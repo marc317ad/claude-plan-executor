@@ -1,0 +1,54 @@
+{
+  "type": "object",
+  "properties": {
+    "task_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "blocked", "partial", "failed", "needs_clarification"]
+    },
+    "summary": { "type": "string" },
+    "files_changed": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tests_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" },
+          "result": {
+            "type": "string",
+            "enum": ["passed", "failed", "not_run"]
+          },
+          "details": { "type": "string" }
+        },
+        "required": ["command", "result", "details"],
+        "additionalProperties": false
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "concerns": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "plan_adaptations": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "required": [
+    "task_id",
+    "status",
+    "summary",
+    "files_changed",
+    "tests_run",
+    "blockers",
+    "concerns",
+    "plan_adaptations"
+  ],
+  "additionalProperties": false
+}

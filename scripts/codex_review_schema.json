@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "properties": {
+    "task_id": { "type": "string" },
+    "verdict": {
+      "type": "string",
+      "enum": ["clean", "minor-findings", "needs-rework"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "important", "minor"]
+          },
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "issue": { "type": "string" },
+          "suggested_fix": { "type": "string" }
+        },
+        "required": ["severity", "file", "line", "issue", "suggested_fix"],
+        "additionalProperties": false
+      }
+    },
+    "scope_ok": { "type": "boolean" },
+    "acceptance_met": { "type": "boolean" },
+    "summary": { "type": "string" }
+  },
+  "required": [
+    "task_id",
+    "verdict",
+    "findings",
+    "scope_ok",
+    "acceptance_met",
+    "summary"
+  ],
+  "additionalProperties": false
+}
