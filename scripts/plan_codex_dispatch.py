@@ -46,14 +46,25 @@ GIT_TIMEOUT = 30
 TEST_TIMEOUT = 300
 
 def _load_plan_config() -> dict:
-    """Read `.claude/plan-executor.json` from cwd; return {} if missing/invalid."""
+    """Read `.claude/plan-executor.json` from cwd; return {} if missing.
+
+    Malformed JSON or unreadable file → SystemExit(2). See plan_ops._load_plan_config.
+    """
     cfg_path = Path(".claude/plan-executor.json")
     if not cfg_path.exists():
         return {}
     try:
         return json.loads(cfg_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(
+            f"plan_codex_dispatch: malformed JSON in {cfg_path}: {exc}\n"
+        )
+        raise SystemExit(2)
+    except OSError as exc:
+        sys.stderr.write(
+            f"plan_codex_dispatch: cannot read {cfg_path}: {exc}\n"
+        )
+        raise SystemExit(2)
 
 
 _PLAN_CFG = _load_plan_config()
@@ -74,8 +85,6 @@ PROTECTED_PATH_PREFIXES = (
     f"{_PLAN_DIR_POSIX}/_run_lock.json",
     ".claude/",
     ".codex/",
-    "scripts/plan_ops.py",
-    "scripts/plan_codex_dispatch.py",
 )
 PROTECTED_PATH_SUFFIXES: tuple[str, ...] = ()
 # Path globs (fnmatch) matched against repo-relative paths. Used for shapes

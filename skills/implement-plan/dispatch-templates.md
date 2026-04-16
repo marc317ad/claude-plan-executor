@@ -47,7 +47,7 @@ All Agent dispatches include the **"You do NOT have the Agent tool"** constraint
 Bash command template — orchestrator issues this directly, wrapper fully owns Codex session lifecycle:
 
 ```
-venv/bin/python scripts/plan_codex_dispatch.py implement \
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement \
   --plan-file <absolute plan path> \
   --task-id <NNN> \
   --repo-root <absolute repo root> \
@@ -61,7 +61,7 @@ Timeout is **300s** per Appendix D.5. The wrapper captures a pre-dispatch baseli
 Bash command template:
 
 ```
-venv/bin/python scripts/plan_codex_dispatch.py review \
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" review \
   --plan-file <absolute plan path> \
   --task-id <NNN> \
   --repo-root <absolute repo root> \

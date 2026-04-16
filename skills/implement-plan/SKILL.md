@@ -13,7 +13,7 @@ user_invocable: true
 1. **Parallel dispatch per batch.** Up to `--parallel N` dispatches in a SINGLE message inside Phase B. Claude-tier via Agent, Codex-tier via Bash — both kick off in the same message when a batch contains both.
 2. **Trust the analyst's schedule.** Batches with disjoint `file_locks` and no cross-batch deps are parallel-safe. Do not add extra safety reasoning.
 3. **Your job is routing only.** Pick tasks from the analyst's schedule, dispatch, interpret reports, commit/revert. No code reading, no diff judgment, no scope inflation.
-4. **Dispatch prompts must be self-contained.** Read `.claude/skills/implement-plan/dispatch-templates.md` for the templates. Every Agent prompt includes the full task block verbatim + "You do NOT have the Agent tool."
+4. **Dispatch prompts must be self-contained.** Read `${CLAUDE_PLUGIN_ROOT}/skills/implement-plan/dispatch-templates.md` for the templates. Every Agent prompt includes the full task block verbatim + "You do NOT have the Agent tool."
 5. **Timeouts on Bash calls.** 5000ms for idioms (printf, git status); 180000ms (180s) for `plan_codex_dispatch.py review`; 300000ms (300s) for `plan_codex_dispatch.py implement`. Timeouts are enforced by the wrapper internally — pass `--timeout 180|300` as documented.
 6. **Subagent errors.** If a dispatch returns `[Tool result missing due to internal error]` or no parseable report, treat as failure. Log it, restore partial changes, do NOT retry silently. Claude-implementer `malformed` outcome goes to `fail-task stage=implement reason=malformed_report`.
 7. **Cross-review asymmetry.** Claude implements → Codex reviews; Codex implements → Claude reviews. Escalation path differs by direction — see Phase D.2.
@@ -22,8 +22,8 @@ user_invocable: true
 
 Standard commands used by this skill:
 
-- `venv/bin/python scripts/plan_ops.py <subcommand> [--json]` — all plan parsing, schedule evaluation, batch selection, narrow commit, failure handling, status transitions, and run-log append verification.
-- `venv/bin/python scripts/plan_codex_dispatch.py implement|review ...` — Codex-tier implementer and reviewer. Emits a single JSON envelope on stdout.
+- `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" <subcommand> [--json]` — all plan parsing, schedule evaluation, batch selection, narrow commit, failure handling, status transitions, and run-log append verification.
+- `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement|review ...` — Codex-tier implementer and reviewer. Emits a single JSON envelope on stdout.
 - `date -u +%Y%m%dT%H%M%S` — run_id fallback (preflight emits one authoritatively).
 
 Never write inline Python for plan operations. Never `git stash` inside this skill — the wrapper restores Codex-side independently; the orchestrator restores Claude-side via `plan_ops.py fail-task` (which uses `git restore`).
@@ -47,7 +47,8 @@ All subcommands accept `--json` for machine-readable output.
 | `plan_ops.py finalize-execution-log ...` | Append §5 execution-log markdown table to plan |
 | `plan_ops.py log-event --event E --fields-json '{...}'` | Append JSONL event with tail re-verify |
 | `plan_ops.py normalize-task-id --id 1\|001\|TASK-001\|004A\|TASK-004A` | Canonicalize to `^\d{3}[A-Z]?$` form |
-| `plan_ops.py acquire-lock / release-lock --plan-file ... --run-id ...` | Per-plan-file run-lock against `docs/plans/_run_lock.json` |
+| `plan_ops.py acquire-lock / release-lock --plan-file ... --run-id ...` | Per-plan-file run-lock against `<run_lock>` |
+| `plan_ops.py path-info` | Emit configured `plan_dir` + derived `run_log` / `run_lock` / `schedule_glob` paths. Run once at Phase 0 to bind the `<plan_dir>` / `<run_log>` / `<run_lock>` / `<schedule_file>` placeholders used throughout this skill. |
 | `plan_ops.py check-plan-deps --plan-file ... --plans-dir ...` | Resolve the target plan's cross-plan `Dependencies:` entries against `<plans-dir>/00_INDEX.md` + sibling `- **Status:**` bullets; emits `{pass, deps, unresolved, errors}` |
 
 ## Parse arguments
@@ -76,8 +77,24 @@ Mutual exclusions: `--codex-only` + `--claude-only` → error. Normalize `--task
 
 ## Pre-flight (Phase 0)
 
+First, bind the path placeholders used throughout this skill by querying the configured plan directory:
+
 ```bash
-venv/bin/python scripts/plan_ops.py preflight --plan-file <absolute plan> [--strict-branch]
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" path-info --json
+```
+
+Returns `{"plan_dir": "...", "run_log": "...", "run_lock": "...", "schedule_glob": "..."}`. Bind:
+- `<plan_dir>` ← `plan_dir`
+- `<run_log>` ← `run_log`
+- `<run_lock>` ← `run_lock`
+- `<schedule_file>` ← `<plan_dir>/<basename>.schedule.json` (constructed per plan from `<plan_dir>` and the plan-file basename without `.md`)
+
+Use these placeholders verbatim in all subsequent commands; never hardcode `docs/plans`.
+
+Then run preflight:
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" preflight --plan-file <absolute plan> [--strict-branch]
 ```
 
 Returns JSON with `pass`, `starting_sha`, `run_id`, `codex_available`, `dirty_files{source_blocking, infra_ignored, plan_doc}`, `base_branch_match`. Halts on `source_blocking` dirty. `plan_doc` churn (the plan file being executed) is allowed. `infra_ignored` warns but proceeds.
@@ -87,7 +104,7 @@ If `codex_available=false`, override `tasks[].agent = "claude"` throughout Phase
 Then acquire the run-lock:
 
 ```bash
-venv/bin/python scripts/plan_ops.py acquire-lock --plan-file <absolute plan> --run-id <id>
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" acquire-lock --plan-file <absolute plan> --run-id <id>
 ```
 
 Overlap on the same plan → halt with the conflicting run_id.
@@ -99,7 +116,7 @@ Append `run_start` via `plan_ops.py log-event`.
 Dispatch `plan-analyst` (Agent, `subagent_type: "plan-analyst"`, `model: "opus"`) with the Phase A template from `dispatch-templates.md`. Extract the fenced ```json block from the analyst's report and feed it to:
 
 ```bash
-echo "<analyst_json>" | venv/bin/python scripts/plan_ops.py parse-schedule --stdin --json
+echo "<analyst_json>" | venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" parse-schedule --stdin --json
 ```
 
 Branch on `outcome`:
@@ -114,7 +131,7 @@ Branch on `outcome`:
 When every gap has `type == "external-dep"`, run:
 
 ```bash
-venv/bin/python scripts/plan_ops.py check-plan-deps \
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" check-plan-deps \
   --plan-file <absolute plan> \
   --plans-dir <directory containing 00_INDEX.md + sibling plans> \
   --json
@@ -138,9 +155,9 @@ Apply filters:
 - `--codex-only` → drop claude tasks; halt if orphans deps.
 - `--task-ids` → restrict; halt if filter orphans deps.
 
-After any filter rewrite, re-compute schedule topology and batches by piping the in-memory JSON through `venv/bin/python scripts/plan_ops.py compute-schedule --stdin --json`, then replace the schedule's `batches` array with the returned `batches` before persisting. Treat this as the sole supported path for batch recomputation; never use inline Python for plan ops.
+After any filter rewrite, re-compute schedule topology and batches by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" compute-schedule --stdin --json`, then replace the schedule's `batches` array with the returned `batches` before persisting. Treat this as the sole supported path for batch recomputation; never use inline Python for plan ops.
 
-Persist the final schedule (after filter rewrites and any required batch recomputation) by piping the in-memory JSON through `venv/bin/python scripts/plan_ops.py write-schedule --schedule-file docs/plans/<basename>.schedule.json --stdin --json`. This is the sole supported path for persistence; never write the file with the Write tool or inline Python (cf. rule at line 316). `write-schedule` runs the same shared validator as `parse-schedule` and refuses to write on any validation error.
+Persist the final schedule (after filter rewrites and any required batch recomputation) by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" write-schedule --schedule-file <schedule_file> --stdin --json`. This is the sole supported path for persistence; never write the file with the Write tool or inline Python (cf. rule at line 316). `write-schedule` runs the same shared validator as `parse-schedule` and refuses to write on any validation error.
 
 ### Dry-run mode
 
@@ -163,7 +180,7 @@ Loop until `ready` is empty OR scheduler stuck.
 ### Phase A — Select batch
 
 ```bash
-venv/bin/python scripts/plan_ops.py batch-next \
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" batch-next \
   --schedule-file <path> \
   --locked-files <comma-separated> \
   --done <comma-separated> \
@@ -179,7 +196,7 @@ Dispatch all batch tasks in a **single message** — Claude via Agent, Codex via
 
 - Log `implement_start {task_id, agent, model?, batch_index}` per task (chain into the dispatch via `&&` when convenient).
 - **Claude tasks** → `Agent(subagent_type: "plan-implementer", model: "opus", prompt: render(templates.PhaseB, ...))`.
-- **Codex tasks** → `Bash: venv/bin/python scripts/plan_codex_dispatch.py implement --plan-file <abs> --task-id NNN --repo-root <abs> --timeout 300`.
+- **Codex tasks** → `Bash: venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement --plan-file <abs> --task-id NNN --repo-root <abs> --timeout 300`.
 
 Await all. For EVERY task (success or not) append `implement_done {task_id, outcome, files_changed[], test_outcome, wall_seconds}`.
 
@@ -188,7 +205,7 @@ Await all. For EVERY task (success or not) append `implement_done {task_id, outc
 *Claude response (markdown):*
 
 ```bash
-printf '%s' "<agent_output>" | venv/bin/python scripts/plan_ops.py parse-implementer-report --stdin --json
+printf '%s' "<agent_output>" | venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" parse-implementer-report --stdin --json
 ```
 
 Gets `{outcome, files_changed, diff_summary, test_outcome, concerns, plan_adaptations, warnings, diagnostics, reversion_guidance?}`. `concerns` and `plan_adaptations` are `list[str]` (one entry per bullet); `warnings` is `list[str]` describing any legacy-alias label fallbacks (e.g., `**Concerns:**` instead of the canonical `**Concerns for reviewer:**`). `diagnostics` is a `list[dict]` of `{code, message}` entries flagging absent mandatory section headers (e.g. missing `**Plan adaptations:**`). Non-halting — surface to the reviewer for visibility; do not gate on it. Post-hoc scope check:
@@ -216,7 +233,7 @@ At the batch join barrier (after every wrapper in a batch returns, before per-ta
 For each non-success task:
 
 ```bash
-venv/bin/python scripts/plan_ops.py fail-task \
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
   --plan-file <abs> --task-id NNN --run-id <id> \
   --files <touched files> --stage implement --reason "<short>" \
   [--reversion-guidance "<from implementer report>"] --json
@@ -227,7 +244,7 @@ This: (1) `git restore <files>` (Claude-side recovery; Codex-side restore was do
 Then cascade:
 
 ```bash
-venv/bin/python scripts/plan_ops.py block-dependents \
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
   --schedule-file <path> --failed NNN --run-id <id> --json
 ```
 
@@ -244,7 +261,7 @@ Otherwise, per successful task:
 *Claude-implemented → Codex review:*
 
 ```bash
-venv/bin/python scripts/plan_codex_dispatch.py review \
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" review \
   --plan-file <abs> --task-id NNN --repo-root <abs> \
   --files <files_changed> --review-focus bugs --timeout 180
 ```
@@ -290,7 +307,7 @@ Per §8.3 line 692: Claude re-implements, Codex re-reviews. One attempt.
 #### D.3 — Commit
 
 ```bash
-venv/bin/python scripts/plan_ops.py commit-task \
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" commit-task \
   --plan-file <abs> --task-id NNN --run-id <id> \
   --files <files_changed> --title "<task.title>" \
   --diff-summary "<implementer.diff_summary>" \
@@ -307,7 +324,7 @@ Commit hook failure → subcommand auto-rolls back (`git reset HEAD`, restore pl
 #### D.4 — Phase D fail
 
 ```bash
-venv/bin/python scripts/plan_ops.py fail-task \
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
   --plan-file <abs> --task-id NNN --run-id <id> \
   --files <files> --stage review --reason "..." \
   --reviewer-findings '<json>' --json
@@ -327,7 +344,7 @@ For each newly committed task: release its file locks, check reverse dependents,
 4. Print summary: counts, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
 5. Housekeeping commit (skip if `done == 0 AND failed == 0`):
    ```bash
-   git add <plan-file> docs/plans/_run_log.jsonl
+   git add <plan-file> <run_log>
    git commit -m "chore(implement-plan): run <run_id> bookkeeping"
    ```
 6. `plan_ops.py release-lock` (finally-style; runs on early halt too).
@@ -353,7 +370,7 @@ Do NOT auto-push. Do NOT auto-PR.
 The Codex dispatch wrapper operates **delta-bounded cleanup** against a pre-dispatch baseline. It never runs `git checkout -- .` or `git clean -fd`, so disjoint sibling work is not destroyed. Protected paths are never touched by cleanup; they land in `extra.protected_skipped_tracked` / `extra.protected_skipped_untracked` for observability.
 
 - **Protected exact paths:** `_run_lock.json`, `.claude`, `.codex`
-- **Protected prefixes:** `docs/plans/_run_log.jsonl`, `docs/plans/_run_lock.json`, `.claude/`, `.codex/`, `scripts/plan_ops.py`, `scripts/plan_codex_dispatch.py`
+- **Protected prefixes:** `<plan_dir>/_run_log.jsonl`, `<plan_dir>/_run_lock.json`, `.claude/`, `.codex/`
 - **Delta invariant:** cleanup only touches `(allowed_files ∪ new-delta-violations) − protected`. Files present in the baseline are never deleted or restored.
 - **Scope misreport:** if Codex's `files_changed` disagrees with the post-dispatch delta, the wrapper emits `outcome="failure"` with `extra.reason="scope_misreport"` and `extra.test_result.result="not_run"`; the test command is skipped but delta-only restore still runs.
 - **Review-path:** keeps "log but succeed" semantics by explicit design; a post-dispatch sandbox escape surfaces in `extra.sandbox_escape_detected` without changing outcome.

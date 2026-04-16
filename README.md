@@ -1,41 +1,51 @@
 # claude-plan-executor
 
-Portable dual-agent `/implement-plan` executor for Claude Code, extracted so it can be reused across projects.
+Portable dual-agent `/implement-plan` executor packaged as a **Claude Code plugin**. Install once at user scope and `/implement-plan <plan-path>` is available from every project you open.
 
-The skill runs a plan file through a Claude-tier + Codex-tier pipeline: plan-analyst validates and schedules tasks, plan-implementer (or Codex) executes each task, code-reviewer cross-reviews, and `plan_ops.py` handles narrow commits, run-log appends, and failure handling.
+The skill runs a plan file through a Claude-tier + Codex-tier pipeline: `plan-analyst` validates and schedules tasks, `plan-implementer` (or Codex via `plan_codex_dispatch.py`) executes each task, `code-reviewer` cross-reviews, and `plan_ops.py` handles narrow commits, run-log appends, and failure handling.
 
-## What lives here vs. per-project
+## Install
 
-**Shared (this repo):**
-- `.claude/skills/implement-plan/` — skill contract, dispatch templates, run-log schema
-- `.claude/agents/plan-analyst.md`, `plan-implementer.md` — generic subagents
-- `scripts/plan_ops.py`, `scripts/plan_codex_dispatch.py` — plan orchestration + Codex wrapper
-- `scripts/codex_{implement,review}_schema.json` — JSON envelope schemas
-- `templates/code-reviewer.md.template` — generic reviewer stub
-
-**Per-project (stays in each consuming project):**
-- `.claude/agents/code-reviewer.md` — domain-specific; every project customizes this
-- `.claude/plan-executor.json` — project config (plan_dir, etc.)
-- `CLAUDE.md` — documents the Python invocation the skill should use (e.g. `venv/bin/python`)
-- `docs/plans/` (or whatever `plan_dir` points to) — actual plan files + run logs
-
-## Install into a project
+**Dev mode** (live-reload from this checkout — recommended while iterating):
 
 ```bash
-/mnt/d/claude-plan-executor/install.sh /path/to/your/project
+claude --plugin-dir /mnt/d/claude-plan-executor
 ```
 
-The installer creates **relative symlinks** from the target project's expected paths back into this repo, so updates pulled here are live everywhere. The installer is idempotent: existing symlinks are left alone, and existing non-symlink files at the target paths are preserved with a warning.
+**Permanent install** (user scope, available from every project):
 
-After install, in the target project:
+Inside Claude Code:
 
-1. Copy `templates/code-reviewer.md.template` to `.claude/agents/code-reviewer.md` and fill in the `{{…}}` placeholders.
-2. Ensure `CLAUDE.md` documents the Python invocation the skill should call (the skill defers to this via `venv/bin/python` or whatever you specify).
-3. Create `docs/plans/` (or override `plan_dir` in `.claude/plan-executor.json`).
+```
+/plugin marketplace add /mnt/d/claude-plan-executor
+/plugin install plan-executor@claude-plan-executor --scope user
+```
+
+Restart Claude Code afterwards. `/implement-plan` should appear in the slash-command list.
+
+## What this plugin provides
+
+- **Slash command**: `/implement-plan <plan-path>` (dispatches the skill)
+- **Skill**: `skills/implement-plan/SKILL.md` (orchestrator protocol)
+- **Subagents**: `plan-analyst`, `plan-implementer`
+- **Scripts**: `plan_ops.py` (commit ceremony, run-log, reconcile), `plan_codex_dispatch.py` (Codex wrapper)
+- **JSON envelope schemas**: `codex_implement_schema.json`, `codex_review_schema.json`
+- **Reviewer template**: `templates/code-reviewer.md.template` (per-project starter)
+
+Scripts execute with `cwd = consuming project` and read project-local `.claude/plan-executor.json`. Plugin-internal references resolve through `${CLAUDE_PLUGIN_ROOT}` at runtime.
+
+## Per-project requirements
+
+Each project that uses `/implement-plan` must provide:
+
+1. **`.claude/agents/code-reviewer.md`** — domain-specific reviewer. Copy `templates/code-reviewer.md.template` from the plugin and fill in `{{…}}` placeholders.
+2. **`.claude/plan-executor.json`** — project config (see Configuration below).
+3. **`CLAUDE.md`** — documents the Python invocation the skill should use (e.g. `venv/bin/python`). The skill reads this convention from your project — the plugin assumes nothing about your interpreter.
+4. **Plan directory** — defaults to `docs/plans/`. Override via `plan_dir` in the config.
 
 ## Configuration
 
-`.claude/plan-executor.json` (at the target project root):
+`.claude/plan-executor.json` (at the consuming project root):
 
 ```json
 {
@@ -43,29 +53,62 @@ After install, in the target project:
 }
 ```
 
-If the file is missing, scripts fall back to `docs/plans` — so a clean install mirrors the original hardcoded behavior.
-
 Fields:
 - `plan_dir` (string, default `"docs/plans"`) — where plan files, `_run_log.jsonl`, `_run_lock.json`, and `*.schedule.json` sidecars live. All executor-infrastructure protected-path patterns are derived from this.
 
-## Updating
+**Behavior on bad config (F-4):**
+- Missing file → silent fallback to defaults.
+- Malformed JSON → exit 2, stderr names the file.
+- Unreadable file (e.g. `chmod 000`) → exit 2, stderr names the file.
 
-Pull updates here:
+Both scripts call `_load_plan_config()` at **import time**, so a malformed config file makes even `--help` exit 2. This is intentional: if the config is broken, no operation should appear to work.
+
+## Path discovery from the orchestrator
+
+The orchestrator queries dynamic paths once at preflight:
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" path-info --json
+```
+
+Returns:
+
+```json
+{
+  "plan_dir": "docs/plans",
+  "run_log": "docs/plans/_run_log.jsonl",
+  "run_lock": "docs/plans/_run_lock.json",
+  "schedule_glob": "docs/plans/*.schedule.json"
+}
+```
+
+These bind to placeholders (`<plan_dir>`, `<run_log>`, `<run_lock>`, `<schedule_file>`) that SKILL.md and dispatch-templates.md reference everywhere. No hardcoded `docs/plans` outside default-value documentation.
+
+## Updating
 
 ```bash
 cd /mnt/d/claude-plan-executor
 git pull
 ```
 
-Every consuming project picks up the change immediately because they symlink in. If a change breaks something, `git revert` here and every project is fixed in one shot.
+Dev-mode users see changes on next Claude Code restart. Permanently-installed users run `/plugin update plan-executor@claude-plan-executor`.
 
-To pin a project to a specific version instead of tracking `main`, replace the symlinks with copies of the files at a known commit.
+## Architecture notes
 
-## Manual install (no installer)
+- Scripts run with `cwd = consuming project`, not the plugin install directory.
+- `${CLAUDE_PLUGIN_ROOT}` resolves at runtime to the plugin install dir (dev mode: this checkout; permanent install: `~/.claude/plugins/cache/claude-plan-executor/plan-executor/<version>/`).
+- `Path(__file__).resolve()` inside scripts works in both modes — schema JSONs colocated next to scripts are found via the resolved script directory.
+- The plugin commits no per-project state. The trading system (or any consuming project) commits only its own `.claude/plan-executor.json` and `.claude/agents/code-reviewer.md`.
 
-If you prefer not to run the script, the installer's logic is: for each of the nine paths listed in `install.sh` (`FILES=(...)`), create `ln -sr <shared>/<path> <target>/<path>`. Then write `.claude/plan-executor.json` with `{"plan_dir": "docs/plans"}`.
+## Outside Claude Code
 
-## What isn't portable yet
+The scripts are usable from CI or shell scripts that don't run inside Claude Code. With `CLAUDE_PLUGIN_ROOT` unset, invoke via the absolute install-cache path:
 
-- **Plan file schema docs** are documented inside `.claude/agents/plan-analyst.md` (§ "Plan schema (reference)"). If you keep a larger design doc (e.g. `DUAL_AGENT_PLAN_EXECUTOR.md`), that stays in the consuming project — it's project-history, not harness logic.
-- **The `code-reviewer` agent** is inherently domain-specific. The template here is a starting point; every project writes its own.
+```bash
+~/.claude/plugins/cache/claude-plan-executor/plan-executor/<version>/scripts/plan_ops.py path-info --json
+```
+
+## What isn't portable
+
+- **Plan file schema docs** live inside `agents/plan-analyst.md` (§ "Plan schema (reference)"). If you keep a larger design doc, that stays in the consuming project — it's project history, not harness logic.
+- **`code-reviewer`** is inherently domain-specific. The template is a starting point; every project writes its own.

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-plan-executor",
+  "description": "Personal plugin marketplace: dual-agent plan executor",
+  "owner": {"name": "marc317ad"},
+  "plugins": [
+    {
+      "name": "plan-executor",
+      "description": "Dual-agent plan executor",
+      "source": {"source": "directory", "path": "."}
+    }
+  ]
+}

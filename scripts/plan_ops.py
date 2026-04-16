@@ -33,25 +33,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 def _load_plan_config() -> dict:
-    """Read `.claude/plan-executor.json` from cwd; return {} if missing/invalid.
+    """Read `.claude/plan-executor.json` from cwd; return {} if missing.
 
     Config schema (all optional):
         { "plan_dir": "docs/plans" }
 
-    When absent, defaults preserve legacy behavior so projects that never
-    adopt the config file keep working unchanged.
+    Missing file → defaults to {} so projects without the config keep working.
+    Malformed JSON or unreadable file → SystemExit(2). The config gates every
+    plan operation; silently falling back to defaults on a typo would route
+    writes to the wrong directory.
     """
     cfg_path = Path(".claude/plan-executor.json")
     if not cfg_path.exists():
         return {}
     try:
         return json.loads(cfg_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(
+            f"plan_ops: malformed JSON in {cfg_path}: {exc}\n"
+        )
+        raise SystemExit(2)
+    except OSError as exc:
+        sys.stderr.write(
+            f"plan_ops: cannot read {cfg_path}: {exc}\n"
+        )
+        raise SystemExit(2)
 
 
 _PLAN_CFG = _load_plan_config()
 PLAN_DIR = Path(_PLAN_CFG.get("plan_dir", "docs/plans"))
+_PLAN_DIR_POSIX = PLAN_DIR.as_posix()
 RUN_LOG_PATH = PLAN_DIR / "_run_log.jsonl"
 RUN_LOCK_PATH = PLAN_DIR / "_run_lock.json"
 
@@ -1060,14 +1071,11 @@ def _git(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedPro
 # envelope somehow reports a protected path as out-of-scope: reconciliation
 # never restores/unlinks executor infrastructure.
 RECONCILE_PROTECTED_EXACT = frozenset({"_run_lock.json", ".claude", ".codex"})
-_PLAN_DIR_POSIX = PLAN_DIR.as_posix()
 RECONCILE_PROTECTED_PREFIXES = (
     f"{_PLAN_DIR_POSIX}/_run_log.jsonl",
     f"{_PLAN_DIR_POSIX}/_run_lock.json",
     ".claude/",
     ".codex/",
-    "scripts/plan_ops.py",
-    "scripts/plan_codex_dispatch.py",
 )
 RECONCILE_PROTECTED_GLOBS = (f"{_PLAN_DIR_POSIX}/*.schedule.json",)
 
@@ -1940,6 +1948,18 @@ def cmd_release_lock(args: argparse.Namespace) -> None:
     _emit(args, {"released": True})
 
 
+def cmd_path_info(args: argparse.Namespace) -> None:
+    """Emit the configured plan-dir and derived paths so the orchestrator can
+    template them into SKILL.md placeholders (`<plan_dir>`, `<run_log>`, etc.)."""
+    payload = {
+        "plan_dir": _PLAN_DIR_POSIX,
+        "run_log": RUN_LOG_PATH.as_posix(),
+        "run_lock": RUN_LOCK_PATH.as_posix(),
+        "schedule_glob": f"{_PLAN_DIR_POSIX}/*.schedule.json",
+    }
+    _emit(args, payload)
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -2087,6 +2107,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_cpd)
 
+    p_pi = sub.add_parser(
+        "path-info",
+        help="Emit configured plan_dir + derived run_log/run_lock/schedule_glob paths",
+    )
+    _add_json(p_pi)
+
     return parser
 
 
@@ -2111,6 +2137,7 @@ def main(argv: list[str] | None = None) -> None:
         "release-lock": cmd_release_lock,
         "reconcile-batch": cmd_reconcile_batch,
         "check-plan-deps": cmd_check_plan_deps,
+        "path-info": cmd_path_info,
     }
     handlers[args.command](args)
 

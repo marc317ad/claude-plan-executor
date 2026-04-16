@@ -1,4 +1,4 @@
-# Run Log Schema (`docs/plans/_run_log.jsonl`)
+# Run Log Schema (`<run_log>`, default `docs/plans/_run_log.jsonl`)
 
 Append-only JSONL. One JSON object per line. **Never rewrite — only append via `Bash` with `printf` and `>>`.** Every append is verified with `&& tail -1`; if tail does not contain the just-written line, retry once.
 
