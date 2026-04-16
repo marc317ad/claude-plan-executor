@@ -102,7 +102,7 @@ Phase 2: Batch Execution (parallel within each batch)
     | +-- Claude tasks -> Agent tool -> plan-implementer subagent
     | |     Full context, multi-file reasoning, complex changes
     | |
-    | +-- Codex tasks -> Bash -> scripts/plan_codex_dispatch.py implement
+    | +-- Codex tasks -> Bash -> plugins/plan-executor/scripts/plan_codex_dispatch.py implement
     |       Lean structured prompt, repo-aware, bounded changes
     |       On failure -> automatic Claude fallback
     |
@@ -278,17 +278,17 @@ Appended by the orchestrator after each run:
 
 | Concept | Canonical | Alias in v1 | Alias mechanism | Scheduled removal |
 |---|---|---|---|---|
-| Task status (plan + helpers) | `pending` | `open` | `STATUS_ALIASES = {"open": "pending"}` in `scripts/plan_ops.py`; accepted in `ALLOWED_TASK_STATUSES` for the alias window. | TASK-006 (sample fixture rewrite). Delete the alias entry when no fixture or test references `open`. |
+| Task status (plan + helpers) | `pending` | `open` | `STATUS_ALIASES = {"open": "pending"}` in `plugins/plan-executor/scripts/plan_ops.py`; accepted in `ALLOWED_TASK_STATUSES` for the alias window. | TASK-006 (sample fixture rewrite). Delete the alias entry when no fixture or test references `open`. |
 | Analyst task-field | `id` | `task_id` | `parse-schedule` required-field check accepts either; `batch-next` reads `t.get("id") or t.get("task_id")`. On alias use the response `warnings` list includes `"schedule uses legacy 'task_id' field; canonical is 'id'"`. | Future chunk. Gate removal on `warnings` being empty for one release cycle. |
 | Analyst batch-field | `index` | `batch_index` | Same pattern as `id` alias (paired warning). | Future chunk. |
 | Implementer concerns label | `**Concerns for reviewer:**` | `**Concerns:**` | Parser searches canonical first, falls back to alias; on fallback emits `"implementer report used legacy 'Concerns:' label; canonical is 'Concerns for reviewer:'"`. `concerns` is a **list of strings**, one per bullet (shape change from prior scalar string). | Future chunk. |
 | Implementer `plan_adaptations` | `**Plan adaptations:**` | none | Extracted as a list of strings (one bullet per entry), same shape as `concerns`. | n/a — new field. |
 | Execution-log columns | `Task \| Agent \| Reviewer \| Verdict \| Commit \| Notes` | none | Writer (`finalize-execution-log`) is the single source of truth. §5 execution-log example uses this shape. | n/a. |
-| `blockers` field shape | array of strings | none | §7.2 line 508 and `scripts/codex_implement_schema.json` both describe array-of-strings. §15.2's object-form example is deleted; consumers point back to §7.2. | n/a. |
+| `blockers` field shape | array of strings | none | §7.2 line 508 and `plugins/plan-executor/scripts/codex_implement_schema.json` both describe array-of-strings. §15.2's object-form example is deleted; consumers point back to §7.2. | n/a. |
 | Schedule persistence path | `docs/plans/<basename>.schedule.json` | none | Named in §9.3. SKILL.md MUST NOT write this file directly. | n/a. |
 | Schedule persistence owner | `plan_ops.py write-schedule` (delivered in TASK-004) | none | Once TASK-004 lands, the orchestrator routes analyst-JSON → writer subcommand → sidecar; direct file writes are a protocol violation. | n/a. |
 
-**Emit-label footnote.** `batch-next` output keeps `batch_index` as its response key (line 347 of `scripts/plan_ops.py`). That key is the wrapper↔orchestrator contract, not the analyst wire contract. Canonical `index` governs the schedule JSON field; the emit label stays `batch_index` in v1 to avoid churning SKILL.md template readers. Any future rename owns the downstream template churn.
+**Emit-label footnote.** `batch-next` output keeps `batch_index` as its response key (line 347 of `plugins/plan-executor/scripts/plan_ops.py`). That key is the wrapper↔orchestrator contract, not the analyst wire contract. Canonical `index` governs the schedule JSON field; the emit label stays `batch_index` in v1 to avoid churning SKILL.md template readers. Any future rename owns the downstream template churn.
 
 **Consumer-shape note.** `parse-implementer-report`'s `concerns` field is a list in v1. Any downstream consumer that reads the helper's JSON output must treat `concerns` as `list[str]`, never as a scalar string.
 
@@ -300,7 +300,7 @@ Appended by the orchestrator after each run:
 
 Reads a plan document, validates structure, classifies tasks, and produces an execution strategy. Read-only.
 
-**File:** `.claude/agents/plan-analyst.md`
+**File:** `plugins/plan-executor/agents/plan-analyst.md`
 **Tools:** Read, Grep, Glob, Bash
 **Model:** opus
 
@@ -418,7 +418,7 @@ Contract notes:
 
 Implements a single task from a plan document. Generalized from `fix-implementer`.
 
-**File:** `.claude/agents/plan-implementer.md`
+**File:** `plugins/plan-executor/agents/plan-implementer.md`
 **Tools:** Read, Grep, Glob, Edit, Write, Bash
 **Model:** opus or sonnet (set by orchestrator per plan-analyst classification)
 
@@ -484,14 +484,14 @@ Implements a single task from a plan document. Generalized from `fix-implementer
 
 ## 7. Codex Dispatch Infrastructure
 
-### 7.1 Wrapper Script: `scripts/plan_codex_dispatch.py`
+### 7.1 Wrapper Script: `plugins/plan-executor/scripts/plan_codex_dispatch.py`
 
 A Python script that standardizes Codex CLI invocation. Two subcommands: `implement` and `review`.
 
 **Interface:**
 
 ```
-Usage: python scripts/plan_codex_dispatch.py <subcommand> [OPTIONS]
+Usage: python plugins/plan-executor/scripts/plan_codex_dispatch.py <subcommand> [OPTIONS]
 
 Subcommands:
   implement   Dispatch a task to Codex for implementation
@@ -518,7 +518,7 @@ Review-specific:
 2. Render the Codex prompt from the task (see prompt template below)
 3. If `--dry-run`: print prompt + metadata, exit 0
 4. Snapshot working tree state via `git status --porcelain`
-5. Write implementation JSON schema to temp file (see `scripts/codex_implement_schema.json`)
+5. Write implementation JSON schema to temp file (see `plugins/plan-executor/scripts/codex_implement_schema.json`)
 6. Invoke: `codex exec --full-auto --ephemeral --output-schema <schema_file> -o <tmpfile> -C <repo_root> - <<< "<prompt>"`
 6. Post-checks:
    a. Check exit code (non-zero -> failure)
@@ -592,7 +592,7 @@ For cross-reviewing Claude's implementations.
 6. Parse the `-o` output file as JSON (schema-constrained)
 7. Output structured JSON envelope
 
-**Review JSON Schema** (written to `scripts/codex_review_schema.json`):
+**Review JSON Schema** (written to `plugins/plan-executor/scripts/codex_review_schema.json`):
 
 ```json
 {
@@ -733,7 +733,7 @@ The two agents have complementary blind spots:
 **Claude-implemented tasks -> Codex review:**
 
 ```bash
-python scripts/plan_codex_dispatch.py review \
+python plugins/plan-executor/scripts/plan_codex_dispatch.py review \
   --task-id NNN \
   --plan-file <path> \
   --files <changed-files> \
@@ -791,7 +791,7 @@ Each agent gets a review prompt tailored to its strengths:
 
 ## 9. Skill Specification: `/implement-plan`
 
-**File:** `.claude/skills/implement-plan/SKILL.md`
+**File:** `plugins/plan-executor/skills/implement-plan/SKILL.md`
 
 ### 9.1 Arguments
 
@@ -867,7 +867,7 @@ Take the next group of tasks from the schedule. Verify no file overlap with `loc
 In a SINGLE message, dispatch all batch tasks:
 
 - **Claude tasks:** Agent tool calls with `subagent_type: "plan-implementer"`, model per analyst classification. Use the Phase B dispatch template (section 10).
-- **Codex tasks:** Bash tool calls with `scripts/plan_codex_dispatch.py implement ...`, timeout 300s (see Appendix D.5).
+- **Codex tasks:** Bash tool calls with `plugins/plan-executor/scripts/plan_codex_dispatch.py implement ...`, timeout 300s (see Appendix D.5).
 
 Both dispatch types in the same message = true parallelism.
 
@@ -892,7 +892,7 @@ For each successful implementation in topo order:
 **If implemented by Claude -> Codex review:**
 
 ```bash
-python scripts/plan_codex_dispatch.py review \
+python plugins/plan-executor/scripts/plan_codex_dispatch.py review \
   --task-id NNN --plan-file <path> \
   --files <implementer's files_changed> \
   --repo-root <path> --review-focus bugs --json
@@ -983,10 +983,10 @@ You do NOT have the Agent tool. Do all work directly with Read, Grep, Glob, Bash
 
 | File | Content | Portable? |
 |------|---------|-----------|
-| `.claude/agents/plan-analyst.md` | Role behavior, output schema, classification heuristic | Yes |
-| `.claude/agents/plan-implementer.md` | Implementation protocol, report format, rules | Yes |
-| `.claude/skills/implement-plan/SKILL.md` | Orchestration phases, dispatch logic, commit ceremony | Yes |
-| `scripts/plan_codex_dispatch.py` | CLI wrapper, prompt templates, error handling | Yes |
+| `plugins/plan-executor/agents/plan-analyst.md` | Role behavior, output schema, classification heuristic | Yes |
+| `plugins/plan-executor/agents/plan-implementer.md` | Implementation protocol, report format, rules | Yes |
+| `plugins/plan-executor/skills/implement-plan/SKILL.md` | Orchestration phases, dispatch logic, commit ceremony | Yes |
+| `plugins/plan-executor/scripts/plan_codex_dispatch.py` | CLI wrapper, prompt templates, error handling | Yes |
 
 ### 11.2 What Is Repo-Specific (Stays in Project Instructions)
 
@@ -1028,12 +1028,12 @@ No modifications to agent files or skill files required.
 
 | File | Purpose |
 |------|---------|
-| `.claude/agents/plan-analyst.md` | Plan validation, task classification, execution strategy |
-| `.claude/agents/plan-implementer.md` | Single-task implementation (generalized fix-implementer) |
-| `.claude/skills/implement-plan/SKILL.md` | Orchestrating skill -- entry point |
-| `scripts/plan_codex_dispatch.py` | Codex CLI wrapper for implement + review |
-| `scripts/codex_review_schema.json` | JSON Schema for Codex review output (used with `--output-schema`) |
-| `scripts/codex_implement_schema.json` | JSON Schema for Codex implementation output (used with `--output-schema`) |
+| `plugins/plan-executor/agents/plan-analyst.md` | Plan validation, task classification, execution strategy |
+| `plugins/plan-executor/agents/plan-implementer.md` | Single-task implementation (generalized fix-implementer) |
+| `plugins/plan-executor/skills/implement-plan/SKILL.md` | Orchestrating skill -- entry point |
+| `plugins/plan-executor/scripts/plan_codex_dispatch.py` | Codex CLI wrapper for implement + review |
+| `plugins/plan-executor/scripts/codex_review_schema.json` | JSON Schema for Codex review output (used with `--output-schema`) |
+| `plugins/plan-executor/scripts/codex_implement_schema.json` | JSON Schema for Codex implementation output (used with `--output-schema`) |
 
 ### Files to Modify
 
@@ -1045,7 +1045,7 @@ No modifications to agent files or skill files required.
 
 | File | Role in This System |
 |------|---------------------|
-| `.claude/agents/code-reviewer.md` | Reviews Codex-implemented tasks |
+| `plugins/plan-executor/agents/code-reviewer.md` | Reviews Codex-implemented tasks |
 | `CLAUDE.md` | Provides project context to Claude agents |
 
 ---
@@ -1070,7 +1070,7 @@ Run empirical tests to validate the Codex CLI contract. Each is a standalone exp
 
 ### Phase 1: Wrapper Script
 
-Build `scripts/plan_codex_dispatch.py`:
+Build `plugins/plan-executor/scripts/plan_codex_dispatch.py`:
 1. Plan parser (extract task blocks, validate structure)
 2. Prompt renderer (implement + review templates)
 3. Codex invocation with subprocess management
@@ -1082,7 +1082,7 @@ Test standalone against one task from a sample plan.
 
 ### Phase 2: Plan-Analyst Agent
 
-Write `.claude/agents/plan-analyst.md`. Test by dispatching against a sample plan:
+Write `plugins/plan-executor/agents/plan-analyst.md`. Test by dispatching against a sample plan:
 1. Correct task classification (codex vs claude)
 2. Valid execution schedule (dependencies respected, file locks correct)
 3. Gap detection (missing test commands, vague criteria)
@@ -1090,7 +1090,7 @@ Write `.claude/agents/plan-analyst.md`. Test by dispatching against a sample pla
 
 ### Phase 3: Plan-Implementer Agent
 
-Write `.claude/agents/plan-implementer.md`. Test by dispatching against one sample task:
+Write `plugins/plan-executor/agents/plan-implementer.md`. Test by dispatching against one sample task:
 1. Correct implementation
 2. Test execution
 3. Well-formed report
@@ -1098,7 +1098,7 @@ Write `.claude/agents/plan-implementer.md`. Test by dispatching against one samp
 
 ### Phase 4: Orchestrator Skill
 
-Write `.claude/skills/implement-plan/SKILL.md`. Integrate all pieces:
+Write `plugins/plan-executor/skills/implement-plan/SKILL.md`. Integrate all pieces:
 1. Preflight (args, dirty tree, codex check)
 2. Plan analysis dispatch
 3. Batch execution with dual-agent paths
@@ -1206,7 +1206,7 @@ Verify no agent/skill file changes were needed.
 }
 ```
 
-`blockers` is an array of plain strings — see §7.2 for the authoritative shape and `scripts/codex_implement_schema.json` for the schema constraint. Do not use object-shaped blocker entries.
+`blockers` is an array of plain strings — see §7.2 for the authoritative shape and `plugins/plan-executor/scripts/codex_implement_schema.json` for the schema constraint. Do not use object-shaped blocker entries.
 
 ### 15.3 Review Output (Codex -> orchestrator)
 
@@ -1341,7 +1341,7 @@ Default (no annotation) is `modify`. The plan-analyst flags `modify` entries whe
 
 **Finding:** Section 7.2 uses prompt-only JSON instruction for implementation but recognizes `--output-schema` as the reliable path.
 
-**Resolution:** Implementation dispatch should also use `--output-schema`. Added `scripts/codex_implement_schema.json` to the file inventory. The wrapper writes the schema to a temp file and passes it via `--output-schema`.
+**Resolution:** Implementation dispatch should also use `--output-schema`. Added `plugins/plan-executor/scripts/codex_implement_schema.json` to the file inventory. The wrapper writes the schema to a temp file and passes it via `--output-schema`.
 
 ### C.7 Missing Failure Modes
 
@@ -1461,7 +1461,7 @@ def codex_implement(task_prompt: str, workdir: str, schema_path: str,
     except subprocess.TimeoutExpired:
         # F1: no -o file after timeout. Delta-bounded cleanup only — the
         # live wrapper calls `_handle_timeout_cleanup(repo, allowed, baseline)`
-        # (see scripts/plan_codex_dispatch.py) which restores just the
+        # (see plugins/plan-executor/scripts/plan_codex_dispatch.py) which restores just the
         # task-owned delta against the pre-dispatch baseline. Never run
         # `git checkout -- .` or `git clean -fd` here: both would erase
         # disjoint sibling work and executor-infrastructure state.

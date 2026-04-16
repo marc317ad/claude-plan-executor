@@ -3,7 +3,7 @@
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md) § TASK-010
 **Consolidated remediation:** [`../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9.2 scheduler, §9.4 parallel execution
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-004 (scheduler — this chunk extends the batcher), TASK-003 (scope enforcement — this chunk reuses `allowed_files`), TASK-007 (audit can verify the lock list is in sync with canonical contract).
 **Issues absorbed:** none (new executor capability; surfaced by Phase 5 scenario catalog's gap between parallel-sibling isolation and global-state mutation risk).
@@ -51,7 +51,7 @@ GLOBAL_LOCK_PATHS = {
 }
 ```
 
-Globs are supported. The set is declared in one place (`scripts/plan_ops.py`) and documented in `DUAL_AGENT_PLAN_EXECUTOR.md` §9.2.
+Globs are supported. The set is declared in one place (`plugins/plan-executor/scripts/plan_ops.py`) and documented in `DUAL_AGENT_PLAN_EXECUTOR.md` §9.2.
 
 ### Scheduler rule
 
@@ -82,7 +82,7 @@ The analyst (`plan-analyst`) can classify the tag during Step 3; or the schedule
 **V1 — Constant is surfaced.**
 
 ```bash
-$PYTHON scripts/plan_ops.py list-global-lock-paths --json
+$PYTHON plugins/plan-executor/scripts/plan_ops.py list-global-lock-paths --json
 ```
 
 Emits the default set as a JSON array.
@@ -92,7 +92,7 @@ Emits the default set as a JSON array.
 Craft a plan fragment where TASK-001 edits `src/foo.py` and TASK-002 edits `requirements.txt`.
 
 ```bash
-$PYTHON scripts/plan_ops.py parse-schedule --stdin < plan.json
+$PYTHON plugins/plan-executor/scripts/plan_ops.py parse-schedule --stdin < plan.json
 ```
 
 Output contains `"global_lock": true` on TASK-002's record and `"global_lock": false` on TASK-001's.
@@ -118,7 +118,7 @@ batches[1] = [001, 003]
 Assert via:
 
 ```bash
-$PYTHON scripts/plan_ops.py batch-next --schedule-file <sched> --batch-index 0 --json
+$PYTHON plugins/plan-executor/scripts/plan_ops.py batch-next --schedule-file <sched> --batch-index 0 --json
 ```
 
 TASK-002 never shares a batch with TASK-001 or TASK-003.
@@ -146,7 +146,7 @@ Re-run `list-global-lock-paths`. Output includes both plus the default set. Re-r
 **V7 — Audit check passes.**
 
 ```bash
-$PYTHON scripts/plan_ops.py audit --check global_lock_paths --json
+$PYTHON plugins/plan-executor/scripts/plan_ops.py audit --check global_lock_paths --json
 ```
 
 (TASK-007 audit has a new check added by this chunk; passes iff the constant matches the documented set in §9.2 of the design doc.)
@@ -167,13 +167,13 @@ $PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k global_lock
 - **Priority:** medium
 - **Files:**
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (§9.2 scheduler, §9.4 parallel)
-  - `scripts/plan_ops.py` (constant + override loader + subcommand + batch rule)
+  - `plugins/plan-executor/scripts/plan_ops.py` (constant + override loader + subcommand + batch rule)
   - `tests/scripts/test_plan_ops.py`
   - `docs/plans/_global_lock_paths.yaml.example` (documented override template)
 - **Dependencies:** TASK-004 (scheduler), TASK-003 (scope enforcement reuse), TASK-007 (optional audit check — can be registered in a follow-up if TASK-007 already landed).
 - **Test command:** `$PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k global_lock`
 - **Acceptance criteria:**
-  - `GLOBAL_LOCK_PATHS` constant declared in one place in `scripts/plan_ops.py` with the default set.
+  - `GLOBAL_LOCK_PATHS` constant declared in one place in `plugins/plan-executor/scripts/plan_ops.py` with the default set.
   - `list-global-lock-paths` subcommand emits the effective set (default + override).
   - `parse-schedule` / `write-schedule` tags each task with `global_lock: bool`.
   - Batcher rule: any task with `global_lock: true` occupies its own batch alone.
@@ -197,7 +197,7 @@ If the default set is too aggressive for a specific repo, override via YAML rath
 
 ### Step 1 — constants
 
-Add to `scripts/plan_ops.py` near the `ALWAYS_IGNORE` constant (from TASK-003):
+Add to `plugins/plan-executor/scripts/plan_ops.py` near the `ALWAYS_IGNORE` constant (from TASK-003):
 
 ```python
 GLOBAL_LOCK_PATHS = frozenset({

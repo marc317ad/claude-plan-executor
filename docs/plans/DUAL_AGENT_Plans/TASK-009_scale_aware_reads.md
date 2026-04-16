@@ -3,7 +3,7 @@
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md) § TASK-009
 **Consolidated remediation:** [`../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §8 (dispatch contract), §10 (implementer report)
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-001 (canonical plan schema — this chunk adds optional task fields; schema must be stable first), TASK-007 (audit can check new field is documented).
 **Issues absorbed:** none (new executor capability; raised by postmortem as a scaling constraint).
@@ -98,8 +98,8 @@ Both fields appear in §5 (plan schema) documentation.
 
 ```bash
 echo '- **Read targets:**
-  - scripts/plan_ops.py:1-20
-  - scripts/plan_ops.py:200-220' | $PYTHON scripts/plan_ops.py resolve-read-targets --stdin --json
+  - plugins/plan-executor/scripts/plan_ops.py:1-20
+  - plugins/plan-executor/scripts/plan_ops.py:200-220' | $PYTHON plugins/plan-executor/scripts/plan_ops.py resolve-read-targets --stdin --json
 ```
 
 Emits JSON:
@@ -107,8 +107,8 @@ Emits JSON:
 ```json
 {
   "reads": [
-    {"file": "scripts/plan_ops.py", "start": 1, "end": 20, "text": "...20 lines..."},
-    {"file": "scripts/plan_ops.py", "start": 200, "end": 220, "text": "...21 lines..."}
+    {"file": "plugins/plan-executor/scripts/plan_ops.py", "start": 1, "end": 20, "text": "...20 lines..."},
+    {"file": "plugins/plan-executor/scripts/plan_ops.py", "start": 200, "end": 220, "text": "...21 lines..."}
   ],
   "symbols": [],
   "errors": []
@@ -119,7 +119,7 @@ Emits JSON:
 
 ```bash
 echo '- **Symbol targets:**
-  - scripts/plan_ops.py::_resolve_python' | $PYTHON scripts/plan_ops.py resolve-read-targets --stdin --json
+  - plugins/plan-executor/scripts/plan_ops.py::_resolve_python' | $PYTHON plugins/plan-executor/scripts/plan_ops.py resolve-read-targets --stdin --json
 ```
 
 Emits a reads entry with the `_resolve_python` function body and accurate start/end line numbers.
@@ -128,10 +128,10 @@ Emits a reads entry with the `_resolve_python` function body and accurate start/
 
 ```bash
 echo '- **Symbol targets:**
-  - scripts/plan_ops.py::does_not_exist' | $PYTHON scripts/plan_ops.py resolve-read-targets --stdin --json
+  - plugins/plan-executor/scripts/plan_ops.py::does_not_exist' | $PYTHON plugins/plan-executor/scripts/plan_ops.py resolve-read-targets --stdin --json
 ```
 
-Emits `errors: ["scripts/plan_ops.py::does_not_exist not found"]` and the top-level exit code is 0 (missing symbol is not fatal; just advisory).
+Emits `errors: ["plugins/plan-executor/scripts/plan_ops.py::does_not_exist not found"]` and the top-level exit code is 0 (missing symbol is not fatal; just advisory).
 
 **V5 — Line ranges are bounded.**
 
@@ -142,7 +142,7 @@ Request 10000 lines from a 100-line file. Helper clamps to file length with a `"
 When `plan_codex_dispatch.py implement` (and the Claude implementer dispatch template) runs against a task with `Read targets:`, the prompt emitted to the agent contains a `## Pre-read excerpts` section with the targeted content.
 
 ```bash
-$PYTHON scripts/plan_codex_dispatch.py implement --plan-file <fixture-with-targets> --task-id 001 --dry-run --emit-prompt
+$PYTHON plugins/plan-executor/scripts/plan_codex_dispatch.py implement --plan-file <fixture-with-targets> --task-id 001 --dry-run --emit-prompt
 ```
 
 (Or equivalent dry-run that prints the prompt to stdout.) Assert the `Pre-read excerpts` block is present.
@@ -169,9 +169,9 @@ A plan with no `Read targets:` or `Symbol targets:` produces a dispatch prompt i
 - **Priority:** medium
 - **Files:**
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (§5 schema, §8 dispatch contract)
-  - `scripts/plan_ops.py` (new `resolve-read-targets` subcommand + helpers)
-  - `scripts/plan_codex_dispatch.py` (dispatch prompt template integration)
-  - `.claude/skills/implement-plan/dispatch-templates.md` (Claude-side templates)
+  - `plugins/plan-executor/scripts/plan_ops.py` (new `resolve-read-targets` subcommand + helpers)
+  - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (dispatch prompt template integration)
+  - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (Claude-side templates)
   - `tests/scripts/test_plan_ops.py`
 - **Dependencies:** TASK-001 (schema) and TASK-007 (audit can then verify new fields are documented, not required).
 - **Test command:** `$PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k read_targets`
@@ -207,7 +207,7 @@ If the dispatcher-prompt size balloons (targets too generous), reduce the defaul
 
 ### Step 2 — helper subcommand `resolve-read-targets`
 
-Add to `scripts/plan_ops.py`:
+Add to `plugins/plan-executor/scripts/plan_ops.py`:
 
 ```python
 def cmd_resolve_read_targets(args):
@@ -280,7 +280,7 @@ parser_rrt.set_defaults(func=cmd_resolve_read_targets)
 
 ### Step 3 — Codex dispatch template integration
 
-`scripts/plan_codex_dispatch.py` `cmd_implement` and `cmd_review`:
+`plugins/plan-executor/scripts/plan_codex_dispatch.py` `cmd_implement` and `cmd_review`:
 
 - Before building the prompt, call `resolve_read_targets(task_block)` inline (import the helper).
 - If `reads` non-empty, inject a `## Pre-read excerpts` section into the prompt. Each entry formatted as:
@@ -298,7 +298,7 @@ parser_rrt.set_defaults(func=cmd_resolve_read_targets)
 
 ### Step 4 — Claude dispatch template integration
 
-`.claude/skills/implement-plan/dispatch-templates.md`:
+`plugins/plan-executor/skills/implement-plan/dispatch-templates.md`:
 
 - Add a `{{pre_read_excerpts}}` interpolation point in the implementer and reviewer templates.
 - Document how the orchestrator populates it (by calling `plan_ops.py resolve-read-targets --task-file <...> --json`).
@@ -306,9 +306,9 @@ parser_rrt.set_defaults(func=cmd_resolve_read_targets)
 
 ### Step 5 — Orchestrator wire-up
 
-`.claude/skills/implement-plan/SKILL.md`:
+`plugins/plan-executor/skills/implement-plan/SKILL.md`:
 
-- In Phase B before dispatching either agent, add a step: "Resolve read targets for the task via `$PYTHON scripts/plan_ops.py resolve-read-targets --task-file <task-block> --json`. Insert the `reads` into the dispatch prompt under `## Pre-read excerpts`."
+- In Phase B before dispatching either agent, add a step: "Resolve read targets for the task via `$PYTHON plugins/plan-executor/scripts/plan_ops.py resolve-read-targets --task-file <task-block> --json`. Insert the `reads` into the dispatch prompt under `## Pre-read excerpts`."
 - State that missing targets (empty output) means no pre-read section.
 
 ### Step 6 — tests
@@ -317,7 +317,7 @@ parser_rrt.set_defaults(func=cmd_resolve_read_targets)
 
 - `test_resolve_read_targets_line_range_basic` — stdin with a single `src/file:10-20` target; assert output matches exact lines.
 - `test_resolve_read_targets_clamps_to_file_length` — request 1-9999 against a 50-line file; assert `truncated_to: 50`.
-- `test_resolve_read_targets_symbol_python` — point at a known function in `scripts/plan_ops.py`; assert start/end.
+- `test_resolve_read_targets_symbol_python` — point at a known function in `plugins/plan-executor/scripts/plan_ops.py`; assert start/end.
 - `test_resolve_read_targets_symbol_class_method` — point at `Class.method`; assert start/end within the class body.
 - `test_resolve_read_targets_symbol_missing_records_error` — non-existent symbol; assert `errors` contains entry; exit 0.
 - `test_resolve_read_targets_non_python_regex_fallback` — point at a shell function in `.sh`; regex hit; note in output.

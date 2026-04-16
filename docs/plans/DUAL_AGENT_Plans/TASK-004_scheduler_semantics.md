@@ -19,7 +19,7 @@
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md) § TASK-004
 **Consolidated remediation:** [`../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9.1-§9.6 (run phases), §8.3 (retry rules)
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-001 (canonical contract), TASK-002 (runtime validation, `write-schedule` subcommand).
 **Issues absorbed:** ISSUE-006, 010, 011, 012, 018, 019 (secondary), 020 (secondary)
@@ -29,41 +29,41 @@
 
 ## Goal
 
-Make the orchestrator's scheduler, failure-propagation, and lock semantics actual invariants enforced by `scripts/plan_ops.py`, not best-effort helpers. `batch-next` selects only from the declared analyst batch; `fail-task` cleans up both tracked edits and created untracked files; `block-dependents` mutates the plan markdown's Status field to `blocked`; `acquire-lock` rejects malformed stale state; `filter-schedule` delivers the missing `--task-ids` path by writing through the `write-schedule` subcommand from TASK-002.
+Make the orchestrator's scheduler, failure-propagation, and lock semantics actual invariants enforced by `plugins/plan-executor/scripts/plan_ops.py`, not best-effort helpers. `batch-next` selects only from the declared analyst batch; `fail-task` cleans up both tracked edits and created untracked files; `block-dependents` mutates the plan markdown's Status field to `blocked`; `acquire-lock` rejects malformed stale state; `filter-schedule` delivers the missing `--task-ids` path by writing through the `write-schedule` subcommand from TASK-002.
 
 ## Scoped Context
 
 ### ISSUE-006 (P1) — `--task-ids` flag documented but not implemented
 
-- **Docs:** `.claude/skills/implement-plan/SKILL.md:64, 72, 111-113` specify the flag and its orphan-prerequisite behavior.
-- **Helpers:** `scripts/plan_ops.py` has 13 subcommands, none of which filters a schedule by task ids.
-- **Rule:** `.claude/skills/implement-plan/SKILL.md:316` forbids inline Python in the orchestrator, so the only path is a helper subcommand.
+- **Docs:** `plugins/plan-executor/skills/implement-plan/SKILL.md:64, 72, 111-113` specify the flag and its orphan-prerequisite behavior.
+- **Helpers:** `plugins/plan-executor/scripts/plan_ops.py` has 13 subcommands, none of which filters a schedule by task ids.
+- **Rule:** `plugins/plan-executor/skills/implement-plan/SKILL.md:316` forbids inline Python in the orchestrator, so the only path is a helper subcommand.
 - **Fix:** add `plan_ops.py filter-schedule --schedule-file <path> --task-ids 1,3 --json`. Produces a new schedule containing the requested tasks plus their transitive prerequisites. Orphaned dependencies (request id depends on a task not in the reachable set) → exit 1 with a clear error. On success, writes via the `write-schedule` contract (TASK-002) — atomic, validated.
 
 ### ISSUE-010 (P1) — `batch-next` does not honor declared batches
 
-- **Location:** `scripts/plan_ops.py:283-351` (`cmd_batch_next`).
+- **Location:** `plugins/plan-executor/scripts/plan_ops.py:283-351` (`cmd_batch_next`).
 - **Current behavior:** lines 299-303 build `tasks_by_id` from the full `tasks[]` list; line 315 computes `ready` globally; lines 322-329 iterate `data["batches"]` only to report a `batch_index`; lines 333-342 pick the first `--parallel` tasks from the global `ready` set regardless of whether they belong to the selected batch.
 - **Defect:** the analyst's batch structure becomes advisory instead of authoritative. Interleaving guarantees the design promises are not actually enforced.
 - **Fix:** within the selected batch's `task_ids`, intersect with `ready`, and draw only from that set. A ready task in a later batch is not eligible until the earlier batches complete.
 
 ### ISSUE-011 (P1) — `fail-task` leaves created untracked files
 
-- **Location:** `scripts/plan_ops.py` `cmd_fail_task:482-523` (line 493 = the single `git restore` call).
+- **Location:** `plugins/plan-executor/scripts/plan_ops.py` `cmd_fail_task:482-523` (line 493 = the single `git restore` call).
 - **Current behavior:** iterates `--files` and runs `git restore --` against each. Creates are untracked, so `git restore` is a no-op for them; the untracked file remains on disk.
 - **Defect:** failed Claude `(create)` tasks leave artifacts behind that the next run inherits as noise.
 - **Fix:** detect creates via `git ls-files --others --exclude-standard` intersected with the task's `allowed_files`, and `Path.unlink` each. Do not touch untracked files outside `allowed_files` — that is the sibling-safety invariant from TASK-003. Protect always-ignore paths regardless.
 
 ### ISSUE-012 (P1) — `block-dependents` does not mutate plan markdown
 
-- **Location:** `scripts/plan_ops.py:526-563` (`cmd_block_dependents`).
+- **Location:** `plugins/plan-executor/scripts/plan_ops.py:526-563` (`cmd_block_dependents`).
 - **Current behavior:** traverses the schedule to compute the blocked set (lines 539-553), appends `blocked` events to `_run_log.jsonl` (lines 555-561), but never calls `mutate_task_status` on the plan markdown.
 - **Defect:** the plan document is no longer the source of truth after a cascade — it still shows affected tasks as `pending`.
 - **Fix:** for each blocked id, mutate the plan markdown's `**Status:**` line to `blocked`, same pattern as `cmd_fail_task:499`.
 
 ### ISSUE-018 (P2) — `acquire-lock` tolerates orphan-shape JSON
 
-- **Location:** `scripts/plan_ops.py:646-662`.
+- **Location:** `plugins/plan-executor/scripts/plan_ops.py:646-662`.
 - **Current behavior:** parses existing lock JSON; only halts if `plan_abs in current and current[plan_abs].get("run_id") != args.run_id`. Orphan-shape JSON (e.g., `{"pid": 99999}`) merges silently; preflight classifies `_run_lock.json` as `infra_ignored` (ISSUE-008), so that path does not catch it either.
 - **Defect:** a crashed prior run leaving a malformed lock does not block a new run. No PID liveness check, no age TTL.
 - **Fix:** reject any pre-existing JSON that does not conform to `{<abs_plan_path>: {"run_id": "...", "acquired_at": "..."}}`. Support `--force` for explicit override. Document the lock shape in `SKILL.md`.
@@ -86,7 +86,7 @@ Primary delivery in TASK-002. TASK-004 depends on it: `filter-schedule` emits th
 echo '{"outcome":"valid","tasks":[{"id":"001","agent":"codex","files":["a"],"dependencies":[]},{"id":"002","agent":"claude","files":["b"],"dependencies":["001"]},{"id":"003","agent":"codex","files":["c"],"dependencies":[]}],"batches":[{"index":1,"task_ids":["001","003"],"file_locks":["a","c"]},{"index":2,"task_ids":["002"],"file_locks":["b"]}]}' \
   > /tmp/full.schedule.json
 
-venv/bin/python scripts/plan_ops.py filter-schedule --schedule-file /tmp/full.schedule.json --task-ids 2 --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule --schedule-file /tmp/full.schedule.json --task-ids 2 --json
 ```
 
 Must return a schedule containing `tasks = [001, 002]` (002 requires 001) and appropriate batches. Exit 0.
@@ -94,7 +94,7 @@ Must return a schedule containing `tasks = [001, 002]` (002 requires 001) and ap
 **V2 — `filter-schedule` orphan detection.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py filter-schedule --schedule-file /tmp/full.schedule.json --task-ids 999 --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule --schedule-file /tmp/full.schedule.json --task-ids 999 --json
 ```
 
 Exit 1, `errors` cites `unknown task id 999`.
@@ -164,9 +164,9 @@ The previous run computed `scheduler_stuck = len(picked) == 0 and len(ready_in_b
 The previous run wrote a test that stripped `warnings` and `errors` from `filter-schedule` stdout in Python before piping. That test is forbidden. The required test must use a literal shell pipe with **no Python-side reshaping**:
 
 ```bash
-venv/bin/python scripts/plan_ops.py filter-schedule \
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule \
   --schedule-file /tmp/full.schedule.json --task-ids 2 --json \
-| venv/bin/python scripts/plan_ops.py write-schedule \
+| venv/bin/python plugins/plan-executor/scripts/plan_ops.py write-schedule \
   --schedule-file /tmp/filtered.schedule.json --stdin --json
 ```
 
@@ -183,10 +183,10 @@ The `write-schedule` invocation must exit 0 and produce a file whose JSON parses
 - **Status:** failed
 - **Priority:** high
 - **Files:**
-  - `scripts/plan_ops.py`
+  - `plugins/plan-executor/scripts/plan_ops.py`
   - `tests/scripts/test_plan_ops.py`
-  - `.claude/skills/implement-plan/SKILL.md`
-  - `.claude/skills/implement-plan/run-log-schema.md`
+  - `plugins/plan-executor/skills/implement-plan/SKILL.md`
+  - `plugins/plan-executor/skills/implement-plan/run-log-schema.md`
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
 - **Dependencies:** TASK-001, TASK-002
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
@@ -220,7 +220,7 @@ If new scheduler behavior causes blocking regressions (e.g., a real plan legitim
 
 ### Step 1 — `filter-schedule` subcommand
 
-Add `cmd_filter_schedule` in `scripts/plan_ops.py`:
+Add `cmd_filter_schedule` in `plugins/plan-executor/scripts/plan_ops.py`:
 
 ```
 def cmd_filter_schedule(args):
@@ -346,7 +346,7 @@ Also add a DAG defensive check at entry — share helper with TASK-002.
 
 ### Step 3 — `fail-task` untracked cleanup
 
-In `cmd_fail_task` (`scripts/plan_ops.py:482`+):
+In `cmd_fail_task` (`plugins/plan-executor/scripts/plan_ops.py:482`+):
 
 After the existing `git restore` block, add:
 
@@ -375,7 +375,7 @@ Add a `--repo-root` argument to `fail-task` if one does not exist; resolve relat
 
 ### Step 4 — `block-dependents` plan mutation
 
-In `cmd_block_dependents` (`scripts/plan_ops.py:526`+), after the blocked-set traversal and before the run-log append loop:
+In `cmd_block_dependents` (`plugins/plan-executor/scripts/plan_ops.py:526`+), after the blocked-set traversal and before the run-log append loop:
 
 ```
 # Mutate plan markdown status for each blocked id
@@ -395,7 +395,7 @@ The existing `mutate_task_status` helper already handles the status-line rewrite
 
 ### Step 5 — `acquire-lock` strict shape
 
-In `cmd_acquire_lock` (`scripts/plan_ops.py:646`):
+In `cmd_acquire_lock` (`plugins/plan-executor/scripts/plan_ops.py:646`):
 
 ```
 current = {}

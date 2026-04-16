@@ -2,7 +2,7 @@
 
 **Created:** 2026-04-13
 **Status:** in-progress
-**Base branch:** phase-7b5-bug-fixes
+**Base branch:** main
 
 ## Purpose
 
@@ -18,7 +18,7 @@ All tasks operate under `docs/plans/sample_phase4_scratch/` (a fixture scratch d
 
 ## Context
 
-The skill under test is `/implement-plan`. Its orchestrator (`.claude/skills/implement-plan/SKILL.md`) runs a per-batch A→E loop and dispatches via `scripts/plan_ops.py` and `scripts/plan_codex_dispatch.py`. Verification focuses on: (1) analyst outcome `valid`, (2) four narrow commits landed on top of `starting_sha`, (3) TASK-004 failed in execute mode with a `failed stage=implement` event in `docs/plans/_run_log.jsonl`, (4) TASK-002's Codex review diff contains only TASK-002's edits.
+The skill under test is `/implement-plan`. Its orchestrator (`plugins/plan-executor/skills/implement-plan/SKILL.md`) runs a per-batch A→E loop and dispatches via `plugins/plan-executor/scripts/plan_ops.py` and `plugins/plan-executor/scripts/plan_codex_dispatch.py`. Verification focuses on: (1) analyst outcome `valid`, (2) four narrow commits landed on top of `starting_sha`, (3) TASK-004 failed in execute mode with a `failed stage=implement` event in `docs/plans/_run_log.jsonl`, (4) TASK-002's Codex review diff contains only TASK-002's edits.
 
 ## How to run
 

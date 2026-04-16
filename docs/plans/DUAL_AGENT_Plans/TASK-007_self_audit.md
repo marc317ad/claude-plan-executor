@@ -3,7 +3,7 @@
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md) § TASK-007
 **Consolidated remediation:** [`../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md)
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-001 (canonical contract — the single source of truth self-audit compares against), TASK-002 (validation machinery self-audit reuses), TASK-005 (gate vocabulary).
 **Issues absorbed:** none (new executor capability)
@@ -45,7 +45,7 @@ The executor gains a self-audit path that proactively detects contract drift bef
 **V1 — `audit` subcommand lists all checks.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py audit --list --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py audit --list --json
 ```
 
 Returns a JSON array containing at least: `status_vocabulary`, `schedule_wire_format`, `implementer_report_labels`, `execution_log_columns`, `schemas`, `portable_tier`, `wrapper_isolation`, `design_doc_orphans`.
@@ -55,7 +55,7 @@ Returns a JSON array containing at least: `status_vocabulary`, `schedule_wire_fo
 After TASK-001 through TASK-005 land (and TASK-006 rewrites the fixture), run:
 
 ```bash
-venv/bin/python scripts/plan_ops.py audit --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py audit --json
 ```
 
 Exit 0, all checks report `pass`.
@@ -67,7 +67,7 @@ Manually introduce a single drift (e.g., rename `pending` back to `open` in `pla
 **V4 — Audit report shape.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py audit --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py audit --json
 ```
 
 Output shape:
@@ -91,7 +91,7 @@ Output shape:
 **V5 — Markdown report path.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py audit --report-file /tmp/audit.md
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py audit --report-file /tmp/audit.md
 ```
 
 Produces a human-readable Markdown table at `/tmp/audit.md`.
@@ -113,8 +113,8 @@ If TASK-001 retains an alias (e.g., accepting both `id` and `task_id` during a d
 - **Status:** pending
 - **Priority:** medium
 - **Files:**
-  - `scripts/plan_ops.py`
-  - `.claude/skills/implement-plan/SKILL.md`
+  - `plugins/plan-executor/scripts/plan_ops.py`
+  - `plugins/plan-executor/skills/implement-plan/SKILL.md`
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
   - `tests/scripts/test_plan_ops.py`
 - **Dependencies:** TASK-001, TASK-002, TASK-005
@@ -146,7 +146,7 @@ If self-audit is noisy, narrow its scope or improve reporting. Keep the critical
 TASK-001 produces a human-readable decision table in `DUAL_AGENT_PLAN_EXECUTOR.md`. For `audit` to cross-check, promote the decisions into either:
 
 (a) A YAML/JSON sidecar at `docs/plans/_canonical_contract.yaml`, or
-(b) A Python constant table at the top of `scripts/plan_ops.py`, e.g.:
+(b) A Python constant table at the top of `plugins/plan-executor/scripts/plan_ops.py`, e.g.:
 
 ```
 CANONICAL_CONTRACT = {
@@ -227,9 +227,9 @@ parser_audit.set_defaults(func=cmd_audit)
 
 ### Step 5 — SKILL.md integration
 
-Add a "Readiness check" subsection at the top of `.claude/skills/implement-plan/SKILL.md`:
+Add a "Readiness check" subsection at the top of `plugins/plan-executor/skills/implement-plan/SKILL.md`:
 
-> Before running `/implement-plan` on a new plan, run `venv/bin/python scripts/plan_ops.py audit --json`. Any finding with `status: fail` must be resolved before proceeding. This catches protocol drift that would otherwise only surface during a run.
+> Before running `/implement-plan` on a new plan, run `venv/bin/python plugins/plan-executor/scripts/plan_ops.py audit --json`. Any finding with `status: fail` must be resolved before proceeding. This catches protocol drift that would otherwise only surface during a run.
 
 Reference the audit in Phase A preflight as an advisory (not a hard gate — gates are TASK-005's job and are runtime-scoped; audit is advisory-scoped).
 

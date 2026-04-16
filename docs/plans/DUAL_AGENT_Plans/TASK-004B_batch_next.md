@@ -2,7 +2,7 @@
 
 **Parent plan:** [`TASK-004_scheduler_semantics.md`](TASK-004_scheduler_semantics.md) (superseded — split into A/B/C/D/E)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9.1-§9.6
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-001 (canonical contract), TASK-002 (`_validate_schedule_dag` helper).
 **Issues absorbed:** ISSUE-010 (P1, primary), ISSUE-019 (P2, secondary — DAG defensive check on this consumer).
@@ -17,7 +17,7 @@ Make `batch-next` honor the analyst's declared batch structure as authoritative 
 
 ### ISSUE-010 (P1) — `batch-next` does not honor declared batches
 
-- **Location:** `scripts/plan_ops.py:1029-1109` (`cmd_batch_next`).
+- **Location:** `plugins/plan-executor/scripts/plan_ops.py:1029-1109` (`cmd_batch_next`).
 - **Current behavior:**
   - Lines 1055-1060 build `tasks_by_id` from the full `tasks[]` list.
   - Lines 1071-1072 compute `ready` globally over the entire schedule.
@@ -185,7 +185,7 @@ def test_batch_next_skips_active_batch_task_with_failed_dep(tmp_path):
     # becomes batch 2. 002's dep is in `failed`, so `_ready(002)` is False;
     # 002 is NOT picked. scheduler_stuck MUST be True (batch 2 has an
     # unfinished task that cannot run). This locks the cousin invariant
-    # from _ready() at scripts/plan_ops.py:1062-1066: tasks with ANY failed
+    # from _ready() at plugins/plan-executor/scripts/plan_ops.py:1062-1066: tasks with ANY failed
     # dependency are never ready.
 ```
 
@@ -198,9 +198,9 @@ def test_batch_next_skips_active_batch_task_with_failed_dep(tmp_path):
 - **Status:** pending
 - **Priority:** high
 - **Files:**
-  - `scripts/plan_ops.py`
+  - `plugins/plan-executor/scripts/plan_ops.py`
   - `tests/scripts/test_plan_ops.py`
-  - `.claude/skills/implement-plan/SKILL.md` (one-line update to Phase A→B description if needed)
+  - `plugins/plan-executor/skills/implement-plan/SKILL.md` (one-line update to Phase A→B description if needed)
 - **Dependencies:** TASK-001, TASK-002
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
 - **Acceptance criteria:**
@@ -212,7 +212,7 @@ def test_batch_next_skips_active_batch_task_with_failed_dep(tmp_path):
     The previous formulation `picked == [] and len(ready_in_batch) > 0` is forbidden — it returned `False` in case (b) and let the orchestrator spin. **(See V3.)**
   - DAG defensive check present at entry (already provided by `_validate_schedule(data)` from TASK-002 — confirm the call is wired and add an explicit assertion in tests).
   - **Malformed batch structure MUST emit `scheduler_stuck=True`, never silent `scheduler_stuck=False`.** If `active_batch` cannot be selected (e.g., `batches=[]`, all batches have empty `task_ids`, or unresolved tasks are not listed in any batch) AND unresolved tasks remain, `batch-next` MUST emit `scheduler_stuck=True` with `picked=[]` / `task_ids=[]`. Same rule applies when `active_ids` becomes empty after normalization. Exit 1 with a malformed-batch error is explicitly NOT chosen here — V11/V12/V13 assert `scheduler_stuck=True` only. **(See V11, V12, V13.)**
-  - **Tasks with any failed dependency are never picked**, even when they are in the active batch. This preserves the existing `_ready()` invariant at `scripts/plan_ops.py:1062-1066`. **(See V14.)**
+  - **Tasks with any failed dependency are never picked**, even when they are in the active batch. This preserves the existing `_ready()` invariant at `plugins/plan-executor/scripts/plan_ops.py:1062-1066`. **(See V14.)**
   - All verification checks V1–V14 pass.
 - **Out of scope (handled by sibling sub-plans):**
   - `filter-schedule` subcommand → TASK-004A
@@ -224,7 +224,7 @@ def test_batch_next_skips_active_batch_task_with_failed_dep(tmp_path):
 Make the analyst's batch structure authoritative in `batch-next`. Fix the cross-batch deadlock blind spot in `scheduler_stuck`. Fix the active-batch advancement bug that ignores `failed` tasks.
 
 **Implementation notes:**
-The cleanest implementation re-uses `_validate_schedule_dag` (TASK-002) and the existing `_normalize_task_id` / `done|failed` set-membership pattern (`scripts/plan_ops.py:1055-1066`). Do not regress existing tests for `cmd_batch_next` that exercise the global-ready behavior — those tests are documenting the current bug; update them to assert the new batch-fidelity contract.
+The cleanest implementation re-uses `_validate_schedule_dag` (TASK-002) and the existing `_normalize_task_id` / `done|failed` set-membership pattern (`plugins/plan-executor/scripts/plan_ops.py:1055-1066`). Do not regress existing tests for `cmd_batch_next` that exercise the global-ready behavior — those tests are documenting the current bug; update them to assert the new batch-fidelity contract.
 
 **Reversion guidance:**
 If a real plan legitimately requires global-ready selection, gate the new behavior behind a `--legacy-batch-next` switch — never restore global-ready as the default. The cross-batch deadlock detection (V3) and the `done|failed` advancement (V4) are independent bug fixes and must NEVER be reverted.
@@ -235,7 +235,7 @@ If a real plan legitimately requires global-ready selection, gate the new behavi
 
 ### Step 1 — Replace the picking block in `cmd_batch_next`
 
-Current code (`scripts/plan_ops.py:1071-1108`) does:
+Current code (`plugins/plan-executor/scripts/plan_ops.py:1071-1108`) does:
 - compute global `ready`
 - iterate batches only to set `batch_index`
 - pick from global `ready` regardless of batch
@@ -357,7 +357,7 @@ _emit(args, {
 - `scheduler_stuck = len(picked) == 0 and len(ready_in_batch) > 0` — masks cross-batch deadlock (V3 regression).
 - `scheduler_stuck = len(picked) == 0 and len(ready) > 0` — uses GLOBAL ready, not batch-scoped, so a globally-ready later-batch task sets `scheduler_stuck=False` even though the active batch is deadlocked.
 - `if all(tid in done for tid in bids): continue` — without `or tid in failed`, a batch with one done + one failed never advances (V4 regression).
-- `if any(tid in done or tid in failed for tid in bids): continue` — the CURRENT production bug at `scripts/plan_ops.py:1081`. This skips a batch as soon as ANY task resolves, jumping past it while unfinished tasks remain. Must be replaced with the `all(... done or failed)` form.
+- `if any(tid in done or tid in failed for tid in bids): continue` — the CURRENT production bug at `plugins/plan-executor/scripts/plan_ops.py:1081`. This skips a batch as soon as ANY task resolves, jumping past it while unfinished tasks remain. Must be replaced with the `all(... done or failed)` form.
 - Silently emitting `scheduler_stuck=False` when `active_batch is None` but `tasks_by_id` has unresolved tasks. Must emit `scheduler_stuck=True` (V11/V12/V13). Policy lock-in: this sub-plan commits to the `scheduler_stuck=True` variant. An alternative "exit non-zero with malformed-batch error" policy is explicitly NOT in scope; the tests MUST assert `scheduler_stuck=True` (not "either outcome OK").
 - Silently emitting `scheduler_stuck=False` when `active_ids` is empty after normalization. Must emit `scheduler_stuck=True` (malformed batch data).
 

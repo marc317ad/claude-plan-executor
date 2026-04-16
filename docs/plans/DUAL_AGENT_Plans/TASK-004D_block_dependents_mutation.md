@@ -3,7 +3,7 @@
 **Parent plan:** TASK-004_scheduler_semantics.md (decomposed into A/B/C/D/E sub-plans after the bundled TASK-004 failed D.2a review twice due to scope/blast-radius issues).
 
 **Status:** pending
-**Base branch:** phase-7b5-bug-fixes
+**Base branch:** main
 **Scope:** Single-issue sub-plan. Addresses **ISSUE-012** ONLY.
 
 **Siblings (do not touch here):**
@@ -18,11 +18,11 @@
 
 **ISSUE-012 (P1) — `block-dependents` does not mutate plan markdown.**
 
-- **Location:** `scripts/plan_ops.py:1331-1369` (`cmd_block_dependents`).
+- **Location:** `plugins/plan-executor/scripts/plan_ops.py:1331-1369` (`cmd_block_dependents`).
 - **Current behavior:** traverses the schedule to compute the blocked set (lines 1344-1359), appends `blocked` events to `_run_log.jsonl` via `_append_run_log("blocked", ...)` (lines 1361-1367), but **never calls `mutate_task_status` on the plan markdown**. Emits `{"blocked_task_ids": [...]}` and exits.
 - **Defect:** the plan document is no longer the source of truth after a cascade. Run-log says task X is blocked; plan markdown still shows it as `pending`. Any subsequent orchestrator re-entry reads the stale `pending` status from the plan, re-queues the task, and dispatches it — undoing the cascade.
-- **Fix (spec):** for each blocked id, call `mutate_task_status(plan_text, blocked_id, "blocked")` and persist. Pattern already exists in `cmd_fail_task` at `scripts/plan_ops.py:1297-1302`.
-- **Evidence the invariant is real:** `ALLOWED_TASK_STATUSES` at `scripts/plan_ops.py:41` includes `"blocked"`. The status is a first-class state; the helper is there; `cmd_block_dependents` just never calls it.
+- **Fix (spec):** for each blocked id, call `mutate_task_status(plan_text, blocked_id, "blocked")` and persist. Pattern already exists in `cmd_fail_task` at `plugins/plan-executor/scripts/plan_ops.py:1297-1302`.
+- **Evidence the invariant is real:** `ALLOWED_TASK_STATUSES` at `plugins/plan-executor/scripts/plan_ops.py:41` includes `"blocked"`. The status is a first-class state; the helper is there; `cmd_block_dependents` just never calls it.
 
 ---
 
@@ -40,7 +40,7 @@ The parent TASK-004 bundled 7 ISSUE-### (006, 010, 011, 012, 018 + 019/020 secon
 
 1. **Single plan read, single plan write.** One `_load_text(plan_path)` call before the mutate loop; one `_write_text(plan_path, mutated_text)` call after the mutate loop finishes (whether by running to completion OR by a `ValueError` from `mutate_task_status`). Per-id writes are forbidden. Combined with acceptance #4 this means: if mutations succeed for ids [A, B] and then raise for C, the single write reflects exactly A and B's flips — ids before the failure persist, ids at or after the failure (including C) do not. **(See V1, V2, V6.)**
 2. **Ordering: mutate-all-in-memory → single plan write → log each applied id.** All plan mutations are applied to in-memory text first. The single file write happens once. THEN the run-log `blocked` event is appended, iterating ONLY the ids whose flip is reflected in the write. Run-log entries MUST NOT be written for ids whose plan flip did not persist. **(See V5, V6.)**
-3. **Idempotent on re-block.** If a task is already `blocked` in the plan, calling `mutate_task_status(..., "blocked")` is allowed and MUST NOT fail. `mutate_task_status` at `scripts/plan_ops.py:657-685` already supports this (status set allows `blocked`; helper is write-same-value tolerant). The cascade MUST still emit a run-log `blocked` event for observability. **(See V7.)**
+3. **Idempotent on re-block.** If a task is already `blocked` in the plan, calling `mutate_task_status(..., "blocked")` is allowed and MUST NOT fail. `mutate_task_status` at `plugins/plan-executor/scripts/plan_ops.py:657-685` already supports this (status set allows `blocked`; helper is write-same-value tolerant). The cascade MUST still emit a run-log `blocked` event for observability. **(See V7.)**
 4. **Emit payload has TWO separate lists (they can diverge).**
    - `plan_mutations_applied: list[str]` — ids whose plan-markdown status was flipped AND whose flip was persisted by the single `_write_text` call.
    - `run_log_appended: list[str]` — ids for which a `blocked` run-log event was successfully appended via `_append_run_log`.
@@ -55,13 +55,13 @@ The parent TASK-004 bundled 7 ISSUE-### (006, 010, 011, 012, 018 + 019/020 secon
 6. **Crash window between plan-write and log-append is an observability gap, not state corruption.** If the process dies (SIGKILL / power loss / OOM) AFTER `_write_text` returns but BEFORE all `_append_run_log` calls complete, the plan has the correct `blocked` statuses and the log has an incomplete event sequence. On orchestrator re-entry, the plan state is authoritative and the cascade is correctly reflected. Transactional plan+log atomicity requires a journal and is explicitly out of scope.
 7. **CLI argument surface.** New REQUIRED arg `--plan-file <path>` (absolute). Old args `--schedule-file`, `--failed`, `--run-id`, `--json` preserved. No other new args. **(See V8.)**
 8. **JSON output shape — ADDITIVE, not exact-set.** Existing key `blocked_task_ids` preserved verbatim. New keys `plan_mutations_applied` and `run_log_appended`. V4 asserts the output CONTAINS these three keys (subset assertion), each being a list of strings. V4 does NOT assert an exact keyset — future additive metadata must remain non-breaking. **(See V4.)**
-9. **BFS ordering preserved; sibling order is `tasks[]` array order.** The current BFS at `scripts/plan_ops.py:1344-1359` traverses dependents level-by-level, and within a level iterates in the order tasks appear in the schedule JSON's `tasks[]` array. This EXACT order MUST be preserved in `blocked_task_ids`, `plan_mutations_applied`, `run_log_appended`, and in the sequence of mutate + log calls. Two schedules that differ only in `tasks[]` ordering produce different emit orderings — do not impose a numeric sort. **(See V3.)**
-10. **Skill callsite update — THREE places in SKILL.md.** `.claude/skills/implement-plan/SKILL.md` has block-dependents callsites at:
+9. **BFS ordering preserved; sibling order is `tasks[]` array order.** The current BFS at `plugins/plan-executor/scripts/plan_ops.py:1344-1359` traverses dependents level-by-level, and within a level iterates in the order tasks appear in the schedule JSON's `tasks[]` array. This EXACT order MUST be preserved in `blocked_task_ids`, `plan_mutations_applied`, `run_log_appended`, and in the sequence of mutate + log calls. Two schedules that differ only in `tasks[]` ordering produce different emit orderings — do not impose a numeric sort. **(See V3.)**
+10. **Skill callsite update — THREE places in SKILL.md.** `plugins/plan-executor/skills/implement-plan/SKILL.md` has block-dependents callsites at:
     - Line ~44 (CLI reference table row)
     - Line ~201 (Phase C command block)
     - Line ~287 (Phase D.4 prose reference)
     All three MUST be updated to include `--plan-file <abs>`. No other SKILL.md changes.
-11. **Module banner update in `scripts/plan_ops.py`.** The module-level docstring banner near line 14 lists the `block-dependents` invocation. Update it to include `--plan-file <abs>`. One line.
+11. **Module banner update in `plugins/plan-executor/scripts/plan_ops.py`.** The module-level docstring banner near line 14 lists the `block-dependents` invocation. Update it to include `--plan-file <abs>`. One line.
 12. **No-dependent success path is still a success.** If `--failed NNN` names an id that no other task depends on, BFS returns `[]`. The subcommand emits `{"blocked_task_ids": [], "plan_mutations_applied": [], "run_log_appended": []}` with exit 0. No plan read or write occurs in this path (the plan is untouched). **(See V14.)**
 13. All verification checks V1–V16 pass.
 
@@ -371,9 +371,9 @@ def test_block_dependents_double_failure_mutate_then_log(
 - **Status:** pending
 - **Priority:** high
 - **Files:**
-  - `scripts/plan_ops.py` (rewrite `cmd_block_dependents`; add `--plan-file` argparse entry; update module-level usage banner near line 14)
+  - `plugins/plan-executor/scripts/plan_ops.py` (rewrite `cmd_block_dependents`; add `--plan-file` argparse entry; update module-level usage banner near line 14)
   - `tests/scripts/test_plan_ops.py` (replace/extend `TestBlockDependents`; current coverage at `tests/scripts/test_plan_ops.py:629-647` is one happy-path test only — V1 through V16)
-  - `.claude/skills/implement-plan/SKILL.md` (update THREE callsites: CLI reference table row near line 44, Phase C command near line 201, Phase D.4 reference near line 287 — all to include `--plan-file <abs>`)
+  - `plugins/plan-executor/skills/implement-plan/SKILL.md` (update THREE callsites: CLI reference table row near line 44, Phase C command near line 201, Phase D.4 reference near line 287 — all to include `--plan-file <abs>`)
 - **Dependencies:** TASK-001, TASK-002
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestBlockDependents`
 - **Acceptance criteria:** all sixteen above (V1–V16).
@@ -565,13 +565,13 @@ p_block.add_argument("--run-id", required=True)
 
 Phase C block, current:
 ```bash
-venv/bin/python scripts/plan_ops.py block-dependents \
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py block-dependents \
   --schedule-file <path> --failed NNN --run-id <id> --json
 ```
 
 Change to:
 ```bash
-venv/bin/python scripts/plan_ops.py block-dependents \
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py block-dependents \
   --schedule-file <path> --plan-file <abs> --failed NNN --run-id <id> --json
 ```
 

@@ -1,13 +1,29 @@
 # DUAL AGENT EXECUTOR HARDENING — Chunked Execution Index
 
 **Created:** 2026-04-14
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Parent plan:** [`docs/plans/DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md)
 **Consolidated defect inventory:** [`docs/analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md)
 **Design contract:** [`docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md)
 **Phase 5 postmortem:** [`docs/analysis/DUAL_AGENT_EXECUTOR_PHASE5_Postmortem_1.md`](../../analysis/DUAL_AGENT_EXECUTOR_PHASE5_Postmortem_1.md)
 **Audit — Codex:** [`docs/analysis/DUAL_AGENT_EXECUTOR_DESIGN_AUDIT_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_DESIGN_AUDIT_2026-04-14.md)
 **Audit — Claude:** [`docs/analysis/DUAL_AGENT_EXECUTOR_Design_vs_Implementation_Gap_Report.md`](../../analysis/DUAL_AGENT_EXECUTOR_Design_vs_Implementation_Gap_Report.md)
+
+---
+
+## Repo reorganization note (2026-04-16)
+
+This repo was decoupled from its original parent and the orchestrator source was moved under `plugins/plan-executor/` (commit `d211c6b`). All **pending** and **proposed** plan files in this directory have been rewritten to reference the new paths:
+
+- `.claude/skills/implement-plan/*` → `plugins/plan-executor/skills/implement-plan/*`
+- `.claude/agents/plan-*.md` → `plugins/plan-executor/agents/plan-*.md`
+- `scripts/plan_ops.py`, `scripts/plan_codex_dispatch.py`, `scripts/codex_*_schema.json` → `plugins/plan-executor/scripts/...`
+
+Tests live at repo root (`tests/scripts/test_plan_ops.py`) so they can prove plugin modifications from the outside. `pytest` is installed in the repo-level `venv/`.
+
+The **done** plans (`TASK-001`, `TASK-002`, `TASK-003`) are intentionally left unedited — they are a historical record of work executed against the old layout. Cross-references to them may use either path form.
+
+`Base branch:` is `main` across all remaining work; sub-branches may be cut later for individual improvements.
 
 ---
 
@@ -19,21 +35,21 @@ Each file in this directory carves out **one v3 task** and inlines the minimum c
 
 ## Shared background (read once, then skip)
 
-**System under test.** The `/implement-plan` skill is a dual-agent plan executor that dispatches work to either Claude (via `plan-implementer` subagent) or Codex (via `scripts/plan_codex_dispatch.py`), with asymmetric cross-review. Key artifacts:
+**System under test.** The `/implement-plan` skill is a dual-agent plan executor that dispatches work to either Claude (via `plan-implementer` subagent) or Codex (via `plugins/plan-executor/scripts/plan_codex_dispatch.py`), with asymmetric cross-review. Key artifacts:
 
-- `.claude/skills/implement-plan/SKILL.md` — orchestrator (317 lines)
-- `.claude/skills/implement-plan/dispatch-templates.md` — phase A/B/D prompts
-- `.claude/skills/implement-plan/run-log-schema.md` — event catalogue
-- `.claude/agents/plan-analyst.md` — produces schedule JSON from plan markdown
-- `.claude/agents/plan-implementer.md` — Claude-side implementer
-- `scripts/plan_ops.py` — 13 stdlib-only helper subcommands (819 lines)
-- `scripts/plan_codex_dispatch.py` — Codex CLI wrapper (980 lines)
-- `scripts/codex_implement_schema.json`, `scripts/codex_review_schema.json`
+- `plugins/plan-executor/skills/implement-plan/SKILL.md` — orchestrator (317 lines)
+- `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` — phase A/B/D prompts
+- `plugins/plan-executor/skills/implement-plan/run-log-schema.md` — event catalogue
+- `plugins/plan-executor/agents/plan-analyst.md` — produces schedule JSON from plan markdown
+- `plugins/plan-executor/agents/plan-implementer.md` — Claude-side implementer
+- `plugins/plan-executor/scripts/plan_ops.py` — 13 stdlib-only helper subcommands (819 lines)
+- `plugins/plan-executor/scripts/plan_codex_dispatch.py` — Codex CLI wrapper (980 lines)
+- `plugins/plan-executor/scripts/codex_implement_schema.json`, `plugins/plan-executor/scripts/codex_review_schema.json`
 - `docs/plans/sample_phase4.md` — end-to-end fixture
 - `tests/scripts/test_plan_ops.py` — 33/42 helper unit tests
 - `tests/scripts/test_plan_codex_dispatch_integration.py` — single-dispatch integration test
 
-**Git state.** Audit, postmortem, and this directory are all anchored at commit `d0f9740` on `phase-7b5-bug-fixes`. Line numbers cited in chunks are against that commit.
+**Git state.** Audit, postmortem, and this directory are all anchored at commit `d0f9740` on `main`. Line numbers cited in chunks are against that commit.
 
 **Core failure mode.** Three independent wire contracts (analyst JSON shape, task status vocabulary, implementer report labels) drifted across Phases 1–4. The Phase 4 test suite validated the implementation against itself rather than against the shipped contracts, so the drift went undetected until Phase 5. Phase 5 Scenario 7 also surfaced a wrapper-isolation bug that makes parallel Codex dispatches delete each other's output and orchestrator state (`_run_log.jsonl`, `_run_lock.json`, `*.schedule.json`).
 
@@ -118,12 +134,12 @@ The plan-schema `### TASK-NNN` block in each chunk is valid against `plan-analys
 
 ### Files modified across multiple chunks
 
-- `scripts/plan_ops.py` — TASK-001, 002, 004, 005, 007, 008, 010, 011
-- `scripts/plan_codex_dispatch.py` — TASK-001, 003, 011
-- `.claude/skills/implement-plan/SKILL.md` — TASK-001, 002, 003, 004, 005, 007, 008, 009, 010, 011
-- `.claude/skills/implement-plan/dispatch-templates.md` — TASK-001, 003, 008, 011
-- `.claude/agents/plan-analyst.md` — TASK-001, 002, 009, 010
-- `.claude/agents/plan-implementer.md` — TASK-001, 002, 009, 011
+- `plugins/plan-executor/scripts/plan_ops.py` — TASK-001, 002, 004, 005, 007, 008, 010, 011
+- `plugins/plan-executor/scripts/plan_codex_dispatch.py` — TASK-001, 003, 011
+- `plugins/plan-executor/skills/implement-plan/SKILL.md` — TASK-001, 002, 003, 004, 005, 007, 008, 009, 010, 011
+- `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` — TASK-001, 003, 008, 011
+- `plugins/plan-executor/agents/plan-analyst.md` — TASK-001, 002, 009, 010
+- `plugins/plan-executor/agents/plan-implementer.md` — TASK-001, 002, 009, 011
 - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` — TASK-001, 003, 004, 005, 007, 008, 009, 010, 011
 - `tests/scripts/test_plan_ops.py` — TASK-002, 004, 005, 006, 007, 008, 009, 010, 011
 - `tests/scripts/test_plan_codex_dispatch_integration.py` — TASK-002, 003, 006, 011

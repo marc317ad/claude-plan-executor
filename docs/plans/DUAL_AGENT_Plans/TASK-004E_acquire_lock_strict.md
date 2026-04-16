@@ -3,7 +3,7 @@
 **Parent plan:** TASK-004_scheduler_semantics.md (decomposed into A/B/C/D/E sub-plans after the bundled TASK-004 failed D.2a review twice due to scope/blast-radius issues).
 
 **Status:** pending
-**Base branch:** phase-7b5-bug-fixes
+**Base branch:** main
 **Scope:** Single-issue sub-plan. Addresses **ISSUE-018** ONLY.
 
 **Siblings (do not touch here):**
@@ -18,7 +18,7 @@
 
 **ISSUE-018 (P2) — `acquire-lock` tolerates orphan-shape JSON.**
 
-- **Location:** `scripts/plan_ops.py:1453-1469` (`cmd_acquire_lock`).
+- **Location:** `plugins/plan-executor/scripts/plan_ops.py:1453-1469` (`cmd_acquire_lock`).
 - **Current behavior:**
   ```python
   current: dict = {}
@@ -41,7 +41,7 @@
     ...
   }
   ```
-  Add `--force` flag for explicit override — overwrites the lock file with a single-entry dict for this plan/run. Document the lock-file shape in `.claude/skills/implement-plan/SKILL.md`.
+  Add `--force` flag for explicit override — overwrites the lock file with a single-entry dict for this plan/run. Document the lock-file shape in `plugins/plan-executor/skills/implement-plan/SKILL.md`.
 
 ### `acquired_at` validation level (decision)
 
@@ -51,7 +51,7 @@ Unicode in `run_id` / `acquired_at` is ACCEPTED. `isinstance(x, str)` passes reg
 
 ### Interaction with existing integration test (scope clarification)
 
-The integration test at `tests/scripts/test_plan_codex_dispatch_integration.py:406-424` (`test_parallel_preserves_run_lock_json`) pre-populates `docs/plans/_run_lock.json` with an orphan-shape body and asserts that it survives byte-equal after two parallel `plan_codex_dispatch.py implement` runs. That test exercises the **wrapper's** delta-bounded cleanup + protected-paths policy — it never invokes `acquire-lock`. The wrapper has no dependency on `plan_ops.py` at runtime (verified: the only reference is the protected-path string `"scripts/plan_ops.py"` at line 62). Tightening `acquire-lock` therefore does NOT change this test's behavior, and this test must continue to pass unchanged.
+The integration test at `tests/scripts/test_plan_codex_dispatch_integration.py:406-424` (`test_parallel_preserves_run_lock_json`) pre-populates `docs/plans/_run_lock.json` with an orphan-shape body and asserts that it survives byte-equal after two parallel `plan_codex_dispatch.py implement` runs. That test exercises the **wrapper's** delta-bounded cleanup + protected-paths policy — it never invokes `acquire-lock`. The wrapper has no dependency on `plan_ops.py` at runtime (verified: the only reference is the protected-path string `"plugins/plan-executor/scripts/plan_ops.py"` at line 62). Tightening `acquire-lock` therefore does NOT change this test's behavior, and this test must continue to pass unchanged.
 
 The broader operational concern — "what happens when the orchestrator encounters a pre-existing orphan-shape lock?" — is covered by the new `--force` escape hatch (acceptance #4) and by the SKILL.md note (acceptance #11). No in-the-wild orphan-shape locks can exist from legitimate callers because no legitimate writer emits anything other than the canonical shape; they would only exist as the result of manual file edits or a prior-version release that has since been replaced. `--force` is the documented recovery path.
 
@@ -67,15 +67,15 @@ The parent TASK-004 bundled 7 ISSUE-### (006, 010, 011, 012, 018 + 019/020 secon
 
 1. **Canonical shape is the ONLY valid shape.** The lock JSON at `docs/plans/_run_lock.json` MUST be a JSON object (top-level dict). Empty object `{}` IS canonical (zero entries is valid). Every key MUST be a non-empty string (treated as an absolute plan path by convention; no path-existence check — locks are opaque handles). Every value MUST be a dict with EXACTLY the keys `{"run_id": str, "acquired_at": str}` — no extra keys, no missing keys. Both values non-empty strings; Unicode accepted. `acquired_at` is validated as an opaque non-empty string (no ISO-8601 parse). **(See V1, V14.)**
 2. **Malformed pre-existing JSON blocks acquisition (no `--force`).** If `_run_lock.json` exists but violates the canonical shape (top-level not a dict; any entry value not a dict; any entry missing `run_id` or `acquired_at`; any entry containing extra keys; any entry with non-string or empty `run_id` / `acquired_at`; empty-string top-level key), `acquire-lock` MUST exit non-zero with a structured error that (a) identifies the specific shape violation and (b) does NOT truncate or modify the lock file on disk. Value-level rejection is symmetric across `run_id` and `acquired_at`: both use `isinstance(x, str) and x != ""`. **(See V2, V3, V4, V5, V15, V15b, V16, V16b, V17, V17b, V18.)**
-3. **JSON-decode error blocks acquisition (no `--force`).** If `_run_lock.json` exists but is not valid JSON (invalid tokens, truncated) OR is a zero-byte file (which `json.loads("")` raises `JSONDecodeError` for), `acquire-lock` MUST exit non-zero with a structured error. It MUST NOT silently treat the file as `{}` and overwrite it — that is the current behavior at `scripts/plan_ops.py:1460-1461`. **(See V6, V19.)**
+3. **JSON-decode error blocks acquisition (no `--force`).** If `_run_lock.json` exists but is not valid JSON (invalid tokens, truncated) OR is a zero-byte file (which `json.loads("")` raises `JSONDecodeError` for), `acquire-lock` MUST exit non-zero with a structured error. It MUST NOT silently treat the file as `{}` and overwrite it — that is the current behavior at `plugins/plan-executor/scripts/plan_ops.py:1460-1461`. **(See V6, V19.)**
 4. **`--force` overwrites atomically.** When `--force` is passed, `acquire-lock` MUST overwrite `_run_lock.json` with a single-entry dict `{<plan_abs>: {"run_id": <args.run_id>, "acquired_at": <now>}}` — explicitly NOT merged with prior (malformed or valid) content. **Prior entries for other plans are LOST under `--force`**; this is the documented behavior because `--force` exists precisely to recover from corruption, and merging with corrupt data is the hazard it is meant to escape. **Concurrency consequence (explicit):** two concurrent `--force` acquires for the same plan are last-writer-wins and can obliterate each other's entry. This is acceptable because `--force` is a manual recovery tool, not a normal code path; concurrent forced recovery is operator error. **(See V7, V20.)**
 5. **Standard happy-path preserved.** When the file does not exist, OR when the file is canonical-shape AND has no entry for this `plan_abs`, acquire the lock by merging (canonical add) into the existing canonical dict. No new keys outside `run_id` / `acquired_at` are written. Output `{"acquired": true}` on stdout. **(See V1, V8, V14.)**
 6. **Same-run re-acquire is idempotent.** When the file is canonical-shape AND `plan_abs` is present AND `run_id` matches `args.run_id`, re-acquisition is a no-op (rewrite the same entry with a fresh `acquired_at` OK; `acquired=True`; exit 0). This matches the current behavior — do not regress. **(See V10.)**
 7. **Cross-plan entries untouched in non-force path.** When a valid canonical dict already exists with entries for OTHER plans, acquiring a lock for THIS plan must not drop the other entries. **Semantic equality** on the other-plan sub-object (NOT byte-equal — the file is fully re-serialized, so JSON whitespace/key-order may differ). **(See V11.)**
 8. **Atomic write.** `_run_lock.json` MUST be written atomically (unique temp file in the same directory + `os.replace`) so a crash mid-write cannot leave a truncated or partially-updated file visible at the canonical path. Use `tempfile.mkstemp(dir=parent, prefix=path.name + ".", suffix=".tmp")` (or `NamedTemporaryFile(delete=False)` with the same dir/prefix) to avoid two concurrent acquires from sharing a fixed `.tmp` name. V12 scope is torn-write prevention **only** — no `fsync`/directory-`fsync` durability guarantees are required. **(See V12.)**
-9. **`release-lock` unchanged.** This sub-plan does NOT modify `cmd_release_lock`. The asymmetry (strict acquire, tolerant release) is intentional: release-lock's only job is to best-effort remove this run's own entry. The existing `cmd_release_lock` at `scripts/plan_ops.py:1476-1479` coerces `JSONDecodeError` to `{}`, but it is NOT fully tolerant of valid-JSON-of-wrong-shape (e.g., a top-level list will raise `AttributeError` on `.get()`). Leaving it alone here is deliberate: a stricter release path could strand legitimate locks when the orchestrator tries to clean up, and the release-side crash modes will be addressed separately if they become load-bearing. Do not add `--force` to release-lock.
+9. **`release-lock` unchanged.** This sub-plan does NOT modify `cmd_release_lock`. The asymmetry (strict acquire, tolerant release) is intentional: release-lock's only job is to best-effort remove this run's own entry. The existing `cmd_release_lock` at `plugins/plan-executor/scripts/plan_ops.py:1476-1479` coerces `JSONDecodeError` to `{}`, but it is NOT fully tolerant of valid-JSON-of-wrong-shape (e.g., a top-level list will raise `AttributeError` on `.get()`). Leaving it alone here is deliberate: a stricter release path could strand legitimate locks when the orchestrator tries to clean up, and the release-side crash modes will be addressed separately if they become load-bearing. Do not add `--force` to release-lock.
 10. **CLI surface.** Add `--force` to the `acquire-lock` subparser. No changes to `--plan-file`, `--run-id`, `--json`. **(See V7, V13.)**
-11. **`SKILL.md` update.** Document the canonical lock-file shape and the `--force` escape hatch in `.claude/skills/implement-plan/SKILL.md` (Pre-flight Phase 0 paragraph, which already mentions the lock). One paragraph, not a new section. The paragraph MUST label `--force` as a manual recovery tool, not a normal flag.
+11. **`SKILL.md` update.** Document the canonical lock-file shape and the `--force` escape hatch in `plugins/plan-executor/skills/implement-plan/SKILL.md` (Pre-flight Phase 0 paragraph, which already mentions the lock). One paragraph, not a new section. The paragraph MUST label `--force` as a manual recovery tool, not a normal flag.
 12. **Concurrent-writer exclusion is out of scope.** Atomic replace prevents torn writes (partial file content visible at the canonical path). It does NOT prevent a TOCTOU race where two concurrent `acquire-lock` processes both read "no entry for this plan," both write, and the second wins. Adding a file lock (`fcntl.flock` / `msvcrt.locking`) is a deliberate non-goal of this sub-plan — the higher-level orchestrator acquires the lock once per run, not concurrently. If concurrent-writer exclusion becomes necessary later, it is an additive change.
 13. **Garbage collection of stale entries out of scope.** Canonical entries for plans whose files have been deleted still block acquisition until manual `--force`. No TTL, no path-existence probe, no auto-release.
 14. **Duplicate JSON keys out of scope.** Python `json.loads()` last-key-wins duplicate top-level keys before this plan's validator runs. Duplicate-key detection at the raw-text layer is NOT a requirement. If this becomes load-bearing it is an additive change.
@@ -354,10 +354,10 @@ def test_acquire_lock_force_discards_other_plans(isolated_plan, monkeypatch):
 - **Status:** pending
 - **Priority:** medium
 - **Files:**
-  - `scripts/plan_ops.py` (rewrite `cmd_acquire_lock`; add `--force` arg; add `_validate_lock_shape`, `_atomic_write_json` helpers)
+  - `plugins/plan-executor/scripts/plan_ops.py` (rewrite `cmd_acquire_lock`; add `--force` arg; add `_validate_lock_shape`, `_atomic_write_json` helpers)
   - `tests/scripts/test_plan_ops.py` (extend `TestLock` class with V1–V20)
   - `tests/scripts/test_plan_codex_dispatch_integration.py` — NOT MODIFIED. This sub-plan explicitly preserves the existing `test_parallel_preserves_run_lock_json` contract. That test never invokes `acquire-lock`; it tests the wrapper's protected-paths policy. No change needed. If the implementer finds themselves editing this file, stop and re-read the scope clarification section.
-  - `.claude/skills/implement-plan/SKILL.md` (one-paragraph lock-file shape + `--force` note in Pre-flight section)
+  - `plugins/plan-executor/skills/implement-plan/SKILL.md` (one-paragraph lock-file shape + `--force` note in Pre-flight section)
 - **Dependencies:** TASK-001
 - **Test command:**
   ```bash
@@ -515,7 +515,7 @@ Phase 0 Pre-flight section currently mentions:
 > Then acquire the run-lock:
 >
 > ```bash
-> venv/bin/python scripts/plan_ops.py acquire-lock --plan-file <absolute plan> --run-id <id>
+> venv/bin/python plugins/plan-executor/scripts/plan_ops.py acquire-lock --plan-file <absolute plan> --run-id <id>
 > ```
 >
 > Overlap on the same plan → halt with the conflicting run_id.
@@ -528,6 +528,6 @@ Append one paragraph (NOT a new section):
 
 - No schema migration needed — the canonical shape matches what `cmd_acquire_lock` already writes (line 1467). Only the READ path gets stricter.
 - Any in-the-wild `_run_lock.json` that diverges from canonical MUST have been written by a non-canonical writer, which doesn't exist in this repo. The backstop is `--force`.
-- The `forced` key in the JSON emit is additive. Existing tests at `tests/scripts/test_plan_ops.py:255-276` only assert subsets of fields; no caller in `.claude/skills/implement-plan/SKILL.md` parses a strict keyset. Adding `forced` is backward-compatible.
+- The `forced` key in the JSON emit is additive. Existing tests at `tests/scripts/test_plan_ops.py:255-276` only assert subsets of fields; no caller in `plugins/plan-executor/skills/implement-plan/SKILL.md` parses a strict keyset. Adding `forced` is backward-compatible.
 - No `.gitignore` entry or git hook mutates `docs/plans/_run_lock.json` today (the only ignored lock path is `docs/bugs/_run_lock.json` at `.gitignore:128`). Tightening `acquire-lock` therefore cannot trip CI or hook workflows.
-- `tempfile` must be imported at the top of `scripts/plan_ops.py`. Verify the existing import block includes it; add if absent.
+- `tempfile` must be imported at the top of `plugins/plan-executor/scripts/plan_ops.py`. Verify the existing import block includes it; add if absent.

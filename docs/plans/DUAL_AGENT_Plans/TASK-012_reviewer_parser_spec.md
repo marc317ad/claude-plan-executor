@@ -48,7 +48,7 @@ If the orchestrator keeps consuming Claude reviewer prose directly and only late
 
 ### 2. Preserve asymmetric reviewer vocabularies
 
-Per [`run-log-schema.md`](../../.claude/skills/implement-plan/run-log-schema.md), verdict vocabularies are intentionally asymmetric and must not be normalized:
+Per [`run-log-schema.md`](../../plugins/plan-executor/skills/implement-plan/run-log-schema.md), verdict vocabularies are intentionally asymmetric and must not be normalized:
 
 - Codex reviewer: `clean | minor-findings | needs-rework`
 - Claude reviewer: `ship | ship-with-fixes | needs-rework`
@@ -70,7 +70,7 @@ This mirrors the executor rule already used for analyst schedules and implemente
 ## Proposed Subcommand
 
 ```bash
-venv/bin/python scripts/plan_ops.py parse-reviewer-report --stdin --reviewer <claude|codex> --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py parse-reviewer-report --stdin --reviewer <claude|codex> --json
 ```
 
 ### Arguments
@@ -177,7 +177,7 @@ This matches the minor-findings item shape already used in the executor run-log 
 
 ### Codex reviewer mode
 
-Producer shape already exists via [`scripts/codex_review_schema.json`](../../scripts/codex_review_schema.json).
+Producer shape already exists via [`plugins/plan-executor/scripts/codex_review_schema.json`](../../plugins/plan-executor/scripts/codex_review_schema.json).
 
 `parse-reviewer-report --reviewer codex` should:
 
@@ -281,7 +281,7 @@ The parser must enforce severity/verdict consistency.
 
 ### Claude reviewer
 
-Per [`code-reviewer.md`](../../.claude/agents/code-reviewer.md):
+Per [`code-reviewer.md`](../../plugins/plan-executor/agents/code-reviewer.md):
 
 - Any `critical` finding forbids `ship`
 - Any `important` finding forbids `ship`
@@ -412,7 +412,7 @@ Constraints:
 
 Required deliverables:
 1. Update the Claude reviewer producer contract so its output is parseable by a fixed canonical shape.
-2. Add `scripts/plan_ops.py parse-reviewer-report --stdin --reviewer <claude|codex> --json`.
+2. Add `plugins/plan-executor/scripts/plan_ops.py parse-reviewer-report --stdin --reviewer <claude|codex> --json`.
 3. Route reviewer consumption through that parser instead of ad hoc field passing.
 4. Keep defensive validation in `commit-task` / `fail-task`, but make `parse-reviewer-report` the main normalization seam.
 5. Add focused tests in `tests/scripts/test_plan_ops.py` for both reviewer types and for verdict/severity consistency failures.

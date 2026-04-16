@@ -3,7 +3,7 @@
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md) § TASK-006
 **Consolidated remediation:** [`../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §5 (plan schema), §14 (testing & conformance)
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-001 (canonical contract), TASK-005 (`fixture-valid` gate — the acceptance predicate).
 **Issues absorbed:** ISSUE-002
@@ -31,7 +31,7 @@ Three independent non-conformances (see `../../analysis/DUAL_AGENT_EXECUTOR_Desi
 - Missing `**Description:**` prose block.
 - Missing `**Reversion guidance:**` prose block.
 - `**Dependencies:**` uses bracket form `[001]`; design §5 line 172 prescribes `none | TASK-NNN, TASK-NNN`.
-- Contains `**Agent:** codex|claude` — a field not in the canonical schema; routing is classifier-owned (`.claude/agents/plan-analyst.md` classifies during Step 3).
+- Contains `**Agent:** codex|claude` — a field not in the canonical schema; routing is classifier-owned (`plugins/plan-executor/agents/plan-analyst.md` classifies during Step 3).
 
 **Status vocabulary.**
 - `**Status:** open`; TASK-001 moves canonical vocabulary to `pending`. The fixture must align.
@@ -56,7 +56,7 @@ A spec-compliant plan is already embedded in the integration test — use it as 
 **V1 — `fixture-valid` gate passes.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py gates --check fixture-valid --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py gates --check fixture-valid --json
 ```
 
 Exit 0, status pass. Requires TASK-005 landed.
@@ -171,7 +171,7 @@ Open a fresh copy of `docs/plans/sample_phase4.md`. Replace the header block plu
 
 **Created:** 2026-04-13
 **Status:** in-progress
-**Base branch:** phase-7b5-bug-fixes
+**Base branch:** main
 
 ## Goal
 

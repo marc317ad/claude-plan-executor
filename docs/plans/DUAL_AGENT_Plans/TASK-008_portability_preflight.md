@@ -3,7 +3,7 @@
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md) § TASK-008
 **Consolidated remediation:** [`../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md) ISSUE-007, ISSUE-008
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9.1 Preflight, §11.1-11.2 Environment, §13 Assumptions
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-001 (canonical contract — affects the preflight result wire shape only if changed), TASK-007 (`portable_tier` audit check flips from fail to pass once this lands).
 **Issues absorbed:** ISSUE-007 (P1 portability), ISSUE-008 (P1 preflight classification).
@@ -25,9 +25,9 @@ Neither issue was a Phase 5 blocker in our environment, but both are documented 
 
 Per the audits: the executor is written as a generic dual-agent orchestrator, but both the skill body and helper docstrings assume a `venv/bin/python` interpreter at the repo root. Counts verified at `d0f9740`:
 
-- `.claude/skills/implement-plan/SKILL.md`: **14 occurrences**.
-- `.claude/skills/implement-plan/dispatch-templates.md`: **3 occurrences**.
-- `scripts/plan_ops.py` usage docstring (lines 8-20): **13 occurrences** in the module header.
+- `plugins/plan-executor/skills/implement-plan/SKILL.md`: **14 occurrences**.
+- `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`: **3 occurrences**.
+- `plugins/plan-executor/scripts/plan_ops.py` usage docstring (lines 8-20): **13 occurrences** in the module header.
 - Additional command-lines may appear inside `plan_codex_dispatch.py` for test runs. Sweep during implementation.
 
 Consequence: on any machine without `./venv/bin/python` at that exact path (a conda checkout; a `.venv` convention; a system `python3`; Windows), the instructions are wrong and the user must hand-edit. Design §11.1-11.2 describes environment assumptions per-repo — this is supposed to be carried by per-repo overrides (e.g., `CLAUDE.md`), not baked into the skill.
@@ -44,7 +44,7 @@ The orchestrator resolves `$PYTHON` once at phase A preflight and passes the res
 
 ### ISSUE-008 (P1) — Preflight classifies dirty files by blunt directory prefix
 
-`scripts/plan_ops.py:182-193` (`cmd_preflight`) partitions `git status --porcelain` output into three buckets:
+`plugins/plan-executor/scripts/plan_ops.py:182-193` (`cmd_preflight`) partitions `git status --porcelain` output into three buckets:
 
 ```python
 dirty: dict[str, list[str]] = {"source_blocking": [], "infra_ignored": [], "plan_doc": []}
@@ -81,17 +81,17 @@ TASK-007 adds a `portable_tier` audit check that greps for `venv/bin/python` lit
 **V1 — No `venv/bin/python` literal in skill surface.**
 
 ```bash
-grep -nE 'venv/bin/python' .claude/skills/implement-plan/SKILL.md \
-  .claude/skills/implement-plan/dispatch-templates.md
+grep -nE 'venv/bin/python' plugins/plan-executor/skills/implement-plan/SKILL.md \
+  plugins/plan-executor/skills/implement-plan/dispatch-templates.md
 ```
 
-Zero matches. (Literals in `scripts/plan_ops.py` header docstring are acceptable as example commands *if* they also show the `$PYTHON` alternative on the adjacent line; preferred is to convert the header to `$PYTHON scripts/plan_ops.py ...`.)
+Zero matches. (Literals in `plugins/plan-executor/scripts/plan_ops.py` header docstring are acceptable as example commands *if* they also show the `$PYTHON` alternative on the adjacent line; preferred is to convert the header to `$PYTHON plugins/plan-executor/scripts/plan_ops.py ...`.)
 
 **V2 — `$PYTHON` placeholder present.**
 
 ```bash
-grep -nE '\$PYTHON|\{\{python_path\}\}' .claude/skills/implement-plan/SKILL.md \
-  .claude/skills/implement-plan/dispatch-templates.md
+grep -nE '\$PYTHON|\{\{python_path\}\}' plugins/plan-executor/skills/implement-plan/SKILL.md \
+  plugins/plan-executor/skills/implement-plan/dispatch-templates.md
 ```
 
 ≥10 matches in SKILL.md, ≥3 in dispatch-templates.md (one per former literal site).
@@ -99,7 +99,7 @@ grep -nE '\$PYTHON|\{\{python_path\}\}' .claude/skills/implement-plan/SKILL.md \
 **V3 — Preflight surfaces resolved `python_path`.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py preflight --plan-file docs/plans/sample_phase4.md --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py preflight --plan-file docs/plans/sample_phase4.md --json
 ```
 
 Output JSON includes `"python_path": "<absolute path>"`. Path exists and is executable.
@@ -148,7 +148,7 @@ Key invariants:
 **V6 — `--strict-scope` upgrades warnings to blocks.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py preflight --plan-file docs/plans/sample_phase4.md \
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py preflight --plan-file docs/plans/sample_phase4.md \
   --strict-scope --json
 ```
 
@@ -169,7 +169,7 @@ All green.
 **V9 — TASK-007 `portable_tier` audit flips to pass.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py audit --check portable_tier --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py audit --check portable_tier --json
 ```
 
 Returns `"status": "pass"` (after TASK-007 + TASK-008 both land).
@@ -183,9 +183,9 @@ Returns `"status": "pass"` (after TASK-007 + TASK-008 both land).
 - **Status:** pending
 - **Priority:** high
 - **Files:**
-  - `.claude/skills/implement-plan/SKILL.md`
-  - `.claude/skills/implement-plan/dispatch-templates.md`
-  - `scripts/plan_ops.py`
+  - `plugins/plan-executor/skills/implement-plan/SKILL.md`
+  - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`
+  - `plugins/plan-executor/scripts/plan_ops.py`
   - `tests/scripts/test_plan_ops.py`
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (§11.1 environment notes)
 - **Dependencies:** TASK-001 (plan schema for allowed_files extraction).
@@ -214,7 +214,7 @@ If the `$PYTHON` abstraction confuses users, retain `venv/bin/python` in example
 
 ### Step 1 — Python resolution helper
 
-Add to `scripts/plan_ops.py` near the other helpers:
+Add to `plugins/plan-executor/scripts/plan_ops.py` near the other helpers:
 
 ```python
 def _resolve_python() -> str:
@@ -253,7 +253,7 @@ result = {
 
 ### Step 2 — scope-aware classifier
 
-Replace `scripts/plan_ops.py:182-193` with a classifier that consumes the plan's tasks.
+Replace `plugins/plan-executor/scripts/plan_ops.py:182-193` with a classifier that consumes the plan's tasks.
 
 Pseudocode:
 
@@ -307,16 +307,16 @@ parser_preflight.add_argument("--strict-scope", action="store_true")
 
 ### Step 3 — SKILL.md $PYTHON sweep
 
-`.claude/skills/implement-plan/SKILL.md`:
+`plugins/plan-executor/skills/implement-plan/SKILL.md`:
 
 - At the top of the skill body, add a "Python interpreter resolution" paragraph:
   > The orchestrator resolves `$PYTHON` once at phase A preflight via `plan_ops.py preflight --json`'s `python_path` field. All subsequent commands must use the resolved path. Do not hardcode `venv/bin/python`.
-- Replace all 14 occurrences of `venv/bin/python` with `$PYTHON`. After each replacement, verify the surrounding phrasing still reads correctly (example: "run `$PYTHON scripts/plan_ops.py ...`" is idiomatic bash).
+- Replace all 14 occurrences of `venv/bin/python` with `$PYTHON`. After each replacement, verify the surrounding phrasing still reads correctly (example: "run `$PYTHON plugins/plan-executor/scripts/plan_ops.py ...`" is idiomatic bash).
 - In Phase A, add a step: "After preflight, set `PYTHON=<python_path>` from its JSON output."
 
 ### Step 4 — dispatch-templates.md $PYTHON sweep
 
-`.claude/skills/implement-plan/dispatch-templates.md`:
+`plugins/plan-executor/skills/implement-plan/dispatch-templates.md`:
 
 - Replace all 3 occurrences of `venv/bin/python` with `{{python_path}}`.
 - Document near the template header: templates are interpolated by the orchestrator; `{{python_path}}` is substituted from preflight's `python_path`.
@@ -331,8 +331,8 @@ Executor helper utilities.
 
 Example invocations (resolve $PYTHON via `preflight --json`'s python_path):
 
-    $PYTHON scripts/plan_ops.py preflight --plan-file <abs> [--strict-branch] [--strict-scope]
-    $PYTHON scripts/plan_ops.py parse-schedule --stdin
+    $PYTHON plugins/plan-executor/scripts/plan_ops.py preflight --plan-file <abs> [--strict-branch] [--strict-scope]
+    $PYTHON plugins/plan-executor/scripts/plan_ops.py parse-schedule --stdin
     ...
 """
 ```
@@ -358,7 +358,7 @@ Example invocations (resolve $PYTHON via `preflight --json`'s python_path):
 
 ### Step 8 — SKILL surface audit
 
-After the sweep, run `scripts/plan_ops.py audit --check portable_tier --json` (from TASK-007). It must pass. If it does not, locate the missed literal with the grep in V1.
+After the sweep, run `plugins/plan-executor/scripts/plan_ops.py audit --check portable_tier --json` (from TASK-007). It must pass. If it does not, locate the missed literal with the grep in V1.
 
 ### Step 9 — regression sweep
 

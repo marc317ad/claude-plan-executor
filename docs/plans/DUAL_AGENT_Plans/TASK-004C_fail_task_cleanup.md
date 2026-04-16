@@ -2,7 +2,7 @@
 
 **Parent plan:** [`TASK-004_scheduler_semantics.md`](TASK-004_scheduler_semantics.md) (superseded — split into A/B/C/D/E)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9.1-§9.6
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-001 (canonical contract), TASK-003 (wrapper-isolation baseline — protected-paths list).
 **Issues absorbed:** ISSUE-011 (P1, primary).
@@ -17,7 +17,7 @@ Make `fail-task` fully restore the working tree when a task fails, regardless of
 
 ### ISSUE-011 (P1) — `fail-task` leaves created untracked files AND crashes on mixed lists
 
-- **Location:** `scripts/plan_ops.py:1281-1328` (`cmd_fail_task`). The single cleanup call is at line 1293.
+- **Location:** `plugins/plan-executor/scripts/plan_ops.py:1281-1328` (`cmd_fail_task`). The single cleanup call is at line 1293.
 - **Current behavior:** `git restore -- <files>` is called once with every entry in `--files`. Two failure modes:
   1. **Untracked files are no-ops.** A `(create)` task that left a new file on disk has that file persist after `fail-task`.
   2. **Mixed tracked+untracked crashes without restoring tracked.** Verified empirically: `git restore -- tracked_file untracked_file` emits `error: pathspec 'untracked_file' did not match any file(s) known to git`, exits 1, and **does not restore the tracked file** either.
@@ -48,12 +48,12 @@ This is the exact failure pattern that motivated TASK-004C. V3 locks the regress
 
 ### Protected-paths policy
 
-The cleanup MUST skip always-ignore paths even if they appear in `--files`. The same protection is enforced by `scripts/plan_codex_dispatch.py:52-70` (wrapper cleanup) AND by `scripts/plan_ops.py:720-745` (reconcile-batch). **Three copies currently exist.** Any pair drifting silently is a real hazard. TASK-004C consolidates ALL THREE into one shared module.
+The cleanup MUST skip always-ignore paths even if they appear in `--files`. The same protection is enforced by `plugins/plan-executor/scripts/plan_codex_dispatch.py:52-70` (wrapper cleanup) AND by `plugins/plan-executor/scripts/plan_ops.py:720-745` (reconcile-batch). **Three copies currently exist.** Any pair drifting silently is a real hazard. TASK-004C consolidates ALL THREE into one shared module.
 
 Canonical protection set (identical across all three current callsites):
 
 - `PROTECTED_EXACT_PATHS`: `_run_lock.json`, `.claude`, `.codex`
-- `PROTECTED_PATH_PREFIXES`: `docs/plans/_run_log.jsonl`, `docs/plans/_run_lock.json`, `.claude/`, `.codex/`, `scripts/plan_ops.py`, `scripts/plan_codex_dispatch.py`
+- `PROTECTED_PATH_PREFIXES`: `docs/plans/_run_log.jsonl`, `docs/plans/_run_lock.json`, `.claude/`, `.codex/`, `plugins/plan-executor/scripts/plan_ops.py`, `plugins/plan-executor/scripts/plan_codex_dispatch.py`
 - `PROTECTED_PATH_GLOBS`: `docs/plans/*.schedule.json`
 - `PROTECTED_PATH_SUFFIXES`: currently empty `()` — preserve the slot for future use; do not remove the tuple.
 
@@ -87,7 +87,7 @@ rel = _canonicalize_file(raw, repo_root):
     # Result is always forward-slash, no "./", no "..", relative to repo_root.
 ```
 
-`a/../scripts/plan_ops.py` and `./scripts/plan_ops.py` MUST both canonicalize to `scripts/plan_ops.py`. The predicate then matches protection rules correctly.
+`a/../plugins/plan-executor/scripts/plan_ops.py` and `./plugins/plan-executor/scripts/plan_ops.py` MUST both canonicalize to `plugins/plan-executor/scripts/plan_ops.py`. The predicate then matches protection rules correctly.
 
 ---
 
@@ -325,7 +325,7 @@ def test_fail_task_classifies_submodule_root_as_submodule(tmp_path_git_repo_with
     # check is running AFTER the directory check — regression.
 ```
 
-**V15 — Path normalization: `./foo` and `a/../scripts/plan_ops.py` canonicalize.**
+**V15 — Path normalization: `./foo` and `a/../plugins/plan-executor/scripts/plan_ops.py` canonicalize.**
 
 ```python
 def test_fail_task_normalizes_path_forms(tmp_path_git_repo):
@@ -362,8 +362,8 @@ def test_fail_task_silent_on_nonexistent_path(tmp_path_git_repo):
 - **Status:** pending
 - **Priority:** high
 - **Files:**
-  - `scripts/plan_ops.py` (rewrite `cmd_fail_task`; delete `RECONCILE_PROTECTED_*` + `_is_reconcile_protected` at lines 720-745 and replace with import from shared module; add `--repo-root` arg if absent)
-  - `scripts/plan_codex_dispatch.py` (delete `PROTECTED_EXACT_PATHS` / `PROTECTED_PATH_PREFIXES` / `PROTECTED_PATH_SUFFIXES` / `PROTECTED_PATH_GLOBS` at lines 52-70 and the `is_protected_path` function body at 316-331; replace with import from shared module; constants re-exported for any legacy import)
+  - `plugins/plan-executor/scripts/plan_ops.py` (rewrite `cmd_fail_task`; delete `RECONCILE_PROTECTED_*` + `_is_reconcile_protected` at lines 720-745 and replace with import from shared module; add `--repo-root` arg if absent)
+  - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (delete `PROTECTED_EXACT_PATHS` / `PROTECTED_PATH_PREFIXES` / `PROTECTED_PATH_SUFFIXES` / `PROTECTED_PATH_GLOBS` at lines 52-70 and the `is_protected_path` function body at 316-331; replace with import from shared module; constants re-exported for any legacy import)
   - `scripts/_plan_paths.py` (**new**) — shared constants + `is_protected_path` + `canonicalize_file`
   - `tests/scripts/test_plan_ops.py` (V1–V17)
 - **Dependencies:** TASK-001, TASK-003
@@ -376,8 +376,8 @@ def test_fail_task_silent_on_nonexistent_path(tmp_path_git_repo):
   - Protected, directory, submodule, and out_of_repo classifications MUST NOT perform any **mutating** filesystem or git operation (no `git restore`, no `unlink`, no directory traversal). They may — and do — perform read-only probes (`.is_dir()`, `git ls-files --stage`, `git rev-parse --show-toplevel`) as part of classification.
   - `restore_ok` semantics per the "`restore_ok` semantics" section above — independent of skip classifications and of unlink outcomes.
   - Emit shape: `{"restore_ok", "status_updated", "log_appended", "removed_untracked", "protected_skipped", "out_of_repo_skipped", "directory_skipped", "submodule_skipped"}` — exactly these eight keys.
-  - Plan-markdown status mutation to `failed` ALWAYS runs (preserves existing contract at `scripts/plan_ops.py:1299`).
-  - Shared module `scripts/_plan_paths.py` is the sole source of `PROTECTED_*` constants AND of `is_protected_path` AND of `canonicalize_file`. All three current callsites (`plan_codex_dispatch.py` wrapper cleanup, `plan_ops.py` reconcile-batch, `plan_ops.py` fail-task) import from it. No duplicated constants anywhere. **Wrapper helper renaming:** the existing `scripts/plan_codex_dispatch.py:_is_protected` helper is removed from that module. The shared-module function is named `is_protected_path` (public). To avoid breaking `tests/scripts/test_plan_codex_dispatch_state_isolation.py:197-220` which references `wrapper._is_protected`, add a module-level compatibility alias at the top of `plan_codex_dispatch.py` immediately after the import: `_is_protected = is_protected_path`. That alias is the single surviving reference in the wrapper module — all internal call sites (`plan_codex_dispatch.py:533-643`) continue to reference `_is_protected` unchanged. The alias is the sanctioned migration path; do NOT edit the test file. Likewise, the existing `scripts/plan_ops.py:_is_reconcile_protected` helper (if present) is removed and replaced by `is_protected_path` at the reconcile callsite — no alias needed there because no external test imports it.
+  - Plan-markdown status mutation to `failed` ALWAYS runs (preserves existing contract at `plugins/plan-executor/scripts/plan_ops.py:1299`).
+  - Shared module `scripts/_plan_paths.py` is the sole source of `PROTECTED_*` constants AND of `is_protected_path` AND of `canonicalize_file`. All three current callsites (`plan_codex_dispatch.py` wrapper cleanup, `plan_ops.py` reconcile-batch, `plan_ops.py` fail-task) import from it. No duplicated constants anywhere. **Wrapper helper renaming:** the existing `plugins/plan-executor/scripts/plan_codex_dispatch.py:_is_protected` helper is removed from that module. The shared-module function is named `is_protected_path` (public). To avoid breaking `tests/scripts/test_plan_codex_dispatch_state_isolation.py:197-220` which references `wrapper._is_protected`, add a module-level compatibility alias at the top of `plan_codex_dispatch.py` immediately after the import: `_is_protected = is_protected_path`. That alias is the single surviving reference in the wrapper module — all internal call sites (`plan_codex_dispatch.py:533-643`) continue to reference `_is_protected` unchanged. The alias is the sanctioned migration path; do NOT edit the test file. Likewise, the existing `plugins/plan-executor/scripts/plan_ops.py:_is_reconcile_protected` helper (if present) is removed and replaced by `is_protected_path` at the reconcile callsite — no alias needed there because no external test imports it.
   - V1–V17 all pass.
 - **Out of scope (handled by sibling sub-plans):**
   - `filter-schedule` subcommand → TASK-004A
@@ -553,8 +553,8 @@ def _is_inside_submodule(abs_path: Path, rel: str, repo_root: Path) -> bool:
 """Shared path constants, predicate, and canonicalization for the
 /implement-plan executor. Imported by:
 
-  - scripts/plan_codex_dispatch.py (wrapper delta-cleanup)
-  - scripts/plan_ops.py (reconcile-batch AND fail-task)
+  - plugins/plan-executor/scripts/plan_codex_dispatch.py (wrapper delta-cleanup)
+  - plugins/plan-executor/scripts/plan_ops.py (reconcile-batch AND fail-task)
 
 Duplicating any of these in the two consumers is forbidden — the three
 historical copies drifted and the drift caused real regressions.
@@ -577,8 +577,8 @@ PROTECTED_PATH_PREFIXES = (
     "docs/plans/_run_lock.json",
     ".claude/",
     ".codex/",
-    "scripts/plan_ops.py",
-    "scripts/plan_codex_dispatch.py",
+    "plugins/plan-executor/scripts/plan_ops.py",
+    "plugins/plan-executor/scripts/plan_codex_dispatch.py",
 )
 PROTECTED_PATH_SUFFIXES: tuple[str, ...] = ()
 PROTECTED_PATH_GLOBS: tuple[str, ...] = (
@@ -671,7 +671,7 @@ Preserve any module-level re-exports if the wrapper's own tests import the const
 Delete `RECONCILE_PROTECTED_EXACT`, `RECONCILE_PROTECTED_PREFIXES`, `RECONCILE_PROTECTED_GLOBS`, and `_is_reconcile_protected`. Any internal caller of `_is_reconcile_protected` now calls `is_protected_path` from the shared module. Grep before deleting:
 
 ```bash
-grep -n "_is_reconcile_protected\|RECONCILE_PROTECTED_" scripts/plan_ops.py
+grep -n "_is_reconcile_protected\|RECONCILE_PROTECTED_" plugins/plan-executor/scripts/plan_ops.py
 ```
 
 ### Step 4 — Rewrite `cmd_fail_task`

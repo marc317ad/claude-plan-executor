@@ -3,7 +3,7 @@
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md) § TASK-005
 **Consolidated remediation:** [`../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9 (run phases), §14 (testing & conformance)
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-001 (canonical contract), TASK-002 (runtime validation — gates reuse these validators), TASK-004 (scheduler semantics — `execution-safe` requires correct batch fidelity).
 **Issues absorbed:** none (new executor capability). This chunk promotes previously-informal checkpoints into enforced gates.
@@ -50,7 +50,7 @@ Execute:
 **V1 — Gate names appear in the helper.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py gates --list --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py gates --list --json
 ```
 
 Returns a JSON array with the six gate names as members. Exit 0.
@@ -58,7 +58,7 @@ Returns a JSON array with the six gate names as members. Exit 0.
 **V2 — Dry-run gate bundle.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py gates --check schema-valid,schedule-valid,fixture-valid \
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py gates --check schema-valid,schedule-valid,fixture-valid \
   --plan-file docs/plans/sample_phase4.md --json
 ```
 
@@ -67,15 +67,15 @@ After TASK-001 through TASK-006, returns all three green. Before TASK-006, retur
 **V3 — Execution-safe / review-safe predicates.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py gates --check execution-safe,review-safe --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py gates --check execution-safe,review-safe --json
 ```
 
-Predicate-based: greps `scripts/plan_codex_dispatch.py` for the always-ignore constant, baseline-snapshot call pattern, absence of `git clean -fd`. Returns green iff TASK-003 is applied.
+Predicate-based: greps `plugins/plan-executor/scripts/plan_codex_dispatch.py` for the always-ignore constant, baseline-snapshot call pattern, absence of `git clean -fd`. Returns green iff TASK-003 is applied.
 
 **V4 — Commit-safe predicate.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py gates --check commit-safe --commit-sha <sha> --task-id 001 --plan-file <plan> --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py gates --check commit-safe --commit-sha <sha> --task-id 001 --plan-file <plan> --json
 ```
 
 Post-hoc verification: compare the commit's file list against the task's declared `files` (plus orchestrator always-ignore). Returns green iff the commit touched no files outside the allowed set.
@@ -83,7 +83,7 @@ Post-hoc verification: compare the commit's file list against the task's declare
 **V5 — Gate surface in SKILL.md.**
 
 ```
-grep -n 'gate' .claude/skills/implement-plan/SKILL.md
+grep -n 'gate' plugins/plan-executor/skills/implement-plan/SKILL.md
 ```
 
 SKILL.md references the gate model explicitly (at least in phase A preflight and phase E post-commit).
@@ -95,13 +95,13 @@ The rerun procedure described in `DUAL_AGENT_PLAN_EXECUTOR.md §14` is now descr
 **V7 — Promotion function round-trip.**
 
 ```
-venv/bin/python scripts/plan_ops.py gates --certify --plan-file docs/plans/sample_phase4.md --mode dry-run --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py gates --certify --plan-file docs/plans/sample_phase4.md --mode dry-run --json
 ```
 
 After TASK-001-006, returns `{"certified": true, "gates": {"schema-valid": "pass", ..., "commit-safe": "not_applicable_dry_run"}}`. Exit 0.
 
 ```
-venv/bin/python scripts/plan_ops.py gates --certify --plan-file docs/plans/sample_phase4.md --mode execute --run-id <id> --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py gates --certify --plan-file docs/plans/sample_phase4.md --mode execute --run-id <id> --json
 ```
 
 Requires a completed run (i.e., run after execute mode); returns gate status across the run.
@@ -116,8 +116,8 @@ Requires a completed run (i.e., run after execute mode); returns gate status acr
 - **Priority:** high
 - **Files:**
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
-  - `.claude/skills/implement-plan/SKILL.md`
-  - `scripts/plan_ops.py`
+  - `plugins/plan-executor/skills/implement-plan/SKILL.md`
+  - `plugins/plan-executor/scripts/plan_ops.py`
   - `tests/scripts/test_plan_ops.py`
   - `docs/plans/sample_phase4.md` (only if the sample must explicitly reference a gate — likely not; cross-refs stay in SKILL/design)
 - **Dependencies:** TASK-001, TASK-002, TASK-004
@@ -160,7 +160,7 @@ Internal layout: one `_gate_<name>(context)` function per gate. Each returns `{"
 - Read plan markdown; check `## Goal`, `## Context`, `## Verification` top-level sections exist.
 - For each `### TASK-NNN` block, check required bullets: `**Status:**`, `**Priority:**`, `**Files:**`, `**Dependencies:**`, `**Test command:**`, `**Acceptance criteria:**`; check `**Description:**` and `**Reversion guidance:**` prose sections.
 - Pass if all checks hold.
-- Reuses logic from `.claude/agents/plan-analyst.md` Step 2 heuristic where possible; do not duplicate.
+- Reuses logic from `plugins/plan-executor/agents/plan-analyst.md` Step 2 heuristic where possible; do not duplicate.
 
 **`_gate_schedule_valid(schedule_json)`**
 - Call into the shared `_validate_schedule_dag` helper (factored in TASK-002).
@@ -172,11 +172,11 @@ Internal layout: one `_gate_<name>(context)` function per gate. Each returns `{"
 - Used by TASK-006 as its acceptance criterion; lives in this chunk because the gate vocabulary is established here.
 
 **`_gate_execution_safe()`**
-- Predicate against `scripts/plan_codex_dispatch.py`: grep for `ALWAYS_IGNORE`, grep for `snapshot_baseline(` calls at both `cmd_implement` and timeout paths, grep for absence of `git.*clean.*-fd` outside comments.
+- Predicate against `plugins/plan-executor/scripts/plan_codex_dispatch.py`: grep for `ALWAYS_IGNORE`, grep for `snapshot_baseline(` calls at both `cmd_implement` and timeout paths, grep for absence of `git.*clean.*-fd` outside comments.
 - Predicate-only — does not invoke the wrapper. Regresses together with TASK-003.
 
 **`_gate_review_safe()`**
-- Predicate against `scripts/plan_codex_dispatch.py`: grep for `snapshot_baseline(` at `cmd_review`, grep for always-ignore respect in the review cleanup path.
+- Predicate against `plugins/plan-executor/scripts/plan_codex_dispatch.py`: grep for `snapshot_baseline(` at `cmd_review`, grep for always-ignore respect in the review cleanup path.
 - Pass iff all checks hold.
 
 **`_gate_commit_safe(commit_sha, task_id, plan_file)`**
@@ -199,7 +199,7 @@ def _certify_execute(plan_file, run_id):
 
 ### Step 4 — `SKILL.md` wire-up
 
-At the top of `.claude/skills/implement-plan/SKILL.md`, add a "Promotion criteria" subsection listing the six gates. In each phase:
+At the top of `plugins/plan-executor/skills/implement-plan/SKILL.md`, add a "Promotion criteria" subsection listing the six gates. In each phase:
 
 - Phase A (preflight): "Run `plan_ops.py gates --check schema-valid,schedule-valid,fixture-valid` before dispatching the analyst. Halt on fail."
 - Phase E (post-commit): "After every successful task commit, run `plan_ops.py gates --check commit-safe --commit-sha <sha> --task-id <id> --plan-file <plan>`. On fail, revert the commit and mark the task failed."

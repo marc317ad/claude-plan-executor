@@ -2,7 +2,7 @@
 
 **Parent plan:** [`TASK-004_scheduler_semantics.md`](TASK-004_scheduler_semantics.md) (superseded — split into A/B/C/D/E)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9.1-§9.6
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-001 (canonical contract), TASK-002 (`write-schedule` subcommand + `_validate_schedule` / `_validate_schedule_dag` helpers).
 **Issues absorbed:** ISSUE-006 (P1, primary), ISSUE-020 (P2, secondary), ISSUE-019 (P2, secondary — DAG defensive check on this consumer).
@@ -19,9 +19,9 @@ Add `plan_ops.py filter-schedule --schedule-file <path> --task-ids 1,3 --json`. 
 
 ### ISSUE-006 (P1) — `--task-ids` flag documented but not implemented
 
-- **Docs:** `.claude/skills/implement-plan/SKILL.md:64, 72, 111-113` specify the flag and its orphan-prerequisite behavior.
-- **Helpers:** `scripts/plan_ops.py` has 13 subcommands, none of which filters a schedule by task ids.
-- **Rule:** `.claude/skills/implement-plan/SKILL.md:316` forbids inline Python in the orchestrator, so the only path is a helper subcommand.
+- **Docs:** `plugins/plan-executor/skills/implement-plan/SKILL.md:64, 72, 111-113` specify the flag and its orphan-prerequisite behavior.
+- **Helpers:** `plugins/plan-executor/scripts/plan_ops.py` has 13 subcommands, none of which filters a schedule by task ids.
+- **Rule:** `plugins/plan-executor/skills/implement-plan/SKILL.md:316` forbids inline Python in the orchestrator, so the only path is a helper subcommand.
 - **Fix:** add `plan_ops.py filter-schedule --schedule-file <path> --task-ids 1,3 --json`. Produces a new schedule containing the requested tasks plus their transitive prerequisites. Two distinct failure modes (see below).
 
 ### ISSUE-020 (P2, secondary) — `write-schedule` subcommand
@@ -38,7 +38,7 @@ Two prior runs of the unsplit TASK-004 failed at this surface area:
 
 - **Run `20260415T000811`** — `filter-schedule` success stdout included `warnings` and `errors` keys that `ALLOWED_SCHEDULE_TOP_LEVEL` rejects. The pipe `filter-schedule | write-schedule` failed because `write-schedule` rejected the unknown top-level keys. The implementer also wrote `test_filter_schedule_pipes_to_write_schedule` that *masked* the bug by Python-stripping the offending keys before piping.
 - **Codex review of TASK-004A draft (2026-04-15)** — caught two more cousin bugs in the original implementation sketch:
-  - Hard-coding `outcome="valid"` while copying `gaps` from source can produce output that fails `_validate_schedule` (rule at `scripts/plan_ops.py:239-244`: `outcome="valid"` requires `gaps=[]`).
+  - Hard-coding `outcome="valid"` while copying `gaps` from source can produce output that fails `_validate_schedule` (rule at `plugins/plan-executor/scripts/plan_ops.py:239-244`: `outcome="valid"` requires `gaps=[]`).
   - Iterating the dependency stack with `tasks_by_id[tid]` indexing crashes with `KeyError` when a transitive dep is missing from `tasks[]`. Two distinct failure modes were conflated under "orphan".
 
 V11 (canonical-only stdout) and V12 (full write-schedule round-trip) below are the regression coverage. Both are hard ship-blockers.
@@ -68,7 +68,7 @@ This contract guarantees the success-path output is byte-for-byte acceptable to 
 
 ### Error shape unification (resolves Codex IMPORTANT #4)
 
-Use the structured `errors` list shape that `cmd_write_schedule` and `cmd_batch_next` already use (`scripts/plan_ops.py:1004-1013, 1037-1046`):
+Use the structured `errors` list shape that `cmd_write_schedule` and `cmd_batch_next` already use (`plugins/plan-executor/scripts/plan_ops.py:1004-1013, 1037-1046`):
 
 ```json
 {"errors": [{"path": "$.task_ids", "code": "unknown-task-id", "message": "unknown task id 999"}]}
@@ -86,7 +86,7 @@ NOT the loose `{"error": "..."}` shape. `_die` will serialize whatever dict you 
 echo '{"outcome":"valid","tasks":[{"id":"001","agent":"codex","files":["a"],"dependencies":[]},{"id":"002","agent":"claude","files":["b"],"dependencies":["001"]},{"id":"003","agent":"codex","files":["c"],"dependencies":[]}],"batches":[{"index":1,"task_ids":["001","003"],"file_locks":["a","c"]},{"index":2,"task_ids":["002"],"file_locks":["b"]}]}' \
   > /tmp/full.schedule.json
 
-venv/bin/python scripts/plan_ops.py filter-schedule --schedule-file /tmp/full.schedule.json --task-ids 2 --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule --schedule-file /tmp/full.schedule.json --task-ids 2 --json
 ```
 
 Must return a schedule containing `tasks = [001, 002]` (002 requires 001) and appropriate batches. Exit 0. Stdout JSON keys exactly `{"outcome","tasks","batches","gaps","risks"}`. `gaps` and `risks` are both `[]` regardless of source.
@@ -94,7 +94,7 @@ Must return a schedule containing `tasks = [001, 002]` (002 requires 001) and ap
 **V2 — Unknown requested ID.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py filter-schedule --schedule-file /tmp/full.schedule.json --task-ids 999 --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule --schedule-file /tmp/full.schedule.json --task-ids 999 --json
 ```
 
 Exit 1, stdout has `errors[*].code == "unknown-task-id"`, message includes `unknown task id 999`.
@@ -105,7 +105,7 @@ Exit 1, stdout has `errors[*].code == "unknown-task-id"`, message includes `unkn
 echo '{"outcome":"valid","tasks":[{"id":"002","agent":"claude","files":["b"],"dependencies":["001"]}],"batches":[{"index":1,"task_ids":["002"],"file_locks":["b"]}]}' \
   > /tmp/broken.schedule.json
 
-venv/bin/python scripts/plan_ops.py filter-schedule --schedule-file /tmp/broken.schedule.json --task-ids 2 --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule --schedule-file /tmp/broken.schedule.json --task-ids 2 --json
 ```
 
 Exit 1, stdout has `errors[*].code == "missing-dependency"`, message names both ids (e.g., `task 002 depends on missing id 001`). MUST NOT raise `KeyError` from Python.
@@ -116,19 +116,19 @@ Exit 1, stdout has `errors[*].code == "missing-dependency"`, message names both 
 echo '{"outcome":"needs-enrichment","tasks":[{"id":"001","agent":"codex","files":["a"],"dependencies":[]}],"batches":[{"index":1,"task_ids":["001"],"file_locks":["a"]}],"gaps":[{"id":"G1","description":"x"}]}' \
   > /tmp/needs_enr.schedule.json
 
-venv/bin/python scripts/plan_ops.py filter-schedule --schedule-file /tmp/needs_enr.schedule.json --task-ids 1 --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule --schedule-file /tmp/needs_enr.schedule.json --task-ids 1 --json
 ```
 
 Exit 1, stdout has `errors[*].code == "source-not-valid"`.
 
 **V5 — Source schedule fails validator.**
 
-If the source schedule itself fails `_validate_schedule` (duplicate IDs, malformed batches, etc.), `filter-schedule` MUST run `_validate_schedule` upfront and exit 1 with the validator's `errors` list — same pattern as `cmd_batch_next` (`scripts/plan_ops.py:1044-1046`). Do not attempt to filter an invalid schedule.
+If the source schedule itself fails `_validate_schedule` (duplicate IDs, malformed batches, etc.), `filter-schedule` MUST run `_validate_schedule` upfront and exit 1 with the validator's `errors` list — same pattern as `cmd_batch_next` (`plugins/plan-executor/scripts/plan_ops.py:1044-1046`). Do not attempt to filter an invalid schedule.
 
 **V5a — Malformed source: missing file.**
 
 ```bash
-venv/bin/python scripts/plan_ops.py filter-schedule --schedule-file /tmp/does_not_exist.json --task-ids 1 --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule --schedule-file /tmp/does_not_exist.json --task-ids 1 --json
 ```
 
 Exit 1, `errors[0].code == "file-not-found"`.
@@ -137,7 +137,7 @@ Exit 1, `errors[0].code == "file-not-found"`.
 
 ```bash
 echo '{not json' > /tmp/bad.json
-venv/bin/python scripts/plan_ops.py filter-schedule --schedule-file /tmp/bad.json --task-ids 1 --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule --schedule-file /tmp/bad.json --task-ids 1 --json
 ```
 
 Exit 1, `errors[0].code == "json-decode"`.
@@ -146,7 +146,7 @@ Exit 1, `errors[0].code == "json-decode"`.
 
 ```bash
 echo '[]' > /tmp/list.json
-venv/bin/python scripts/plan_ops.py filter-schedule --schedule-file /tmp/list.json --task-ids 1 --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule --schedule-file /tmp/list.json --task-ids 1 --json
 ```
 
 Exit 1, `errors[0].code == "top-level-not-object"`.
@@ -172,9 +172,9 @@ A pytest case MUST run `filter-schedule` and assert `set(json.loads(stdout).keys
 The required test must use a literal shell pipe with **no Python-side reshaping**:
 
 ```bash
-venv/bin/python scripts/plan_ops.py filter-schedule \
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py filter-schedule \
   --schedule-file /tmp/full.schedule.json --task-ids 2 --json \
-| venv/bin/python scripts/plan_ops.py write-schedule \
+| venv/bin/python plugins/plan-executor/scripts/plan_ops.py write-schedule \
   --schedule-file /tmp/filtered.schedule.json --stdin --json
 ```
 
@@ -182,7 +182,7 @@ The `write-schedule` invocation MUST exit 0. The written file MUST then parse ba
 
 **Forbidden test pattern (rejection criterion):** any test that reshapes `filter-schedule` stdout in Python before piping (e.g., `data = json.loads(out); data.pop("warnings"); data.pop("errors"); pipe data`). That pattern hides the bug instead of catching it; a previous run shipped exactly such a test. The reviewer will reject any retest of the canonical pipe that does not use a literal shell pipe (or `Popen | Popen`).
 
-**V13 — Round-trip drops source `risks`.** The validator requires `gaps=[]` whenever `outcome="valid"` (`scripts/plan_ops.py:239-244`), so the only source-side metadata that can survive is `risks`. The test fixture: source schedule with `outcome="valid"`, `gaps=[]`, **non-empty `risks`**. Run `filter-schedule | write-schedule | parse-schedule` as a literal shell pipe (no Python reshaping). Pipeline MUST exit 0 throughout. The persisted file MUST have `risks=[]` regardless of the source's `risks` content. This is the test that catches the Codex CRITICAL #3 outcome/gaps bug — if the implementer copies `risks` from source instead of emitting `[]`, the pipe still works but the test fails on the persisted-file content assertion. (The test name should reflect `risks`, not `gaps`; the earlier draft had a stale title that suggested `gaps` was the surviving field — it isn't, because canonical-success requires `gaps=[]`.)
+**V13 — Round-trip drops source `risks`.** The validator requires `gaps=[]` whenever `outcome="valid"` (`plugins/plan-executor/scripts/plan_ops.py:239-244`), so the only source-side metadata that can survive is `risks`. The test fixture: source schedule with `outcome="valid"`, `gaps=[]`, **non-empty `risks`**. Run `filter-schedule | write-schedule | parse-schedule` as a literal shell pipe (no Python reshaping). Pipeline MUST exit 0 throughout. The persisted file MUST have `risks=[]` regardless of the source's `risks` content. This is the test that catches the Codex CRITICAL #3 outcome/gaps bug — if the implementer copies `risks` from source instead of emitting `[]`, the pipe still works but the test fails on the persisted-file content assertion. (The test name should reflect `risks`, not `gaps`; the earlier draft had a stale title that suggested `gaps` was the surviving field — it isn't, because canonical-success requires `gaps=[]`.)
 
 ---
 
@@ -193,9 +193,9 @@ The `write-schedule` invocation MUST exit 0. The written file MUST then parse ba
 - **Status:** pending
 - **Priority:** high
 - **Files:**
-  - `scripts/plan_ops.py`
+  - `plugins/plan-executor/scripts/plan_ops.py`
   - `tests/scripts/test_plan_ops.py`
-  - `.claude/skills/implement-plan/SKILL.md`
+  - `plugins/plan-executor/skills/implement-plan/SKILL.md`
 - **Dependencies:** TASK-001, TASK-002
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
 - **Acceptance criteria:**
@@ -215,7 +215,7 @@ The `write-schedule` invocation MUST exit 0. The written file MUST then parse ba
 Add the missing `filter-schedule` subcommand so the orchestrator's `--task-ids` path actually works. Output is byte-for-byte compatible with `write-schedule --stdin` so the orchestrator can compose them with a literal shell pipe.
 
 **Implementation notes:**
-Defensive DAG validation should exist downstream even if the analyst already does it upstream. Reuse `_validate_schedule_dag` from TASK-002. Use the same source-validate-then-filter pattern as `cmd_batch_next` (`scripts/plan_ops.py:1029-1046`).
+Defensive DAG validation should exist downstream even if the analyst already does it upstream. Reuse `_validate_schedule_dag` from TASK-002. Use the same source-validate-then-filter pattern as `cmd_batch_next` (`plugins/plan-executor/scripts/plan_ops.py:1029-1046`).
 
 **Reversion guidance:**
 Safe to revert; `--task-ids` goes back to being documented-but-unimplemented. Only `SKILL.md` needs a compensating edit.
@@ -226,7 +226,7 @@ Safe to revert; `--task-ids` goes back to being documented-but-unimplemented. On
 
 ### Step 1 — Read source, validate, then filter (mirror `cmd_batch_next`)
 
-**Convention note:** the existing codebase inlines the read/parse/type-check pattern in every consumer (`cmd_batch_next:1029-1046`, `cmd_write_schedule:994-1013`). This sub-plan deliberately follows that convention rather than introducing a `_load_json` helper — extracting that helper is a sibling refactor that would touch every consumer at once and is out of scope here. Mirror the existing inline pattern verbatim. **All `t["id"]` / `t["task_id"]` access MUST use the alias-tolerant pattern** `t.get("id") if "id" in t else t.get("task_id")` (used at `scripts/plan_ops.py:66, 129, 169, 284, 1057, 1091`). Direct `t["id"]` indexing will `KeyError` on a schedule that uses the legacy `task_id` alias even after `_validate_schedule` passes (the validator warns but does not normalize).
+**Convention note:** the existing codebase inlines the read/parse/type-check pattern in every consumer (`cmd_batch_next:1029-1046`, `cmd_write_schedule:994-1013`). This sub-plan deliberately follows that convention rather than introducing a `_load_json` helper — extracting that helper is a sibling refactor that would touch every consumer at once and is out of scope here. Mirror the existing inline pattern verbatim. **All `t["id"]` / `t["task_id"]` access MUST use the alias-tolerant pattern** `t.get("id") if "id" in t else t.get("task_id")` (used at `plugins/plan-executor/scripts/plan_ops.py:66, 129, 169, 284, 1057, 1091`). Direct `t["id"]` indexing will `KeyError` on a schedule that uses the legacy `task_id` alias even after `_validate_schedule` passes (the validator warns but does not normalize).
 
 The `cmd_filter_schedule` body MUST follow this order:
 
@@ -362,7 +362,7 @@ At minimum (one test per V):
 - `test_filter_schedule_missing_file_rejected` — V5a; assert exit 1, `errors[0].code == "file-not-found"`.
 - `test_filter_schedule_malformed_json_rejected` — V5b; assert exit 1, `errors[0].code == "json-decode"`.
 - `test_filter_schedule_top_level_not_object_rejected` — V5c; assert exit 1, `errors[0].code == "top-level-not-object"`.
-- `test_filter_schedule_alias_task_id_field_supported` — source schedule uses legacy `task_id` instead of `id`; `filter-schedule` MUST process it without `KeyError` (matches the alias-tolerance pattern at `scripts/plan_ops.py:66, 1057`).
+- `test_filter_schedule_alias_task_id_field_supported` — source schedule uses legacy `task_id` instead of `id`; `filter-schedule` MUST process it without `KeyError` (matches the alias-tolerance pattern at `plugins/plan-executor/scripts/plan_ops.py:66, 1057`).
 - `test_filter_schedule_cycle_rejected` — V6 cycle JSON; assert exit 1, `errors[0].code == "dependency-cycle"`.
 - `test_filter_schedule_id_form_normalization` — V7; mix of `1`, `001`, `TASK-001`.
 - `test_filter_schedule_drops_empty_batches` — V8; batch whose tasks are all filtered out is absent from output.

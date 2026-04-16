@@ -2,7 +2,7 @@
 
 **Created:** 2026-04-14
 **Status:** draft
-**Base branch:** phase-7b5-bug-fixes
+**Base branch:** main
 
 ## Goal
 
@@ -76,15 +76,15 @@ Add runtime rules for large-scope task handling, dependency/global-lock behavior
   - docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
   - docs/analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md
   - docs/plans/DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md
-  - scripts/plan_ops.py
-  - scripts/plan_codex_dispatch.py
-  - scripts/codex_implement_schema.json
-  - scripts/codex_review_schema.json
-  - .claude/agents/plan-analyst.md
-  - .claude/agents/plan-implementer.md
-  - .claude/skills/implement-plan/SKILL.md
-  - .claude/skills/implement-plan/run-log-schema.md
-  - .claude/skills/implement-plan/dispatch-templates.md
+  - plugins/plan-executor/scripts/plan_ops.py
+  - plugins/plan-executor/scripts/plan_codex_dispatch.py
+  - plugins/plan-executor/scripts/codex_implement_schema.json
+  - plugins/plan-executor/scripts/codex_review_schema.json
+  - plugins/plan-executor/agents/plan-analyst.md
+  - plugins/plan-executor/agents/plan-implementer.md
+  - plugins/plan-executor/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/skills/implement-plan/run-log-schema.md
+  - plugins/plan-executor/skills/implement-plan/dispatch-templates.md
 - **Dependencies:** none
 - **Test command:** none
 - **Acceptance criteria:**
@@ -109,11 +109,11 @@ Restore prior protocol-bearing files only if the unified contract blocks all exe
 - **Status:** pending
 - **Priority:** critical
 - **Files:**
-  - scripts/plan_ops.py
-  - scripts/plan_codex_dispatch.py
-  - .claude/skills/implement-plan/SKILL.md
-  - .claude/agents/plan-analyst.md
-  - .claude/agents/plan-implementer.md
+  - plugins/plan-executor/scripts/plan_ops.py
+  - plugins/plan-executor/scripts/plan_codex_dispatch.py
+  - plugins/plan-executor/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/agents/plan-analyst.md
+  - plugins/plan-executor/agents/plan-implementer.md
   - tests/scripts/test_plan_ops.py
   - tests/scripts/test_plan_codex_dispatch_integration.py
 - **Dependencies:** TASK-001
@@ -140,11 +140,11 @@ If strict validation creates false positives, temporarily allow only documented 
 - **Status:** done
 - **Priority:** critical
 - **Files:**
-  - scripts/plan_codex_dispatch.py
+  - plugins/plan-executor/scripts/plan_codex_dispatch.py
   - tests/scripts/test_plan_codex_dispatch_integration.py
   - docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
-  - .claude/skills/implement-plan/SKILL.md
-  - .claude/skills/implement-plan/dispatch-templates.md
+  - plugins/plan-executor/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/skills/implement-plan/dispatch-templates.md
   - docs/plans/DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md
 - **Dependencies:** TASK-001
 - **Test command:** none
@@ -172,10 +172,10 @@ If the new cleanup logic regresses, fall back only behind an explicit compatibil
 - **Status:** pending
 - **Priority:** high
 - **Files:**
-  - scripts/plan_ops.py
+  - plugins/plan-executor/scripts/plan_ops.py
   - tests/scripts/test_plan_ops.py
-  - .claude/skills/implement-plan/SKILL.md
-  - .claude/skills/implement-plan/run-log-schema.md
+  - plugins/plan-executor/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/skills/implement-plan/run-log-schema.md
   - docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
 - **Dependencies:** TASK-001, TASK-002
 - **Test command:** none
@@ -204,8 +204,8 @@ If new scheduler behavior causes blocking regressions, preserve defensive valida
 - **Priority:** high
 - **Files:**
   - docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
-  - .claude/skills/implement-plan/SKILL.md
-  - scripts/plan_ops.py
+  - plugins/plan-executor/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/scripts/plan_ops.py
   - tests/scripts/test_plan_ops.py
   - docs/plans/sample_phase4.md
   - docs/analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md
@@ -261,8 +261,8 @@ If fixture migration causes disruption, preserve the old artifact as a legacy/ad
 - **Status:** pending
 - **Priority:** medium
 - **Files:**
-  - scripts/plan_ops.py
-  - .claude/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/scripts/plan_ops.py
+  - plugins/plan-executor/skills/implement-plan/SKILL.md
   - docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
   - tests/scripts/test_plan_ops.py
   - docs/analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md
@@ -291,9 +291,9 @@ If self-audit is noisy, narrow its scope or improve reporting. Keep the critical
 - **Status:** pending
 - **Priority:** medium
 - **Files:**
-  - .claude/skills/implement-plan/SKILL.md
-  - .claude/skills/implement-plan/dispatch-templates.md
-  - scripts/plan_ops.py
+  - plugins/plan-executor/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/skills/implement-plan/dispatch-templates.md
+  - plugins/plan-executor/scripts/plan_ops.py
   - docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
   - tests/scripts/test_plan_ops.py
 - **Dependencies:** TASK-001, TASK-005
@@ -320,9 +320,9 @@ If parameterization introduces temporary friction, keep a project-default variab
 - **Status:** pending
 - **Priority:** medium
 - **Files:**
-  - .claude/agents/plan-implementer.md
-  - .claude/agents/plan-analyst.md
-  - .claude/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/agents/plan-implementer.md
+  - plugins/plan-executor/agents/plan-analyst.md
+  - plugins/plan-executor/skills/implement-plan/SKILL.md
   - docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
   - tests/scripts/test_plan_ops.py
 - **Dependencies:** TASK-001, TASK-002
@@ -349,10 +349,10 @@ If scale-aware reading weakens correctness, tighten thresholds and fall back to 
 - **Status:** pending
 - **Priority:** medium
 - **Files:**
-  - .claude/skills/implement-plan/SKILL.md
-  - .claude/agents/plan-analyst.md
+  - plugins/plan-executor/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/agents/plan-analyst.md
   - docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
-  - scripts/plan_ops.py
+  - plugins/plan-executor/scripts/plan_ops.py
   - tests/scripts/test_plan_ops.py
 - **Dependencies:** TASK-001, TASK-004, TASK-005
 - **Test command:** none
@@ -378,10 +378,10 @@ If the global-lock set is too broad, narrow the manifest list carefully. Do not 
 - **Status:** pending
 - **Priority:** medium
 - **Files:**
-  - .claude/agents/plan-implementer.md
-  - .claude/skills/implement-plan/dispatch-templates.md
-  - scripts/plan_codex_dispatch.py
-  - scripts/plan_ops.py
+  - plugins/plan-executor/agents/plan-implementer.md
+  - plugins/plan-executor/skills/implement-plan/dispatch-templates.md
+  - plugins/plan-executor/scripts/plan_codex_dispatch.py
+  - plugins/plan-executor/scripts/plan_ops.py
   - docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
   - tests/scripts/test_plan_ops.py
   - tests/scripts/test_plan_codex_dispatch_integration.py

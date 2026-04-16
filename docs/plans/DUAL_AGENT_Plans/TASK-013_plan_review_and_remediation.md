@@ -88,13 +88,13 @@ The orchestrator is the correct owner because it already owns:
 
 This should therefore live primarily in:
 
-- `.claude/skills/implement-plan/SKILL.md`
+- `plugins/plan-executor/skills/implement-plan/SKILL.md`
 - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
-- `scripts/plan_ops.py`
+- `plugins/plan-executor/scripts/plan_ops.py`
 
 with prompt/template changes in:
 
-- `.claude/skills/implement-plan/dispatch-templates.md`
+- `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`
 
 and seam validation/tests in:
 
@@ -187,7 +187,7 @@ If you want the smallest change set, the original planner may produce the repair
 Add a helper analogous to `parse-implementer-report` and `parse-reviewer-report`:
 
 ```bash
-venv/bin/python scripts/plan_ops.py parse-plan-review-report --stdin --reviewer <codex|claude> --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py parse-plan-review-report --stdin --reviewer <codex|claude> --json
 ```
 
 Canonical output:
@@ -216,7 +216,7 @@ Canonical output:
 If a remediation planner is introduced, give it a narrow contract:
 
 ```bash
-venv/bin/python scripts/plan_ops.py parse-remediation-plan --stdin --json
+venv/bin/python plugins/plan-executor/scripts/plan_ops.py parse-remediation-plan --stdin --json
 ```
 
 Canonical output:
@@ -301,10 +301,10 @@ The executor fails and reverts immediately when findings are vague, out of scope
 - **Priority:** high
 - **Files:**
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
-  - `.claude/skills/implement-plan/SKILL.md`
-  - `.claude/skills/implement-plan/dispatch-templates.md`
-  - `scripts/plan_ops.py`
-  - `scripts/plan_codex_dispatch.py`
+  - `plugins/plan-executor/skills/implement-plan/SKILL.md`
+  - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`
+  - `plugins/plan-executor/scripts/plan_ops.py`
+  - `plugins/plan-executor/scripts/plan_codex_dispatch.py`
   - `tests/scripts/test_plan_ops.py`
   - `tests/scripts/test_plan_codex_dispatch_integration.py`
 - **Dependencies:** TASK-002, TASK-004, TASK-005, TASK-012

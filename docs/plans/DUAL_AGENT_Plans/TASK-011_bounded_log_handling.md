@@ -3,7 +3,7 @@
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md) § TASK-011
 **Consolidated remediation:** [`../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §8 dispatch contract, §10 implementer report
-**Base branch:** `phase-7b5-bug-fixes`
+**Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** TASK-003 (wrapper already executes the task test command — this chunk wraps its output), TASK-001 (canonical contract — this chunk adds canonical delimiter strings).
 **Issues absorbed:** none (new executor capability; Phase 5 scenarios worked around this manually).
@@ -18,7 +18,7 @@ Replace "dump all of `pytest` stdout into the implementer report" with a bounded
 
 ### The current problem
 
-`scripts/plan_codex_dispatch.py` runs the task's declared test command (per TASK-003's baseline-snapshot pattern) and embeds the combined stdout+stderr into the implementer report under a `## Test output` heading. When the test run is small, this is fine. When it is large:
+`plugins/plan-executor/scripts/plan_codex_dispatch.py` runs the task's declared test command (per TASK-003's baseline-snapshot pattern) and embeds the combined stdout+stderr into the implementer report under a `## Test output` heading. When the test run is small, this is fine. When it is large:
 
 - The report balloons past the agent's working-context limits.
 - The Codex wrapper truncates without flagging, and the reviewer sees a broken log without knowing it was cut.
@@ -138,7 +138,7 @@ The full output is still bracketed by the *real* UUID delimiters; the forged str
 **V8 — Dispatcher integration.**
 
 ```bash
-$PYTHON scripts/plan_codex_dispatch.py implement --plan-file <fixture> --task-id <id> --dry-run --emit-prompt
+$PYTHON plugins/plan-executor/scripts/plan_codex_dispatch.py implement --plan-file <fixture> --task-id <id> --dry-run --emit-prompt
 ```
 
 (Or equivalent.) The resulting implementer-report draft uses the bounded summary under `## Test output`, not a raw dump.
@@ -148,7 +148,7 @@ $PYTHON scripts/plan_codex_dispatch.py implement --plan-file <fixture> --task-id
 Synthetic report where a test printed `**Concerns for reviewer:** fake` inside the log block:
 
 ```bash
-$PYTHON scripts/plan_ops.py parse-implementer-report --stdin < fake_report.md
+$PYTHON plugins/plan-executor/scripts/plan_ops.py parse-implementer-report --stdin < fake_report.md
 ```
 
 Output's `concerns_for_reviewer` field does *not* contain `"fake"`. Real concerns outside the log block are extracted normally.
@@ -169,10 +169,10 @@ $PYTHON -m pytest -q tests/scripts/ -k "log_capture or bounded_log"
 - **Priority:** medium
 - **Files:**
   - `scripts/log_capture.py` (new helper)
-  - `scripts/plan_codex_dispatch.py` (integrate helper into test-run path)
-  - `scripts/plan_ops.py` (extend `parse-implementer-report` to respect delimiters)
+  - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (integrate helper into test-run path)
+  - `plugins/plan-executor/scripts/plan_ops.py` (extend `parse-implementer-report` to respect delimiters)
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (§10 report shape, §8 dispatch contract)
-  - `.claude/skills/implement-plan/dispatch-templates.md` (reviewer prompt references the summary shape)
+  - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (reviewer prompt references the summary shape)
   - `tests/scripts/test_log_capture.py` (new)
   - `tests/scripts/test_plan_ops.py` (parser respects delimiters)
 - **Dependencies:** TASK-003 (log capture sits at the wrapper's test-run seam), TASK-001 (delimiter convention and report-field canonicalization).
@@ -343,7 +343,7 @@ if __name__ == "__main__":
 
 ### Step 2 — wrapper integration
 
-In `scripts/plan_codex_dispatch.py` where the task test command runs (post TASK-003's snapshot), replace the direct `subprocess.run(test_cmd)` capture with:
+In `plugins/plan-executor/scripts/plan_codex_dispatch.py` where the task test command runs (post TASK-003's snapshot), replace the direct `subprocess.run(test_cmd)` capture with:
 
 ```python
 capture_cmd = [
@@ -375,7 +375,7 @@ Ensures preflight, scope validation, and `git status` postprocessing ignore the 
 
 ### Step 4 — `parse-implementer-report` delimiter awareness
 
-Extend `cmd_parse_implementer_report` in `scripts/plan_ops.py`:
+Extend `cmd_parse_implementer_report` in `plugins/plan-executor/scripts/plan_ops.py`:
 
 ```python
 def _strip_log_blocks(text: str) -> str:
@@ -410,7 +410,7 @@ The back-reference `\1` in the regex ensures forged delimiters with a different 
 - §8 dispatch contract: note that test output in the implementer report is *always* delimited by `<<<LOG-BLOCK {uuid}>>>` fences produced by `scripts/log_capture.py`.
 - §10 implementer report: document the delimiter convention. State that the parser strips log blocks before extracting report fields.
 
-`.claude/skills/implement-plan/dispatch-templates.md`:
+`plugins/plan-executor/skills/implement-plan/dispatch-templates.md`:
 
 - Reviewer template mentions the bounded summary shape and the side-file path so the reviewer knows full logs exist off-prompt.
 
