@@ -7,7 +7,7 @@
     {
       "name": "plan-executor",
       "description": "Dual-agent plan executor",
-      "source": {"source": "directory", "path": "."}
+      "source": "./plugins/plan-executor"
     }
   ]
 }
