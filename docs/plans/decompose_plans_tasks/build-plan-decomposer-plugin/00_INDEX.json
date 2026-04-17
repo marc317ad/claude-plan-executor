@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "chunks": [
+    {
+      "task_id": "001",
+      "v3_task": "TASK-001",
+      "file": "TASK-001_plugin_skeleton.md",
+      "priority": "critical",
+      "issues_absorbed": [],
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "v3_task": "TASK-002",
+      "file": "TASK-002_canonical_contract_constants.md",
+      "priority": "critical",
+      "issues_absorbed": [],
+      "depends_on": ["001"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "012",
+      "v3_task": "TASK-012",
+      "file": "TASK-012_plan_analyst_gate_suppression.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "v3_task": "TASK-003",
+      "file": "TASK-003_inspect_parse_fingerprint_subcommands.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["002"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "v3_task": "TASK-004",
+      "file": "TASK-004_build_schedule_and_manifest_subcommands.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["003"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "v3_task": "TASK-005",
+      "file": "TASK-005_render_and_templates.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["004"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "v3_task": "TASK-006",
+      "file": "TASK-006_validate_output_subcommand.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "v3_task": "TASK-007",
+      "file": "TASK-007_commit_swap_subcommand.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["006"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "008",
+      "v3_task": "TASK-008",
+      "file": "TASK-008_recover_subcommand.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["007"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "009",
+      "v3_task": "TASK-009",
+      "file": "TASK-009_sync_status_subcommand.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": ["004"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "013",
+      "v3_task": "TASK-013",
+      "file": "TASK-013_tests_units_inputmode_e2e.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["003", "004", "005", "006"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "010",
+      "v3_task": "TASK-010",
+      "file": "TASK-010_plan_decomposer_agent.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["003", "004", "005", "006", "007", "008", "009"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "011",
+      "v3_task": "TASK-011",
+      "file": "TASK-011_skill_and_commands.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["010"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "014",
+      "v3_task": "TASK-014",
+      "file": "TASK-014_tests_recovery_parentdrift.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["007", "008"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "015",
+      "v3_task": "TASK-015",
+      "file": "TASK-015_tests_status_supersede_concision.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["005", "006", "009"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "016",
+      "v3_task": "TASK-016",
+      "file": "TASK-016_readme_update.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": ["011"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "017",
+      "v3_task": "TASK-017",
+      "file": "TASK-017_phase_b_shadow_run_gate.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["011", "012", "013", "014", "015", "016"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "018",
+      "v3_task": "TASK-018",
+      "file": "TASK-018_phase_c_permanent_install_gate.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": ["017"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

@@ -909,24 +909,44 @@ def cmd_implement(args) -> int:
             ))
             return 1
 
-        # Scope validation (Appendix D F2: sandbox unreliable) — observe-only
-        # against pre-dispatch baseline. Wrapper never mutates out-of-scope;
-        # orchestrator reconciles at batch boundary (Fix E).
+        # Observe-only scope check (Appendix D F2: sandbox unreliable) against
+        # pre-dispatch baseline. Wrapper never mutates out-of-scope; orchestrator
+        # reconciles at batch boundary (Fix E).
         scope = validate_scope(repo_root, allowed_files, baseline)
-        if scope["out_of_scope_observed"]:
+
+        # scope_violation is gated on Codex's SELF-DECLARED scope. If Codex
+        # reports `files_changed` containing paths outside `allowed_files`,
+        # that is an explicit escape and the wrapper reports scope_violation.
+        #
+        # Observed-but-unreported out-of-scope writes (Codex didn't mention
+        # them) are retained in scope.out_of_scope_{tracked,untracked} for
+        # orchestrator reconciliation but do NOT fail the wrapper. Two
+        # parallel sibling dispatches writing their own declared files race
+        # into each other's post-dispatch diff, and under the pre-fix rule
+        # every sibling flipped to scope_violation. The orchestrator has
+        # whole-batch context to distinguish a sibling race from a silent
+        # Codex escape; the wrapper does not.
+        reported = {
+            normalize_file_path(f) for f in parsed.get("files_changed", [])
+        }
+        allowed_set = set(allowed_files)
+        reported_out_of_scope = sorted(reported - allowed_set)
+        if reported_out_of_scope:
             emit(make_envelope(
                 task["task_id"], "implement", "scope_violation",
                 exit_code=codex["exit_code"],
                 raw=output_text,
                 parsed=parsed,
                 error=(
-                    f"Codex wrote files outside scope. "
-                    f"Out-of-scope tracked: {scope['out_of_scope_tracked']}, "
+                    f"Codex declared writes outside scope. "
+                    f"Reported out-of-scope: {reported_out_of_scope}, "
+                    f"observed out-of-scope tracked: {scope['out_of_scope_tracked']}, "
                     f"untracked: {scope['out_of_scope_untracked']}. "
                     f"Orchestrator will reconcile."
                 ),
                 extra={
                     "scope": scope,
+                    "reported_out_of_scope": reported_out_of_scope,
                     "out_of_scope_tracked": scope["out_of_scope_tracked"],
                     "out_of_scope_untracked": scope["out_of_scope_untracked"],
                     "out_of_scope_observed": True,
@@ -952,21 +972,15 @@ def cmd_implement(args) -> int:
             return 1
 
         # Dishonesty check: compare reported files_changed against the
-        # full observed delta (in-scope plus any out-of-scope observation).
-        # We include out-of-scope observations so undeclared writes outside
-        # `allowed_files` are caught as a defense-in-depth layer even if the
-        # scope_violation branch above is ever bypassed. Runs BEFORE the test
-        # command — misreport is fatal.
-        reported = {
-            normalize_file_path(f) for f in parsed.get("files_changed", [])
-        }
-        actual_all = (
-            set(scope["changed_in_scope_new"])
-            | set(scope["out_of_scope_tracked"])
-            | set(scope["out_of_scope_untracked"])
-        )
-        undeclared = sorted(actual_all - reported)
-        phantom = sorted(reported - actual_all)
+        # IN-SCOPE delta only. Out-of-scope observations (a parallel sibling's
+        # own declared file appearing mid-dispatch, or a silent Codex escape)
+        # live in scope["out_of_scope_*"] for orchestrator reconciliation and
+        # are intentionally excluded here so sibling races do not false-flag
+        # this task. Runs BEFORE the test command — misreport is fatal.
+        actual_in_scope_new = set(scope["changed_in_scope_new"])
+        actual_in_scope_all = set(scope["changed_in_scope"])
+        undeclared = sorted(actual_in_scope_new - reported)
+        phantom = sorted(reported - actual_in_scope_all)
         if undeclared or phantom:
             emit(make_envelope(
                 task["task_id"], "implement", "failure",

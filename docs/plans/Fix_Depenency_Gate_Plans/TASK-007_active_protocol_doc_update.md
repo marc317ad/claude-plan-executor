@@ -11,12 +11,17 @@ Update the active protocol/design document `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.
 
 This task deliberately edits only the active protocol doc. Historical completed plans under `docs/plans/DUAL_AGENT_Plans/` are left untouched.
 
+**Scope clarifications:**
+- Sections 7, 8, and 10 are already dependency-clean and are intentionally not touched.
+- Appendix C is not modified by this task.
+- The implementer-reported agent status `blocked` (§7.2, §8.3, §15.2, Appendix C.3) is a separate concept from the scheduler's removed `blocked` state. It is retained in v1 and not modified by this task.
+
 ## Verification
 
-1. `grep -nE 'dependency DAG|topological|topo order|dependency ordering is enforced|cascade-block|blocked dependents|Dependents blocked|dependency cycle|dependencies respected' docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` returns zero hits, except any explicitly marked historical comparison text that is not normative.
+1. `grep -nE '\bDAG\b|topological|topo order|dependency ordering is enforced|cascade-block|blocked dependents|Dependents blocked|dependency cycle|dependencies respected|<K> blocked|blocked\s*:\s*dict|blocked\s*\|\s*skipped' docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` returns zero hits.
 2. `grep -nE '00_INDEX.json|check-plan-deps|pre-flight dependency' docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` shows the surviving dependency gate is documented as pre-flight only.
 3. `grep -nE 'file-disjoint|file-lock|priority' docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` shows the active scheduling model is documented in the architecture, analyst process, and verification sections.
-4. Manual read-through of sections 1, 2, 4, 5, 6, 9, 13, 14, Appendix A, and Appendix C confirms there is no contradiction between the active design doc and `plugins/plan-executor/skills/implement-plan/SKILL.md`.
+4. Manual read-through of sections 1, 2, 4, 5, 6, 9, 13, 14, and Appendix A confirms there is no contradiction between the active design doc and `plugins/plan-executor/skills/implement-plan/SKILL.md`.
 
 ---
 
@@ -29,14 +34,16 @@ This task deliberately edits only the active protocol doc. Historical completed 
 - **Files:**
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
 - **Dependencies:** none
-- **Test command:** `grep -nE 'dependency DAG|topological|topo order|dependency ordering is enforced|cascade-block|blocked dependents|Dependents blocked|dependency cycle|dependencies respected' docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
+- **Test command:** `grep -nE '\bDAG\b|topological|topo order|dependency ordering is enforced|cascade-block|blocked dependents|Dependents blocked|dependency cycle|dependencies respected|<K> blocked|blocked\s*:\s*dict|blocked\s*\|\s*skipped' docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
 - **Acceptance criteria:**
   - Section 1, "What makes this different from single-agent execution", changes the structured-plan-contract bullet from "parsed, validated plan with dependencies" to "parsed, validated plan and pre-flight dependency gate".
   - Section 2, "Design Principles", changes failure handling from "blocked dependents" to isolated task failures; it explicitly says peer tasks continue independently after terminal task failure.
   - Section 4 architecture diagram says Phase 0 resolves cross-plan dependencies via `00_INDEX.json`, and Phase 1 no longer says "Build dependency DAG, detect cycles". Phase 1 instead says the analyst classifies tasks and produces file-disjoint execution batches and risks.
   - Section 4 "Batch Scheduling" no longer says dependency ordering is enforced between batches. Replace the subsection body with text that says batches are file-disjoint; ordering comes from priority and file-lock conflicts only; intra-plan `Dependencies:` fields are not used for readiness, topological sorting, or cascade blocking; cross-plan dependency completion is checked once during pre-flight against `00_INDEX.json`.
   - The Batch Scheduling example no longer uses "depends on TASK-001"; use file-lock split / priority ordering wording instead.
-  - Section 5 required-fields table marks `Dependencies` as optional legacy input, ignored by downstream scheduling. If the plan-template bullet remains, annotate it as optional legacy text ignored by the scheduler.
+  - Section 5 plan-document schema (line 208) removes `blocked` from the `Status:` enum, leaving `pending | in-progress | done | failed | skipped`.
+  - Section 5 plan-document schema (line 215) deletes the `- **Dependencies:** none | TASK-NNN, TASK-NNN` bullet from the task template.
+  - Section 5 required-fields table (line 248) deletes the `Dependencies` row entirely.
   - Section 6 plan-analyst process no longer says dependencies must reference existing tasks, no longer builds a dependency DAG, and no longer runs cycle detection. Replace the old DAG step with file-scope normalization. Replace topo-level batch computation with priority order plus file-disjoint batching.
   - Section 6 report format removes `<K> blocked` from the task summary.
   - Section 6 execution schedule example removes "sequential dep" and "depends on TASK-001"; use "file-lock split" or equivalent.
@@ -52,7 +59,6 @@ This task deliberately edits only the active protocol doc. Historical completed 
   - Section 14 verification row 5 changes "valid schedule" to "file-disjoint schedule".
   - Section 14 verification row 11 changes "Dependency cascade" to "Failure isolation"; pass criteria says failed task is recorded, peer tasks continue independently, and no cascade-block event is emitted.
   - Appendix A comparison row changes "DAG computation" to "Batch computation"; implement-plan side says file-disjoint batching plus `00_INDEX.json` pre-flight gating.
-  - Appendix C.1 Worktree Isolation resolution clarifies that batches are not dependency levels; they are file-lock groups ordered by priority and lock conflicts.
 
 **Description:**
 Bring the active design document up to date with the stripped dependency-gate architecture. The implementation plans TASK-001 through TASK-006 remove downstream dependency gates from code, agents, skill text, run-log schema, and tests. This task removes the remaining normative design-doc claims that batches are topological dependency levels, that cycles/orphans are scheduler errors, and that failed tasks cascade-block dependents.
@@ -64,12 +70,12 @@ Use targeted edits around the known stale sections:
 - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:34` - failure-handling principle.
 - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:89-97` - architecture phase diagram.
 - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:123-133` - Batch Scheduling subsection.
-- `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:248` - `Dependencies` required-field row.
+- `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:208`, `:215`, `:248` - Section 5 schema: `Status:` enum, `Dependencies:` template bullet, `Dependencies` required-field row.
 - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:309`, `:315`, `:323` - analyst process.
 - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:335`, `:344-348`, `:357-358`, `:385`, `:404` - analyst report / JSON contract examples.
 - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:849-857`, `:882`, `:890`, `:911` - orchestrator runtime state and ordering.
 - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:1087-1089`, `:1112-1116`, `:1140`, `:1146` - implementation and verification plans.
-- `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:1258`, `:1288` - appendices.
+- `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md:1258` - Appendix A.
 
 Suggested replacement snippets:
 
@@ -97,10 +103,6 @@ Phase 1: Plan Analysis (Claude Code -> plan-analyst agent)
 Tasks are processed in batches. Within a batch, tasks have disjoint file scopes and can execute in parallel. Between batches, ordering is derived from priority and file-lock conflicts only; intra-plan `Dependencies:` fields are not used for downstream readiness, topological sorting, or cascade blocking.
 
 Cross-plan dependency completion is checked once during pre-flight against `00_INDEX.json`. If any required cross-plan dependency is unresolved, execution halts before the analyst runs.
-```
-
-```md
-| Dependencies | No | Legacy plan field. Ignored by downstream scheduling; cross-plan dependency gating is performed from `00_INDEX.json` during pre-flight. |
 ```
 
 ```md

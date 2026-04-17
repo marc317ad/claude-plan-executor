@@ -13,6 +13,7 @@ Cost per run: one real Codex CLI call, ~15-30s wall clock.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,19 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = REPO_ROOT / "plugins" / "plan-executor" / "scripts" / "plan_codex_dispatch.py"
+
+CODEX_SESSION_INIT_FAILURE_NEEDLES = (
+    "Failed to create session",
+    "Failed to initialize session",
+    "error creating thread",
+    "Read-only file system",
+    "os error 30",
+    "failed to refresh available models",
+    "error sending request for url",
+    "failed to connect to websocket",
+    "dns error",
+    "Operation not permitted",
+)
 
 
 SCRATCH_PLAN = """# Plan: Scratch integration test
@@ -71,16 +85,82 @@ Delete SCRATCH.txt from the repository root.
 """
 
 
-def _codex_available() -> bool:
+def _codex_available(env: dict[str, str] | None = None) -> bool:
     try:
         r = subprocess.run(
             ["codex", "--version"],
+            env=env,
             capture_output=True,
             timeout=5,
         )
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
+
+
+def _make_codex_env(tmp_path: Path) -> dict[str, str]:
+    """Return an environment with writable Codex/session state under tmp_path."""
+    env = os.environ.copy()
+
+    codex_state = tmp_path / "codex_state"
+    home = codex_state / "home"
+    codex_home = codex_state / "codex_home"
+    xdg_config = codex_state / "xdg_config"
+    xdg_cache = codex_state / "xdg_cache"
+    xdg_data = codex_state / "xdg_data"
+    tmp = codex_state / "tmp"
+    for path in (home, codex_home, xdg_config, xdg_cache, xdg_data, tmp):
+        path.mkdir(parents=True, exist_ok=True)
+
+    # Keep live authentication/config readable when present, but force logs,
+    # sessions, caches, and PATH-update probes into per-test writable storage.
+    source_codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    for name in ("auth.json", "config.toml", "installation_id"):
+        source = source_codex_home / name
+        if source.is_file():
+            shutil.copy2(source, codex_home / name)
+
+    env.update({
+        "HOME": str(home),
+        "CODEX_HOME": str(codex_home),
+        "XDG_CONFIG_HOME": str(xdg_config),
+        "XDG_CACHE_HOME": str(xdg_cache),
+        "XDG_DATA_HOME": str(xdg_data),
+        "TMPDIR": str(tmp),
+    })
+    return env
+
+
+@pytest.fixture(scope="session")
+def live_codex_env(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+    tmp_path = tmp_path_factory.mktemp("live_codex")
+    env = _make_codex_env(tmp_path)
+    if not _codex_available(env):
+        pytest.skip("codex CLI not available")
+    if env.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1":
+        pytest.skip(
+            "live Codex CLI cannot run in this environment: network is disabled"
+        )
+    return env
+
+
+def _skip_if_live_codex_environment_failure(*texts: str) -> None:
+    combined = "\n".join(text for text in texts if text)
+    if any(needle in combined for needle in CODEX_SESSION_INIT_FAILURE_NEEDLES):
+        pytest.skip(
+            "live Codex CLI cannot initialize or reach its service in this environment"
+        )
+
+
+def _load_envelope_or_skip(stdout: str, stderr: str) -> dict:
+    _skip_if_live_codex_environment_failure(stdout, stderr)
+    envelope = json.loads(stdout)
+    _skip_if_live_codex_environment_failure(
+        envelope.get("error") or "",
+        envelope.get("codex_output_raw") or "",
+        stderr,
+    )
+    return envelope
 
 
 def _git(args, cwd, check=True):
@@ -111,11 +191,8 @@ def _make_repo(tmp_path: Path) -> Path:
 
 
 @pytest.mark.slow
-def test_implement_creates_file_end_to_end(tmp_path):
+def test_implement_creates_file_end_to_end(tmp_path, live_codex_env):
     """Full wrapper path: plan parse -> Codex call -> scope check -> envelope."""
-    if not _codex_available():
-        pytest.skip("codex CLI not available")
-
     repo = _make_repo(tmp_path)
 
     plan_path = repo / "plan.md"
@@ -133,10 +210,21 @@ def test_implement_creates_file_end_to_end(tmp_path):
             "--repo-root", str(repo),
             "--timeout", "180",
         ],
+        env=live_codex_env,
         capture_output=True,
         text=True,
         timeout=240,
     )
+
+    # Envelope must be valid JSON on stdout
+    try:
+        envelope = _load_envelope_or_skip(result.stdout, result.stderr)
+    except json.JSONDecodeError as e:
+        pytest.fail(
+            f"wrapper stdout not valid JSON: {e}\n"
+            f"STDOUT:\n{result.stdout}\n"
+            f"STDERR:\n{result.stderr}"
+        )
 
     # Wrapper must not crash
     assert result.returncode == 0, (
@@ -144,16 +232,6 @@ def test_implement_creates_file_end_to_end(tmp_path):
         f"STDOUT:\n{result.stdout}\n"
         f"STDERR:\n{result.stderr}"
     )
-
-    # Envelope must be valid JSON on stdout
-    try:
-        envelope = json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        pytest.fail(
-            f"wrapper stdout not valid JSON: {e}\n"
-            f"STDOUT:\n{result.stdout}\n"
-            f"STDERR:\n{result.stderr}"
-        )
 
     # Required envelope keys (section 7.4)
     required_keys = {
@@ -260,7 +338,12 @@ Delete `{file}`.
 """
 
 
-def _launch_wrapper(repo: Path, plan: Path, task_id: str) -> subprocess.Popen:
+def _launch_wrapper(
+    repo: Path,
+    plan: Path,
+    task_id: str,
+    env: dict[str, str],
+) -> subprocess.Popen:
     return subprocess.Popen(
         [
             sys.executable,
@@ -274,20 +357,18 @@ def _launch_wrapper(repo: Path, plan: Path, task_id: str) -> subprocess.Popen:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
 
 
 @pytest.mark.slow
-def test_parallel_implement_siblings_preserve_each_other(tmp_path):
+def test_parallel_implement_siblings_preserve_each_other(tmp_path, live_codex_env):
     """Two real wrapper subprocesses on disjoint tasks in the same repo.
 
     Each writes its own file; neither may erase the other's work. The
     delta-bounded cleanup must ensure both siblings finish with outcome
     success and both target files exist.
     """
-    if not _codex_available():
-        pytest.skip("codex CLI not available")
-
     repo = _make_repo(tmp_path)
 
     plan_a = repo / "plan_a.md"
@@ -297,21 +378,20 @@ def test_parallel_implement_siblings_preserve_each_other(tmp_path):
     _git(["add", "plan_a.md", "plan_b.md"], cwd=repo)
     _git(["commit", "-q", "-m", "add sibling plans"], cwd=repo)
 
-    proc_a = _launch_wrapper(repo, plan_a, "001")
-    proc_b = _launch_wrapper(repo, plan_b, "002")
+    proc_a = _launch_wrapper(repo, plan_a, "001", live_codex_env)
+    proc_b = _launch_wrapper(repo, plan_b, "002", live_codex_env)
 
     out_a, err_a = proc_a.communicate(timeout=240)
     out_b, err_b = proc_b.communicate(timeout=240)
 
+    env_a = _load_envelope_or_skip(out_a, err_a)
+    env_b = _load_envelope_or_skip(out_b, err_b)
     assert proc_a.returncode == 0, (
         f"sibling A failed rc={proc_a.returncode}\nSTDOUT:\n{out_a}\nSTDERR:\n{err_a}"
     )
     assert proc_b.returncode == 0, (
         f"sibling B failed rc={proc_b.returncode}\nSTDOUT:\n{out_b}\nSTDERR:\n{err_b}"
     )
-
-    env_a = json.loads(out_a)
-    env_b = json.loads(out_b)
     assert env_a["outcome"] == "success", env_a
     assert env_b["outcome"] == "success", env_b
     assert (repo / "a.py").exists(), "sibling A's file was erased"
@@ -319,16 +399,16 @@ def test_parallel_implement_siblings_preserve_each_other(tmp_path):
 
 
 @pytest.mark.slow
-def test_parallel_implement_with_baseline_untracked_survives(tmp_path):
+def test_parallel_implement_with_baseline_untracked_survives(
+    tmp_path,
+    live_codex_env,
+):
     """A pre-populated untracked file must survive concurrent sibling dispatches.
 
     notes.txt is created before dispatch. Both siblings capture baselines
     that include notes.txt as untracked, so neither sibling's cleanup may
     delete it.
     """
-    if not _codex_available():
-        pytest.skip("codex CLI not available")
-
     repo = _make_repo(tmp_path)
 
     plan_a = repo / "plan_a.md"
@@ -341,14 +421,14 @@ def test_parallel_implement_with_baseline_untracked_survives(tmp_path):
     notes = repo / "notes.txt"
     notes.write_text("pre-existing sibling state\n")
 
-    proc_a = _launch_wrapper(repo, plan_a, "001")
-    proc_b = _launch_wrapper(repo, plan_b, "002")
+    proc_a = _launch_wrapper(repo, plan_a, "001", live_codex_env)
+    proc_b = _launch_wrapper(repo, plan_b, "002", live_codex_env)
 
-    out_a, _ = proc_a.communicate(timeout=240)
-    out_b, _ = proc_b.communicate(timeout=240)
+    out_a, err_a = proc_a.communicate(timeout=240)
+    out_b, err_b = proc_b.communicate(timeout=240)
 
-    env_a = json.loads(out_a)
-    env_b = json.loads(out_b)
+    env_a = _load_envelope_or_skip(out_a, err_a)
+    env_b = _load_envelope_or_skip(out_b, err_b)
     assert env_a["outcome"] == "success", env_a
     assert env_b["outcome"] == "success", env_b
     assert notes.exists(), "pre-existing untracked notes.txt was erased"
@@ -365,27 +445,29 @@ def _stage_sibling_plans(repo: Path) -> tuple[Path, Path]:
     return plan_a, plan_b
 
 
-def _run_parallel(repo: Path, plan_a: Path, plan_b: Path) -> tuple[dict, dict]:
-    proc_a = _launch_wrapper(repo, plan_a, "001")
-    proc_b = _launch_wrapper(repo, plan_b, "002")
+def _run_parallel(
+    repo: Path,
+    plan_a: Path,
+    plan_b: Path,
+    env: dict[str, str],
+) -> tuple[dict, dict]:
+    proc_a = _launch_wrapper(repo, plan_a, "001", env)
+    proc_b = _launch_wrapper(repo, plan_b, "002", env)
     out_a, err_a = proc_a.communicate(timeout=240)
     out_b, err_b = proc_b.communicate(timeout=240)
-    env_a = json.loads(out_a) if out_a.strip() else {
+    env_a = _load_envelope_or_skip(out_a, err_a) if out_a.strip() else {
         "outcome": "no_stdout", "stderr": err_a,
     }
-    env_b = json.loads(out_b) if out_b.strip() else {
+    env_b = _load_envelope_or_skip(out_b, err_b) if out_b.strip() else {
         "outcome": "no_stdout", "stderr": err_b,
     }
     return env_a, env_b
 
 
 @pytest.mark.slow
-def test_parallel_preserves_run_log_jsonl(tmp_path):
+def test_parallel_preserves_run_log_jsonl(tmp_path, live_codex_env):
     """A pre-populated docs/plans/_run_log.jsonl must survive parallel
     dispatches untouched (protected path, observe-only)."""
-    if not _codex_available():
-        pytest.skip("codex CLI not available")
-
     repo = _make_repo(tmp_path)
     plan_a, plan_b = _stage_sibling_plans(repo)
 
@@ -395,7 +477,7 @@ def test_parallel_preserves_run_log_jsonl(tmp_path):
     original = '{"event":"baseline","ts":"2026-04-14T00:00:00Z"}\n'
     run_log.write_text(original)
 
-    env_a, env_b = _run_parallel(repo, plan_a, plan_b)
+    env_a, env_b = _run_parallel(repo, plan_a, plan_b, live_codex_env)
     assert env_a["outcome"] == "success", env_a
     assert env_b["outcome"] == "success", env_b
     assert run_log.exists(), "protected _run_log.jsonl was erased"
@@ -403,11 +485,8 @@ def test_parallel_preserves_run_log_jsonl(tmp_path):
 
 
 @pytest.mark.slow
-def test_parallel_preserves_run_lock_json(tmp_path):
+def test_parallel_preserves_run_lock_json(tmp_path, live_codex_env):
     """A pre-populated docs/plans/_run_lock.json must survive untouched."""
-    if not _codex_available():
-        pytest.skip("codex CLI not available")
-
     repo = _make_repo(tmp_path)
     plan_a, plan_b = _stage_sibling_plans(repo)
 
@@ -417,7 +496,7 @@ def test_parallel_preserves_run_lock_json(tmp_path):
     original = '{"run_id":"RUN-BASELINE","owner":"test","acquired_at":"2026-04-14T00:00:00Z"}\n'
     run_lock.write_text(original)
 
-    env_a, env_b = _run_parallel(repo, plan_a, plan_b)
+    env_a, env_b = _run_parallel(repo, plan_a, plan_b, live_codex_env)
     assert env_a["outcome"] == "success", env_a
     assert env_b["outcome"] == "success", env_b
     assert run_lock.exists(), "protected _run_lock.json was erased"
@@ -425,11 +504,8 @@ def test_parallel_preserves_run_lock_json(tmp_path):
 
 
 @pytest.mark.slow
-def test_parallel_preserves_schedule_json_tracked(tmp_path):
+def test_parallel_preserves_schedule_json_tracked(tmp_path, live_codex_env):
     """A tracked docs/plans/*.schedule.json must survive untouched."""
-    if not _codex_available():
-        pytest.skip("codex CLI not available")
-
     repo = _make_repo(tmp_path)
     plan_a, plan_b = _stage_sibling_plans(repo)
 
@@ -444,7 +520,7 @@ def test_parallel_preserves_schedule_json_tracked(tmp_path):
     _git(["add", "docs/plans/mixed_batch.schedule.json"], cwd=repo)
     _git(["commit", "-q", "-m", "add schedule"], cwd=repo)
 
-    env_a, env_b = _run_parallel(repo, plan_a, plan_b)
+    env_a, env_b = _run_parallel(repo, plan_a, plan_b, live_codex_env)
     assert env_a["outcome"] == "success", env_a
     assert env_b["outcome"] == "success", env_b
     assert sched.exists(), "protected schedule.json was erased"
@@ -452,11 +528,8 @@ def test_parallel_preserves_schedule_json_tracked(tmp_path):
 
 
 @pytest.mark.slow
-def test_parallel_preserves_schedule_json_untracked(tmp_path):
+def test_parallel_preserves_schedule_json_untracked(tmp_path, live_codex_env):
     """An untracked docs/plans/*.schedule.json must survive parallel dispatches."""
-    if not _codex_available():
-        pytest.skip("codex CLI not available")
-
     repo = _make_repo(tmp_path)
     plan_a, plan_b = _stage_sibling_plans(repo)
 
@@ -467,7 +540,7 @@ def test_parallel_preserves_schedule_json_untracked(tmp_path):
     original = '{"batches":[]}\n'
     sched.write_text(original)
 
-    env_a, env_b = _run_parallel(repo, plan_a, plan_b)
+    env_a, env_b = _run_parallel(repo, plan_a, plan_b, live_codex_env)
     assert env_a["outcome"] == "success", env_a
     assert env_b["outcome"] == "success", env_b
     assert sched.exists(), "untracked schedule.json was erased"
@@ -475,15 +548,12 @@ def test_parallel_preserves_schedule_json_untracked(tmp_path):
 
 
 @pytest.mark.slow
-def test_timeout_and_success_interleaved_preserves_sibling(tmp_path):
+def test_timeout_and_success_interleaved_preserves_sibling(tmp_path, live_codex_env):
     """A sibling that times out must not erase the other sibling's completed
     work. Sibling A uses a 1-second timeout (guaranteed to fire before Codex
     can finish a real task) while sibling B uses a normal 180s timeout. After
     the timeout path cleans up A's partial state, B's declared file must still
     exist."""
-    if not _codex_available():
-        pytest.skip("codex CLI not available")
-
     repo = _make_repo(tmp_path)
     plan_a, plan_b = _stage_sibling_plans(repo)
 
@@ -498,17 +568,18 @@ def test_timeout_and_success_interleaved_preserves_sibling(tmp_path):
             "--timeout", "1",
         ],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=live_codex_env,
     )
     # B: normal timeout — should succeed
-    proc_b = _launch_wrapper(repo, plan_b, "002")
+    proc_b = _launch_wrapper(repo, plan_b, "002", live_codex_env)
 
     out_a, err_a = proc_a.communicate(timeout=60)
     out_b, err_b = proc_b.communicate(timeout=240)
 
-    env_a = json.loads(out_a) if out_a.strip() else {
+    env_a = _load_envelope_or_skip(out_a, err_a) if out_a.strip() else {
         "outcome": "no_stdout", "stderr": err_a,
     }
-    env_b = json.loads(out_b) if out_b.strip() else {
+    env_b = _load_envelope_or_skip(out_b, err_b) if out_b.strip() else {
         "outcome": "no_stdout", "stderr": err_b,
     }
 

@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(codex:rescue)",
+      "Read(//home/mad/.claude/plugins/cache/openai-codex/codex/1.0.3/agents/**)",
+      "Read(//home/mad/.claude/plugins/cache/openai-codex/codex/1.0.3/commands/**)",
+      "Read(//home/mad/.claude/plugins/cache/openai-codex/codex/1.0.3/skills/**)",
+      "Bash(find *)",
+      "Bash(codex --version)",
+      "Read(//home/mad/.codex/**)",
+      "Bash(codex --help)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(env)",
+      "Bash(codex exec *)",
+      "Bash(venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch_integration.py::test_implement_creates_file_end_to_end -m slow)",
+      "Bash(venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch_integration.py -m slow)",
+      "Bash(venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestPreflightDirtyCategorization)",
+      "Bash(venv/bin/pytest -q tests/scripts/test_plan_ops.py)",
+      "Bash(git stash *)",
+      "Bash(venv/bin/pytest -q tests/scripts/test_plan_ops.py::test_analyst_to_parse_schedule_roundtrip)",
+      "Bash(venv/bin/python /mnt/d/claude-plan-executor/plugins/plan-executor/scripts/plan_ops.py preflight --plan-file /mnt/d/claude-plan-executor/docs/plans/DUAL_AGENT_Plans/TASK-004A_filter_schedule.md --json)",
+      "Bash(git check-attr *)",
+      "Bash(venv/bin/pytest tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_log_jsonl -m slow -v -s)",
+      "Bash(venv/bin/pytest tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_log_jsonl tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_lock_json tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_schedule_json_tracked -m slow -v)"
+    ]
+  }
+}

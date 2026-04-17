@@ -15,7 +15,7 @@ A portable skill + agent system that takes a structured markdown plan document a
 1. **Cross-model review** -- every implementation is reviewed by the agent that did NOT write it, eliminating single-model blind spots
 2. **Capability-based routing** -- tasks route to the agent best suited for them, not the most expensive one
 3. **Parallel execution** -- Claude subagents and Codex subprocesses run concurrently on non-conflicting tasks
-4. **Structured plan contract** -- all work derives from a parsed, validated plan with dependencies, not ad-hoc requests
+4. **Structured plan contract** -- all work derives from a parsed, validated plan and pre-flight dependency gate, not ad-hoc requests
 
 ### Co-design methodology
 
@@ -31,7 +31,7 @@ This plan was co-designed by querying Codex directly about its capabilities, pre
 4. **Automatic fallback, never automatic escalation.** Codex failure triggers Claude fallback. Claude failure is deferred to the user. Never the reverse.
 5. **Orchestrator never writes code.** Routing, status tracking, commit ceremony only. Identical to the fix-coordinator pattern.
 6. **Portable by default.** Agent files contain stable role behavior. Project instructions (`.codex`, `CLAUDE.md`) contain repo-specific rules. Plan documents contain task-local truth. *[Codex input: "If you keep repo rules in agent files, portability dies. If you keep task state in project instructions, resumability dies."]*
-7. **Failure handling is first-class.** Mandatory reversion guidance, explicit fail stages, blocked dependents, no blind retry. Carried from the fix-bugs pipeline.
+7. **Failure handling is first-class.** Mandatory reversion guidance, explicit fail stages, isolated task failures, no blind retry. Peer tasks continue independently after a terminal task failure.
 8. **Handoff artifacts are machine-readable.** Outputs from one agent that feed into another use structured JSON, not freeform prose that the next agent must re-parse.
 
 ---
@@ -88,13 +88,13 @@ User -> /implement-plan <plan.md> [flags]
 
 Phase 0: Preflight
     | Parse arguments, validate plan structure, check dirty tree
+    | Resolve cross-plan dependencies via 00_INDEX.json
     | Record starting SHA, generate run_id
     |
 Phase 1: Plan Analysis (Claude Code -> plan-analyst agent)
     | Read plan, validate fields, verify files exist
-    | Build dependency DAG, detect cycles
     | Classify each task -> claude | codex
-    | Produce execution strategy (batches, order, risks)
+    | Produce file-disjoint execution batches and risks
     |
     | [dry-run stops here]
     |
@@ -122,13 +122,15 @@ Phase 4: Commit & Report
 
 ### Batch Scheduling
 
-Tasks are processed in batches. Within a batch, tasks have disjoint file scopes and can execute in parallel. Between batches, dependency ordering is enforced.
+Tasks are processed in batches. Within a batch, tasks have disjoint file scopes and can execute in parallel. Between batches, ordering is derived from priority and file-lock conflicts only; intra-plan `Dependencies:` fields are not used for downstream readiness, graph ordering, or failure propagation.
+
+Cross-plan dependency completion is checked once during pre-flight against `00_INDEX.json`. If any required cross-plan dependency is unresolved, execution halts before the analyst runs.
 
 The plan-analyst agent produces the batch schedule. The orchestrator executes it:
 
 ```
 Batch 1: TASK-001 (codex), TASK-003 (claude)   <- disjoint files, parallel
-Batch 2: TASK-002 (claude)                      <- depends on TASK-001
+Batch 2: TASK-002 (claude)                      <- file-lock split / higher priority conflict
 Batch 3: TASK-004 (codex), TASK-005 (codex)     <- disjoint files, parallel
 ```
 
@@ -205,14 +207,13 @@ Integration test command, manual check procedure, etc.>
 
 ### TASK-001: <title>
 
-- **Status:** pending | in-progress | done | failed | blocked | skipped
+- **Status:** pending | in-progress | done | failed | skipped
 - **Priority:** critical | high | medium | low
 - **Files:**
   - path/to/file.py
   - path/to/other.py:140-160
   - path/to/new_file.py (create)
   - path/to/old_file.py (delete)
-- **Dependencies:** none | TASK-NNN, TASK-NNN
 - **Test command:** <command> | none
 - **Acceptance criteria:**
   - <criterion 1>
@@ -245,7 +246,6 @@ Integration test command, manual check procedure, etc.>
 | Status | Yes | Updated by orchestrator |
 | Priority | Yes | Drives classification and execution order |
 | Files | Yes | Scope enforcement depends on this. Optional annotations: `(create)`, `(modify)`, `(delete)`. Default is `modify`. |
-| Dependencies | Yes | `none` is valid |
 | Test command | Yes | `none` is valid but triggers extra review |
 | Acceptance criteria | Yes | At least one criterion |
 | Description | Yes | - |
@@ -292,6 +292,8 @@ Appended by the orchestrator after each run:
 
 **Consumer-shape note.** `parse-implementer-report`'s `concerns` field is a list in v1. Any downstream consumer that reads the helper's JSON output must treat `concerns` as `list[str]`, never as a scalar string.
 
+**Dependency-gate footnote.** In v1, `Dependencies:` in plan markdown and `tasks[*].dependencies` in legacy schedule JSON are not scheduler inputs. The only dependency-completion gate is `plan_ops.py check-plan-deps` against `00_INDEX.json` during pre-flight. Scheduler helpers may tolerate dependency fields for compatibility, but must not use them for readiness, graph ordering, graph validation, or failure propagation.
+
 ---
 
 ## 6. Agent Specifications
@@ -306,13 +308,13 @@ Reads a plan document, validates structure, classifies tasks, and produces an ex
 
 **Process:**
 
-1. **Parse the plan.** Extract header metadata, goal, context, verification command, and all task blocks. Validate required fields are present, IDs are unique, dependencies reference existing tasks.
+1. **Parse the plan.** Extract header metadata, goal, context, verification command, and all task blocks. Validate required fields are present and IDs are unique.
 
 2. **Verify file existence.** For each task's `Files:` entries (strip `:line_range` suffixes), confirm the file exists on disk. Missing file -> flag as `stale-paths` with a warning, not a hard failure.
 
 3. **Verify test commands.** For each task with a test command other than `none`, confirm the test file or entry point exists. Flag missing test targets.
 
-4. **Build dependency DAG.** Construct the directed graph from `Dependencies:` fields. Run cycle detection. Cycle -> abort with error listing the cycle ring.
+4. **Normalize file scopes.** Canonicalize each task's `Files:` entries, strip line-range suffixes for locking, preserve create/modify/delete annotations, and identify overlapping file scopes.
 
 5. **Classify tasks.** For each task, assess:
    - File count and estimated line changes (read the files, assess scope)
@@ -320,7 +322,7 @@ Reads a plan document, validates structure, classifies tasks, and produces an ex
    - Whether description is concrete or requires design invention
    - Apply the classification heuristic from section 3
 
-6. **Compute batch schedule.** Topological sort by dependencies. Within each topological level, group tasks with disjoint file scopes into parallel batches. Apply priority ordering as tiebreaker (critical -> high -> medium -> low).
+6. **Compute batch schedule.** Sort tasks by priority (critical -> high -> medium -> low) and source order, then group file-disjoint tasks into parallel batches. Split tasks that touch the same file into separate batches by file lock.
 
 7. **Identify risks.** Flag: tasks touching the same file in different batches, tasks without test commands, vague acceptance criteria, scope that exceeds what the classified agent typically handles.
 
@@ -332,7 +334,7 @@ Reads a plan document, validates structure, classifies tasks, and produces an ex
 **Outcome:** valid | needs-enrichment | invalid
 **Reason:** <if not valid>
 
-**Tasks:** <total> -- <N> claude, <M> codex, <K> blocked
+**Tasks:** <total> -- <N> claude, <M> codex
 
 ### Task Classification
 
@@ -344,7 +346,7 @@ Reads a plan document, validates structure, classifies tasks, and produces an ex
 ### Execution Schedule
 
 - Batch 1 (parallel): TASK-001 (codex), TASK-003 (claude)
-- Batch 2 (sequential dep): TASK-002 (claude) -- depends on TASK-001
+- Batch 2 (file-lock split): TASK-002 (claude)
 - Batch 3 (parallel): TASK-004 (codex), TASK-005 (codex)
 
 ### Gaps
@@ -354,8 +356,8 @@ Reads a plan document, validates structure, classifies tasks, and produces an ex
 
 ### Risks
 
-- TASK-002 and TASK-004 both touch src/config/settings.py (different batches, safe)
-- No integration test covers tasks 001+002 together
+- TASK-002 and TASK-004 both touch src/config/settings.py (different batches by file lock)
+- Combined behavior of tasks 001+002 needs explicit verification
 
 ### File Lock Map
 
@@ -382,7 +384,6 @@ Schema:
       "agent": "claude | codex",
       "priority": "critical | high | medium | low",
       "files": ["path/to/file.py"],
-      "dependencies": ["002", "003"],
       "test_command": "... | none",
       "classification_reason": "..."
     }
@@ -401,7 +402,7 @@ Schema:
 
 Contract notes:
 - `tasks[*].id` omits the `TASK-` prefix (the prefix is constant; strip it in the JSON to keep keys short).
-- `tasks[*].dependencies` is an empty list when the plan says `none`.
+- `tasks[*].dependencies`, if present from a legacy schedule, is tolerated but ignored by scheduler helpers.
 - `tasks[*].test_command` preserves the plan's literal string, including the literal `none`.
 - `batches` are in execution order; `batches[*].index` starts at 1.
 - `batches[*].file_locks` is the union of every `tasks[*].files` entry for the tasks in that batch (orchestrator uses this to enforce parallel-safety within the batch).
@@ -852,7 +853,6 @@ Initialize state:
 ready         : sorted list of task_ids from analyst's schedule
 done          : set = {}
 failed        : set = {}
-blocked       : dict = {task_id -> reason}
 locked_files  : set = {}
 ```
 
@@ -879,7 +879,7 @@ For each task:
 - **Claude failure:** mark as `failed`. No fallback.
 - **plan-incorrect:** mark as `failed` with special reason. Suggest user amend the plan.
 
-For each failed task: cascade-block any tasks that depend on it.
+For each failed task: record the failure, release its file locks, and continue with peer tasks independently. Terminal failures do not propagate to other tasks.
 
 Update plan document: set `Status: in-progress` for active tasks, `Status: failed` for failed.
 
@@ -887,7 +887,7 @@ Update plan document: set `Status: in-progress` for active tasks, `Status: faile
 
 Process tasks ONE AT A TIME (reviews must be serial to avoid reviewer seeing uncommitted changes from other tasks):
 
-For each successful implementation in topo order:
+For each successful implementation in schedule order:
 
 **If implemented by Claude -> Codex review:**
 
@@ -908,7 +908,7 @@ Dispatch `code-reviewer` agent with the task's files and intent. Parse review re
 
 ### 9.6 Phase 4: Commit & Report
 
-For each reviewed-clean task, in topo order:
+For each reviewed-clean task, in schedule order:
 
 1. `git add` specifically the files from the implementer's report
 2. Commit:
@@ -1084,9 +1084,9 @@ Test standalone against one task from a sample plan.
 
 Write `plugins/plan-executor/agents/plan-analyst.md`. Test by dispatching against a sample plan:
 1. Correct task classification (codex vs claude)
-2. Valid execution schedule (dependencies respected, file locks correct)
+2. Valid execution schedule (priority order and file locks correct)
 3. Gap detection (missing test commands, vague criteria)
-4. Cycle detection
+4. No dependency graph, cycle, or orphan-dependency errors emitted by the analyst
 
 ### Phase 3: Plan-Implementer Agent
 
@@ -1112,7 +1112,8 @@ Write `plugins/plan-executor/skills/implement-plan/SKILL.md`. Integrate all piec
 Create a 4-5 task test plan for this repo. Mix of:
 - 2 Codex-tier tasks (trivial, mechanical)
 - 2 Claude-tier tasks (multi-file, reasoning)
-- 1 task with dependency on another
+- At least 2 file-disjoint tasks that can run in parallel
+- At least 2 tasks touching the same file so batching splits them by file lock
 
 Run `/implement-plan test_plan.md` and verify:
 - Correct routing (codex vs claude)
@@ -1137,13 +1138,13 @@ Verify no agent/skill file changes were needed.
 | 2 | Wrapper dry-run | `plan_codex_dispatch.py implement --dry-run` | Correct prompt rendered, valid JSON envelope |
 | 3 | Wrapper real exec | `plan_codex_dispatch.py implement` on trivial task | Fix applied, tests pass, JSON output valid |
 | 4 | Wrapper review | `plan_codex_dispatch.py review` on known diff | Findings match expected issues |
-| 5 | Plan-analyst | Dispatch against sample plan | Correct classification, valid schedule, gaps flagged |
+| 5 | Plan-analyst | Dispatch against sample plan | Correct classification, file-disjoint schedule, gaps flagged |
 | 6 | Plan-implementer | Dispatch against sample task | Implementation correct, report well-formed |
 | 7 | Cross-review (both dirs) | Claude->Codex review + Codex->Claude review | Both produce valid reviews with real findings |
 | 8 | Orchestrator dry-run | `/implement-plan sample.md --dry-run` | Analysis report correct, no files changed |
 | 9 | Orchestrator execute | `/implement-plan sample.md` | All tasks done, reviewed, committed |
 | 10 | Fallback test | Force codex failure on one task | Auto Claude fallback, task still completed |
-| 11 | Dependency cascade | Fail a task with dependents | Dependents blocked, correctly reported |
+| 11 | Failure isolation | Fail one task while peers remain eligible | Failed task is recorded, peer tasks continue independently, no dependent-blocking event is emitted |
 | 12 | Plan status tracking | Check plan.md after run | All Status fields updated, execution log appended |
 | 13 | Portability | Run on different repo with no agent changes | Works without modification |
 
@@ -1255,7 +1256,7 @@ Verify no agent/skill file changes were needed.
 | Dispatch | Agent tool only | Agent tool + Codex subprocess |
 | Status tracking | Bug file frontmatter + rename | Plan document inline updates |
 | Portability | Tied to this repo's bug format | Portable by design |
-| DAG computation | bug_ops.py | plan-analyst agent |
+| Batch computation | bug_ops.py | File-disjoint batching plus `00_INDEX.json` pre-flight gating |
 
 ## Appendix B: Codex CLI Quick Reference
 
