@@ -1,0 +1,91 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "016A",
+      "title": "D.5 partial-agreement verdict + payload schema",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "classification_reason": "Multi-file verdict/routing, high priority"
+    },
+    {
+      "id": "016B",
+      "title": "plan-remediator subagent",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/agents/plan-remediator.md"
+      ],
+      "test_command": "none",
+      "classification_reason": "New file/module creation, design decisions"
+    },
+    {
+      "id": "016C",
+      "title": "D.2a.6 narrow-remediation retry path + commit trailers",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "classification_reason": "Multi-file wiring, orchestrator routing"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "016A",
+        "016B"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-remediator.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "016C"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [
+    {
+      "type": "test-deferred",
+      "affected_tasks": [
+        "016B",
+        "016C"
+      ],
+      "detail": "none (pure agent spec; end-to-end exercise lands in TASK-016C)"
+    },
+    {
+      "type": "same-file-across-batches",
+      "affected_tasks": [
+        "016A",
+        "016C"
+      ],
+      "detail": "plugins/plan-executor/scripts/plan_ops.py, SKILL.md, dispatch-templates.md, and tests/scripts/test_plan_ops.py touched in batches 1 and 2 \u2014 serialized by dependency ordering, safe."
+    }
+  ]
+}
