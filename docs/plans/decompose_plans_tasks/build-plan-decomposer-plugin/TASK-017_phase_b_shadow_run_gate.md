@@ -39,7 +39,7 @@ Shadow-run the decomposer against the pinwheel plan. All Phase B hard gates pass
   - `/decompose-plan docs/plans/we-need-to-make-compressed-pinwheel.md --dry-run` exits 0 with staging dirs populated and no production writes.
   - Live run exits 0; `00_INDEX.json` chunk count == TASK files on disk.
   - Three emitted TASK files each return `outcome: valid` from `plan_ops.py preflight` (plan-analyst).
-  - Supersede smoke test: hand-edit one TASK body, re-run on that TASK file, parent transitions to `Superceeded` with `superseded_by: [<child_ids>]`; 2–5 children emitted; all children plan-analyst-valid; manifest history records the supersede entry.
+  - Supersede smoke test: hand-edit one TASK body, re-run on that TASK file, parent transitions to `Superseded` with `superseded_by: [<child_ids>]`; 2–5 children emitted; all children plan-analyst-valid; manifest history records the supersede entry.
   - Recovery smoke test (general mid-swap crash): second run reads journal `committed_state.phase`, completes the protocol; end state byte-identical to a single successful run.
   - Recovery W0 smoke test: crash after parent rename, before phase-2 journal write → `recover` detects `staging_parent ABSENT AND F_prod == planned_parent_fingerprint`, writes phase-2, completes.
   - Parent-copy drift smoke test: hand-edit production parent → re-run aborts `parent-copy-divergent` with all three fingerprints; re-run with `--force-parent` succeeds and records audit entry.

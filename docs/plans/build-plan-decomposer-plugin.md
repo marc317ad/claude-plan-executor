@@ -59,7 +59,7 @@ The `DUAL_AGENT_Plans/` directory was built by hand to solve this for the execut
 | Slug derivation | Default = **source filename without extension** (deterministic, user-chosen when saving). Override via explicit `--output-slug <s>` when the filename is non-descriptive. H1-title slugification is not used as a fallback — too unstable across plan edits. |
 | Granularity | **Complexity-driven, context-budget aware.** See Context Budget Rules below. Prefer correctness and reviewability over minimum task count. |
 | Gate-step classification | **Always emit as Claude-tier TASKs** with `Test command: none`. Acceptance criteria describe the expected outcome of the manual action. No human-only appendix. |
-| Supersede UX | **Input-path auto-detect.** Running `/decompose-plan <path/to/TASK-NNN_*.md>` triggers supersede mode: the input TASK becomes `Superceeded`, gets sub-tasks with suffix IDs (`004A`, `004B`, …). Single-letter suffix only (no `004AA`). Humans update the TASK file with deviations / issues BEFORE re-running the decomposer — the richer content is what the decomposer uses to split the task. |
+| Supersede UX | **Input-path auto-detect.** Running `/decompose-plan <path/to/TASK-NNN_*.md>` triggers supersede mode: the input TASK becomes `Superseded`, gets sub-tasks with suffix IDs (`004A`, `004B`, …). Single-letter suffix only (no `004AA`). Humans update the TASK file with deviations / issues BEFORE re-running the decomposer — the richer content is what the decomposer uses to split the task. |
 | Phase B target | **claude-plan-executor repo.** Development and shadow runs happen in `/mnt/d/claude-plan-executor`. No trading-repo involvement. |
 | Parent-plan commit | **Yes, committed** at `docs/plans/<slug>.md`. Duplicated content is acceptable for self-contained review. |
 
@@ -138,9 +138,9 @@ Any drift across agent / script / template causes the same class of failure that
 |---|---|---|
 | Task ID regex | `^\d{3}[A-Z]?$` | Matches plan-analyst's `TASK-NNN[A-Z]?` — single uppercase suffix reserved for supersede-split children. |
 | Supersede depth | Single-letter suffix ONLY | `004` → `004A`, `004B`, … Never `004AA`. If a child proves too big, split its siblings (`004A`, `004B`, `004C`, `004D`, `004E`) rather than deepening. |
-| Status vocabulary (decomposer / index) | `Pending \| In-Progress \| Done \| Failed \| Blocked \| Superceeded \| Cancelled` | Title-case, matches `DUAL_AGENT_Plans/00_INDEX.json` exactly (including `Superceeded` misspelling). `00_INDEX.json.chunks[].status` + frontmatter `status:` both use this vocabulary. |
+| Status vocabulary (decomposer / index) | `Pending \| In-Progress \| Done \| Failed \| Blocked \| Superseded \| Cancelled` | Title-case, matches `DUAL_AGENT_Plans/00_INDEX.json` exactly. `00_INDEX.json.chunks[].status` + frontmatter `status:` both use this vocabulary. |
 | Status vocabulary (plan-executor runtime) | `open \| in-progress \| done \| failed \| skipped` | Lowercase. Used by `/implement-plan` + `plan_ops.py` when it rewrites the **Tasks** block status line inside a TASK body during commit / fail. This is a separate vocabulary operating on a separate field. |
-| Status mapping (cross-plugin) | `Pending ↔ open`, `In-Progress ↔ in-progress`, `Done ↔ done`, `Failed ↔ failed`, `Blocked ↔ skipped`, `Superceeded ↔ skipped`, `Cancelled ↔ skipped` | Consumers that need both views reference this table. See "Cross-Plugin Status Contract" section below. |
+| Status mapping (cross-plugin) | `Pending ↔ open`, `In-Progress ↔ in-progress`, `Done ↔ done`, `Failed ↔ failed`, `Blocked ↔ skipped`, `Superseded ↔ skipped`, `Cancelled ↔ skipped` | Consumers that need both views reference this table. See "Cross-Plugin Status Contract" section below. |
 | Priority vocabulary | `critical \| high \| medium \| low` | Matches plan-analyst. |
 | Filename pattern | `TASK-{NNN}_{task_slug}.md` | No date, no status, no group. `task_slug` derived from the TASK's title (agent-side slugification). |
 | Status changes | Frontmatter-only + `00_INDEX.json.status` field | **No filename rename.** Simpler than fix-plan-decomposer. |
@@ -303,7 +303,7 @@ On recovery, only the most recent `run_history[]` entry's `committed_state.phase
 
 Two plugins now co-own status state for a single TASK file:
 
-1. **`plan-decomposer`** writes to frontmatter `status:` and `00_INDEX.json.chunks[].status` using **title-case** vocabulary (`Pending / In-Progress / Done / Failed / Blocked / Superceeded / Cancelled`). This is the schema inherited byte-for-byte from `DUAL_AGENT_Plans/`. It is the **plan lifecycle** view ("is this TASK decomposed? superseded? cancelled by design?").
+1. **`plan-decomposer`** writes to frontmatter `status:` and `00_INDEX.json.chunks[].status` using **title-case** vocabulary (`Pending / In-Progress / Done / Failed / Blocked / Superseded / Cancelled`). This is the schema inherited byte-for-byte from `DUAL_AGENT_Plans/`. It is the **plan lifecycle** view ("is this TASK decomposed? superseded? cancelled by design?").
 2. **`/implement-plan`** writes to the `- **Status:** <status>` bullet inside the `## Tasks` block body (NOT frontmatter) using **lowercase** vocabulary (`open / in-progress / done / failed / skipped`). This is the **execution lifecycle** view ("has a runner actually completed this TASK?").
 
 These are DIFFERENT FIELDS in the same file. The decomposer does not read or write the body Status bullet. The executor does not read or write the frontmatter `status:` or `00_INDEX.json`.
@@ -501,13 +501,13 @@ Key differences from fresh mode:
 
 - Slug inherited from parent subdirectory.
 - Parent plan already committed at `<plan_dir>/<slug>.md`; skip the parent-copy step.
-- Parent TASK becomes `Superceeded` with `superseded_by: [<new_ids>]`, body preserved, frontmatter updated.
+- Parent TASK becomes `Superseded` with `superseded_by: [<new_ids>]`, body preserved, frontmatter updated.
 - Sub-tasks inherit parent's `depends_on` unless the parent's body specifies new deps per sub-task.
-- **Preserve external references**: any other TASK whose `depends_on` includes the parent ID keeps that reference. The `Superceeded` + `superseded_by` fields signal downstream tooling that "dep is satisfied when all superseded_by entries are Done."
+- **Preserve external references**: any other TASK whose `depends_on` includes the parent ID keeps that reference. The `Superseded` + `superseded_by` fields signal downstream tooling that "dep is satisfied when all superseded_by entries are Done."
 - Parent's fingerprint is recomputed; if a fresh re-decomposition later produces the same parent fingerprint, the supersede history is preserved (matched bug path → no re-split).
 - Staging + atomic swap covers the parent-TASK frontmatter update, all new sub-task files, and the INDEX regen — routed through `commit-swap` (same Python-in-process protocol as fresh mode). Supersede does not need a parent-plan rename, so `--skip-parent-rename` is passed to `commit-swap`; tasks-dir rename + journal phases still execute normally.
 - Manifest `history[]` entry records the supersede: `{from: parent_id, to: [child_ids], reason: str, fingerprint_parent: str}`.
-- If parent TASK is already `Superceeded` OR has status `Done`/`Cancelled` → abort with `supersede-illegal-state`.
+- If parent TASK is already `Superseded` OR has status `Done`/`Cancelled` → abort with `supersede-illegal-state`.
 
 ### Rules
 
@@ -517,7 +517,7 @@ Key differences from fresh mode:
 - **Never delete TASK files.** Status changes via frontmatter + `00_INDEX.json` update, not deletion.
 - **Never allocate an ID without manifest commit.** If the final atomic swap fails, roll back staging; manifest.next_id is only incremented during the atomic swap phase.
 - **Never silently lose info.** Field-merge on re-run; preserve old titles/problems/etc. in `change_history`.
-- **Never rewrite a downstream task's `depends_on` to point at superseded_by children.** The parent ID + `Superceeded` status is the stable reference.
+- **Never rewrite a downstream task's `depends_on` to point at superseded_by children.** The parent ID + `Superseded` status is the stable reference.
 - **Trust TASK files on disagreement.** Manifest is cache.
 - **Abort on cycle. Abort on validation failure.** No partial writes.
 - **Cap supersede depth at 1.** Single-letter suffix. If a sub-task needs further splitting, redo the parent's split so siblings absorb the complexity.
@@ -767,15 +767,15 @@ Modeled on `tests/scripts/test_plan_ops.py`:
 8. **manifest --action commit** — atomic write-then-rename (`os.replace` / `os.rename`) of the staging temp file into the target path; corrupt stdin fails loud without touching the on-disk manifest file.
 9. **build-schedule happy path (fresh)** — parsed tree + manifest → schedule with correct topological ordering, split/merge reasons recorded.
 10. **build-schedule cycle detection** — returns non-zero + ring list; no writes.
-11. **build-schedule supersede mode** — `--supersede-parent 004` correctly sets parent to `Superceeded`, creates `004A..004E`, inherits parent's `depends_on`, preserves external references to `004`.
-12. **build-schedule supersede-illegal-state** — parent with status Done / Cancelled / Superceeded rejected.
+11. **build-schedule supersede mode** — `--supersede-parent 004` correctly sets parent to `Superseded`, creates `004A..004E`, inherits parent's `depends_on`, preserves external references to `004`.
+12. **build-schedule supersede-illegal-state** — parent with status Done / Cancelled / Superseded rejected.
 13. **build-schedule supersede depth cap** — attempting to supersede `004A` (already single-suffixed) rejected with `supersede-depth-exceeded`.
 14. **render dry-run** — staging dirs populated, no production writes.
 15. **render happy path** — TASK files match template, `00_INDEX.json` schema validates, `00_INDEX.md` sections present, parent-plan copy lands at `<plan_dir>/<slug>.md`.
 16. **validate-output** — catches missing required field, ID regex violation, dangling dep, cycle, schema drift, chunk-vs-file mismatch, missing parent-plan file.
 17. **set-status** — frontmatter-only rewrite; `00_INDEX.json.status` synced; filename unchanged.
 18. **Full e2e with pinwheel plan (fresh)** — source → parsed → scheduled → rendered → validated. Emits N TASK files, all plan-analyst-valid. Characterized at Phase B.
-19. **Full e2e supersede** — take a TASK file emitted by #18, run decomposer on it → parent marked Superceeded, 3–5 children emitted, INDEX updated, all children plan-analyst-valid.
+19. **Full e2e supersede** — take a TASK file emitted by #18, run decomposer on it → parent marked Superseded, 3–5 children emitted, INDEX updated, all children plan-analyst-valid.
 20. **Re-run idempotency** — second run with unchanged source plan produces zero writes + "no-op" report.
 21. **Re-run merge on source edit** — edit one section's problem prose in source; re-run produces exactly one merged TASK with `change_history` appended.
 22. **Context-budget split — hard ceiling** — synthetic spec with 6 files is split into ≥ 2 TASKs with `split_ceiling_files` reason.
@@ -847,7 +847,7 @@ Modeled on `tests/scripts/test_plan_ops.py`:
 14. Iterate agent spec or template if report shows gaps.
 15. Live run: `/decompose-plan docs/plans/we-need-to-make-compressed-pinwheel.md`.
 16. Manually feed three TASK files into `/implement-plan docs/plans/decompose_plans_tasks/we-need-to-make-compressed-pinwheel/TASK-001_<task_slug>.md --dry-run`. Expect `outcome: valid` from plan-analyst. Repeat for TASK-002 and TASK-003; if all three pass, promote.
-17. Supersede smoke test: pick one of the emitted TASK files, hand-edit its body to add a "## Deviations" section, then `/decompose-plan docs/plans/decompose_plans_tasks/.../TASK-NNN_<task_slug>.md`. The decomposer MUST log `input TASK has drifted from manifest fingerprint; treating user edits as authoritative for split decisions` in its report (per Input Mode Detection Rules step 7). Expect parent status → `Superceeded`, 2–5 children emitted, INDEX updated, all children plan-analyst-valid. Verify `_manifest.json.history[]` has one new supersede entry with `{from: <parent_id>, to: [<child_ids>], reason: <string>, fingerprint_parent: <sha>}`.
+17. Supersede smoke test: pick one of the emitted TASK files, hand-edit its body to add a "## Deviations" section, then `/decompose-plan docs/plans/decompose_plans_tasks/.../TASK-NNN_<task_slug>.md`. The decomposer MUST log `input TASK has drifted from manifest fingerprint; treating user edits as authoritative for split decisions` in its report (per Input Mode Detection Rules step 7). Expect parent status → `Superseded`, 2–5 children emitted, INDEX updated, all children plan-analyst-valid. Verify `_manifest.json.history[]` has one new supersede entry with `{from: <parent_id>, to: [<child_ids>], reason: <string>, fingerprint_parent: <sha>}`.
 
 17a. Recovery smoke test (addresses Codex pass-2 issue A and pass-3 issue Q1): simulate a crash during the cross-directory swap by running a Python-driven test that (1) performs Step 13 up through journal entry 2 (post-parent-rename) and then raises, (2) re-runs `/decompose-plan` on the same source plan with no edits. Expect: the second run reads `<slug>.journal.json.committed_state.phase == "post-parent-rename"` (the journal is the recovery authority; `_manifest.json` inside `<slug>/` is consumer cache only), re-renders tasks staging, completes the tasks rename, finalizes journal and cache manifest. End state MUST be identical to a single successful run (same fingerprints, same INDEX, same TASK file contents).
 
@@ -904,7 +904,7 @@ If the first shadow run violates a hard gate, fix the code. If it violates a sof
 
 21. Re-run `/decompose-plan` on the same pinwheel plan → no writes. Verify re-run idempotency.
 22. Edit one paragraph in the source plan; re-run → exactly one TASK merged, `change_history` appended.
-23. Re-run on a superseded parent → aborts with `supersede-illegal-state` (parent is already `Superceeded`).
+23. Re-run on a superseded parent → aborts with `supersede-illegal-state` (parent is already `Superseded`).
 
 ---
 
@@ -918,7 +918,7 @@ If the first shadow run violates a hard gate, fix the code. If it violates a sof
 6. `jq '.chunks | .[] | select(.status == "Pending") | .depends_on[]' 00_INDEX.json | sort -u` — every referenced id resolves to a chunk.
 7. `venv/bin/python /mnt/d/claude-plan-executor/plugins/plan-executor/scripts/plan_ops.py preflight --plan-file docs/plans/decompose_plans_tasks/<slug>/TASK-001_*.md` exits 0 — plan-analyst compatibility proven.
 8. Re-run decomposer; report shows `tasks_emitted=0, tasks_merged=0, tasks_superseded=0` and no writes occurred (`find docs/plans/decompose_plans_tasks/<slug>/ docs/plans/<slug>.md -newer <manifest_mtime>` is empty).
-9. Supersede smoke test (Phase B step 17) produces valid `00_INDEX.json.chunks[]` with parent `status="Superceeded"` + `superseded_by: [NNNA, NNNB, …]`.
+9. Supersede smoke test (Phase B step 17) produces valid `00_INDEX.json.chunks[]` with parent `status="Superseded"` + `superseded_by: [NNNA, NNNB, …]`.
 
 ---
 

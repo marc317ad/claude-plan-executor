@@ -2398,7 +2398,7 @@ class TestCheckPlanDeps_check_plan_deps:
         plans_dir = tmp_path / "plans"
         path = _write_roster(plans_dir, [
             {"task_id": "001", "file": "TASK-001_canonical_contracts.md", "depends_on": [], "status": "Done"},
-            {"task_id": "004", "file": "TASK-004_scheduler_semantics.md", "depends_on": ["001"], "status": "Superceeded", "superseded_by": ["004A"]},
+            {"task_id": "004", "file": "TASK-004_scheduler_semantics.md", "depends_on": ["001"], "status": "Superseded", "superseded_by": ["004A"]},
             {"task_id": "004A", "file": "TASK-004A_filter_schedule.md", "depends_on": ["001"], "status": "Pending"},
         ])
 
@@ -2470,10 +2470,10 @@ class TestCheckPlanDeps_check_plan_deps:
         assert body["unresolved"] == []
         assert [d["task_id"] for d in body["deps"]] == ["004B"]
 
-    def test_005_expands_superceeded_004_and_reports_replacements(self, tmp_path: Path) -> None:
+    def test_005_expands_superseded_004_and_reports_replacements(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
         _write_roster(plans_dir, [
-            {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A", "004B", "004C", "004D", "004E"]},
+            {"task_id": "004", "status": "Superseded", "superseded_by": ["004A", "004B", "004C", "004D", "004E"]},
             {"task_id": "004A", "status": "Done"},
             {"task_id": "004B", "status": "Pending"},
             {"task_id": "004C", "status": "Done"},
@@ -2497,7 +2497,7 @@ class TestCheckPlanDeps_check_plan_deps:
     def test_005_passes_when_all_004_replacements_done(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
         _write_roster(plans_dir, [
-            {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A", "004B", "004C", "004D", "004E"]},
+            {"task_id": "004", "status": "Superseded", "superseded_by": ["004A", "004B", "004C", "004D", "004E"]},
             {"task_id": "004A", "status": "Done"},
             {"task_id": "004B", "status": "Done"},
             {"task_id": "004C", "status": "Done"},
@@ -2516,10 +2516,10 @@ class TestCheckPlanDeps_check_plan_deps:
         assert body["errors"] == []
         assert [d["task_id"] for d in body["deps"]] == ["004A", "004B", "004C", "004D", "004E"]
 
-    def test_superceeded_missing_replacement_reported(self, tmp_path: Path) -> None:
+    def test_superseded_missing_replacement_reported(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
         _write_roster(plans_dir, [
-            {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A", "004B"]},
+            {"task_id": "004", "status": "Superseded", "superseded_by": ["004A", "004B"]},
             {"task_id": "004A", "status": "Done"},
             {"task_id": "005", "depends_on": ["004"], "status": "Pending"},
         ])
@@ -2532,7 +2532,7 @@ class TestCheckPlanDeps_check_plan_deps:
         assert body["pass"] is False
         assert body["unresolved"] == [{
             "task_id": "004B",
-            "reason": "superceeded-target-missing",
+            "reason": "superseded-target-missing",
             "detail": "task 004B is not declared in 00_INDEX.json roster",
             "parent_id": "004",
         }]
@@ -2583,7 +2583,7 @@ class TestCheckPlanDeps_check_plan_deps:
     )
     def test_malformed_dep_lists_rejected(self, tmp_path: Path, field: str, value: object) -> None:
         plans_dir = tmp_path / "plans"
-        row = {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A"]}
+        row = {"task_id": "004", "status": "Superseded", "superseded_by": ["004A"]}
         row[field] = value
         _write_roster(plans_dir, [row, {"task_id": "004A", "status": "Pending"}])
 
@@ -2593,8 +2593,8 @@ class TestCheckPlanDeps_check_plan_deps:
     def test_supersession_cycle_rejected(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
         _write_roster(plans_dir, [
-            {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A"]},
-            {"task_id": "004A", "status": "Superceeded", "superseded_by": ["004"]},
+            {"task_id": "004", "status": "Superseded", "superseded_by": ["004A"]},
+            {"task_id": "004A", "status": "Superseded", "superseded_by": ["004"]},
         ])
 
         with pytest.raises(ValueError, match="cycle"):

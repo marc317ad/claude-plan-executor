@@ -36,7 +36,7 @@ Render-step sub-bullets (step 11 a–e): section elision, gate slim render, over
 
 Step 13 is the exclusive production-write step: the agent invokes `decomp_ops.py commit-swap` in-process. On exit code 2 (recoverable), the agent calls `recover`. On exit code 3 (parent-copy divergence), the agent surfaces the error and HALTS — it never silently applies `--force-parent`.
 
-Supersede mode (input_mode=="supersede"): steps 1–8 treat the parent TASK's body as a mini source plan; children get single-letter suffix IDs; parent becomes `Superceeded` with `superseded_by: [child_ids]`; `commit-swap` is invoked with `--skip-parent-rename`; abort with `supersede-illegal-state` on parents in `Superceeded / Done / Cancelled`; abort `supersede-after-execution` when body `- **Status:** done` (override with `--force-supersede`).
+Supersede mode (input_mode=="supersede"): steps 1–8 treat the parent TASK's body as a mini source plan; children get single-letter suffix IDs; parent becomes `Superseded` with `superseded_by: [child_ids]`; `commit-swap` is invoked with `--skip-parent-rename`; abort with `supersede-illegal-state` on parents in `Superseded / Done / Cancelled`; abort `supersede-after-execution` when body `- **Status:** done` (override with `--force-supersede`).
 
 ## Verification
 

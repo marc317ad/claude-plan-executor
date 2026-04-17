@@ -32,7 +32,7 @@ Step 10 in the Agent Spec requires that all renderers consume the OUTPUT of a si
 
 Complexity scoring uses `CEILING_*` constants from TASK-002. Tie-breaker priority: `critical(0) < high(1) < medium(2) < low(3)`, then source-order index. Matched tasks preserve existing IDs; only `new_pending` consume `manifest.next_id++`.
 
-Supersede mode (triggered via `--supersede-parent NNN`) produces sub-tasks `NNNA..NNNE`, caps depth at 1, inherits parent `depends_on`, and rejects parents already in `Superceeded / Done / Cancelled` with `supersede-illegal-state` + `supersede-depth-exceeded` when parent id already matches `^\d{3}[A-Z]$`.
+Supersede mode (triggered via `--supersede-parent NNN`) produces sub-tasks `NNNA..NNNE`, caps depth at 1, inherits parent `depends_on`, and rejects parents already in `Superseded / Done / Cancelled` with `supersede-illegal-state` + `supersede-depth-exceeded` when parent id already matches `^\d{3}[A-Z]$`.
 
 `manifest commit` MUST write via temp-file + `os.replace` (atomic). Corrupt stdin MUST leave the on-disk manifest untouched.
 
@@ -60,7 +60,7 @@ Supersede mode (triggered via `--supersede-parent NNN`) produces sub-tasks `NNNA
   - Ordering is Kahn's topological sort with priority tie-break then source-order; stable across runs.
   - Every `split_*` / `merged_*` decision records a reason code from `PROSE_REASON_CODES`-adjacent split/merge code set (`split_ceiling_files`, `split_ceiling_loc`, `split_new_module`, `split_cross_cutting`, `split_async_boundary`, `split_api_surface`, `merged_trivial_scaffold`, `merged_same_file`, `merged_mechanical_rename`).
   - Cycle → non-zero exit; JSON payload includes `ring: [task_id, task_id, ...]`; no file writes attempted.
-  - `build-schedule --supersede-parent NNN` inherits parent `depends_on`, generates single-letter children, rejects `Superceeded/Done/Cancelled` parents with `supersede-illegal-state`, rejects parents matching `^\d{3}[A-Z]$` with `supersede-depth-exceeded`.
+  - `build-schedule --supersede-parent NNN` inherits parent `depends_on`, generates single-letter children, rejects `Superseded/Done/Cancelled` parents with `supersede-illegal-state`, rejects parents matching `^\d{3}[A-Z]$` with `supersede-depth-exceeded`.
   - `manifest --action init` outputs the canonical empty shape.
   - `manifest --action commit` uses `os.replace` on a `.tmp` sibling; malformed stdin fails before touching the target file.
 

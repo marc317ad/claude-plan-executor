@@ -72,7 +72,7 @@ DEPENDENCIES_BULLET_RE = re.compile(
     r"^\s*-\s*\*\*Dependencies:\*\*\s*(.+?)\s*$", re.MULTILINE,
 )
 ALLOWED_TASK_STATUSES = {"pending", "open", "in-progress", "done", "failed", "blocked", "skipped"}
-ALLOWED_INDEX_STATUSES = {"Done", "Pending", "Superceeded"}
+ALLOWED_INDEX_STATUSES = {"Done", "Pending", "Superseded"}
 _INDEX_SUPERSEDED_BY: dict[str, list[str]] = {}
 STATUS_ALIASES = {"open": "pending"}
 SCHEDULE_FIELD_ALIASES = {"task_id": "id", "batch_index": "index"}
@@ -839,10 +839,10 @@ def _parse_index_roster(path: Path) -> dict[str, dict]:
             _valid_normalized_id(dep, "superseded_by", task_id)
             for dep in superseded_raw
         ]
-        if status == "Superceeded" and not superseded_by:
-            raise ValueError(f"Superceeded task {task_id} must have superseded_by targets")
-        if status != "Superceeded" and superseded_by:
-            raise ValueError(f"non-Superceeded task {task_id} must not have superseded_by targets")
+        if status == "Superseded" and not superseded_by:
+            raise ValueError(f"Superseded task {task_id} must have superseded_by targets")
+        if status != "Superseded" and superseded_by:
+            raise ValueError(f"non-Superseded task {task_id} must not have superseded_by targets")
         roster[task_id] = {"file": filename, "depends_on": deps, "status": status}
         if superseded_by:
             _INDEX_SUPERSEDED_BY[task_id] = superseded_by
@@ -1143,7 +1143,7 @@ def cmd_check_plan_deps(args: argparse.Namespace) -> None:
         if entry is None:
             item = {
                 "task_id": dep_id,
-                "reason": "superceeded-target-missing" if parent_id else "unresolved-dep",
+                "reason": "superseded-target-missing" if parent_id else "unresolved-dep",
                 "detail": f"task {dep_id} is not declared in 00_INDEX.json roster",
             }
             if parent_id:
@@ -1171,7 +1171,7 @@ def cmd_check_plan_deps(args: argparse.Namespace) -> None:
                 **({"parent_id": parent_id} if parent_id else {}),
             })
             return
-        if status == "Superceeded":
+        if status == "Superseded":
             targets = _INDEX_SUPERSEDED_BY.get(dep_id, [])
             for target_id in targets:
                 _resolve_dependency(target_id, parent_id=dep_id)

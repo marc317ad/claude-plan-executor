@@ -11,9 +11,8 @@
         "tests/scripts/test_plan_ops.py",
         "plugins/plan-executor/skills/implement-plan/SKILL.md"
       ],
-      "dependencies": [],
       "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
-      "classification_reason": "Multi-file new subcommand, DAG logic, 13 tests"
+      "classification_reason": "Multi-file, design-sensitive CLI contract"
     }
   ],
   "batches": [

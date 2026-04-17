@@ -50,7 +50,7 @@ Also pin the stdlib tokenizer used for prose-budget counting (whitespace + punct
 - **Dependencies:** 001
 - **Test command:** `python plugins/plan-decomposer/scripts/decomp_ops.py --help`
 - **Acceptance criteria:**
-  - Module defines: `TASK_ID_RE`, `TASK_FILENAME_RE`, `DECOMPOSER_STATUSES` (7 title-case values including `Superceeded`), `EXECUTOR_STATUSES` (5 lowercase), `STATUS_MAP` (cross-plugin), `PRIORITIES`, `TASK_TYPES = {"standard","gate"}`, `CEILING_FILES=5`, `CEILING_LOC=250`, `CEILING_PLAN_FILES=3`, `CEILING_NEW_MODULES=1`, `PROSE_BUDGET_STANDARD_HARD=400`, `PROSE_BUDGET_STANDARD_SOFT=200`, `PROSE_BUDGET_GATE_HARD=60`, `PROSE_BUDGET_GATE_SOFT=40`, `PROSE_REASON_CODES` (7 codes).
+  - Module defines: `TASK_ID_RE`, `TASK_FILENAME_RE`, `DECOMPOSER_STATUSES` (7 title-case values including `Superseded`), `EXECUTOR_STATUSES` (5 lowercase), `STATUS_MAP` (cross-plugin), `PRIORITIES`, `TASK_TYPES = {"standard","gate"}`, `CEILING_FILES=5`, `CEILING_LOC=250`, `CEILING_PLAN_FILES=3`, `CEILING_NEW_MODULES=1`, `PROSE_BUDGET_STANDARD_HARD=400`, `PROSE_BUDGET_STANDARD_SOFT=200`, `PROSE_BUDGET_GATE_HARD=60`, `PROSE_BUDGET_GATE_SOFT=40`, `PROSE_REASON_CODES` (7 codes).
   - Function `normalize_fingerprint_input(title: str, first_file: str, problem_prefix: str) -> str` lowercases all three inputs, strips `:<line_range>` from path, collapses whitespace, joins with `|`.
   - Function `sha256_hex(normalized: str) -> str` returns `sha256:<hex>`.
   - Function `count_prose_tokens(body: str) -> int` excludes code-fence blocks and YAML frontmatter; approximates tiktoken via whitespace+punctuation split; algorithm pinned via docstring.
@@ -61,7 +61,7 @@ Also pin the stdlib tokenizer used for prose-budget counting (whitespace + punct
 Establishes the single source of truth for every schema decision downstream TASKs must respect. If any later TASK re-declares one of these constants, that TASK is wrong — it must import from this module.
 
 **Implementation notes:**
-Status title-case vocabulary MUST include the `Superceeded` misspelling (matches DUAL_AGENT_Plans exemplar byte-for-byte). Do not "fix" it to `Superseded`.
+Status title-case vocabulary matches `DUAL_AGENT_Plans/00_INDEX.json` byte-for-byte (correct spelling `Superseded`; the prior `Superceeded` misspelling was corrected across the plan-executor plugin and DUAL_AGENT_Plans roster).
 
 **Reversion guidance:**
 Delete the new file; this TASK creates `decomp_ops.py` from scratch.
