@@ -82,6 +82,10 @@ TASK-001 resolves the contract split by picking one canonical version per row. E
 | 9 | [`TASK-009_scale_aware_reads.md`](TASK-009_scale_aware_reads.md) | TASK-009 | medium | — (new capability) | TASK-001, TASK-002 |
 | 10 | [`TASK-010_global_dep_locks.md`](TASK-010_global_dep_locks.md) | TASK-010 | medium | — (new capability) | TASK-001, TASK-004, TASK-005 |
 | 11 | [`TASK-011_bounded_log_handling.md`](TASK-011_bounded_log_handling.md) | TASK-011 | medium | — (new capability) | TASK-001, TASK-002 |
+| 14A | [`TASK-014_remediation_and_plan_review.md`](TASK-014_remediation_and_plan_review.md) | TASK-014A | high | — (new capability) | TASK-001, TASK-002 |
+| 14B | [`TASK-014_remediation_and_plan_review.md`](TASK-014_remediation_and_plan_review.md) | TASK-014B | medium | — (new capability) | TASK-001 |
+| 14C | [`TASK-014_remediation_and_plan_review.md`](TASK-014_remediation_and_plan_review.md) | TASK-014C | high | — (new capability) | TASK-001, TASK-002 |
+| 15 | [`TASK-015_codex_reviewer_prompt_tuning.md`](TASK-015_codex_reviewer_prompt_tuning.md) | TASK-015 | medium | — (new capability) | TASK-014C |
 
 ## Proposed follow-on specs
 
