@@ -1237,48 +1237,66 @@ def cmd_reconcile_batch(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_check_plan_deps(args: argparse.Namespace) -> None:
-    plan_path = Path(args.plan_file)
-    plans_dir = Path(args.plans_dir)
+def _resolve_plan_deps(plan_path: Path, plans_dir: Path) -> dict:
+    """Core dep-resolution logic. Returns {pass, deps, unresolved, errors}.
 
+    `errors[]` is non-empty on fatal issues (plan not found, bad roster,
+    missing task block, task not in 00_INDEX.json); `pass` is False in
+    that case and `deps`/`unresolved` are empty. Callers decide whether
+    to halt or treat unresolvable as "leave the existing value in place".
+    """
     if not plan_path.is_file():
-        _die(args, {"errors": [{
-            "path": f"$.<file:{plan_path}>",
-            "code": "file-not-found",
-            "message": f"plan file not found: {plan_path}",
-        }]})
+        return {
+            "pass": False,
+            "deps": [],
+            "unresolved": [],
+            "errors": [{
+                "path": f"$.<file:{plan_path}>",
+                "code": "file-not-found",
+                "message": f"plan file not found: {plan_path}",
+            }],
+        }
 
     index_path = plans_dir / "00_INDEX.json"
     try:
         roster = _parse_index_roster(index_path)
-    except FileNotFoundError as e:
-        _die(args, {"errors": [{
-            "path": f"$.<file:{index_path}>",
-            "code": "index-not-found",
-            "message": str(e),
-        }]})
-    except ValueError as e:
-        _die(args, {"errors": [{
-            "path": f"$.<file:{index_path}>",
-            "code": "index-not-found",
-            "message": str(e),
-        }]})
+    except (FileNotFoundError, ValueError) as e:
+        return {
+            "pass": False,
+            "deps": [],
+            "unresolved": [],
+            "errors": [{
+                "path": f"$.<file:{index_path}>",
+                "code": "index-not-found",
+                "message": str(e),
+            }],
+        }
 
     plan_text = plan_path.read_text(encoding="utf-8")
     current_task_id = _first_plan_task_id(plan_text)
     if current_task_id is None:
-        _die(args, {"errors": [{
-            "path": f"$.<file:{plan_path}>",
-            "code": "task-not-found",
-            "message": f"no TASK block found in {plan_path}",
-        }]})
+        return {
+            "pass": False,
+            "deps": [],
+            "unresolved": [],
+            "errors": [{
+                "path": f"$.<file:{plan_path}>",
+                "code": "task-not-found",
+                "message": f"no TASK block found in {plan_path}",
+            }],
+        }
     current_entry = roster.get(current_task_id)
     if current_entry is None:
-        _die(args, {"errors": [{
-            "path": f"$.<file:{index_path}>.chunks",
-            "code": "task-not-in-index",
-            "message": f"task {current_task_id} is not declared in 00_INDEX.json roster",
-        }]})
+        return {
+            "pass": False,
+            "deps": [],
+            "unresolved": [],
+            "errors": [{
+                "path": f"$.<file:{index_path}>.chunks",
+                "code": "task-not-in-index",
+                "message": f"task {current_task_id} is not declared in 00_INDEX.json roster",
+            }],
+        }
     requested = current_entry["depends_on"]
 
     resolved: list[dict] = []
@@ -1334,12 +1352,19 @@ def cmd_check_plan_deps(args: argparse.Namespace) -> None:
     for dep_id in requested:
         _resolve_dependency(dep_id)
 
-    _emit(args, {
+    return {
         "pass": len(unresolved) == 0,
         "deps": resolved,
         "unresolved": unresolved,
         "errors": [],
-    }, exit_code=0)
+    }
+
+
+def cmd_check_plan_deps(args: argparse.Namespace) -> None:
+    result = _resolve_plan_deps(Path(args.plan_file), Path(args.plans_dir))
+    if result["errors"]:
+        _die(args, {"errors": result["errors"]})
+    _emit(args, result, exit_code=0)
 
 
 # ---------------------------------------------------------------------------

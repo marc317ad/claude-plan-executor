@@ -3930,6 +3930,7 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
                 str(PY), str(self.WRAPPER), "plan-review",
                 "--plan-file", str(plan),
                 "--schedule-file", str(schedule),
+                "--plans-dir", str(tmp_path),
                 "--repo-root", str(tmp_path),
                 "--dry-run",
                 "--timeout", "180",
@@ -3949,6 +3950,11 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
         # gating contract.
         assert "approved" in body["prompt_preview"]
         assert "needs-replan" in body["prompt_preview"]
+        # The prompt must direct Codex to compute dependencies_ok via
+        # check-plan-deps rather than parsing it from the plan; otherwise
+        # Codex falls back to hunting for the legacy tasks[*].dependencies
+        # field and blocks the run on its absence.
+        assert "check-plan-deps" in body["prompt_preview"]
 
     def test_missing_plan_file_fails(self, tmp_path: Path) -> None:
         schedule = tmp_path / "sample.schedule.json"
@@ -3958,6 +3964,7 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
                 str(PY), str(self.WRAPPER), "plan-review",
                 "--plan-file", str(tmp_path / "nope.md"),
                 "--schedule-file", str(schedule),
+                "--plans-dir", str(tmp_path),
                 "--repo-root", str(tmp_path),
                 "--dry-run",
             ],
@@ -3978,6 +3985,7 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
                 str(PY), str(self.WRAPPER), "plan-review",
                 "--plan-file", str(plan),
                 "--schedule-file", str(tmp_path / "nope.json"),
+                "--plans-dir", str(tmp_path),
                 "--repo-root", str(tmp_path),
                 "--dry-run",
             ],
@@ -4000,6 +4008,7 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
                 str(PY), str(self.WRAPPER), "plan-review",
                 "--plan-file", str(plan),
                 "--schedule-file", str(schedule),
+                "--plans-dir", str(tmp_path),
                 "--repo-root", str(tmp_path),
                 "--dry-run",
             ],

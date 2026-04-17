@@ -18,8 +18,8 @@ Usage:
         --files f1,f2 [--review-focus bugs] [--dry-run] [--timeout SECS]
 
     venv/bin/python scripts/plan_codex_dispatch.py plan-review \
-        --plan-file PATH --schedule-file PATH [--repo-root PATH] \
-        [--dry-run] [--timeout SECS]
+        --plan-file PATH --schedule-file PATH --plans-dir PATH \
+        --repo-root PATH [--dry-run] [--timeout SECS]
 """
 
 from __future__ import annotations
@@ -261,7 +261,13 @@ def render_implement_prompt(task: dict, context: str) -> str:
     )
 
 
-def render_plan_review_prompt(plan_text: str, schedule_json: str, plan_basename: str) -> str:
+def render_plan_review_prompt(
+    plan_text: str,
+    schedule_json: str,
+    plan_basename: str,
+    plan_abs_path: str,
+    plans_dir: str,
+) -> str:
     """Prompt template for Phase 1.5 — Codex reviews the plan + schedule.
 
     The analyst (Claude/Opus) authored the plan; Codex provides an independent
@@ -269,6 +275,10 @@ def render_plan_review_prompt(plan_text: str, schedule_json: str, plan_basename:
     schedule JSON — not a diff — so this prompt is intentionally distinct
     from the `review` subcommand prompt.
     """
+    dep_cmd = (
+        f"venv/bin/python plugins/plan-executor/scripts/plan_ops.py "
+        f"check-plan-deps --plan-file {plan_abs_path} --plans-dir {plans_dir} --json"
+    )
     return (
         f"Review the plan and its persisted schedule. The plan was authored "
         f"by a peer analyst; you are an independent pre-dispatch reviewer.\n\n"
@@ -279,10 +289,14 @@ def render_plan_review_prompt(plan_text: str, schedule_json: str, plan_basename:
         f"and a well-scoped Files list.\n"
         f"2. Cross-check the schedule against the plan. Every task in the "
         f"plan should appear in tasks[]; every batch must hold file-disjoint "
-        f"tasks; dependencies must be acyclic and resolvable.\n"
+        f"tasks.\n"
         f"3. Flag anything that would cost execution time to discover mid-run: "
-        f"missing context, contradictory file annotations, dependency cycles, "
-        f"scheduler traps, acceptance criteria that are untestable, etc.\n\n"
+        f"missing context, contradictory file annotations, scheduler traps, "
+        f"acceptance criteria that are untestable, etc.\n"
+        f"4. To populate `dependencies_ok`, run this command and use the "
+        f"`pass` field from its JSON output verbatim:\n"
+        f"   {dep_cmd}\n"
+        f"   Do not parse dependencies from the plan or schedule yourself.\n\n"
         f"Verdict vocabulary (pick exactly one):\n"
         f"- `approved` — plan is ready to execute as-is.\n"
         f"- `approved-with-notes` — plan is ready; notes carried into run "
@@ -1325,7 +1339,14 @@ def cmd_plan_review(args) -> int:
         ))
         return 1
 
-    prompt = render_plan_review_prompt(plan_text, schedule_text, plan_path.name)
+    plans_dir = str(Path(args.plans_dir).resolve())
+    prompt = render_plan_review_prompt(
+        plan_text,
+        schedule_text,
+        plan_path.name,
+        str(plan_path),
+        plans_dir,
+    )
 
     if args.dry_run:
         emit({
@@ -1518,6 +1539,11 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Absolute path to plan document")
     pr.add_argument("--schedule-file", required=True,
                     help="Absolute path to persisted schedule JSON")
+    pr.add_argument("--plans-dir", required=True,
+                    help="Absolute path to the plans directory containing "
+                         "00_INDEX.json. Embedded in the Codex prompt so the "
+                         "reviewer can shell out to `plan_ops.py "
+                         "check-plan-deps` for dependencies_ok.")
     pr.add_argument("--repo-root", required=True,
                     help="Absolute path to the repo root passed as `codex -C`. "
                          "Required — plans typically live in a subdirectory "

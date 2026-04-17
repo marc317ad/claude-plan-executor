@@ -22,6 +22,7 @@ Bash command template:
 venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
   --plan-file <absolute plan path> \
   --schedule-file <absolute schedule path> \
+  --plans-dir <plan_dir> \
   --repo-root <absolute repo root> \
   --timeout 180
 ```
