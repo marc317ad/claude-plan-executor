@@ -201,3 +201,13 @@ Safe to revert; remove Phase 1.5 from SKILL.md, drop the `plan-review` wrapper s
 ## Reversion guidance
 
 All three subtasks are independently reversible. (A) and (C) are pure SKILL.md + dispatch-template + wrapper work; (B) is a ~30-line change inside `cmd_commit_task`. Revert order if needed: C → A → B (least-dependency first).
+
+## Execution log — R-TASK-014 (success)
+
+Starting SHA: `6723a6836ef9c8794c33e7ac65e1f7973006291a`  → Ending SHA: `f229214b3067e37745889d58a76f60d2595f8493`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 014A | claude | claude | ship | ece54e665a6fdfab34031253ff6a59fb9f264147 | D.5 adjudication — 4 Codex findings dismissed (false positives / scope-inflation); pass 4 committed with [disagreement] |
+| 014B | claude | claude | ship | 9eca99619a49292a310c91cb4ee96ea90fd30baf | D.5 adjudication — pass 1 Fix 1 applied (roster in commit), pass 2 fixes (malformed roster hard-error + roster rollback on git failure), pass 3 fix (atomic rollback via tempfile+os.replace); pass 4 [disagreement] after scope-inflation findings |
+| 014C | claude | claude | ship | f229214b3067e37745889d58a76f60d2595f8493 | D.5 adjudication — pass 1 Finding 3 fix (--repo-root required), pass 2 Finding 1 fix (envelope validation ordering); pass 2 [disagreement] after flip-flopping/scope-inflation findings |
