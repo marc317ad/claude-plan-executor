@@ -370,6 +370,40 @@ Fires when Codex's `needs-rework` is independently confirmed by the D.5 code-rev
 
    **Hard rule:** D.2a.5's second `needs-rework` MUST NOT trigger `fail-task` automatically. `fail-task` on a paused run requires an explicit user instruction in the next turn. See the "Never auto-`fail-task` on the D.2a.5 halt path" rule below.
 
+#### D.2a.6 — Narrow-remediation retry (partial-agreement path)
+
+Fires when Codex's `needs-rework` verdict is split by the D.5 third-opinion reviewer into load-bearing + dismissed buckets (`partial-agreement`). Strictly one attempt — same bounding as D.2a.5. `--codex-review-binding` skips this entire section: binding mode means `needs-rework` → immediate `fail-task` with NO D.5, NO D.2a.5, and NO D.2a.6.
+
+1. Log `narrow_remediation_start {task_id, load_bearing_count, dismissed_count, d5_summary}`. The `narrow_remediation_start` / `narrow_remediation_done` events are distinct from D.2a.5's `remediation_start` / `remediation_done`; the run log is the audit source of truth for which retry path fired.
+2. Re-dispatch `plan-remediator` (Agent, `subagent_type: "plan-remediator"`, `model: "opus"`) using the **Phase B-narrow-remediation** template from `dispatch-templates.md`. The template embeds `load_bearing_findings_json` (filtered subset of Codex findings where the array index ∈ D.5's `load_bearing`), `dismissed_findings_json` (the complement, labeled "DO NOT fix — context only"), and `d5_summary`. The file:line touch-only scope rule in `plan-remediator.md` structurally bounds the retry; "fix narrowly, do not scope-inflate" remains a prompt-level hint.
+3. Classify the retry with the standard Phase B rules plus the new `scope-violation` outcome. `outcome ≠ success` (including `scope-violation`) → halt per step 6 below (same awaiting-user pause path; do NOT call `fail-task`).
+4. On retry success, re-run D.1 (Codex review). The re-review is binding — no further retry regardless of verdict.
+5. Route the re-review:
+   - `clean | minor-findings` → D.3 commit with `--narrow-remediation-tag --dismissed-finding-ids I,J,K` (comma-separated dismissed indices from the D.5 split). Commit body carries `[narrow-remediation]` followed immediately by `[disagreement: I,J,K]`; summary row shows both tags.
+   - `needs-rework` (second failure) → proceed to step 6.
+6. Log `narrow_remediation_done {task_id, outcome}` before entering the pause (on both the retry-implement-failure and second-review-failure branches, so the log records the attempt's terminal state either way).
+7. **Awaiting-user pause** (second `needs-rework`, OR a failed/scope-violation retry implementer outcome):
+   - Payload shape mirrors D.2a.5 with a flipped `stage` label and one added field on the review-failure branch:
+     - Second-review failure: `stage:"post_narrow_remediation_review"`, include `codex_findings:[...]`, `d5_summary:"..."`, and `dismissed_finding_indices:[...]` (for round-tripping the D.5 split into the next turn).
+     - Retry-implement failure: `stage:"post_narrow_remediation_implement"`, include `retry_outcome`, `diagnostics`, and `reversion_guidance` from the implementer report; omit `codex_findings` (no second review ran).
+   - `--ending-sha <sha>` MUST be `git rev-parse HEAD` at pause time, same as D.2a.5. Log currently-dirty file paths in the `awaiting_user` event's `dirty_files` field so the next turn has a concrete handoff.
+   ```bash
+   venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+     --event awaiting_user \
+     --fields-json '{"task_id":"NNN","stage":"post_narrow_remediation_review","codex_findings":[...],"d5_summary":"...","dismissed_finding_indices":[...],"dirty_files":[...]}' --json
+
+   venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" finalize-execution-log \
+     --run-id <id> --starting-sha <sha> --ending-sha "$(git rev-parse HEAD)" \
+     --outcome paused --rows-json '[...]' --json
+
+   venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+     --event run_end \
+     --fields-json '{"run_id":"<id>","outcome":"paused","done":N,"failed":M,"paused_on_task":"NNN"}' --json
+   ```
+   After the paused `run_end`, the End-of-run sequence (update-plan-header, regular finalize, housekeeping commit) is SKIPPED — the paused branch emits its own `finalize-execution-log --outcome paused` and `run_end outcome=paused` instead. Print the failure envelope, release the run-lock, and return control to the user with pending edits **still in the working tree**. Do NOT call `fail-task`. Do NOT `git restore`. The user's next conversation turn decides disposition (same three options as D.2a.5: "revert" / "keep as-is" / "hand-fix").
+
+   **Hard rule:** D.2a.6's second `needs-rework` or non-success retry MUST NOT trigger `fail-task` automatically. Same protocol as D.2a.5's halt path — the "Never auto-`fail-task` on the D.2a.5 halt path" rule below extends to D.2a.6.
+
 #### D.2b — Role-swap retry (Codex implements + Claude reviewer needs-rework)
 
 Per §8.3 line 692: Claude re-implements, Codex re-reviews. One attempt.
@@ -389,10 +423,11 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" commit-task \
   --reviewer <codex|claude|none> \
   --reviewer-verdict "<verdict>" \
   --reviewer-minor-findings '<json array>' \
-  [--disagreement-tag] [--remediation-tag] --json
+  [--disagreement-tag] [--remediation-tag] \
+  [--narrow-remediation-tag --dismissed-finding-ids I,J,K] --json
 ```
 
-`--remediation-tag` appends a `[remediation]` line to the commit body; set it only when the commit follows a successful D.2a.5 retry.
+`--remediation-tag` appends a `[remediation]` line to the commit body; set it only when the commit follows a successful D.2a.5 retry. `--narrow-remediation-tag` (with a non-empty `--dismissed-finding-ids` list) appends `[narrow-remediation]` + `[disagreement: I,J,K]` on adjacent lines; set it only when the commit follows a successful D.2a.6 retry. Argparse enforces four constraints: (a) `--narrow-remediation-tag` XOR `--remediation-tag`, (b) `--dismissed-finding-ids` XOR `--disagreement-tag`, (c) `--dismissed-finding-ids` requires `--narrow-remediation-tag`, (d) `--narrow-remediation-tag` requires non-empty `--dismissed-finding-ids`.
 
 This: (1) guard check for unexpected staged overlap, (2) plan-status flip to `done`, (3) `git commit --only <files> <plan-file> -m "feat(TASK-NNN): <title>\n\n<diff summary>\n\nPlan: <basename>"`, (4) SHA capture, (5) run-log `commit_done` append.
 
@@ -416,8 +451,8 @@ Release this task's file locks. Loop to Phase A.
 ## End of run
 
 1. `plan_ops.py update-plan-header --status <complete|partial>` (complete iff `failed == 0`; else partial).
-2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. Use `--outcome paused` when exiting via the D.2a.5 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting.
-3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5).
+2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. Use `--outcome paused` when exiting via the D.2a.5 OR D.2a.6 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting.
+3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5 or D.2a.6).
 4. Print summary: counts `{done, failed}`, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
 5. Housekeeping commit (skip if `done == 0 AND failed == 0`):
    ```bash
@@ -433,7 +468,7 @@ Do NOT auto-push. Do NOT auto-PR.
 - **Never edit code files.** Orchestrator only touches plan files, `_run_log.jsonl`, `_run_lock.json`, and git staging. Implementer subagents / Codex wrapper own code changes.
 - **Never commit a reviewer-flagged `needs-rework`.** Only clean / minor-findings / ship / ship-with-fixes commit automatically.
 - **Never `git add -A` or `git add .`.** Stage specific files only — `commit-task` already uses `--only`.
-- **Never retry a failed task inside the same run** beyond the one D.2b role-swap, the one D.2a.5 bounded remediation retry, and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.
+- **Never retry a failed task inside the same run** beyond the one D.2b role-swap, the one D.2a.5 bounded remediation retry, the one D.2a.6 narrow-remediation retry, and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.
 - **Never auto-`fail-task` on the D.2a.5 halt path.** A second `needs-rework` after a D.2a.5 remediation retry triggers `log-event type=awaiting_user` + `finalize-execution-log --outcome paused` and returns control to the user with pending edits left in the working tree. Calling `fail-task` on the paused run is allowed ONLY when the user's next conversation turn explicitly instructs it. Silent auto-revert on the post-remediation `needs-rework` path is a protocol violation.
 - **Never modify plan-file body except `**Status:**` bullets and the tail execution-log section.** Append-only on the log.
 - **One commit per task** plus at most one `chore:` housekeeping commit per run. Narrow `git commit --only` in Phase D.3 is mandatory.

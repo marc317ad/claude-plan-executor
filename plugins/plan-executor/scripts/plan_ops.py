@@ -113,6 +113,12 @@ ALLOWED_LOG_EVENTS = {
     "fallback_used",
     "review_skipped",
     "remediation_start",
+    # `narrow_remediation_start` / `narrow_remediation_done` are added per
+    # TASK-016C D.2a.6. Distinct from `remediation_start` so the run log is
+    # the audit source of truth for which retry path fired (D.2a.5 full
+    # rework vs D.2a.6 narrow scope).
+    "narrow_remediation_start",
+    "narrow_remediation_done",
     "plan_review_start",
     "plan_review_done",
     "plan_review_skipped",
@@ -737,6 +743,24 @@ def _validate_d5_adjudication_payload(
         })
 
     if verdict == "partial-agreement":
+        # Pre-TASK-016C follow-up (non-blocking note from D.5 on TASK-016A #1):
+        # the orchestrator forwards `d5_summary` to the plan-remediator
+        # Phase B-narrow-remediation template; a missing or empty string
+        # silently hands the remediator a blank justification for why the
+        # load-bearing findings are load-bearing. Require non-empty summary
+        # on the partial-agreement path.
+        if not isinstance(summary, str) or summary.strip() == "":
+            errors.append({
+                "path": "$.summary",
+                "code": "partial-agreement-missing-summary",
+                "message": (
+                    "partial-agreement payload requires a non-empty "
+                    "'summary' string; the remediator template forwards "
+                    "this to justify why the load-bearing findings are "
+                    "load-bearing"
+                ),
+            })
+
         def _check_bucket(name: str) -> list[int] | None:
             value = payload.get(name)
             if value is None:
@@ -759,6 +783,7 @@ def _validate_d5_adjudication_payload(
                 })
                 return None
             cleaned: list[int] = []
+            had_type_error = False
             for i, item in enumerate(value):
                 # bool is a subclass of int in Python; reject it explicitly so
                 # `[True]` does not pass as `[1]`.
@@ -771,8 +796,17 @@ def _validate_d5_adjudication_payload(
                             f"an integer index, got {type(item).__name__}"
                         ),
                     })
+                    had_type_error = True
                     continue
                 cleaned.append(item)
+            # Pre-TASK-016C follow-up (non-blocking note from D.5 on
+            # TASK-016A #2): short-circuit downstream split validation
+            # on bucket-element type errors so callers don't see a
+            # spurious `partial-agreement-invalid-split` stacked on top
+            # of the underlying `invalid-type`. Return None signals
+            # "structurally broken; skip split checks".
+            if had_type_error:
+                return None
             return cleaned
 
         load_bearing = _check_bucket("load_bearing")
@@ -802,6 +836,32 @@ def _validate_d5_adjudication_payload(
                         "'needs-rework' — pick that verdict instead"
                     ),
                 })
+            # Pre-TASK-016C follow-up (non-blocking note from D.5 on
+            # TASK-016A #2): intra-bucket duplicates (e.g., `[0, 0]`)
+            # are a contract violation — the remediator would see the
+            # same index twice. Reject with the existing
+            # `partial-agreement-invalid-split` code.
+            for name, bucket in (
+                ("load_bearing", load_bearing),
+                ("dismissed", dismissed),
+            ):
+                seen: dict[int, int] = {}
+                dup_indices: list[int] = []
+                for i, idx in enumerate(bucket):
+                    if idx in seen:
+                        dup_indices.append(idx)
+                    else:
+                        seen[idx] = i
+                if dup_indices:
+                    errors.append({
+                        "path": f"$.{name}",
+                        "code": "partial-agreement-invalid-split",
+                        "message": (
+                            f"partial-agreement bucket {name!r} must not "
+                            f"repeat indices; duplicates: "
+                            f"{sorted(set(dup_indices))}"
+                        ),
+                    })
             overlap = sorted(set(load_bearing) & set(dismissed))
             if overlap:
                 errors.append({
@@ -2351,6 +2411,15 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
 
     _write_text(plan, mutated)
 
+    # TASK-016C (post-remediation): dismissed-finding-ids content parsing
+    # lives in main() post-parse so empty/non-integer tokens fail via
+    # parser.error() (exit 2) before any plan mutation. By the time we
+    # reach the handler, args.dismissed_finding_ids is already a
+    # list[int] (possibly empty) — see main().
+    dismissed_ids: list[int] = list(
+        getattr(args, "dismissed_finding_ids", []) or []
+    )
+
     commit_msg = (
         f"feat(TASK-{tid}): {args.title}\n\n"
         f"{args.diff_summary}\n\n"
@@ -2362,6 +2431,19 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         # clean first-pass commits. Kept on its own line adjacent to any
         # [disagreement] tag that D.2a might have already appended upstream.
         commit_msg = commit_msg.rstrip("\n") + "\n\n[remediation]\n"
+    if getattr(args, "narrow_remediation_tag", False):
+        # TASK-016C D.2a.6 post-narrow-remediation commit: a trailing
+        # [narrow-remediation] tag plus a [disagreement: i,j] trailer
+        # listing the dismissed finding indices, on adjacent lines with
+        # [narrow-remediation] first. Distinct from D.2a.5's
+        # [remediation] tag so `git log --oneline` can distinguish the
+        # narrow retry from the full-rework retry. Argparse has already
+        # excluded --remediation-tag and --disagreement-tag.
+        trailer_ids = ",".join(str(i) for i in dismissed_ids)
+        commit_msg = (
+            commit_msg.rstrip("\n")
+            + f"\n\n[narrow-remediation]\n[disagreement: {trailer_ids}]\n"
+        )
 
     # TASK-014B — roster auto-update must happen BEFORE `git add` so the
     # updated `00_INDEX.json` is included in the same commit as the plan
@@ -2451,6 +2533,14 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         "minor_findings_count": len(minor),
         "disagreement_tag": bool(args.disagreement_tag),
         "remediation_tag": bool(getattr(args, "remediation_tag", False)),
+        # TASK-016C: surface the D.2a.6 flags in commit_done so the run
+        # summary and downstream auditing can distinguish narrow
+        # remediations from full D.2a.5 retries without re-parsing the
+        # commit body.
+        "narrow_remediation_tag": bool(
+            getattr(args, "narrow_remediation_tag", False)
+        ),
+        "dismissed_finding_ids": dismissed_ids,
     }
     _append_run_log("commit_done", event_fields)
 
@@ -2770,13 +2860,50 @@ def build_parser() -> argparse.ArgumentParser:
     p_commit.add_argument("--reviewer-verdict", default="")
     p_commit.add_argument("--reviewer-minor-findings", default="[]",
                           help="JSON array of minor findings")
-    p_commit.add_argument("--disagreement-tag", action="store_true",
-                          help="Mark commit as §8.4 disagreement")
-    p_commit.add_argument("--remediation-tag", action="store_true",
-                          help=(
-                              "Mark commit as a D.2a.5 post-remediation retry. "
-                              "Appends a [remediation] tag line to the commit body."
-                          ))
+    # TASK-016C: a commit cannot be both a D.2a.5 full remediation AND a
+    # D.2a.6 narrow remediation — they are parallel retry paths with
+    # distinct trailer shapes. Enforced at argparse rather than the
+    # log-event layer to catch operator error on the CLI, before a
+    # malformed commit is written.
+    p_commit_rem_grp = p_commit.add_mutually_exclusive_group()
+    p_commit_rem_grp.add_argument(
+        "--remediation-tag", action="store_true",
+        help=(
+            "Mark commit as a D.2a.5 post-remediation retry. "
+            "Appends a [remediation] tag line to the commit body."
+        ),
+    )
+    p_commit_rem_grp.add_argument(
+        "--narrow-remediation-tag", action="store_true",
+        help=(
+            "Mark commit as a D.2a.6 narrow-remediation retry. "
+            "Appends a [narrow-remediation] tag line to the commit "
+            "body (adjacent to the [disagreement: i,j] trailer). "
+            "Mutually exclusive with --remediation-tag; requires a "
+            "non-empty --dismissed-finding-ids."
+        ),
+    )
+    # TASK-016C: a commit cannot be both "D.5 disagrees with all Codex
+    # findings" (bare --disagreement-tag) AND "D.5 disagrees with a
+    # subset" (--dismissed-finding-ids i,j). The bare form is used by
+    # D.5 verdicts `ship | ship-with-fixes`; the with-indices form only
+    # appears on the partial-agreement path.
+    p_commit_dis_grp = p_commit.add_mutually_exclusive_group()
+    p_commit_dis_grp.add_argument(
+        "--disagreement-tag", action="store_true",
+        help="Mark commit as §8.4 disagreement (bare [disagreement] tag)",
+    )
+    p_commit_dis_grp.add_argument(
+        "--dismissed-finding-ids", default="",
+        help=(
+            "Comma-separated integer indices of Codex findings that "
+            "D.5 dismissed on the partial-agreement path (0-based "
+            "into the original Codex findings array). Emits a "
+            "[disagreement: I,J,K] trailer adjacent to the "
+            "[narrow-remediation] tag. Requires --narrow-remediation-tag; "
+            "mutually exclusive with --disagreement-tag."
+        ),
+    )
     p_commit.add_argument("--dry-run", action="store_true")
     _add_json(p_commit)
 
@@ -2869,6 +2996,57 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # TASK-016C: cross-flag constraints that `add_mutually_exclusive_group`
+    # cannot express directly. These are enforced here so `parser.error()`
+    # produces the standard argparse exit-code-2 + usage banner; an
+    # operator mistake on the CLI halts before any commit is written.
+    if getattr(args, "command", None) == "commit-task":
+        narrow = bool(getattr(args, "narrow_remediation_tag", False))
+        dismissed_raw = getattr(args, "dismissed_finding_ids", "") or ""
+        has_dismissed = bool(dismissed_raw.strip())
+        # (c) --dismissed-finding-ids requires --narrow-remediation-tag.
+        if has_dismissed and not narrow:
+            parser.error(
+                "--dismissed-finding-ids requires --narrow-remediation-tag; "
+                "the [disagreement: i,j] trailer only appears on the "
+                "D.2a.6 narrow-remediation path"
+            )
+        # (d) --narrow-remediation-tag requires non-empty
+        # --dismissed-finding-ids. A narrow-remediation commit without
+        # dismissed indices is a contradiction — there would be nothing
+        # for the [disagreement: i,j] trailer to record.
+        if narrow and not has_dismissed:
+            parser.error(
+                "--narrow-remediation-tag requires a non-empty "
+                "--dismissed-finding-ids; the partial-agreement path "
+                "always carries at least one dismissed index"
+            )
+        # TASK-016C post-remediation: content-validate the
+        # --dismissed-finding-ids comma list at argparse layer so empty
+        # tokens (`','`, `'1,,3'`) and non-integer tokens (`'1,x'`) fail
+        # via parser.error() with exit code 2, before cmd_commit_task
+        # writes the plan or touches git. Overwrites the raw string on
+        # args with the parsed list[int] so handlers consume a typed
+        # value. When narrow-remediation is not set and the flag is
+        # empty, the attribute collapses to an empty list.
+        dismissed_parsed: list[int] = []
+        if has_dismissed:
+            for token in dismissed_raw.split(","):
+                stripped = token.strip()
+                if not stripped:
+                    parser.error(
+                        "--dismissed-finding-ids must not contain empty "
+                        "comma-separated tokens (got "
+                        f"{dismissed_raw!r})"
+                    )
+                try:
+                    dismissed_parsed.append(int(stripped))
+                except ValueError:
+                    parser.error(
+                        "--dismissed-finding-ids entry "
+                        f"{stripped!r} is not a valid integer"
+                    )
+        args.dismissed_finding_ids = dismissed_parsed
     handlers = {
         "preflight": cmd_preflight,
         "parse-schedule": cmd_parse_schedule,

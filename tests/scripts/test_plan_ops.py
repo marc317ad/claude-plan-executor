@@ -4324,3 +4324,652 @@ class TestD5RouteTableDocumentation:
         assert "partial-agreement" in text
         # The route column must mention D.2a.6 (forward-referenced).
         assert "D.2a.6" in text
+
+
+# ---------------------------------------------------------------------------
+# TASK-016C — D.2a.6 narrow-remediation retry path + commit trailers
+# ---------------------------------------------------------------------------
+#
+# V6  — narrow_remediation_start / narrow_remediation_done are in the
+#       run-log allow-list and round-trip through log-event.
+# V7  — (verified by TestD5RouteTableDocumentation above — TASK-016A owns
+#       the route-table row; this task only confirms presence.)
+# V8  — Phase B-narrow-remediation template in dispatch-templates.md
+#       advertises plan-remediator + the three JSON slots.
+# V9  — commit-task --narrow-remediation-tag --dismissed-finding-ids
+#       emits the [narrow-remediation]\n[disagreement: I,J,K] trailers.
+# V10 — argparse constraints (a)-(d) are enforced with argparse errors.
+# V11 — awaiting_user event accepts the two new stage labels with the
+#       D.2a.5-parallel payload shape, and SKILL.md §D.2a.6 documents
+#       the retry protocol end-to-end.
+
+
+class TestNarrowRemediationLogEvents:
+    """V6 — `narrow_remediation_start` / `narrow_remediation_done` MUST be
+    in the `log-event` allow-list so the orchestrator can signal D.2a.6
+    entry/exit without the allow-list tripwire firing. Distinct from
+    `remediation_start` (which belongs to D.2a.5 full rework) so the run
+    log is the audit source of truth for which retry path fired.
+    """
+
+    def test_narrow_remediation_start_accepted(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "narrow_remediation_start",
+            "--fields-json",
+            (
+                '{"run_id":"R1","task_id":"001",'
+                '"load_bearing_count":2,"dismissed_count":2,'
+                '"d5_summary":"0 and 2 are ship-blockers"}'
+            ),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "narrow_remediation_start"
+        assert rec["load_bearing_count"] == 2
+        assert rec["dismissed_count"] == 2
+
+    def test_narrow_remediation_done_accepted(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "narrow_remediation_done",
+            "--fields-json",
+            '{"run_id":"R1","task_id":"001","outcome":"success"}',
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "narrow_remediation_done"
+        assert rec["outcome"] == "success"
+
+    def test_narrow_events_distinct_from_d2a5_events(self) -> None:
+        """The narrow-remediation events are sibling entries to the
+        D.2a.5 events, not replacements. Both pairs MUST coexist in the
+        allow-list so the orchestrator can still emit the full-rework
+        pair on the `needs-rework` route."""
+        assert "remediation_start" in plan_ops.ALLOWED_LOG_EVENTS
+        assert "narrow_remediation_start" in plan_ops.ALLOWED_LOG_EVENTS
+        assert "narrow_remediation_done" in plan_ops.ALLOWED_LOG_EVENTS
+
+
+class TestAwaitingUserNarrowStages:
+    """V11 — `awaiting_user` event accepts the two D.2a.6 stage labels
+    with the D.2a.5-parallel payload shape. Tests the structural
+    round-trip; stage-label validation lives in the orchestrator
+    template, not in `log-event` itself.
+    """
+
+    def test_post_narrow_remediation_review_accepted(
+        self, isolated_plan: Path
+    ) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "awaiting_user",
+            "--fields-json",
+            (
+                '{"run_id":"R1","task_id":"001",'
+                '"stage":"post_narrow_remediation_review",'
+                '"codex_findings":[],"d5_summary":"split stable",'
+                '"dismissed_finding_indices":[1,3],'
+                '"dirty_files":["src/foo.py"]}'
+            ),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "awaiting_user"
+        assert rec["stage"] == "post_narrow_remediation_review"
+        assert rec["dismissed_finding_indices"] == [1, 3]
+
+    def test_post_narrow_remediation_implement_accepted(
+        self, isolated_plan: Path
+    ) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "awaiting_user",
+            "--fields-json",
+            (
+                '{"run_id":"R1","task_id":"001",'
+                '"stage":"post_narrow_remediation_implement",'
+                '"retry_outcome":"scope-violation",'
+                '"diagnostics":[],'
+                '"reversion_guidance":"see report",'
+                '"dirty_files":["src/foo.py"]}'
+            ),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "awaiting_user"
+        assert rec["stage"] == "post_narrow_remediation_implement"
+        assert rec["retry_outcome"] == "scope-violation"
+
+
+class TestNarrowRemediationCommitTag:
+    """V9 — `commit-task --narrow-remediation-tag --dismissed-finding-ids
+    I,J,K` emits the `[narrow-remediation]\\n[disagreement: I,J,K]` trailers
+    on their own adjacent lines, narrow-remediation first. Run-log
+    `commit_done` event surfaces the flags so the run summary can
+    distinguish narrow retries from full D.2a.5 retries without
+    re-parsing the commit body.
+    """
+
+    def test_narrow_remediation_trailers_in_commit_body(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "narrow fix",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--narrow-remediation-tag",
+            "--dismissed-finding-ids", "1,3",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = subprocess.run(
+            ["git", "log", "-1", "--pretty=format:%B"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout
+        # Narrow-remediation first, disagreement-with-ids immediately
+        # after on the next line. The exact adjacency is the auditable
+        # shape the run summary keys off.
+        assert "[narrow-remediation]\n[disagreement: 1,3]" in body, (
+            f"expected adjacent trailers in commit body, got:\n{body}"
+        )
+        # Absence checks — neither the bare [disagreement] form nor the
+        # D.2a.5 [remediation] tag should appear on a D.2a.6 commit.
+        assert "[remediation]\n" not in body.replace(
+            "[narrow-remediation]\n", ""
+        ), f"unexpected bare [remediation] tag: {body}"
+
+    def test_commit_done_records_narrow_flags(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "narrow fix",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--narrow-remediation-tag",
+            "--dismissed-finding-ids", "0,2,4",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        commit_events = [json.loads(ln) for ln in lines if '"commit_done"' in ln]
+        assert commit_events, f"no commit_done event: {lines}"
+        rec = commit_events[-1]
+        assert rec["narrow_remediation_tag"] is True
+        assert rec["dismissed_finding_ids"] == [0, 2, 4]
+        # The D.2a.5 fields MUST still be present and false — the flags
+        # are parallel, not overloaded.
+        assert rec["remediation_tag"] is False
+        assert rec["disagreement_tag"] is False
+
+    def test_narrow_flags_absent_by_default(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "plain first pass",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = subprocess.run(
+            ["git", "log", "-1", "--pretty=format:%B"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert "[narrow-remediation]" not in body
+        assert "[disagreement:" not in body
+
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        rec = json.loads(
+            [ln for ln in log_path.read_text(encoding="utf-8").splitlines()
+             if '"commit_done"' in ln][-1]
+        )
+        assert rec["narrow_remediation_tag"] is False
+        assert rec["dismissed_finding_ids"] == []
+
+
+class TestNarrowRemediationArgparseConstraints:
+    """V10 — commit-task argparse enforces all four constraints with
+    argparse errors (exit code 2, usage banner on stderr):
+        (a) --narrow-remediation-tag XOR --remediation-tag
+        (b) --dismissed-finding-ids XOR --disagreement-tag
+        (c) --dismissed-finding-ids requires --narrow-remediation-tag
+        (d) --narrow-remediation-tag requires non-empty
+            --dismissed-finding-ids
+    Catches operator error on the CLI before any commit is written.
+    """
+
+    COMMON = [
+        "commit-task",
+        "--plan-file", "docs/plans/sample.md",
+        "--task-id", "001",
+        "--run-id", "R1",
+        "--files", "src/foo.py",
+        "--title", "t",
+        "--diff-summary", "d",
+        "--reviewer", "none",
+        "--reviewer-verdict", "",
+    ]
+
+    def test_a_narrow_and_full_remediation_tags_mutually_exclusive(
+        self, tmp_git_repo: Path
+    ) -> None:
+        cp = _run(
+            *self.COMMON,
+            "--remediation-tag",
+            "--narrow-remediation-tag",
+            "--dismissed-finding-ids", "1",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        # argparse mutually-exclusive violation exits with code 2.
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "not allowed with" in cp.stderr or "mutually exclusive" in cp.stderr
+
+    def test_b_dismissed_ids_and_disagreement_tag_mutually_exclusive(
+        self, tmp_git_repo: Path
+    ) -> None:
+        cp = _run(
+            *self.COMMON,
+            "--disagreement-tag",
+            "--dismissed-finding-ids", "1,2",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "not allowed with" in cp.stderr or "mutually exclusive" in cp.stderr
+
+    def test_c_dismissed_ids_requires_narrow_remediation_tag(
+        self, tmp_git_repo: Path
+    ) -> None:
+        cp = _run(
+            *self.COMMON,
+            "--dismissed-finding-ids", "1,2",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        # parser.error() prefaces with `error:` on stderr; both the
+        # clause and the flag name appear verbatim.
+        assert "--narrow-remediation-tag" in cp.stderr
+        assert "--dismissed-finding-ids" in cp.stderr
+
+    def test_d_narrow_remediation_requires_non_empty_dismissed_ids(
+        self, tmp_git_repo: Path
+    ) -> None:
+        cp = _run(
+            *self.COMMON,
+            "--narrow-remediation-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "--narrow-remediation-tag" in cp.stderr
+        assert "--dismissed-finding-ids" in cp.stderr
+
+    def test_d_narrow_remediation_rejects_empty_dismissed_ids(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """Whitespace-only --dismissed-finding-ids is equivalent to
+        omitting it; argparse constraint (d) still fires."""
+        cp = _run(
+            *self.COMMON,
+            "--narrow-remediation-tag",
+            "--dismissed-finding-ids", "   ",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "--narrow-remediation-tag" in cp.stderr
+
+    def test_dismissed_ids_rejects_bare_comma(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """A single comma parses to two empty tokens; argparse MUST
+        reject rather than silently produce an empty trailer. The plan
+        file must remain untouched on argparse failure."""
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan_before = plan.read_text(encoding="utf-8")
+        cp = _run(
+            *self.COMMON,
+            "--narrow-remediation-tag",
+            "--dismissed-finding-ids", ",",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "--dismissed-finding-ids" in cp.stderr
+        assert "empty" in cp.stderr
+        # No plan mutation — argparse exits before cmd_commit_task runs.
+        assert plan.read_text(encoding="utf-8") == plan_before
+
+    def test_dismissed_ids_rejects_internal_empty_token(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """`1,,3` is a malformed operator entry; silently dropping the
+        empty middle token would emit `[disagreement: 1,3]` and hide
+        the mistake. argparse MUST reject with exit 2."""
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan_before = plan.read_text(encoding="utf-8")
+        cp = _run(
+            *self.COMMON,
+            "--narrow-remediation-tag",
+            "--dismissed-finding-ids", "1,,3",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "--dismissed-finding-ids" in cp.stderr
+        assert "empty" in cp.stderr
+        assert plan.read_text(encoding="utf-8") == plan_before
+
+    def test_dismissed_ids_rejects_non_integer_token(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """Non-integer tokens (`1,x`) also fail at argparse, not in the
+        commit handler, so the plan file stays untouched."""
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan_before = plan.read_text(encoding="utf-8")
+        cp = _run(
+            *self.COMMON,
+            "--narrow-remediation-tag",
+            "--dismissed-finding-ids", "1,x",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "--dismissed-finding-ids" in cp.stderr
+        assert "'x'" in cp.stderr
+        assert plan.read_text(encoding="utf-8") == plan_before
+
+    def test_valid_combination_passes(self, tmp_git_repo: Path) -> None:
+        """Sanity check — the happy path must still work after all the
+        mutual-exclusion groups and post-parse checks are in place."""
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "t",
+            "--diff-summary", "d",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--narrow-remediation-tag",
+            "--dismissed-finding-ids", "1,3",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+
+
+class TestPhaseBNarrowRemediationTemplate:
+    """V8 — dispatch-templates.md gains a Phase B-narrow-remediation
+    template. The orchestrator's D.2a.6 dispatch reads the template
+    anchors here; drift would silently break the retry wiring.
+    """
+
+    TEMPLATES = (
+        REPO_ROOT / "plugins" / "plan-executor"
+        / "skills" / "implement-plan" / "dispatch-templates.md"
+    )
+
+    def _narrow_section(self) -> str:
+        text = self.TEMPLATES.read_text(encoding="utf-8")
+        start = text.find("## Phase B-narrow-remediation")
+        assert start >= 0, (
+            "Phase B-narrow-remediation heading missing from "
+            "dispatch-templates.md"
+        )
+        body = text[start:]
+        next_section = body.find("\n## ", 1)
+        if next_section >= 0:
+            body = body[:next_section]
+        return body
+
+    def test_template_heading_and_plan_remediator_dispatch(self) -> None:
+        body = self._narrow_section()
+        # Subagent type is the new plan-remediator role, not plan-implementer.
+        assert "plan-remediator" in body
+        # Model stays opus per TASK-016B frontmatter.
+        assert "opus" in body
+
+    def test_template_embeds_the_three_json_slots(self) -> None:
+        body = self._narrow_section()
+        assert "load_bearing_findings_json" in body
+        assert "dismissed_findings_json" in body
+        assert "d5_summary" in body
+
+    def test_template_labels_dismissed_as_do_not_fix(self) -> None:
+        body = self._narrow_section()
+        lowered = body.lower()
+        # The dismissed block MUST carry the "DO NOT fix" marker so the
+        # remediator cannot silently act on the dismissed subset.
+        assert "do not fix" in lowered
+        # The "context only" phrasing is the canonical complement.
+        assert "context only" in lowered or "context-only" in lowered
+
+    def test_template_retains_fix_narrowly_guidance(self) -> None:
+        body = self._narrow_section()
+        # The file:line scope rule is the structural enforcement, but
+        # the prompt-level hint is preserved for the same reasons
+        # dispatch-templates.md:209 keeps it on D.2a.5.
+        assert "Fix narrowly" in body or "fix narrowly" in body
+
+    def test_template_has_no_agent_tool_constraint(self) -> None:
+        body = self._narrow_section()
+        assert "You do NOT have the Agent tool" in body
+
+
+class TestD2a6SkillMdSection:
+    """V11 — SKILL.md grows a §D.2a.6 section parallel to §D.2a.5 with
+    the one-attempt bounding, route-on-retry-success, the two
+    awaiting-user branches with distinct stage labels, and the
+    binding-mode exemption.
+    """
+
+    SKILL = (
+        REPO_ROOT / "plugins" / "plan-executor"
+        / "skills" / "implement-plan" / "SKILL.md"
+    )
+
+    def _d2a6_section(self) -> str:
+        text = self.SKILL.read_text(encoding="utf-8")
+        start = text.find("#### D.2a.6")
+        assert start >= 0, "SKILL.md missing #### D.2a.6 heading"
+        body = text[start:]
+        next_section = body.find("\n#### ", 1)
+        if next_section >= 0:
+            body = body[:next_section]
+        return body
+
+    def test_section_exists_and_names_plan_remediator(self) -> None:
+        body = self._d2a6_section()
+        assert "plan-remediator" in body
+
+    def test_section_bounds_one_attempt(self) -> None:
+        body = self._d2a6_section()
+        # The "one attempt" constraint must be explicit so the
+        # orchestrator does not loop the retry.
+        assert "one attempt" in body.lower() or "One attempt" in body
+
+    def test_section_re_runs_d1_binding(self) -> None:
+        body = self._d2a6_section()
+        # On retry success, the re-review is binding.
+        assert "D.1" in body
+        assert "binding" in body.lower()
+
+    def test_section_has_both_awaiting_user_stage_labels(self) -> None:
+        body = self._d2a6_section()
+        assert "post_narrow_remediation_review" in body
+        assert "post_narrow_remediation_implement" in body
+
+    def test_section_lists_narrow_remediation_events(self) -> None:
+        body = self._d2a6_section()
+        assert "narrow_remediation_start" in body
+        assert "narrow_remediation_done" in body
+
+    def test_section_documents_binding_mode_exemption(self) -> None:
+        body = self._d2a6_section()
+        # --codex-review-binding skips D.2a.6 entirely per the
+        # non-goals in the plan's Scoped Context.
+        assert "codex-review-binding" in body
+        # The exemption must be unambiguous — either explicit "skip" or
+        # "NO D.2a.6".
+        assert (
+            "skip" in body.lower()
+            or "NO D.2a.6" in body
+            or "not entered" in body.lower()
+        )
+
+    def test_section_commit_uses_narrow_flags(self) -> None:
+        body = self._d2a6_section()
+        assert "--narrow-remediation-tag" in body
+        assert "--dismissed-finding-ids" in body
+
+
+class TestD5AdjudicationFollowups:
+    """Non-blocking follow-ups from D.5 on TASK-016A, addressed within
+    TASK-016C because the same file is already in scope. These are
+    refinements to the partial-agreement validator, not new surface.
+    """
+
+    def _run_parser(
+        self, payload: dict | str, *, codex_findings_count: int,
+    ) -> subprocess.CompletedProcess:
+        stdin = (
+            payload if isinstance(payload, str) else json.dumps(payload)
+        )
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-d5-adjudication", "--stdin",
+                "--codex-findings-count", str(codex_findings_count),
+                "--json",
+            ],
+            input=stdin,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_rejects_missing_summary_on_partial_agreement(self) -> None:
+        """Follow-up #1 — partial-agreement MUST carry a non-empty
+        summary; the remediator template forwards it as the D.5
+        justification."""
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [0],
+                "dismissed": [1],
+                # summary deliberately omitted
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "partial-agreement-missing-summary" in codes
+
+    def test_rejects_empty_summary_on_partial_agreement(self) -> None:
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [0],
+                "dismissed": [1],
+                "summary": "   ",
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "partial-agreement-missing-summary" in codes
+
+    def test_non_partial_agreement_tolerates_missing_summary(self) -> None:
+        """The follow-up applies only to partial-agreement. Other
+        verdicts were already passing through without a summary
+        requirement and MUST continue to do so."""
+        cp = self._run_parser(
+            {"verdict": "ship"},
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+    def test_bucket_type_error_short_circuits_split_validation(self) -> None:
+        """Follow-up #2 — a bucket with a non-integer element MUST NOT
+        stack a spurious `partial-agreement-invalid-split` on top of
+        the underlying `invalid-type` code."""
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": ["0"],  # non-integer — type error
+                "dismissed": [1],
+                "summary": "indices must be integers",
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "invalid-type" in codes
+        # The split-validation code MUST NOT fire when the bucket is
+        # structurally broken — it would be a spurious stacking error.
+        assert "partial-agreement-invalid-split" not in codes
+
+    def test_rejects_intra_bucket_duplicate_indices(self) -> None:
+        """Follow-up #2 — a bucket with a repeated index (e.g., [0, 0])
+        is a contract violation; the remediator would see the same
+        finding twice."""
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [0, 0],
+                "dismissed": [1],
+                "summary": "duplicate index 0",
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "partial-agreement-invalid-split" in codes

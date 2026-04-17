@@ -174,7 +174,7 @@ Safe to revert; delete the file. Nothing else references `plan-remediator` until
 
 ### TASK-016C: D.2a.6 narrow-remediation retry path + commit trailers
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
@@ -219,3 +219,13 @@ Safe to revert; remove §D.2a.6 from SKILL.md, delete the Phase B-narrow-remedia
 ## Reversion guidance
 
 Three subtasks are independently reversible. B has no runtime surface until C wires it up (safe to ship alone; no-op until dispatched). A adds a verdict the router doesn't route (until C) — so A + B can land without C, and C depends on both. Revert order if needed: C → A → B (reverse of dependency order; least-dependency last).
+
+## Execution log — 20260417T214309 (paused)
+
+Starting SHA: `df5b6805c88108046e65bf8eb049671fd790e20d`  → Ending SHA: `7839d5da0bef33829166ece2cce62434bff160cd`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-016A | claude | claude (D.5) | ship-with-fixes | d461e4b | [disagreement] (Codex needs-rework → D.5 ship-with-fixes); 2 minor follow-up findings |
+| TASK-016B | claude | claude (D.5) | ship-with-fixes | 7839d5d | [disagreement] (Codex needs-rework → D.5 ship-with-fixes); 1 minor follow-up finding |
+| TASK-016C | claude | codex (binding re-review) | needs-rework | — | Paused post-narrow-remediation-review. D.5 partial-agreement split findings [2]=load-bearing / [0,1]=dismissed; narrow remediation applied; binding re-review raised 2 new findings (orchestrator disputes finding 1 as empirically wrong; finding 2 is minor test-gap). User disposition pending. |
