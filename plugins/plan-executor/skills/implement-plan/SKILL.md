@@ -11,7 +11,7 @@ user_invocable: true
 ## Dispatch rules (read before any subagent call)
 
 1. **Parallel dispatch per batch.** Up to `--parallel N` dispatches in a SINGLE message inside Phase B. Claude-tier via Agent, Codex-tier via Bash — both kick off in the same message when a batch contains both.
-2. **Trust the analyst's schedule.** Batches with disjoint `file_locks` and no cross-batch deps are parallel-safe. Do not add extra safety reasoning.
+2. **Trust the analyst's schedule.** Batches with disjoint `file_locks` are parallel-safe. Do not add extra safety reasoning.
 3. **Your job is routing only.** Pick tasks from the analyst's schedule, dispatch, interpret reports, commit/revert. No code reading, no diff judgment, no scope inflation.
 4. **Dispatch prompts must be self-contained.** Read `${CLAUDE_PLUGIN_ROOT}/skills/implement-plan/dispatch-templates.md` for the templates. Every Agent prompt includes the full task block verbatim + "You do NOT have the Agent tool."
 5. **Timeouts on Bash calls.** 5000ms for idioms (printf, git status); 180000ms (180s) for `plan_codex_dispatch.py review`; 300000ms (300s) for `plan_codex_dispatch.py implement`. Timeouts are enforced by the wrapper internally — pass `--timeout 180|300` as documented.
@@ -36,20 +36,18 @@ All subcommands accept `--json` for machine-readable output.
 |---|---|
 | `plan_ops.py preflight --plan-file <abs> [--strict-branch]` | Smart dirty-tree + codex probe + starting_sha + run_id + base-branch check |
 | `plan_ops.py parse-schedule --stdin [--strict]` | Validate analyst JSON; surface errors, tasks, batches, gaps, risks. `--strict` promotes unknown nested fields from warning to error. |
-| `plan_ops.py compute-schedule --stdin [--strict]` | Recompute topo order + file-disjoint batches from `tasks[]`; use after any filter rewrite before persisting the schedule. |
+| `plan_ops.py compute-schedule --stdin [--strict]` | Recompute file-disjoint batches from `tasks[]`; use after any filter rewrite before persisting the schedule. |
 | `plan_ops.py write-schedule --schedule-file <path> --stdin [--strict]` | Validate + atomically persist schedule JSON. Refuses to write on any validation error. |
-| `plan_ops.py batch-next --schedule-file ... --locked-files ... --done ... --failed ... --parallel N` | Pick next batch respecting file locks + deps; flags `scheduler_stuck` |
+| `plan_ops.py batch-next --schedule-file ... --locked-files ... --done ... --failed ... --parallel N` | Pick next batch respecting file locks; flags `scheduler_stuck` |
 | `plan_ops.py parse-implementer-report --stdin` | Extract outcome / files_changed / diff_summary / test_outcome / concerns / plan_adaptations / reversion_guidance / warnings / **diagnostics** from the plan-implementer markdown report. `concerns` and `plan_adaptations` are lists of strings (one bullet each). |
 | `plan_ops.py commit-task ...` | Full D.3: guard, plan-status mutate (→ done), narrow `git commit --only`, SHA capture, run-log `commit_done` append |
 | `plan_ops.py fail-task --stage implement\|review\|commit ...` | Full Phase C / D.4: git restore (if files), plan-status mutate (→ failed), run-log `failed` append |
-| `plan_ops.py block-dependents --schedule-file ... --failed NNN --run-id RID` | Transitive cascade-block; logs `blocked` events per dependent |
 | `plan_ops.py update-plan-header --status in-progress\|complete\|partial` | Mutate the plan-file top-level `**Status:**` |
 | `plan_ops.py finalize-execution-log ...` | Append §5 execution-log markdown table to plan |
 | `plan_ops.py log-event --event E --fields-json '{...}'` | Append JSONL event with tail re-verify |
 | `plan_ops.py normalize-task-id --id 1\|001\|TASK-001\|004A\|TASK-004A` | Canonicalize to `^\d{3}[A-Z]?$` form |
 | `plan_ops.py acquire-lock / release-lock --plan-file ... --run-id ...` | Per-plan-file run-lock against `<run_lock>` |
 | `plan_ops.py path-info` | Emit configured `plan_dir` + derived `run_log` / `run_lock` / `schedule_glob` paths. Run once at Phase 0 to bind the `<plan_dir>` / `<run_log>` / `<run_lock>` / `<schedule_file>` placeholders used throughout this skill. |
-| `plan_ops.py check-plan-deps --plan-file ... --plans-dir ...` | Resolve the target plan's cross-plan `Dependencies:` entries against `<plans-dir>/00_INDEX.md` + sibling `- **Status:**` bullets; emits `{pass, deps, unresolved, errors}` |
 
 ## Parse arguments
 
@@ -65,7 +63,7 @@ Optional:
   --parallel N            Max concurrent tasks per batch (default: 2)
   --codex-only            Filter schedule to codex tasks
   --claude-only           Filter schedule to claude tasks
-  --task-ids 1,2,3        Restrict; halt if filter breaks deps
+  --task-ids 1,2,3        Restrict to exactly these task IDs; halt if any ID is unknown.
   --skip-cross-review     Commit without review (loud banner in summary)
   --codex-review-binding  Codex critical on Claude goes straight to fail-task;
                           no §8.4 third-opinion escalation
@@ -101,6 +99,15 @@ Returns JSON with `pass`, `starting_sha`, `run_id`, `codex_available`, `dirty_fi
 
 If `codex_available=false`, override `tasks[].agent = "claude"` throughout Phase 1 and warn; wrapper's own "codex binary not found on PATH" branch is the backstop.
 
+Then run the mandatory cross-plan dependency gate:
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" check-plan-deps \
+  --plan-file <absolute plan> --plans-dir <dirname of plan-file> --json
+```
+
+Halts on `pass: false` with the `unresolved[]` list. Halts on non-empty `errors[]` as internal-error. There is no `--allow-gaps` override — cross-plan deps are hard blockers.
+
 Then acquire the run-lock:
 
 ```bash
@@ -121,41 +128,23 @@ echo "<analyst_json>" | venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.
 
 Branch on `outcome`:
 - `invalid` → halt; surface report; log `run_end reason=analyst_invalid`; release lock.
-- `needs-enrichment` AND every gap has `type == "external-dep"` → invoke `scripts/plan_ops.py check-plan-deps` to resolve against the sibling-plan manifest (see "Cross-plan dependency resolution" below). On `pass: true`, upgrade the outcome to `valid`, append a `cross_plan_resolved` event, and proceed. On `pass: false`, halt with the named blockers from `unresolved[]` (no `--allow-gaps` override — unresolved cross-plan deps are hard blockers).
-- `needs-enrichment` with any non-`external-dep` gap + no `--allow-gaps` → halt with gaps listed.
-- `needs-enrichment` with any non-`external-dep` gap + `--allow-gaps` → warn + proceed.
+- `needs-enrichment` + no `--allow-gaps` → halt with gaps listed.
+- `needs-enrichment` + `--allow-gaps` → warn + proceed.
 - `valid` → proceed.
-
-### Cross-plan dependency resolution
-
-When every gap has `type == "external-dep"`, run:
-
-```bash
-venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" check-plan-deps \
-  --plan-file <absolute plan> \
-  --plans-dir <directory containing 00_INDEX.md + sibling plans> \
-  --json
-```
-
-`--plans-dir` is the directory of the target plan — the subcommand expects `00_INDEX.md` there alongside the sibling plans referenced by the roster. Output:
-
-```json
-{
-  "pass": true|false,
-  "deps": [{"task_id": "001", "plan_file": "TASK-001_*.md", "status": "done"}, ...],
-  "unresolved": [{"task_id": "002", "reason": "dep-not-done|unresolved-dep|file-not-found", ...}],
-  "errors": []
-}
-```
-
-Result-shape contract: `errors[]` is non-empty only for malformed inputs (missing plan file, missing `00_INDEX.md`, roster table not found) — the subcommand exits non-zero in those cases and the orchestrator halts with an internal-error message. `unresolved[]` carries successfully parsed but not-done sibling deps — exit code is zero, `pass` is `false`, and the orchestrator halts with the blocker list. When `pass: true`, append `cross_plan_resolved {resolved_deps: [...], run_id, plan_file}` via `log-event` and treat the analyst outcome as `valid` for the rest of Phase 1.
 
 Apply filters:
 - `--claude-only` or `codex_available=false` → rewrite `tasks[].agent = "claude"` in the in-memory schedule (persist to a scratch copy on disk for `batch-next`).
-- `--codex-only` → drop claude tasks; halt if orphans deps.
-- `--task-ids` → restrict; halt if filter orphans deps.
+- `--codex-only` → drop claude tasks.
+- `--task-ids` → pipe the analyst schedule through `filter-schedule | write-schedule` so the exact requested IDs and persistence happen in one shell pipeline (no inline Python):
+  ```bash
+  venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" filter-schedule \
+    --schedule-file <schedule_file> --task-ids <csv> --json \
+  | venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" write-schedule \
+    --schedule-file <schedule_file> --stdin --json
+  ```
+  `filter-schedule` emits exactly the requested IDs in source order. Unknown task ID halts with `unknown-task-id`. Missing dep references in the filtered subgraph are not an error — schedule dependencies are no longer interpreted.
 
-After any filter rewrite, re-compute schedule topology and batches by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" compute-schedule --stdin --json`, then replace the schedule's `batches` array with the returned `batches` before persisting. Treat this as the sole supported path for batch recomputation; never use inline Python for plan ops.
+After any filter rewrite, re-compute file-disjoint batches by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" compute-schedule --stdin --json`, then replace the schedule's `batches` array with the returned `batches` before persisting.
 
 Persist the final schedule (after filter rewrites and any required batch recomputation) by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" write-schedule --schedule-file <schedule_file> --stdin --json`. This is the sole supported path for persistence; never write the file with the Write tool or inline Python (cf. rule at line 316). `write-schedule` runs the same shared validator as `parse-schedule` and refuses to write on any validation error.
 
@@ -166,10 +155,9 @@ If `--dry-run`: print the schedule + intended dispatches. Release lock. Exit. Dr
 ## Execute mode — per-batch A→E loop
 
 ```
-ready          : topo order from analyst JSON
+ready          : analyst batch order; within a batch, batch-next serializes by file-lock availability
 done           : set[task_id] = {}
 failed         : set[task_id] = {}
-blocked        : dict[task_id -> reason] = {}
 locked_files   : set[str] = {}
 committed      : list[(task_id, sha)]
 review_notes   : dict[task_id -> list[minor findings]] = {}
@@ -241,16 +229,9 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
 
 This: (1) `git restore <files>` (Claude-side recovery; Codex-side restore was done inside the wrapper), (2) plan-status flip to `failed`, (3) run-log `failed {stage=implement, ...}` append.
 
-Then cascade:
+Release this task's file locks. Remove the task from `ready`. Peer tasks in the same and later batches proceed independently. Do NOT proceed to Phase D for this task.
 
-```bash
-venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
-  --schedule-file <path> --failed NNN --run-id <id> --json
-```
-
-Remove blocked dependents from `ready`, add to `blocked`. Release this task's file locks. Do NOT proceed to Phase D for this task.
-
-### Phase D — Review + commit (serial per task, topo order)
+### Phase D — Review + commit (serial per task, analyst batch order)
 
 **If `--skip-cross-review`:** skip to D.3 immediately. Log `review_skipped`. Final summary shows a loud warning banner.
 
@@ -330,18 +311,18 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
   --reviewer-findings '<json>' --json
 ```
 
-Same atomic shape as Phase C. Cascade-block dependents via `block-dependents`.
+Same atomic shape as Phase C.
 
-### Phase E — Unblock + next batch
+### Phase E — Next batch
 
-For each newly committed task: release its file locks, check reverse dependents, push satisfied ones into `ready`, re-sort. Loop to Phase A.
+Release this task's file locks. Loop to Phase A.
 
 ## End of run
 
-1. `plan_ops.py update-plan-header --status <complete|partial>` (complete iff `failed == 0 AND blocked == 0`; else partial).
+1. `plan_ops.py update-plan-header --status <complete|partial>` (complete iff `failed == 0`; else partial).
 2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --rows-json '[...]' ` — build the §5 table.
-3. Log `run_end` event (counts + disagreement_count + minor_findings_total).
-4. Print summary: counts, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
+3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total).
+4. Print summary: counts `{done, failed}`, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
 5. Housekeeping commit (skip if `done == 0 AND failed == 0`):
    ```bash
    git add <plan-file> <run_log>
@@ -356,7 +337,7 @@ Do NOT auto-push. Do NOT auto-PR.
 - **Never edit code files.** Orchestrator only touches plan files, `_run_log.jsonl`, `_run_lock.json`, and git staging. Implementer subagents / Codex wrapper own code changes.
 - **Never commit a reviewer-flagged `needs-rework`.** Only clean / minor-findings / ship / ship-with-fixes commit automatically.
 - **Never `git add -A` or `git add .`.** Stage specific files only — `commit-task` already uses `--only`.
-- **Never retry a failed task inside the same run** beyond the one D.2b role-swap and the one Codex→Claude fallback. Terminal failures cascade-block.
+- **Never retry a failed task inside the same run** beyond the one D.2b role-swap and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.
 - **Never modify plan-file body except `**Status:**` bullets and the tail execution-log section.** Append-only on the log.
 - **One commit per task** plus at most one `chore:` housekeeping commit per run. Narrow `git commit --only` in Phase D.3 is mandatory.
 - **Never auto-push, never auto-PR.**

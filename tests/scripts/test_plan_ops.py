@@ -609,7 +609,7 @@ class TestComputeSchedule:
             text=True,
         )
 
-    def test_linear_chain(self) -> None:
+    def test_disjoint_files_single_batch(self) -> None:
         payload = {
             "tasks": [
                 {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
@@ -621,7 +621,9 @@ class TestComputeSchedule:
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
         assert body["topo"] == ["001", "002", "003"]
-        assert [batch["task_ids"] for batch in body["batches"]] == [["001"], ["002"], ["003"]]
+        assert body["batches"] == [
+            {"index": 1, "task_ids": ["001", "002", "003"], "file_locks": ["a.py", "b.py", "c.py"]}
+        ]
 
     def test_parallel_disjoint_files(self) -> None:
         payload = {
@@ -675,29 +677,19 @@ class TestComputeSchedule:
         body = _parse_json(cp)
         assert body["topo"] == ["004", "004A", "004B"]
 
-    def test_missing_dependency(self) -> None:
+    def test_compute_batches_defaults_missing_priority_to_low(self) -> None:
         payload = {
             "tasks": [
-                {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["999"]},
+                {"id": "001", "files": ["a.py"]},
+                {"id": "002", "priority": "", "files": ["b.py"]},
+                {"id": "003", "priority": "banana", "files": ["c.py"]},
+                {"id": "004", "priority": "high", "files": ["d.py"]},
             ]
         }
         cp = self._run_compute(payload)
-        assert cp.returncode != 0
-        errors = _parse_json(cp)["errors"]
-        assert any(error["code"] == "missing-dependency" for error in errors), errors
-
-    def test_cycle_detected(self) -> None:
-        payload = {
-            "tasks": [
-                {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["002"]},
-                {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
-            ]
-        }
-        cp = self._run_compute(payload)
-        assert cp.returncode != 0
-        errors = _parse_json(cp)["errors"]
-        cycle_error = next(error for error in errors if error["code"] == "dependency-cycle")
-        assert cycle_error["cycle_nodes"] == ["001", "002"]
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["topo"] == ["004", "001", "002", "003"]
 
     def test_accepts_analyst_json_wrapper(self) -> None:
         payload = {
@@ -764,7 +756,7 @@ class TestBatchNext:
         )
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
-        assert body["task_ids"] == ["001"]
+        assert body["task_ids"] == ["001", "002"]
         assert body["batch_index"] == 0
         assert body["scheduler_stuck"] is False
 
@@ -781,21 +773,21 @@ class TestBatchNext:
         )
         assert cp.returncode == 0
         body = _parse_json(cp)
-        assert body["task_ids"] == []
-        assert body["scheduler_stuck"] is True
+        assert body["task_ids"] == ["002"]
+        assert body["scheduler_stuck"] is False
 
-    def test_dependency_respected(self, tmp_path: Path) -> None:
+    def test_batch_next_ignores_upstream_failure(self, tmp_path: Path) -> None:
         sched = self._schedule_path(tmp_path)
         cp = _run(
             "batch-next",
             "--schedule-file", str(sched),
-            "--done", "001",
+            "--failed", "001",
             "--parallel", "2",
             "--json",
         )
         assert cp.returncode == 0
         body = _parse_json(cp)
-        assert body["task_ids"] == ["002"]
+        assert "002" in body["task_ids"]
 
     def test_all_done_returns_empty(self, tmp_path: Path) -> None:
         sched = self._schedule_path(tmp_path)
@@ -810,32 +802,6 @@ class TestBatchNext:
         body = _parse_json(cp)
         assert body["task_ids"] == []
         assert body["scheduler_stuck"] is False
-
-
-# ---------------------------------------------------------------------------
-# block-dependents
-# ---------------------------------------------------------------------------
-
-
-class TestBlockDependents:
-    def test_cascade_single_level(self, tmp_path: Path, isolated_plan: Path) -> None:
-        sched = tmp_path / "schedule.json"
-        sched.write_text(json.dumps(VALID_SCHEDULE), encoding="utf-8")
-
-        cp = _run(
-            "block-dependents",
-            "--schedule-file", str(sched),
-            "--failed", "001",
-            "--run-id", "R1",
-            "--json",
-        )
-        assert cp.returncode == 0, cp.stderr
-        body = _parse_json(cp)
-        assert body["blocked_task_ids"] == ["002"]
-
-        log_lines = plan_ops.RUN_LOG_PATH.read_text(encoding="utf-8").splitlines()
-        events = [json.loads(ln) for ln in log_lines]
-        assert any(e["event"] == "blocked" and e["task_id"] == "002" for e in events)
 
 
 # ---------------------------------------------------------------------------
@@ -1106,37 +1072,6 @@ class TestParseScheduleContractValidation:
         codes = [e["code"] for e in body["errors"]]
         assert "duplicate-batch-index" in codes
 
-    def test_rejects_dependency_cycle(self) -> None:
-        payload = {
-            "outcome": "valid",
-            "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": ["002"]},
-                {"id": "002", "agent": "codex", "files": [], "dependencies": ["001"]},
-            ],
-            "batches": [{"index": 1, "task_ids": ["001", "002"], "file_locks": []}],
-        }
-        cp = _parse_schedule_payload(payload)
-        assert cp.returncode == 1
-        body = _parse_json(cp)
-        cycle = next((e for e in body["errors"] if e["code"] == "dependency-cycle"), None)
-        assert cycle is not None
-        assert "001" in cycle["message"] and "002" in cycle["message"]
-
-    def test_rejects_orphan_dependency(self) -> None:
-        payload = {
-            "outcome": "valid",
-            "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": ["999"]},
-            ],
-            "batches": [{"index": 1, "task_ids": ["001"], "file_locks": []}],
-        }
-        cp = _parse_schedule_payload(payload)
-        assert cp.returncode == 1
-        body = _parse_json(cp)
-        orphan = next((e for e in body["errors"] if e["code"] == "unknown-dependency"), None)
-        assert orphan is not None
-        assert orphan["path"] == "$.tasks[0].dependencies[0]"
-
     def test_rejects_batch_task_ref_unknown(self) -> None:
         payload = {
             "outcome": "valid",
@@ -1374,22 +1309,47 @@ class TestWriteSchedule:
         written = json.loads(dest.read_text(encoding="utf-8"))
         assert written["tasks"][0]["id"] == "001"
 
-    def test_does_not_write_on_validation_failure(self, tmp_path: Path) -> None:
+    def test_does_not_write_on_unknown_batch_task_ref(self, tmp_path: Path) -> None:
         dest = tmp_path / "schedule.json"
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": ["002"]},
+                {"id": "001", "agent": "codex", "files": [], "dependencies": []},
             ],
-            "batches": [{"index": 1, "task_ids": ["001"], "file_locks": []}],
+            "batches": [{"index": 1, "task_ids": ["001", "999"], "file_locks": []}],
         }
         cp = _run_write_schedule(payload, dest)
         assert cp.returncode == 1
         body = _parse_json(cp)
         codes = [e["code"] for e in body["errors"]]
-        assert "unknown-dependency" in codes
+        assert "unknown-batch-task-ref" in codes
         assert not dest.exists()
         assert not (dest.parent / (dest.name + ".tmp")).exists()
+
+    def test_parse_and_write_schedule_tolerate_orphan_dependencies_field(
+        self, tmp_path: Path,
+    ) -> None:
+        dest = tmp_path / "schedule.json"
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": ["999"]},
+            ],
+            "batches": [{"index": 1, "task_ids": ["001"], "file_locks": ["a"]}],
+        }
+        cp = _run_write_schedule(payload, dest)
+        assert cp.returncode == 0, cp.stderr
+        written = json.loads(dest.read_text(encoding="utf-8"))
+        assert written["tasks"][0]["dependencies"] == ["999"]
+
+        parse_cp = _parse_schedule_payload(payload)
+        assert parse_cp.returncode == 0, parse_cp.stderr
+        body = _parse_json(parse_cp)
+        codes = [e.get("code", "") for e in body.get("errors") or []]
+        assert not any(
+            "orphan" in code or "unknown-dependency" in code or "dependency" in code
+            for code in codes
+        )
 
     def test_atomic_replaces_existing_file(self, tmp_path: Path) -> None:
         dest = tmp_path / "schedule.json"
@@ -1505,26 +1465,6 @@ class TestParseImplementerReportDiagnostics:
 
 
 class TestBatchNextDagDefense:
-    def test_rejects_cycle_in_schedule_file(self, tmp_path: Path) -> None:
-        sched = tmp_path / "schedule.json"
-        sched.write_text(json.dumps({
-            "outcome": "valid",
-            "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": ["002"]},
-                {"id": "002", "agent": "codex", "files": [], "dependencies": ["001"]},
-            ],
-            "batches": [{"index": 1, "task_ids": ["001", "002"], "file_locks": []}],
-        }), encoding="utf-8")
-        cp = _run(
-            "batch-next",
-            "--schedule-file", str(sched),
-            "--json",
-        )
-        assert cp.returncode == 1
-        body = _parse_json(cp)
-        codes = [e["code"] for e in body["errors"]]
-        assert "dependency-cycle" in codes
-
     def test_rejects_duplicate_task_id_in_schedule_file(self, tmp_path: Path) -> None:
         sched = tmp_path / "schedule.json"
         sched.write_text(json.dumps({
@@ -2139,59 +2079,6 @@ class TestValidateScheduleSuffixed:
         codes = [e["code"] for e in body["errors"]]
         assert "non-canonical-id" in codes
 
-    def test_dependency_references_accept_suffix(self) -> None:
-        payload = {
-            "outcome": "valid",
-            "tasks": [
-                {
-                    "id": "004A",
-                    "agent": "claude",
-                    "files": ["a.py"],
-                    "dependencies": [],
-                },
-                {
-                    "id": "005",
-                    "agent": "claude",
-                    "files": ["b.py"],
-                    "dependencies": ["004A"],
-                },
-            ],
-            "batches": [
-                {"index": 1, "task_ids": ["004A"], "file_locks": ["a.py"]},
-                {"index": 2, "task_ids": ["005"], "file_locks": ["b.py"]},
-            ],
-        }
-        cp = _parse_schedule_payload(payload)
-        assert cp.returncode == 0, cp.stderr
-
-    def test_dependency_reference_to_missing_suffix_is_orphan(self) -> None:
-        payload = {
-            "outcome": "valid",
-            "tasks": [
-                {
-                    "id": "004",
-                    "agent": "claude",
-                    "files": ["a.py"],
-                    "dependencies": [],
-                },
-                {
-                    "id": "005",
-                    "agent": "claude",
-                    "files": ["b.py"],
-                    "dependencies": ["004A"],
-                },
-            ],
-            "batches": [
-                {"index": 1, "task_ids": ["004"], "file_locks": ["a.py"]},
-                {"index": 2, "task_ids": ["005"], "file_locks": ["b.py"]},
-            ],
-        }
-        cp = _parse_schedule_payload(payload)
-        assert cp.returncode == 1
-        body = _parse_json(cp)
-        codes = [e["code"] for e in body["errors"]]
-        assert "unknown-dependency" in codes
-
     def test_batch_task_ids_accept_suffix(self) -> None:
         payload = {
             "outcome": "valid",
@@ -2214,98 +2101,6 @@ class TestValidateScheduleSuffixed:
         }
         cp = _parse_schedule_payload(payload)
         assert cp.returncode == 0, cp.stderr
-
-
-MIXED_SCHEDULE_SUFFIXED = {
-    "outcome": "valid",
-    "tasks": [
-        {
-            "id": "004A",
-            "agent": "claude",
-            "files": ["src/leaf_a.py"],
-            "dependencies": [],
-            "acceptance_criteria": ["passes"],
-        },
-        {
-            "id": "005",
-            "agent": "claude",
-            "files": ["src/next.py"],
-            "dependencies": ["004A"],
-            "acceptance_criteria": ["passes"],
-        },
-        {
-            "id": "006",
-            "agent": "claude",
-            "files": ["src/other.py"],
-            "dependencies": ["004"],
-            "acceptance_criteria": ["passes"],
-        },
-        {
-            "id": "004",
-            "agent": "claude",
-            "files": ["src/stem.py"],
-            "dependencies": [],
-            "acceptance_criteria": ["passes"],
-        },
-    ],
-    "batches": [
-        {
-            "index": 0,
-            "task_ids": ["004", "004A"],
-            "file_locks": ["src/stem.py", "src/leaf_a.py"],
-        },
-        {
-            "index": 1,
-            "task_ids": ["005", "006"],
-            "file_locks": ["src/next.py", "src/other.py"],
-        },
-    ],
-    "gaps": [],
-    "risks": [],
-}
-
-
-class TestBlockDependentsSuffixed:
-    def test_cascade_from_suffixed_id(
-        self, tmp_path: Path, isolated_plan: Path
-    ) -> None:
-        sched = tmp_path / "schedule.json"
-        sched.write_text(json.dumps(MIXED_SCHEDULE_SUFFIXED), encoding="utf-8")
-
-        cp = _run(
-            "block-dependents",
-            "--schedule-file", str(sched),
-            "--failed", "004A",
-            "--run-id", "R_SUFFIXED",
-            "--json",
-        )
-        assert cp.returncode == 0, cp.stderr
-        body = _parse_json(cp)
-        # 005 depends on 004A → blocked. 006 depends on 004 (stem) → NOT blocked.
-        assert "005" in body["blocked_task_ids"]
-        assert "006" not in body["blocked_task_ids"]
-
-    def test_cascade_from_stem_does_not_block_suffixed_siblings(
-        self, tmp_path: Path, isolated_plan: Path
-    ) -> None:
-        sched = tmp_path / "schedule.json"
-        sched.write_text(json.dumps(MIXED_SCHEDULE_SUFFIXED), encoding="utf-8")
-
-        cp = _run(
-            "block-dependents",
-            "--schedule-file", str(sched),
-            "--failed", "004",
-            "--run-id", "R_STEM",
-            "--json",
-        )
-        assert cp.returncode == 0, cp.stderr
-        body = _parse_json(cp)
-        # 006 depends on 004 → blocked. 005 depends on 004A (not 004) → NOT blocked.
-        # 004A itself must not appear as blocked by a 004 failure — bookkeeping-only stem.
-        assert "006" in body["blocked_task_ids"]
-        assert "005" not in body["blocked_task_ids"]
-        assert "004A" not in body["blocked_task_ids"]
-
 
 @pytest.fixture()
 def tmp_git_repo_mixed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -2453,16 +2248,8 @@ class TestSuffixedPlanFilenameInvariance:
 
 
 # ---------------------------------------------------------------------------
-# check-plan-deps — cross-plan dependency resolution via 00_INDEX.md
+# check-plan-deps — cross-plan dependency resolution via 00_INDEX.json
 # ---------------------------------------------------------------------------
-
-
-INDEX_HEADER = (
-    "# Mini index\n\n"
-    "## Chunk roster\n\n"
-    "| # | File | v3 Task | Priority | Depends on chunks |\n"
-    "|---|---|---|---|---|\n"
-)
 
 
 def _sibling_plan(task_id: str, status: str, title: str = "Sibling task") -> str:
@@ -2507,21 +2294,32 @@ def _target_plan(task_id: str, deps_raw: str, title: str = "Target task") -> str
 
 def _write_roster(
     plans_dir: Path,
-    rows: list[tuple[str, str, str]],
+    rows: list[dict],
 ) -> Path:
-    """Write `00_INDEX.md` with a chunk-roster of `(task_id, filename, depends_on)`."""
+    """Write `00_INDEX.json` with chunk rows."""
     plans_dir.mkdir(parents=True, exist_ok=True)
-    lines = [INDEX_HEADER]
-    for i, (task_id, filename, deps) in enumerate(rows, start=1):
-        lines.append(
-            f"| {i} | [`{filename}`]({filename}) | TASK-{task_id} | medium | {deps or '—'} |\n"
-        )
-    path = plans_dir / "00_INDEX.md"
-    path.write_text("".join(lines), encoding="utf-8")
+    chunks = []
+    for row in rows:
+        task_id = row["task_id"]
+        chunks.append({
+            "task_id": task_id,
+            "v3_task": f"TASK-{task_id}",
+            "file": row.get("file", f"TASK-{task_id}.md"),
+            "priority": row.get("priority", "medium"),
+            "issues_absorbed": row.get("issues_absorbed", []),
+            "depends_on": row.get("depends_on", []),
+            "status": row.get("status", "Done"),
+            "superseded_by": row.get("superseded_by", []),
+        })
+    path = plans_dir / "00_INDEX.json"
+    path.write_text(
+        json.dumps({"schema_version": 1, "source": "test", "chunks": chunks}, indent=2),
+        encoding="utf-8",
+    )
     return path
 
 
-class TestCheckPlanDeps:
+class TestCheckPlanDeps_check_plan_deps:
     def _run_cpd(
         self, plan_file: Path, plans_dir: Path
     ) -> subprocess.CompletedProcess:
@@ -2532,19 +2330,34 @@ class TestCheckPlanDeps:
             "--json",
         )
 
-    def test_all_done_pass(self, tmp_path: Path) -> None:
+    def test_parse_index_roster_returns_public_shape(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
-        _write_roster(
-            plans_dir,
-            [
-                ("001", "TASK-001.md", ""),
-                ("002", "TASK-002.md", "TASK-001"),
-            ],
-        )
-        (plans_dir / "TASK-001.md").write_text(_sibling_plan("001", "done"), encoding="utf-8")
-        (plans_dir / "TASK-002.md").write_text(_sibling_plan("002", "done"), encoding="utf-8")
+        path = _write_roster(plans_dir, [
+            {"task_id": "001", "file": "TASK-001_canonical_contracts.md", "depends_on": [], "status": "Done"},
+            {"task_id": "004", "file": "TASK-004_scheduler_semantics.md", "depends_on": ["001"], "status": "Superceeded", "superseded_by": ["004A"]},
+            {"task_id": "004A", "file": "TASK-004A_filter_schedule.md", "depends_on": ["001"], "status": "Pending"},
+        ])
+
+        roster = plan_ops._parse_index_roster(path)
+
+        assert roster["001"] == {
+            "file": "TASK-001_canonical_contracts.md",
+            "depends_on": [],
+            "status": "Done",
+        }
+        assert "superseded_by" not in roster["004"]
+        assert plan_ops._INDEX_SUPERSEDED_BY == {"004": ["004A"]}
+
+    def test_004a_passes_direct_done_deps(self, tmp_path: Path) -> None:
+        plans_dir = tmp_path / "plans"
+        _write_roster(plans_dir, [
+            {"task_id": "001", "status": "Done"},
+            {"task_id": "002", "depends_on": ["001"], "status": "Done"},
+            {"task_id": "003", "depends_on": ["001"], "status": "Done"},
+            {"task_id": "004A", "depends_on": ["001", "002", "003"], "status": "Pending"},
+        ])
         target = plans_dir / "TASK-004A_target.md"
-        target.write_text(_target_plan("004A", "TASK-001, TASK-002"), encoding="utf-8")
+        target.write_text(_target_plan("004A", "ignored"), encoding="utf-8")
 
         cp = self._run_cpd(target, plans_dir)
         assert cp.returncode == 0, cp.stderr
@@ -2553,116 +2366,83 @@ class TestCheckPlanDeps:
         assert body["unresolved"] == []
         assert body["errors"] == []
         ids = sorted(d["task_id"] for d in body["deps"])
-        assert ids == ["001", "002"]
+        assert ids == ["001", "002", "003"]
         for entry in body["deps"]:
-            assert entry["status"] == "done"
+            assert entry["status"] == "Done"
 
-    def test_one_pending_fails(self, tmp_path: Path) -> None:
+    def test_004b_blocks_on_direct_004a(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
-        _write_roster(
-            plans_dir,
-            [
-                ("001", "TASK-001.md", ""),
-                ("002", "TASK-002.md", ""),
-            ],
-        )
-        (plans_dir / "TASK-001.md").write_text(_sibling_plan("001", "done"), encoding="utf-8")
-        (plans_dir / "TASK-002.md").write_text(_sibling_plan("002", "pending"), encoding="utf-8")
-        target = plans_dir / "TASK-004A_target.md"
-        target.write_text(_target_plan("004A", "TASK-001, TASK-002"), encoding="utf-8")
+        _write_roster(plans_dir, [
+            {"task_id": "004A", "status": "Pending"},
+            {"task_id": "004B", "depends_on": ["004A"], "status": "Pending"},
+        ])
+        target = plans_dir / "TASK-004B_target.md"
+        target.write_text(_target_plan("004B", "none"), encoding="utf-8")
 
         cp = self._run_cpd(target, plans_dir)
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
         assert body["pass"] is False
         assert body["errors"] == []
-        unresolved_ids = [u["task_id"] for u in body["unresolved"]]
-        assert unresolved_ids == ["002"]
+        assert [u["task_id"] for u in body["unresolved"]] == ["004A"]
         assert body["unresolved"][0]["reason"] == "dep-not-done"
-        assert body["unresolved"][0]["status"] == "pending"
-        resolved_ids = [d["task_id"] for d in body["deps"]]
-        assert resolved_ids == ["001"]
+        assert body["unresolved"][0]["status"] == "Pending"
 
-    def test_unknown_id_unresolved(self, tmp_path: Path) -> None:
+    def test_004c_checks_only_direct_004b(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
-        _write_roster(
-            plans_dir,
-            [
-                ("001", "TASK-001.md", ""),
-            ],
-        )
-        (plans_dir / "TASK-001.md").write_text(_sibling_plan("001", "done"), encoding="utf-8")
-        target = plans_dir / "TASK-004A_target.md"
-        target.write_text(_target_plan("004A", "TASK-999"), encoding="utf-8")
+        _write_roster(plans_dir, [
+            {"task_id": "004A", "status": "Pending"},
+            {"task_id": "004B", "depends_on": ["004A"], "status": "Done"},
+            {"task_id": "004C", "depends_on": ["004B"], "status": "Pending"},
+        ])
+        target = plans_dir / "TASK-004C_target.md"
+        target.write_text(_target_plan("004C", "TASK-004A"), encoding="utf-8")
+
+        cp = self._run_cpd(target, plans_dir)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["pass"] is True
+        assert body["errors"] == []
+        assert body["unresolved"] == []
+        assert [d["task_id"] for d in body["deps"]] == ["004B"]
+
+    def test_005_expands_superceeded_004_and_reports_replacements(self, tmp_path: Path) -> None:
+        plans_dir = tmp_path / "plans"
+        _write_roster(plans_dir, [
+            {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A", "004B", "004C", "004D", "004E"]},
+            {"task_id": "004A", "status": "Done"},
+            {"task_id": "004B", "status": "Pending"},
+            {"task_id": "004C", "status": "Done"},
+            {"task_id": "004D", "status": "Pending"},
+            {"task_id": "004E", "status": "Pending"},
+            {"task_id": "005", "depends_on": ["004"], "status": "Pending"},
+        ])
+        target = plans_dir / "TASK-005_target.md"
+        target.write_text(_target_plan("005", "none"), encoding="utf-8")
 
         cp = self._run_cpd(target, plans_dir)
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
         assert body["pass"] is False
-        assert body["deps"] == []
         assert body["errors"] == []
-        assert len(body["unresolved"]) == 1
-        assert body["unresolved"][0]["task_id"] == "999"
-        assert body["unresolved"][0]["reason"] == "unresolved-dep"
+        assert [d["task_id"] for d in body["deps"]] == ["004A", "004C"]
+        assert [u["task_id"] for u in body["unresolved"]] == ["004B", "004D", "004E"]
+        assert {u["parent_id"] for u in body["unresolved"]} == {"004"}
+        assert {u["reason"] for u in body["unresolved"]} == {"dep-not-done"}
 
-    def test_missing_plan_file_unresolved(self, tmp_path: Path) -> None:
+    def test_005_passes_when_all_004_replacements_done(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
-        _write_roster(
-            plans_dir,
-            [
-                ("001", "TASK-001_missing.md", ""),
-            ],
-        )
-        target = plans_dir / "TASK-004A_target.md"
-        target.write_text(_target_plan("004A", "TASK-001"), encoding="utf-8")
-
-        cp = self._run_cpd(target, plans_dir)
-        assert cp.returncode == 0, cp.stderr
-        body = _parse_json(cp)
-        assert body["pass"] is False
-        assert body["deps"] == []
-        assert body["errors"] == []
-        assert len(body["unresolved"]) == 1
-        assert body["unresolved"][0]["task_id"] == "001"
-        assert body["unresolved"][0]["reason"] == "file-not-found"
-        assert body["unresolved"][0]["plan_file"] == "TASK-001_missing.md"
-
-    def test_in_plan_dep_not_queried(self, tmp_path: Path) -> None:
-        plans_dir = tmp_path / "plans"
-        _write_roster(
-            plans_dir,
-            [
-                ("001", "TASK-001.md", ""),
-            ],
-        )
-        (plans_dir / "TASK-001.md").write_text(_sibling_plan("001", "done"), encoding="utf-8")
-        target_body = (
-            "# Plan: leaf group\n\n"
-            "**Created:** 2026-04-15\n"
-            "**Status:** in-progress\n"
-            "**Base branch:** main\n\n"
-            "## Tasks\n\n"
-            "### TASK-004A: First leaf\n\n"
-            "- **Status:** pending\n"
-            "- **Priority:** medium\n"
-            "- **Files:**\n  - src/a.py\n"
-            "- **Dependencies:** TASK-001, TASK-004B\n"
-            "- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`\n"
-            "- **Acceptance criteria:**\n  - Ships.\n"
-            "- **Description:** Placeholder.\n"
-            "- **Reversion guidance:** `git restore src/a.py`\n\n"
-            "### TASK-004B: Second leaf\n\n"
-            "- **Status:** pending\n"
-            "- **Priority:** medium\n"
-            "- **Files:**\n  - src/b.py\n"
-            "- **Dependencies:** none\n"
-            "- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`\n"
-            "- **Acceptance criteria:**\n  - Ships.\n"
-            "- **Description:** Placeholder.\n"
-            "- **Reversion guidance:** `git restore src/b.py`\n"
-        )
-        target = plans_dir / "TASK-004_target.md"
-        target.write_text(target_body, encoding="utf-8")
+        _write_roster(plans_dir, [
+            {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A", "004B", "004C", "004D", "004E"]},
+            {"task_id": "004A", "status": "Done"},
+            {"task_id": "004B", "status": "Done"},
+            {"task_id": "004C", "status": "Done"},
+            {"task_id": "004D", "status": "Done"},
+            {"task_id": "004E", "status": "Done"},
+            {"task_id": "005", "depends_on": ["004"], "status": "Pending"},
+        ])
+        target = plans_dir / "TASK-005_target.md"
+        target.write_text(_target_plan("005", "none"), encoding="utf-8")
 
         cp = self._run_cpd(target, plans_dir)
         assert cp.returncode == 0, cp.stderr
@@ -2670,14 +2450,34 @@ class TestCheckPlanDeps:
         assert body["pass"] is True
         assert body["unresolved"] == []
         assert body["errors"] == []
-        ids = [d["task_id"] for d in body["deps"]]
-        assert ids == ["001"]
+        assert [d["task_id"] for d in body["deps"]] == ["004A", "004B", "004C", "004D", "004E"]
+
+    def test_superceeded_missing_replacement_reported(self, tmp_path: Path) -> None:
+        plans_dir = tmp_path / "plans"
+        _write_roster(plans_dir, [
+            {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A", "004B"]},
+            {"task_id": "004A", "status": "Done"},
+            {"task_id": "005", "depends_on": ["004"], "status": "Pending"},
+        ])
+        target = plans_dir / "TASK-005_target.md"
+        target.write_text(_target_plan("005", "none"), encoding="utf-8")
+
+        cp = self._run_cpd(target, plans_dir)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["pass"] is False
+        assert body["unresolved"] == [{
+            "task_id": "004B",
+            "reason": "superceeded-target-missing",
+            "detail": "task 004B is not declared in 00_INDEX.json roster",
+            "parent_id": "004",
+        }]
 
     def test_malformed_index_rejected(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "00_INDEX.md").write_text(
-            "# Mini index\n\nNo roster here.\n", encoding="utf-8",
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({"source": "test"}), encoding="utf-8",
         )
         target = plans_dir / "TASK-004A_target.md"
         target.write_text(_target_plan("004A", "TASK-001"), encoding="utf-8")
@@ -2688,34 +2488,57 @@ class TestCheckPlanDeps:
         codes = [e["code"] for e in body["errors"]]
         assert "index-not-found" in codes
 
-    def test_task_id_alias_forms(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("status", ["Superseded", "done", "pending", "failed", "Deferred"])
+    def test_invalid_status_values_rejected(self, tmp_path: Path, status: str) -> None:
         plans_dir = tmp_path / "plans"
-        _write_roster(
-            plans_dir,
-            [
-                ("001", "TASK-001.md", ""),
-                ("002", "TASK-002.md", ""),
-                ("003", "TASK-003.md", ""),
-            ],
-        )
-        for tid in ("001", "002", "003"):
-            (plans_dir / f"TASK-{tid}.md").write_text(
-                _sibling_plan(tid, "done"), encoding="utf-8",
-            )
-        target = plans_dir / "TASK-004A_target.md"
-        target.write_text(_target_plan("004A", "1, 002, TASK-003"), encoding="utf-8")
+        _write_roster(plans_dir, [{"task_id": "001", "status": status}])
 
-        cp = self._run_cpd(target, plans_dir)
-        assert cp.returncode == 0, cp.stderr
-        body = _parse_json(cp)
-        assert body["pass"] is True
-        ids = sorted(d["task_id"] for d in body["deps"])
-        assert ids == ["001", "002", "003"]
+        with pytest.raises(ValueError):
+            plan_ops._parse_index_roster(plans_dir / "00_INDEX.json")
+
+    def test_duplicate_task_ids_rejected(self, tmp_path: Path) -> None:
+        plans_dir = tmp_path / "plans"
+        _write_roster(plans_dir, [
+            {"task_id": "001", "status": "Done"},
+            {"task_id": "001", "status": "Pending"},
+        ])
+
+        with pytest.raises(ValueError, match="duplicate"):
+            plan_ops._parse_index_roster(plans_dir / "00_INDEX.json")
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("depends_on", "001"),
+            ("depends_on", ["TASK-001"]),
+            ("depends_on", ["1"]),
+            ("superseded_by", "004A"),
+            ("superseded_by", ["TASK-004A"]),
+            ("superseded_by", ["4A"]),
+        ],
+    )
+    def test_malformed_dep_lists_rejected(self, tmp_path: Path, field: str, value: object) -> None:
+        plans_dir = tmp_path / "plans"
+        row = {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A"]}
+        row[field] = value
+        _write_roster(plans_dir, [row, {"task_id": "004A", "status": "Pending"}])
+
+        with pytest.raises(ValueError):
+            plan_ops._parse_index_roster(plans_dir / "00_INDEX.json")
+
+    def test_supersession_cycle_rejected(self, tmp_path: Path) -> None:
+        plans_dir = tmp_path / "plans"
+        _write_roster(plans_dir, [
+            {"task_id": "004", "status": "Superceeded", "superseded_by": ["004A"]},
+            {"task_id": "004A", "status": "Superceeded", "superseded_by": ["004"]},
+        ])
+
+        with pytest.raises(ValueError, match="cycle"):
+            plan_ops._parse_index_roster(plans_dir / "00_INDEX.json")
 
     def test_missing_plan_file_arg(self, tmp_path: Path) -> None:
         plans_dir = tmp_path / "plans"
-        _write_roster(plans_dir, [("001", "TASK-001.md", "")])
-        (plans_dir / "TASK-001.md").write_text(_sibling_plan("001", "done"), encoding="utf-8")
+        _write_roster(plans_dir, [{"task_id": "001", "status": "Done"}])
         missing = plans_dir / "does_not_exist.md"
 
         cp = self._run_cpd(missing, plans_dir)
@@ -2735,3 +2558,332 @@ class TestCheckPlanDeps:
         body = _parse_json(cp)
         codes = [e["code"] for e in body["errors"]]
         assert "index-not-found" in codes
+
+
+# ---------------------------------------------------------------------------
+# filter-schedule (TASK-004A) — subcommand for `--task-ids` orchestrator path
+# ---------------------------------------------------------------------------
+
+
+def _run_filter_schedule(
+    sched_path: Path, task_ids: str
+) -> subprocess.CompletedProcess:
+    return _run(
+        "filter-schedule",
+        "--schedule-file", str(sched_path),
+        "--task-ids", task_ids,
+        "--json",
+    )
+
+
+def _full_schedule_fixture() -> dict:
+    return {
+        "outcome": "valid",
+        "tasks": [
+            {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+            {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"]},
+            {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+        ],
+        "batches": [
+            {"index": 1, "task_ids": ["001", "003"], "file_locks": ["a", "c"]},
+            {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+        ],
+    }
+
+
+class TestFilterSchedule:
+    def test_filter_schedule_happy_path(self, tmp_path: Path) -> None:
+        sched = tmp_path / "full.schedule.json"
+        sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "2")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["outcome"] == "valid"
+        assert [t["id"] for t in body["tasks"]] == ["002"]
+        assert body["tasks"][0]["dependencies"] == ["001"]
+        assert body["batches"] == [
+            {"index": 2, "task_ids": ["002"], "file_locks": ["b"]}
+        ]
+        assert body["gaps"] == []
+        assert body["risks"] == []
+
+    def test_filter_schedule_unknown_id_rejected(self, tmp_path: Path) -> None:
+        sched = tmp_path / "full.schedule.json"
+        sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "999")
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        assert body["errors"][0]["code"] == "unknown-task-id"
+        assert "999" in body["errors"][0]["message"]
+
+    def test_filter_returns_exact_selection_even_with_orphan_deps(
+        self, tmp_path: Path,
+    ) -> None:
+        sched = tmp_path / "broken.schedule.json"
+        sched.write_text(json.dumps({
+            "outcome": "valid",
+            "tasks": [
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": ["999"]},
+            ],
+            "batches": [{"index": 1, "task_ids": ["002"], "file_locks": ["b"]}],
+        }), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "2")
+        assert cp.returncode == 0, cp.stderr
+        assert "KeyError" not in cp.stderr
+        body = _parse_json(cp)
+        assert [t["id"] for t in body["tasks"]] == ["002"]
+        assert body["tasks"][0]["dependencies"] == ["999"]
+
+    def test_filter_schedule_source_not_valid_rejected(self, tmp_path: Path) -> None:
+        sched = tmp_path / "needs_enr.schedule.json"
+        sched.write_text(json.dumps({
+            "outcome": "needs-enrichment",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": []},
+            ],
+            "batches": [{"index": 1, "task_ids": ["001"], "file_locks": ["a"]}],
+            "gaps": [{"id": "G1", "description": "x"}],
+        }), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "1")
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "source-not-valid" in codes
+
+    def test_filter_schedule_invalid_source_rejected(self, tmp_path: Path) -> None:
+        # Source fails _validate_schedule (duplicate ids).
+        sched = tmp_path / "dup.schedule.json"
+        sched.write_text(json.dumps({
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": []},
+                {"id": "001", "agent": "claude", "files": ["b"],
+                 "dependencies": []},
+            ],
+            "batches": [{"index": 1, "task_ids": ["001"], "file_locks": ["a"]}],
+        }), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "1")
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "duplicate-task-id" in codes
+
+    def test_filter_schedule_missing_file_rejected(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does_not_exist.json"
+        cp = _run_filter_schedule(missing, "1")
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        assert body["errors"][0]["code"] == "file-not-found"
+
+    def test_filter_schedule_malformed_json_rejected(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not json", encoding="utf-8")
+        cp = _run_filter_schedule(bad, "1")
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        assert body["errors"][0]["code"] == "json-decode"
+
+    def test_filter_schedule_top_level_not_object_rejected(self, tmp_path: Path) -> None:
+        lst = tmp_path / "list.json"
+        lst.write_text("[]", encoding="utf-8")
+        cp = _run_filter_schedule(lst, "1")
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        assert body["errors"][0]["code"] == "top-level-not-object"
+
+    def test_filter_schedule_alias_task_id_field_supported(self, tmp_path: Path) -> None:
+        # Legacy alias `task_id` must be processed without KeyError — the
+        # validator warns but does not normalize.
+        sched = tmp_path / "alias.schedule.json"
+        sched.write_text(json.dumps({
+            "outcome": "valid",
+            "tasks": [
+                {"task_id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": []},
+                {"task_id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": ["001"]},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        }), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "2")
+        assert cp.returncode == 0, cp.stderr
+        assert "KeyError" not in cp.stderr
+        body = _parse_json(cp)
+        # Task objects are copied verbatim — `task_id` is preserved.
+        ids = [
+            (t.get("id") if "id" in t else t.get("task_id")) for t in body["tasks"]
+        ]
+        assert ids == ["002"]
+
+    def test_filter_schedule_id_form_normalization(self, tmp_path: Path) -> None:
+        # Accepts 001, 1, and TASK-001 forms; empty fragments skipped.
+        sched = tmp_path / "norm.schedule.json"
+        sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "1,,002,TASK-003")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert [t["id"] for t in body["tasks"]] == ["001", "002", "003"]
+
+    def test_filter_schedule_all_empty_task_ids_rejected(self, tmp_path: Path) -> None:
+        sched = tmp_path / "full.schedule.json"
+        sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        cp = _run_filter_schedule(sched, ",,,")
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "invalid-task-ids" in codes
+
+    def test_filter_schedule_drops_empty_batches(self, tmp_path: Path) -> None:
+        sched = tmp_path / "drop.schedule.json"
+        sched.write_text(json.dumps({
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": []},
+                {"id": "003", "agent": "codex", "files": ["c"],
+                 "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["003"], "file_locks": ["c"]},
+                {"index": 2, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
+            ],
+        }), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "2")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        indices = [b["index"] for b in body["batches"]]
+        assert indices == [2]
+        assert body["batches"][0]["task_ids"] == ["002"]
+
+    def test_filter_schedule_preserves_batch_index(self, tmp_path: Path) -> None:
+        sched = tmp_path / "preserve.schedule.json"
+        sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "2")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        indices = [b["index"] for b in body["batches"]]
+        assert indices == [2]
+
+    def test_filter_schedule_filters_batch_task_ids(self, tmp_path: Path) -> None:
+        sched = tmp_path / "filter_bids.schedule.json"
+        sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "002")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert [b["index"] for b in body["batches"]] == [2]
+        assert body["batches"][0]["task_ids"] == ["002"]
+
+    def test_filter_schedule_success_stdout_is_canonical_only(
+        self, tmp_path: Path,
+    ) -> None:
+        """V11 — Hard-won regression from run 20260415T000811.
+
+        Success stdout MUST have exactly the canonical five keys; no
+        warnings/errors/other metadata. Otherwise write-schedule --stdin will
+        reject the piped payload on unknown top-level fields.
+        """
+        sched = tmp_path / "canon.schedule.json"
+        sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "2")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert set(body.keys()) == {"outcome", "tasks", "batches", "gaps", "risks"}
+
+    def test_filter_schedule_pipes_to_write_schedule_via_shell(
+        self, tmp_path: Path,
+    ) -> None:
+        """V12 — Literal shell pipe, NO Python-side reshaping.
+
+        Hard-won regression from run 20260415T000811: a prior implementation
+        emitted `warnings`/`errors` keys on success and the test masked the
+        bug by Python-popping them before piping. This test uses
+        subprocess.run(..., shell=True) to prove byte-for-byte pipeability.
+        """
+        src = tmp_path / "src.schedule.json"
+        dest = tmp_path / "filtered.schedule.json"
+        src.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        pipeline = (
+            f'{PY} {SCRIPT} filter-schedule '
+            f'--schedule-file {src} --task-ids 2 --json '
+            f'| {PY} {SCRIPT} write-schedule '
+            f'--schedule-file {dest} --stdin --json'
+        )
+        cp = subprocess.run(
+            pipeline, shell=True, capture_output=True, text=True,
+            cwd=str(REPO_ROOT),
+        )
+        assert cp.returncode == 0, (
+            f"pipeline failed:\nstdout={cp.stdout}\nstderr={cp.stderr}"
+        )
+        assert dest.is_file()
+        # Verify write succeeded and file parses back cleanly.
+        written = json.loads(dest.read_text(encoding="utf-8"))
+        assert written["outcome"] == "valid"
+        assert [t["id"] for t in written["tasks"]] == ["002"]
+        assert written["tasks"][0]["dependencies"] == ["001"]
+
+    def test_filter_schedule_full_round_trip_drops_source_risks(
+        self, tmp_path: Path,
+    ) -> None:
+        """V13 — Source schedule has non-empty `risks`; filter-schedule +
+        write-schedule + parse-schedule round-trip MUST exit 0 and the
+        persisted file MUST have `risks=[]` regardless of source.
+
+        Source-side `gaps` cannot be tested under outcome='valid' (validator
+        forbids non-empty gaps with that outcome); `risks` is the only
+        source-side metadata that could survive if the implementer
+        mistakenly copied from source.
+        """
+        src_payload = {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": ["001"]},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+            "gaps": [],
+            "risks": [{"id": "R1", "description": "example risk"}],
+        }
+        src = tmp_path / "src_risks.schedule.json"
+        dest = tmp_path / "filtered_risks.schedule.json"
+        src.write_text(json.dumps(src_payload), encoding="utf-8")
+        # Literal shell pipe: filter-schedule | write-schedule.
+        pipeline = (
+            f'{PY} {SCRIPT} filter-schedule '
+            f'--schedule-file {src} --task-ids 2 --json '
+            f'| {PY} {SCRIPT} write-schedule '
+            f'--schedule-file {dest} --stdin --json'
+        )
+        cp = subprocess.run(
+            pipeline, shell=True, capture_output=True, text=True,
+            cwd=str(REPO_ROOT),
+        )
+        assert cp.returncode == 0, (
+            f"pipeline failed:\nstdout={cp.stdout}\nstderr={cp.stderr}"
+        )
+        # Now parse the persisted file back through parse-schedule.
+        parse_cmd = [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"]
+        parse_cp = subprocess.run(
+            parse_cmd, input=dest.read_text(encoding="utf-8"),
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        assert parse_cp.returncode == 0, parse_cp.stderr
+        # Persisted file MUST have risks=[] regardless of source.
+        written = json.loads(dest.read_text(encoding="utf-8"))
+        assert written.get("risks") == []
+        assert written.get("gaps") == []
+        assert written["outcome"] == "valid"
+        assert [t["id"] for t in written["tasks"]] == ["002"]

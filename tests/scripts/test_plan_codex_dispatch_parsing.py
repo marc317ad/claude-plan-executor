@@ -124,7 +124,6 @@ class TestWrapperParseTaskBlock:
         assert block["title"] == "Filter schedule by agent tier"
         assert "scripts/plan_ops.py" in block["files"]
         assert "tests/scripts/test_plan_ops.py" in block["files"]
-        assert block["dependencies"] == "[004]"
         assert "pytest tests/scripts/test_plan_ops.py" in block["test_command"]
         assert "filter-schedule subcommand" in block["description"]
 

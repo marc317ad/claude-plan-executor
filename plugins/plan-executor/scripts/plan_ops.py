@@ -12,7 +12,6 @@ Usage:
     venv/bin/python scripts/plan_ops.py parse-implementer-report --stdin
     venv/bin/python scripts/plan_ops.py commit-task --plan-file <abs> --task-id NNN ...
     venv/bin/python scripts/plan_ops.py fail-task --plan-file <abs> --task-id NNN ...
-    venv/bin/python scripts/plan_ops.py block-dependents --schedule-file <path> --failed NNN --run-id RID
     venv/bin/python scripts/plan_ops.py update-plan-header --plan-file <abs> --status <s>
     venv/bin/python scripts/plan_ops.py finalize-execution-log --plan-file <abs> ...
     venv/bin/python scripts/plan_ops.py log-event --event E --fields-json '{...}'
@@ -72,8 +71,9 @@ STATUS_BULLET_RE = re.compile(r"^(\s*-\s*\*\*Status:\*\*)\s*(.+?)\s*$", re.MULTI
 DEPENDENCIES_BULLET_RE = re.compile(
     r"^\s*-\s*\*\*Dependencies:\*\*\s*(.+?)\s*$", re.MULTILINE,
 )
-INDEX_ROSTER_HEADER_RE = re.compile(r"^\|\s*#\s*\|\s*File\s*\|", re.MULTILINE)
 ALLOWED_TASK_STATUSES = {"pending", "open", "in-progress", "done", "failed", "blocked", "skipped"}
+ALLOWED_INDEX_STATUSES = {"Done", "Pending", "Superceeded"}
+_INDEX_SUPERSEDED_BY: dict[str, list[str]] = {}
 STATUS_ALIASES = {"open": "pending"}
 SCHEDULE_FIELD_ALIASES = {"task_id": "id", "batch_index": "index"}
 ALLOWED_PLAN_STATUSES = {"in-progress", "complete", "partial"}
@@ -109,40 +109,6 @@ def _task_order_key(task_id: str, priority: str) -> tuple[int, int, str]:
         int(match.group(1)),
         match.group(2),
     )
-
-
-def _topo_sort(tasks: list[dict]) -> tuple[list[str], dict[str, list[str]], dict[str, int], list[str]]:
-    indeg: dict[str, int] = {}
-    adj: dict[str, list[str]] = {}
-    task_meta: dict[str, dict] = {}
-    for task in tasks:
-        task_id = task["id"]
-        indeg[task_id] = 0
-        adj[task_id] = []
-        task_meta[task_id] = task
-
-    for task in tasks:
-        task_id = task["id"]
-        for dep in task["dependencies"]:
-            adj[dep].append(task_id)
-            indeg[task_id] += 1
-
-    ready = sorted(
-        [task_id for task_id, deg in indeg.items() if deg == 0],
-        key=lambda task_id: _task_order_key(task_id, task_meta[task_id]["priority"]),
-    )
-    topo: list[str] = []
-    while ready:
-        current = ready.pop(0)
-        topo.append(current)
-        for nxt in adj[current]:
-            indeg[nxt] -= 1
-            if indeg[nxt] == 0:
-                ready.append(nxt)
-        ready.sort(key=lambda task_id: _task_order_key(task_id, task_meta[task_id]["priority"]))
-
-    residual = sorted(task_id for task_id, deg in indeg.items() if deg > 0)
-    return topo, adj, indeg, residual
 
 
 def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[dict]]:
@@ -186,31 +152,6 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
             })
             continue
 
-        raw_deps = task.get("dependencies") or []
-        if not isinstance(raw_deps, list):
-            errors.append({
-                "path": f"$.tasks[{i}].dependencies",
-                "code": "invalid-type",
-                "message": "dependencies must be an array",
-            })
-            continue
-
-        deps: list[str] = []
-        dep_invalid = False
-        for j, dep in enumerate(raw_deps):
-            dep_id = _normalize_task_id(dep)
-            if dep_id is None:
-                errors.append({
-                    "path": f"$.tasks[{i}].dependencies[{j}]",
-                    "code": "invalid-task-id",
-                    "message": f"dependencies[{j}]={dep!r} is not a valid task id",
-                })
-                dep_invalid = True
-                continue
-            deps.append(dep_id)
-        if dep_invalid:
-            continue
-
         priority = str(task.get("priority", "low")).strip().lower() or "low"
         if priority not in PRIORITY_RANKS:
             priority = "low"
@@ -219,73 +160,47 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
             "id": task_id,
             "priority": priority,
             "files": [str(path) for path in raw_files],
-            "dependencies": deps,
         })
 
     if errors:
         return [], [], errors
 
-    known_ids = {task["id"] for task in normalized_tasks}
-    for task in normalized_tasks:
-        for dep in task["dependencies"]:
-            if dep not in known_ids:
-                errors.append({
-                    "path": f"$.tasks[{seen_ids[task['id']]}].dependencies",
-                    "code": "missing-dependency",
-                    "message": f"dependency {dep!r} is not a known task id",
-                })
-    if errors:
-        return [], [], errors
-
-    topo, _, _, residual = _topo_sort(normalized_tasks)
-    if residual:
-        return [], [], [{
-            "path": "$.tasks",
-            "code": "dependency-cycle",
-            "message": f"dependency cycle among tasks: {residual}",
-            "cycle_nodes": residual,
-        }]
-
-    task_map = {task["id"]: task for task in normalized_tasks}
-    levels: dict[str, int] = {}
-    for task_id in topo:
-        deps = task_map[task_id]["dependencies"]
-        levels[task_id] = 1 if not deps else 1 + max(levels[dep] for dep in deps)
-
+    ordered_tasks = sorted(
+        normalized_tasks,
+        key=lambda task: _task_order_key(task["id"], task["priority"]),
+    )
+    ordered_task_ids = [task["id"] for task in ordered_tasks]
     batches: list[dict] = []
     next_batch_index = 1
-    max_level = max(levels.values(), default=0)
-    for level in range(1, max_level + 1):
-        level_task_ids = [task_id for task_id in topo if levels[task_id] == level]
-        open_batches: list[dict] = []
-        for task_id in level_task_ids:
-            task_files = set(task_map[task_id]["files"])
-            placed = False
-            for batch in open_batches:
-                if batch["_files"] & task_files:
-                    continue
-                batch["task_ids"].append(task_id)
-                batch["_files"].update(task_files)
-                placed = True
-                break
-            if not placed:
-                open_batches.append({
-                    "index": next_batch_index,
-                    "task_ids": [task_id],
-                    "_files": set(task_files),
-                })
-                next_batch_index += 1
+    open_batches: list[dict] = []
+    for task in ordered_tasks:
+        task_files = set(task["files"])
+        placed = False
         for batch in open_batches:
-            batches.append({
-                "index": batch["index"],
-                "task_ids": batch["task_ids"],
-                "file_locks": sorted(batch["_files"]),
+            if batch["_files"] & task_files:
+                continue
+            batch["task_ids"].append(task["id"])
+            batch["_files"].update(task_files)
+            placed = True
+            break
+        if not placed:
+            open_batches.append({
+                "index": next_batch_index,
+                "task_ids": [task["id"]],
+                "_files": set(task_files),
             })
+            next_batch_index += 1
+    for batch in open_batches:
+        batches.append({
+            "index": batch["index"],
+            "task_ids": batch["task_ids"],
+            "file_locks": sorted(batch["_files"]),
+        })
 
-    return topo, batches, []
+    return ordered_task_ids, batches, []
 
 
-def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
+def _validate_schedule_refs(tasks: list, batches: list) -> list[dict]:
     errors: list[dict] = []
     seen_ids: dict[str, int] = {}
     for i, t in enumerate(tasks):
@@ -321,20 +236,6 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
             seen_idx[raw] = i
 
     known_ids = set(seen_ids)
-    for i, t in enumerate(tasks):
-        if not isinstance(t, dict):
-            continue
-        deps = t.get("dependencies") or []
-        if not isinstance(deps, list):
-            continue
-        for j, d in enumerate(deps):
-            if str(d) not in known_ids:
-                errors.append({
-                    "path": f"$.tasks[{i}].dependencies[{j}]",
-                    "code": "unknown-dependency",
-                    "message": f"dependency {str(d)!r} is not a known task id",
-                })
-
     for i, b in enumerate(batches):
         if not isinstance(b, dict):
             continue
@@ -348,41 +249,6 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
                     "code": "unknown-batch-task-ref",
                     "message": f"task_ids[{j}]={str(r)!r} is not a known task id",
                 })
-
-    indeg: dict[str, int] = {tid: 0 for tid in known_ids}
-    adj: dict[str, list[str]] = {tid: [] for tid in known_ids}
-    for t in tasks:
-        if not isinstance(t, dict):
-            continue
-        raw = t.get("id") if "id" in t else t.get("task_id")
-        if raw is None:
-            continue
-        tid = str(raw)
-        if tid not in indeg:
-            continue
-        for d in t.get("dependencies") or []:
-            ds = str(d)
-            if ds in indeg:
-                adj[ds].append(tid)
-                indeg[tid] += 1
-    queue = [tid for tid, deg in indeg.items() if deg == 0]
-    visited = 0
-    head = 0
-    while head < len(queue):
-        cur = queue[head]
-        head += 1
-        visited += 1
-        for nxt in adj[cur]:
-            indeg[nxt] -= 1
-            if indeg[nxt] == 0:
-                queue.append(nxt)
-    if visited < len(known_ids):
-        residual = sorted(tid for tid, deg in indeg.items() if deg > 0)
-        errors.append({
-            "path": "$.tasks",
-            "code": "dependency-cycle",
-            "message": f"dependency cycle among tasks: {residual}",
-        })
 
     # Batch file-scope disjointness (TASK-003B Fix D):
     # Tasks in the same batch must have pairwise-disjoint `files` lists.
@@ -502,7 +368,7 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                         "code": "missing-field",
                         "message": f"tasks[{i}] missing field 'id'",
                     })
-            for key in ("agent", "files", "dependencies"):
+            for key in ("agent", "files"):
                 if key not in t:
                     errors.append({
                         "path": f"$.tasks[{i}].{key}",
@@ -582,7 +448,7 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                         warnings.append(msg)
 
     if not errors:
-        errors.extend(_validate_schedule_dag(tasks, batches))
+        errors.extend(_validate_schedule_refs(tasks, batches))
 
     return errors, warnings
 
@@ -914,124 +780,99 @@ def mutate_task_status(plan_text: str, task_id: str, new_status: str) -> tuple[s
 
 
 def _parse_index_roster(path: Path) -> dict[str, dict]:
-    """Parse the chunk-roster table in a DUAL_AGENT_Plans 00_INDEX.md.
+    """Parse the JSON sidecar roster for DUAL_AGENT_Plans.
 
-    Locates the header row `| # | File | ... | Depends on chunks |`, walks the
-    subsequent `|`-delimited rows until it hits a non-table line, and returns
-    `{task_id: {"file": <filename>, "depends_on": [task_id,...]}}`. Keys are
-    canonical 3-digit ids produced by `_normalize_task_id`.
-
-    Raises FileNotFoundError if `path` does not exist and ValueError if the
-    roster table cannot be located or lacks the columns we need.
+    Returns `{task_id: {"file": filename, "depends_on": deps, "status": status}}`.
+    Supersession metadata is validated and stored in `_INDEX_SUPERSEDED_BY`.
     """
     if not path.is_file():
         raise FileNotFoundError(f"index file not found: {path}")
-    text = path.read_text(encoding="utf-8")
-    header = INDEX_ROSTER_HEADER_RE.search(text)
-    if not header:
-        raise ValueError(f"no chunk-roster table in {path}")
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"malformed JSON in {path}: {e}") from e
+    if not isinstance(doc, dict):
+        raise ValueError(f"index sidecar must be a JSON object in {path}")
+    if "schema_version" not in doc or "chunks" not in doc:
+        raise ValueError(f"index sidecar missing schema_version or chunks in {path}")
+    if doc["schema_version"] != 1:
+        raise ValueError(f"unsupported index schema_version {doc['schema_version']!r} in {path}")
+    chunks = doc["chunks"]
+    if not isinstance(chunks, list):
+        raise ValueError(f"index chunks must be a list in {path}")
 
-    header_end = text.find("\n", header.start())
-    if header_end == -1:
-        raise ValueError(f"malformed roster header in {path}")
-    header_line = text[header.start() : header_end]
-    columns = [c.strip() for c in header_line.strip().strip("|").split("|")]
+    def _valid_normalized_id(raw: object, field: str, chunk_ref: str) -> str:
+        if not isinstance(raw, str):
+            raise ValueError(f"{field} for {chunk_ref} must be a string")
+        normalized = _normalize_task_id(raw)
+        if normalized is None or raw != normalized:
+            raise ValueError(f"{field} for {chunk_ref} must be a normalized task id")
+        return normalized
 
-    def _col_index(candidates: tuple[str, ...]) -> int | None:
-        for name in candidates:
-            if name in columns:
-                return columns.index(name)
-        return None
-
-    file_idx = _col_index(("File",))
-    task_idx = _col_index(("v3 Task", "Task", "Task ID"))
-    if file_idx is None or task_idx is None:
-        raise ValueError(f"roster missing File / Task columns in {path}")
-    depends_idx = _col_index(("Depends on chunks", "Depends on", "Dependencies"))
-
+    global _INDEX_SUPERSEDED_BY
+    _INDEX_SUPERSEDED_BY = {}
     roster: dict[str, dict] = {}
-    saw_separator = False
-    for line in text[header_end + 1 :].splitlines():
-        stripped = line.strip()
-        if not stripped:
-            if saw_separator:
-                break
-            continue
-        if not stripped.startswith("|"):
-            if saw_separator:
-                break
-            continue
-        if stripped.startswith("|---") or stripped.startswith("| ---"):
-            saw_separator = True
-            continue
-        if not saw_separator:
-            continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
-        max_idx = max(file_idx, task_idx, depends_idx if depends_idx is not None else 0)
-        if len(cells) <= max_idx:
-            continue
-        task_id = _normalize_task_id(cells[task_idx])
-        if not task_id:
-            continue
-        file_raw = cells[file_idx]
-        link = re.match(r"\[\s*`?([^`\]]+?)`?\s*\]\(([^)]+)\)", file_raw)
-        if link:
-            filename = link.group(2).strip()
-        else:
-            filename = file_raw.strip().strip("`")
-        deps: list[str] = []
-        if depends_idx is not None and len(cells) > depends_idx:
-            deps_raw = cells[depends_idx]
-            if deps_raw and deps_raw not in {"—", "–", "-", "none", "None"}:
-                for part in deps_raw.split(","):
-                    d = _normalize_task_id(part.strip())
-                    if d:
-                        deps.append(d)
-        roster[task_id] = {"file": filename, "depends_on": deps}
+    for i, chunk in enumerate(chunks):
+        chunk_ref = f"chunks[{i}]"
+        if not isinstance(chunk, dict):
+            raise ValueError(f"{chunk_ref} must be an object")
+        missing = {"task_id", "file", "depends_on", "status", "superseded_by"} - set(chunk)
+        if missing:
+            raise ValueError(f"{chunk_ref} missing required fields: {sorted(missing)}")
+        task_id = _valid_normalized_id(chunk["task_id"], "task_id", chunk_ref)
+        if task_id in roster:
+            raise ValueError(f"duplicate task_id {task_id} in {path}")
+        filename = chunk["file"]
+        if not isinstance(filename, str) or not filename.strip():
+            raise ValueError(f"file for {task_id} must be a non-empty string")
+        status = chunk["status"]
+        if status not in ALLOWED_INDEX_STATUSES:
+            raise ValueError(f"status for {task_id} must be one of {sorted(ALLOWED_INDEX_STATUSES)}")
+        depends_raw = chunk["depends_on"]
+        superseded_raw = chunk["superseded_by"]
+        if not isinstance(depends_raw, list):
+            raise ValueError(f"depends_on for {task_id} must be a list")
+        if not isinstance(superseded_raw, list):
+            raise ValueError(f"superseded_by for {task_id} must be a list")
+        deps = [_valid_normalized_id(dep, "depends_on", task_id) for dep in depends_raw]
+        superseded_by = [
+            _valid_normalized_id(dep, "superseded_by", task_id)
+            for dep in superseded_raw
+        ]
+        if status == "Superceeded" and not superseded_by:
+            raise ValueError(f"Superceeded task {task_id} must have superseded_by targets")
+        if status != "Superceeded" and superseded_by:
+            raise ValueError(f"non-Superceeded task {task_id} must not have superseded_by targets")
+        roster[task_id] = {"file": filename, "depends_on": deps, "status": status}
+        if superseded_by:
+            _INDEX_SUPERSEDED_BY[task_id] = superseded_by
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def _visit(task_id: str) -> None:
+        if task_id in visited:
+            return
+        if task_id in visiting:
+            raise ValueError(f"supersession cycle involving {task_id}")
+        visiting.add(task_id)
+        for child in _INDEX_SUPERSEDED_BY.get(task_id, []):
+            if child in _INDEX_SUPERSEDED_BY:
+                _visit(child)
+        visiting.remove(task_id)
+        visited.add(task_id)
+
+    for task_id in list(_INDEX_SUPERSEDED_BY):
+        _visit(task_id)
     return roster
 
 
-def _read_plan_task_status(plan_path: Path, task_id: str) -> str | None:
-    """Return the `- **Status:**` bullet value for `### TASK-<id>:` in a plan file.
-
-    Returns `None` when the plan file, the task heading, or the status bullet is
-    absent.
-    """
-    if not plan_path.is_file():
-        return None
-    text = plan_path.read_text(encoding="utf-8")
-    _, blocks = _split_task_blocks(text)
-    for tid, body in blocks:
-        if tid == task_id:
-            m = _find_status_bullet(body)
-            if m:
-                return m.group(2).strip()
-            return None
-    return None
-
-
-def _collect_plan_dependencies(plan_text: str) -> tuple[set[str], set[str]]:
-    """Return `(in_plan_ids, requested_deps)` for a plan body.
-
-    `in_plan_ids` is the set of canonical task ids declared in the plan;
-    `requested_deps` is the normalized union of every task-block
-    `- **Dependencies:**` bullet value.
-    """
-    in_plan: set[str] = set()
-    requested: set[str] = set()
+def _first_plan_task_id(plan_text: str) -> str | None:
+    """Return the first TASK id declared in a plan file."""
     _, blocks = _split_task_blocks(plan_text)
-    for tid, body in blocks:
-        in_plan.add(tid)
-        for m in DEPENDENCIES_BULLET_RE.finditer(body):
-            raw = m.group(1).strip()
-            if raw.lower() in {"none", "—", "–", "-"}:
-                continue
-            raw = raw.strip("[]")
-            for part in raw.split(","):
-                normalized = _normalize_task_id(part.strip())
-                if normalized:
-                    requested.add(normalized)
-    return in_plan, requested
+    if not blocks:
+        return None
+    return blocks[0][0]
 
 
 def _append_run_log(event: str, fields: dict) -> str:
@@ -1261,7 +1102,7 @@ def cmd_check_plan_deps(args: argparse.Namespace) -> None:
             "message": f"plan file not found: {plan_path}",
         }]})
 
-    index_path = plans_dir / "00_INDEX.md"
+    index_path = plans_dir / "00_INDEX.json"
     try:
         roster = _parse_index_roster(index_path)
     except FileNotFoundError as e:
@@ -1278,45 +1119,74 @@ def cmd_check_plan_deps(args: argparse.Namespace) -> None:
         }]})
 
     plan_text = plan_path.read_text(encoding="utf-8")
-    in_plan_ids, requested = _collect_plan_dependencies(plan_text)
-    cross_plan = sorted(requested - in_plan_ids)
+    current_task_id = _first_plan_task_id(plan_text)
+    if current_task_id is None:
+        _die(args, {"errors": [{
+            "path": f"$.<file:{plan_path}>",
+            "code": "task-not-found",
+            "message": f"no TASK block found in {plan_path}",
+        }]})
+    current_entry = roster.get(current_task_id)
+    if current_entry is None:
+        _die(args, {"errors": [{
+            "path": f"$.<file:{index_path}>.chunks",
+            "code": "task-not-in-index",
+            "message": f"task {current_task_id} is not declared in 00_INDEX.json roster",
+        }]})
+    requested = current_entry["depends_on"]
 
     resolved: list[dict] = []
     unresolved: list[dict] = []
-    for dep_id in cross_plan:
+
+    def _resolve_dependency(dep_id: str, parent_id: str | None = None) -> None:
         entry = roster.get(dep_id)
         if entry is None:
-            unresolved.append({
+            item = {
                 "task_id": dep_id,
-                "reason": "unresolved-dep",
-                "detail": f"task {dep_id} is not declared in 00_INDEX.md roster",
-            })
-            continue
+                "reason": "superceeded-target-missing" if parent_id else "unresolved-dep",
+                "detail": f"task {dep_id} is not declared in 00_INDEX.json roster",
+            }
+            if parent_id:
+                item["parent_id"] = parent_id
+            unresolved.append(item)
+            return
+
         plan_file = entry["file"]
-        sibling_path = plans_dir / plan_file
-        if not sibling_path.is_file():
-            unresolved.append({
-                "task_id": dep_id,
-                "plan_file": plan_file,
-                "reason": "file-not-found",
-                "detail": f"roster points to missing file: {sibling_path}",
-            })
-            continue
-        status = _read_plan_task_status(sibling_path, dep_id)
-        if status == "done":
+        status = entry["status"]
+        if status == "Done":
             resolved.append({
                 "task_id": dep_id,
                 "plan_file": plan_file,
-                "status": "done",
+                "status": status,
+                **({"parent_id": parent_id} if parent_id else {}),
             })
-        else:
+            return
+        if status == "Pending":
             unresolved.append({
                 "task_id": dep_id,
                 "plan_file": plan_file,
                 "reason": "dep-not-done",
-                "status": status or "unknown",
-                "detail": f"sibling status is {status!r}, expected 'done'",
+                "status": status,
+                "detail": f"roster status is {status!r}, expected 'Done'",
+                **({"parent_id": parent_id} if parent_id else {}),
             })
+            return
+        if status == "Superceeded":
+            targets = _INDEX_SUPERSEDED_BY.get(dep_id, [])
+            for target_id in targets:
+                _resolve_dependency(target_id, parent_id=dep_id)
+            return
+        unresolved.append({
+            "task_id": dep_id,
+            "plan_file": plan_file,
+            "reason": "dep-not-done",
+            "status": status,
+            "detail": f"roster status is {status!r}, expected 'Done'",
+            **({"parent_id": parent_id} if parent_id else {}),
+        })
+
+    for dep_id in requested:
+        _resolve_dependency(dep_id)
 
     _emit(args, {
         "pass": len(unresolved) == 0,
@@ -1519,17 +1389,11 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
         if tid:
             tasks_by_id[tid] = t
 
-    def _ready(task: dict) -> bool:
-        deps = [_normalize_task_id(str(d)) for d in (task.get("dependencies") or [])]
-        if any(d in failed for d in deps):
-            return False
-        return all(d in done for d in deps if d)
-
     def _files(task: dict) -> list[str]:
         return list(task.get("files") or [])
 
     remaining = [t for tid, t in tasks_by_id.items() if tid not in done and tid not in failed]
-    ready = [t for t in remaining if _ready(t)]
+    ready = remaining
 
     picked: list[str] = []
     picked_files: list[str] = []
@@ -1566,6 +1430,125 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
         "task_ids": picked,
         "file_locks": picked_files,
         "scheduler_stuck": scheduler_stuck,
+    })
+
+
+def cmd_filter_schedule(args: argparse.Namespace) -> None:
+    sched_path = Path(args.schedule_file)
+    if not sched_path.is_file():
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "file-not-found",
+            "message": f"schedule file not found: {sched_path}",
+        }]})
+    try:
+        data = json.loads(sched_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "json-decode",
+            "message": f"schedule json decode: {e}",
+        }]})
+    if not isinstance(data, dict):
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "top-level-not-object",
+            "message": "top-level schedule must be an object",
+        }]})
+
+    # 1. Source-schedule validation (mirror cmd_batch_next:1504-1506).
+    errors, warnings = _validate_schedule(data)
+    if errors:
+        _die(args, {"errors": errors, "warnings": warnings})
+
+    # 2. Source-not-valid rejection (V4). Filtering an already-broken schedule
+    # is meaningless — the orchestrator should surface the source outcome
+    # instead.
+    if data.get("outcome") != "valid":
+        _die(args, {"errors": [{
+            "path": "$.outcome",
+            "code": "source-not-valid",
+            "message": (
+                f"filter-schedule requires source outcome='valid', "
+                f"got {data.get('outcome')!r}"
+            ),
+        }]})
+
+    # 3. --task-ids parse + normalize. Empty fragments (e.g. "1,,3") are
+    # skipped silently; all-empty input is a hard error.
+    raw_ids = [s.strip() for s in (args.task_ids or "").split(",") if s.strip()]
+    requested: list[str] = []
+    for r in raw_ids:
+        norm = _normalize_task_id(r)
+        if norm is None:
+            _die(args, {"errors": [{
+                "path": "$.task_ids",
+                "code": "invalid-task-ids",
+                "message": f"could not normalize task id {r!r}",
+            }]})
+        requested.append(norm)
+    if not requested:
+        _die(args, {"errors": [{
+            "path": "$.task_ids",
+            "code": "invalid-task-ids",
+            "message": "no task ids provided",
+        }]})
+
+    # Build tasks_by_id using the alias-tolerant pattern (the legacy
+    # `task_id` field is valid per _validate_schedule, just warned).
+    tasks_by_id: dict[str, dict] = {}
+    for t in data.get("tasks") or []:
+        raw_tid = t.get("id") if "id" in t else t.get("task_id")
+        norm = _normalize_task_id(str(raw_tid)) if raw_tid is not None else None
+        if norm:
+            tasks_by_id[norm] = t
+
+    # 4. Unknown requested id (V2). Case 1: "user typo".
+    unknown = [tid for tid in requested if tid not in tasks_by_id]
+    if unknown:
+        _die(args, {"errors": [{
+            "path": "$.task_ids",
+            "code": "unknown-task-id",
+            "message": f"unknown task id {tid}",
+        } for tid in unknown]})
+
+    # 5. Exact selection. Legacy task fields pass through without affecting
+    # filtering.
+    closed = set(requested)
+
+    # 6. Build output tasks/batches in source order. Drop batches whose
+    # task_ids become empty post-filter (V8); filter retained batch task_ids
+    # to the closed set (V10); preserve original `index` values (V9).
+    def _tid_of(t: dict) -> str | None:
+        raw = t.get("id") if "id" in t else t.get("task_id")
+        return _normalize_task_id(str(raw)) if raw is not None else None
+
+    out_tasks = [t for t in (data.get("tasks") or []) if _tid_of(t) in closed]
+    out_batches: list[dict] = []
+    for b in (data.get("batches") or []):
+        bids = [_normalize_task_id(str(x)) for x in (b.get("task_ids") or [])]
+        keep = [x for x in bids if x in closed]
+        if keep:
+            out_batches.append({**b, "task_ids": keep})
+
+    # 7. Reference-integrity check on the filtered schedule.
+    ref_errors = _validate_schedule_refs(out_tasks, out_batches)
+    if ref_errors:
+        _die(args, {"errors": ref_errors})
+
+    # 8. Emit canonical schedule. gaps=[] and risks=[] are intentional —
+    # inheriting source-level gaps/risks would either contradict
+    # outcome=valid (per _validate_schedule:467-472) or carry stale
+    # references to filtered-out tasks. Success stdout MUST contain ONLY
+    # these five keys so write-schedule --stdin accepts the output
+    # byte-for-byte (V11, V12, V13). Do NOT add warnings/errors/other
+    # metadata on the success path.
+    _emit(args, {
+        "outcome": "valid",
+        "tasks": out_tasks,
+        "batches": out_batches,
+        "gaps": [],
+        "risks": [],
     })
 
 
@@ -1788,47 +1771,6 @@ def cmd_fail_task(args: argparse.Namespace) -> None:
     })
 
 
-def cmd_block_dependents(args: argparse.Namespace) -> None:
-    sched_path = Path(args.schedule_file)
-    if not sched_path.is_file():
-        _die(args, {"error": f"schedule file not found: {sched_path}"})
-    try:
-        data = json.loads(sched_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        _die(args, {"error": f"schedule json decode: {e}"})
-
-    failed_id = _normalize_task_id(args.failed)
-    if not failed_id:
-        _die(args, {"error": f"cannot normalize --failed: {args.failed!r}"})
-
-    blocked: list[str] = []
-    queue = [failed_id]
-    seen = set(queue)
-    tasks = data.get("tasks") or []
-    while queue:
-        cur = queue.pop(0)
-        for t in tasks:
-            raw_tid = t.get("id") if "id" in t else t.get("task_id")
-            tid = _normalize_task_id(str(raw_tid))
-            if not tid or tid in seen:
-                continue
-            deps = [_normalize_task_id(str(d)) for d in (t.get("dependencies") or [])]
-            if cur in deps:
-                blocked.append(tid)
-                seen.add(tid)
-                queue.append(tid)
-
-    for bid in blocked:
-        _append_run_log("blocked", {
-            "run_id": args.run_id,
-            "task_id": bid,
-            "blocker_task_id": failed_id,
-            "reason": f"dependency TASK-{failed_id} failed",
-        })
-
-    _emit(args, {"blocked_task_ids": blocked})
-
-
 def cmd_update_plan_header(args: argparse.Namespace) -> None:
     plan = Path(args.plan_file)
     if not plan.is_file():
@@ -1989,7 +1931,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Promote unknown nested fields from warning to error")
     _add_json(p_sched)
 
-    p_comp = sub.add_parser("compute-schedule", help="Compute topo order + disjoint batches")
+    p_comp = sub.add_parser("compute-schedule", help="Compute priority order + disjoint batches")
     p_comp.add_argument("--stdin", action="store_true", required=True,
                         help="Read JSON schedule from stdin")
     p_comp.add_argument("--strict", action="store_true",
@@ -2013,6 +1955,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--failed", default="", help="Comma-separated failed task ids")
     p_batch.add_argument("--parallel", type=int, default=2, help="Max concurrent tasks")
     _add_json(p_batch)
+
+    p_fs = sub.add_parser(
+        "filter-schedule",
+        help="Filter schedule by --task-ids and emit canonical schedule on stdout",
+    )
+    p_fs.add_argument("--schedule-file", required=True,
+                      help="Path to source schedule JSON")
+    p_fs.add_argument("--task-ids", required=True,
+                      help="CSV of task ids; canonical, plain, or TASK-NNN forms")
+    _add_json(p_fs)
 
     p_rep = sub.add_parser("parse-implementer-report",
                            help="Parse plan-implementer markdown report")
@@ -2049,12 +2001,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Implementer-supplied reversion guidance (stage=implement)")
     p_fail.add_argument("--dry-run", action="store_true")
     _add_json(p_fail)
-
-    p_block = sub.add_parser("block-dependents", help="Cascade-block downstream tasks")
-    p_block.add_argument("--schedule-file", required=True)
-    p_block.add_argument("--failed", required=True, help="Failed task id")
-    p_block.add_argument("--run-id", required=True)
-    _add_json(p_block)
 
     p_hdr = sub.add_parser("update-plan-header", help="Mutate **Status:** in plan header block")
     p_hdr.add_argument("--plan-file", required=True)
@@ -2098,12 +2044,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cpd = sub.add_parser(
         "check-plan-deps",
-        help="Resolve cross-plan dependencies via 00_INDEX.md + sibling statuses",
+        help="Resolve cross-plan prerequisites via 00_INDEX.json",
     )
     p_cpd.add_argument("--plan-file", required=True, help="Absolute path to plan file")
     p_cpd.add_argument(
         "--plans-dir", required=True,
-        help="Directory containing 00_INDEX.md and sibling plan files",
+        help="Directory containing 00_INDEX.json and sibling plan files",
     )
     _add_json(p_cpd)
 
@@ -2125,10 +2071,10 @@ def main(argv: list[str] | None = None) -> None:
         "compute-schedule": cmd_compute_schedule,
         "write-schedule": cmd_write_schedule,
         "batch-next": cmd_batch_next,
+        "filter-schedule": cmd_filter_schedule,
         "parse-implementer-report": cmd_parse_implementer_report,
         "commit-task": cmd_commit_task,
         "fail-task": cmd_fail_task,
-        "block-dependents": cmd_block_dependents,
         "update-plan-header": cmd_update_plan_header,
         "finalize-execution-log": cmd_finalize_execution_log,
         "log-event": cmd_log_event,

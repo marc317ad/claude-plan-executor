@@ -200,7 +200,6 @@ def parse_task_block(plan_text: str, task_id_arg: str) -> dict:
         "title": title,
         "status": _extract_inline_field(block, "Status"),
         "priority": _extract_inline_field(block, "Priority"),
-        "dependencies": _extract_inline_field(block, "Dependencies"),
         "test_command": _extract_inline_field(block, "Test command"),
         "files": _extract_bullet_list(block, "Files"),
         "acceptance_criteria": _extract_bullet_list(block, "Acceptance criteria"),

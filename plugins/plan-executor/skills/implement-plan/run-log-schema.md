@@ -7,7 +7,7 @@ All events carry `ts` (ISO-8601 UTC, e.g. `2026-04-13T17:02:04Z`) and `run_id`.
 | `event` | Required fields |
 |---|---|
 | `run_start` | `ts, run_id, plan_file, mode, flags, starting_sha, candidate_count` |
-| `run_end` | `ts, run_id, ending_sha, done_count, failed_count, blocked_count, disagreement_count, minor_findings_total` |
+| `run_end` | `ts, run_id, ending_sha, done_count, failed_count, disagreement_count, minor_findings_total` |
 | `batch_start` | `ts, run_id, batch_index, task_ids, file_locks` |
 | `implement_start` | `ts, run_id, task_id, agent, model?, batch_index` |
 | `implement_done` | `ts, run_id, task_id, outcome, files_changed, test_outcome, wall_seconds` |
@@ -17,12 +17,11 @@ All events carry `ts` (ISO-8601 UTC, e.g. `2026-04-13T17:02:04Z`) and `run_id`.
 | `disagreement` | `ts, run_id, task_id, codex_findings, code_reviewer_verdict` |
 | `commit_done` | `ts, run_id, task_id, commit_sha, files, reviewer_verdict, minor_findings_count, disagreement_tag` |
 | `failed` | `ts, run_id, task_id, stage, reason, reversion_guidance?, reviewer_findings?` |
-| `blocked` | `ts, run_id, task_id, blocker_task_id, reason` |
 | `review_skipped` | `ts, run_id, task_id, reason` |
 
 ## Field definitions
 
-- **`outcome`** (on `implement_done`): one of `success | partial | failed | plan-incorrect | blocked | malformed` for Claude-tier implementers; one of `success | failure | timeout | parse_error | scope_violation | dry_run` for Codex-tier (wrapper-emitted; see `scripts/plan_codex_dispatch.py`). The event fires on **every** implementer return, success or not.
+- **`outcome`** (on `implement_done`): one of `success | partial | failed | plan-incorrect | malformed` for Claude-tier implementers; one of `success | failure | timeout | parse_error | scope_violation | dry_run` for Codex-tier (wrapper-emitted; see `scripts/plan_codex_dispatch.py`). The event fires on **every** implementer return, success or not.
 - **`stage`** (on `failed`): `implement | review | commit`. A `failed` event fires *additionally* on non-success, paired with an `implement_done outcome≠success`, a `review_done verdict=needs-rework`, or a commit rollback.
 - **`verdict`** (on `review_done`): one of `clean | minor-findings | needs-rework` for Codex reviewers (matches `scripts/codex_review_schema.json`); one of `ship | ship-with-fixes | needs-rework` for Claude reviewers (`code-reviewer` vocab). Preserved verbatim — not normalized across reviewer types.
 - **`test_outcome`** (on `implement_done`): `passed | failed | not-run | pre-existing-failure`.

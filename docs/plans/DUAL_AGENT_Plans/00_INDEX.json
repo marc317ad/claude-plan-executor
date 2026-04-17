@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "chunks": [
+    {
+      "task_id": "001",
+      "v3_task": "TASK-001",
+      "file": "TASK-001_canonical_contracts.md",
+      "priority": "critical",
+      "issues_absorbed": ["001", "009", "013", "014", "016", "022", "024", "025", "026"],
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "v3_task": "TASK-002",
+      "file": "TASK-002_runtime_validation.md",
+      "priority": "critical",
+      "issues_absorbed": ["001", "014", "016", "019", "020"],
+      "depends_on": ["001"],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "v3_task": "TASK-003",
+      "file": "TASK-003_state_isolation.md",
+      "priority": "critical",
+      "issues_absorbed": ["003", "004", "005", "015", "017", "021"],
+      "depends_on": ["001"],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "v3_task": "TASK-004",
+      "file": "TASK-004_scheduler_semantics.md",
+      "priority": "high",
+      "issues_absorbed": ["006", "010", "011", "012", "018", "019", "020"],
+      "depends_on": ["001", "002"],
+      "status": "Superceeded",
+      "superseded_by": ["004A", "004B", "004C", "004D", "004E"]
+    },
+    {
+      "task_id": "004A",
+      "v3_task": "TASK-004A",
+      "file": "TASK-004A_filter_schedule.md",
+      "priority": "high",
+      "issues_absorbed": ["006", "019", "020"],
+      "depends_on": ["001", "002", "003"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004B",
+      "v3_task": "TASK-004B",
+      "file": "TASK-004B_batch_next.md",
+      "priority": "high",
+      "issues_absorbed": ["010", "019"],
+      "depends_on": ["004A"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004C",
+      "v3_task": "TASK-004C",
+      "file": "TASK-004C_fail_task_cleanup.md",
+      "priority": "high",
+      "issues_absorbed": ["011", "015", "017", "021"],
+      "depends_on": ["004B"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004D",
+      "v3_task": "TASK-004D",
+      "file": "TASK-004D_block_dependents_mutation.md",
+      "priority": "high",
+      "issues_absorbed": ["012", "018"],
+      "depends_on": ["004C"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004E",
+      "v3_task": "TASK-004E",
+      "file": "TASK-004E_acquire_lock_strict.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": ["004D"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "v3_task": "TASK-005",
+      "file": "TASK-005_phase_gates.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": ["004"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "v3_task": "TASK-006",
+      "file": "TASK-006_conformance_fixture.md",
+      "priority": "high",
+      "issues_absorbed": ["002"],
+      "depends_on": ["005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "v3_task": "TASK-007",
+      "file": "TASK-007_self_audit.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": ["005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "008",
+      "v3_task": "TASK-008",
+      "file": "TASK-008_portability_preflight.md",
+      "priority": "medium",
+      "issues_absorbed": ["007", "008"],
+      "depends_on": ["005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "009",
+      "v3_task": "TASK-009",
+      "file": "TASK-009_scale_aware_reads.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": ["002"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "010",
+      "v3_task": "TASK-010",
+      "file": "TASK-010_global_dep_locks.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": ["005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "011",
+      "v3_task": "TASK-011",
+      "file": "TASK-011_bounded_log_handling.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": ["002", "003"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
