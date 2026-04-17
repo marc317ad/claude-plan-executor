@@ -21,7 +21,8 @@
       "Bash(venv/bin/python /mnt/d/claude-plan-executor/plugins/plan-executor/scripts/plan_ops.py preflight --plan-file /mnt/d/claude-plan-executor/docs/plans/DUAL_AGENT_Plans/TASK-004A_filter_schedule.md --json)",
       "Bash(git check-attr *)",
       "Bash(venv/bin/pytest tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_log_jsonl -m slow -v -s)",
-      "Bash(venv/bin/pytest tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_log_jsonl tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_lock_json tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_schedule_json_tracked -m slow -v)"
+      "Bash(venv/bin/pytest tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_log_jsonl tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_lock_json tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_schedule_json_tracked -m slow -v)",
+      "Bash(venv/bin/python *)"
     ]
   }
 }

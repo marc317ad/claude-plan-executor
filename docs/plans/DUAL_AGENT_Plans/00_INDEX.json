@@ -328,6 +328,46 @@
       "depends_on": [],
       "status": "Pending",
       "superseded_by": []
+    },
+    {
+      "task_id": "016A",
+      "v3_task": "TASK-016A",
+      "file": "TASK-016_partial_agreement_and_narrow_remediation.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": [
+        "001",
+        "002",
+        "014A"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "016B",
+      "v3_task": "TASK-016B",
+      "file": "TASK-016_partial_agreement_and_narrow_remediation.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "016C",
+      "v3_task": "TASK-016C",
+      "file": "TASK-016_partial_agreement_and_narrow_remediation.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": [
+        "016A",
+        "016B",
+        "014A"
+      ],
+      "status": "Pending",
+      "superseded_by": []
     }
   ]
 }
