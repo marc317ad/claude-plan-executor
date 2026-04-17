@@ -3166,3 +3166,392 @@ class TestFinalizeExecutionLogOutcome:
         text = isolated_plan.read_text(encoding="utf-8")
         assert "## Execution log — R-legacy\n" in text
         assert "## Execution log — R-legacy (" not in text
+
+
+# ---------------------------------------------------------------------------
+# TASK-014B — roster auto-update in commit-task (V5–V7)
+# ---------------------------------------------------------------------------
+
+
+def _write_index(plans_dir: Path, chunks: list[dict]) -> Path:
+    """Write a `00_INDEX.json` with the given chunk rows into `plans_dir`.
+
+    Mirrors the on-disk schema (`schema_version=1`, `chunks=[...]`) that
+    `_parse_index_roster` validates. Returns the path.
+    """
+    path = plans_dir / "00_INDEX.json"
+    path.write_text(
+        json.dumps({"schema_version": 1, "source": "test", "chunks": chunks}, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+class TestRosterAutoUpdate:
+    """V5–V7 — `commit-task` flips the matching `00_INDEX.json` chunk's
+    `status` to `Done`, writes atomically via tempfile+os.replace, is
+    idempotent on re-run, and rolls back the commit if the chunk is
+    missing from the roster.
+    """
+
+    def _chunk(self, task_id: str, file_: str, status: str = "Pending") -> dict:
+        return {
+            "task_id": task_id,
+            "v3_task": f"TASK-{task_id}",
+            "file": file_,
+            "priority": "medium",
+            "issues_absorbed": [],
+            "depends_on": [],
+            "status": status,
+            "superseded_by": [],
+        }
+
+    def test_v5_commit_task_flips_pending_to_done(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """V5 — a successful commit-task flips the chunk's status to Done."""
+        plans_dir = tmp_git_repo / "docs" / "plans"
+        index_path = _write_index(plans_dir, [
+            self._chunk("001", "sample.md", status="Pending"),
+        ])
+        before = json.loads(index_path.read_text(encoding="utf-8"))
+        assert before["chunks"][0]["status"] == "Pending"
+
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = plans_dir / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        after = json.loads(index_path.read_text(encoding="utf-8"))
+        assert after["chunks"][0]["status"] == "Done"
+        # Every other field (task_id, file, priority, depends_on, ...) is
+        # byte-preserved — the mutation is narrow.
+        for field in ("task_id", "file", "priority", "depends_on", "superseded_by"):
+            assert after["chunks"][0][field] == before["chunks"][0][field]
+        # Plan-level status bullet flip is unchanged (existing behavior).
+        assert "### TASK-001: First task\n\n- **Status:** done" in plan.read_text(
+            encoding="utf-8"
+        )
+        # The roster update MUST be part of the commit, not an uncommitted
+        # working-tree mutation — drift is the whole reason TASK-014B exists.
+        head_index = subprocess.run(
+            ["git", "show", "HEAD:docs/plans/00_INDEX.json"],
+            capture_output=True, text=True, cwd=tmp_git_repo, check=True,
+        )
+        head_roster = json.loads(head_index.stdout)
+        assert head_roster["chunks"][0]["status"] == "Done"
+        # And no uncommitted changes to the roster are left behind.
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain", "--", "docs/plans/00_INDEX.json"],
+            capture_output=True, text=True, cwd=tmp_git_repo, check=True,
+        )
+        assert porcelain.stdout.strip() == ""
+
+    def test_v5_only_matching_chunk_mutated(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """`commit-task` MUST only mutate the chunk whose `file` matches the
+        plan's basename; sibling chunks are byte-preserved.
+        """
+        plans_dir = tmp_git_repo / "docs" / "plans"
+        index_path = _write_index(plans_dir, [
+            self._chunk("001", "sample.md", status="Pending"),
+            self._chunk("002", "other.md", status="Pending"),
+            self._chunk("003", "third.md", status="Done"),
+        ])
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = plans_dir / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        after = json.loads(index_path.read_text(encoding="utf-8"))
+        # 001: flipped to Done.
+        assert after["chunks"][0]["task_id"] == "001"
+        assert after["chunks"][0]["status"] == "Done"
+        # 002: untouched — a stale Pending that a future run will flip.
+        assert after["chunks"][1]["task_id"] == "002"
+        assert after["chunks"][1]["status"] == "Pending"
+        # 003: untouched Done.
+        assert after["chunks"][2]["task_id"] == "003"
+        assert after["chunks"][2]["status"] == "Done"
+
+    def test_v6_write_is_atomic_no_tmpfile_leftover(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """V6 — after a successful commit-task, no `.tmp`/`.00_INDEX.*`
+        temporary file is left behind in the plans directory.
+        """
+        plans_dir = tmp_git_repo / "docs" / "plans"
+        _write_index(plans_dir, [
+            self._chunk("001", "sample.md", status="Pending"),
+        ])
+
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = plans_dir / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        leftovers = [
+            p.name for p in plans_dir.iterdir()
+            if p.name.startswith(".00_INDEX.") or p.suffix == ".tmp"
+        ]
+        assert leftovers == [], f"tempfile leaked: {leftovers}"
+
+    def test_v6_idempotent_second_commit_byte_identical(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """V6 — re-running commit-task for an already-Done chunk produces
+        byte-identical `00_INDEX.json` on the second run.
+        """
+        plans_dir = tmp_git_repo / "docs" / "plans"
+        index_path = _write_index(plans_dir, [
+            self._chunk("001", "sample.md", status="Pending"),
+        ])
+
+        # First run: Pending → Done.
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = plans_dir / "sample.md"
+        cp1 = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp1.returncode == 0, cp1.stderr
+        bytes_after_first = index_path.read_bytes()
+        assert json.loads(bytes_after_first)["chunks"][0]["status"] == "Done"
+
+        # Second run: already-Done → no-op write, byte-identical.
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 3\n", encoding="utf-8")
+        cp2 = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R2",
+            "--files", "src/foo.py",
+            "--title", "First task retry",
+            "--diff-summary", "bump x again",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp2.returncode == 0, cp2.stderr
+        bytes_after_second = index_path.read_bytes()
+        assert bytes_after_second == bytes_after_first, (
+            "idempotent re-run must be byte-identical"
+        )
+
+    def test_v7_missing_roster_entry_rolls_back_commit(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """V7 — if the plan's basename has no matching chunk in
+        `00_INDEX.json`, commit-task exits 1 with
+        `errors[0].code == 'task-not-in-index'` and the git commit is rolled
+        back (HEAD unchanged; working-tree edits remain for the user).
+        """
+        plans_dir = tmp_git_repo / "docs" / "plans"
+        # Roster is present but sample.md has no entry — only an unrelated
+        # chunk exists. This is the drift scenario the plan calls out.
+        index_path = _write_index(plans_dir, [
+            self._chunk("999", "unrelated.md", status="Pending"),
+        ])
+        original_index_bytes = index_path.read_bytes()
+
+        initial_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = plans_dir / "sample.md"
+        original_plan_text = plan.read_text(encoding="utf-8")
+
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 1, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body.get("errors", [])]
+        assert "task-not-in-index" in codes
+        assert body["errors"][0]["code"] == "task-not-in-index"
+
+        # Git HEAD is unchanged — the commit was rolled back.
+        final_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert final_sha == initial_sha, (
+            "rollback must leave HEAD at the pre-commit-task SHA"
+        )
+
+        # Plan text is restored — the status bullet flip is undone.
+        assert plan.read_text(encoding="utf-8") == original_plan_text
+        # Roster bytes are also byte-identical — the rollback introduced
+        # by TASK-014B must preserve the sidecar on the missing-entry path
+        # (the roster mutation is skipped entirely before git state changes).
+        assert index_path.read_bytes() == original_index_bytes
+
+    def test_fail_task_leaves_roster_untouched(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """`fail-task` MUST NOT mutate the roster. Future retries need the
+        original Pending status intact.
+        """
+        plans_dir = tmp_git_repo / "docs" / "plans"
+        index_path = _write_index(plans_dir, [
+            self._chunk("001", "sample.md", status="Pending"),
+        ])
+        before_bytes = index_path.read_bytes()
+
+        (tmp_git_repo / "src" / "foo.py").write_text("BROKEN\n", encoding="utf-8")
+        plan = plans_dir / "sample.md"
+        cp = _run(
+            "fail-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--stage", "implement",
+            "--reason", "malformed_report",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        assert index_path.read_bytes() == before_bytes, (
+            "fail-task must not touch 00_INDEX.json"
+        )
+
+    def test_commit_task_with_no_roster_still_commits(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """Backward compatibility — plans that predate the roster (no
+        `00_INDEX.json` next to the plan file) MUST still commit cleanly.
+        Only drift in an EXISTING roster is load-bearing.
+        """
+        # No _write_index call — tmp_git_repo has no 00_INDEX.json.
+        plans_dir = tmp_git_repo / "docs" / "plans"
+        assert not (plans_dir / "00_INDEX.json").exists()
+
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = plans_dir / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["commit_sha"]
+
+    def test_commit_task_malformed_roster_is_hard_error(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """A present-but-invalid `00_INDEX.json` (bad JSON or missing
+        `chunks`) is a hard error — commit-task must NOT silently treat it
+        as "no roster" and commit anyway. Otherwise a corrupted sidecar
+        would let drift sneak through. The plan text is restored and git
+        HEAD is unchanged.
+        """
+        plans_dir = tmp_git_repo / "docs" / "plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        index_path = plans_dir / "00_INDEX.json"
+        index_path.write_text("{ not valid json", encoding="utf-8")
+
+        initial_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = plans_dir / "sample.md"
+        original_plan_text = plan.read_text(encoding="utf-8")
+
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 1, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body.get("errors", [])]
+        assert "index-malformed" in codes
+
+        final_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert final_sha == initial_sha
+        assert plan.read_text(encoding="utf-8") == original_plan_text
+        # The malformed sidecar is left exactly as-is — we never rewrote it.
+        assert index_path.read_text(encoding="utf-8") == "{ not valid json"

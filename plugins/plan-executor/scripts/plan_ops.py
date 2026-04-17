@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -896,6 +897,115 @@ def _parse_index_roster(path: Path) -> dict[str, dict]:
     return roster
 
 
+def _update_index_status(
+    index_path: Path, plan_basename: str, new_status: str
+) -> tuple[str, dict | None]:
+    """Flip the `status` of the chunk whose `file` matches `plan_basename`.
+
+    TASK-014B: written atomically via `tempfile.NamedTemporaryFile(dir=parent)
+    + os.replace(tmp, index_path)` so a mid-write interrupt leaves the prior
+    roster intact. The write is idempotent — re-running for an already-at-
+    target chunk produces byte-identical bytes on the second run.
+
+    Returns `(outcome, error_dict_or_None)`:
+      * `("updated", None)` — chunk found, status changed, file rewritten.
+      * `("unchanged", None)` — chunk found, status already at target; no
+        write performed (byte-identical idempotency is trivially satisfied).
+      * `("missing-index", err)` — `00_INDEX.json` absent (tolerated by the
+        caller as a soft skip).
+      * `("invalid-index", err)` — roster present but unparseable or missing
+        `chunks`. Caller must treat as a hard error so silently-invalid
+        sidecars don't drift.
+      * `("missing-entry", err)` — roster parsed but no chunk matches
+        `plan_basename`.
+
+    `err` is an `errors[0]`-shaped dict `{path, code, message}` ready to feed
+    into `_die`.
+    """
+    if new_status not in ALLOWED_INDEX_STATUSES:
+        raise ValueError(
+            f"new_status must be one of {sorted(ALLOWED_INDEX_STATUSES)}, got {new_status!r}"
+        )
+
+    if not index_path.is_file():
+        return "missing-index", {
+            "path": f"$.<file:{index_path}>",
+            "code": "index-not-found",
+            "message": f"index file not found: {index_path}",
+        }
+
+    raw_text = index_path.read_text(encoding="utf-8")
+    try:
+        doc = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        return "invalid-index", {
+            "path": f"$.<file:{index_path}>",
+            "code": "index-malformed",
+            "message": f"malformed JSON in {index_path}: {exc}",
+        }
+    if not isinstance(doc, dict) or not isinstance(doc.get("chunks"), list):
+        return "invalid-index", {
+            "path": f"$.<file:{index_path}>",
+            "code": "index-malformed",
+            "message": f"index sidecar missing chunks in {index_path}",
+        }
+
+    target_idx = None
+    for i, chunk in enumerate(doc["chunks"]):
+        if isinstance(chunk, dict) and chunk.get("file") == plan_basename:
+            target_idx = i
+            break
+
+    if target_idx is None:
+        return "missing-entry", {
+            "path": f"$.<file:{index_path}>.chunks",
+            "code": "task-not-in-index",
+            "message": (
+                f"no chunk in 00_INDEX.json matches plan basename {plan_basename!r}"
+            ),
+        }
+
+    current_status = doc["chunks"][target_idx].get("status")
+    if current_status == new_status:
+        # Idempotent: re-running commit-task on an already-Done chunk is a
+        # no-op write. Skip the tempfile dance entirely so the on-disk bytes
+        # are trivially byte-identical across runs.
+        return "unchanged", None
+
+    doc["chunks"][target_idx]["status"] = new_status
+
+    # `json.dumps(..., indent=2)` mirrors the roster's existing layout (see
+    # `_write_roster` in the test suite and the on-disk 00_INDEX.json files
+    # in docs/plans/DUAL_AGENT_Plans/). Trailing newline for POSIX-friendly
+    # diffs.
+    new_text = json.dumps(doc, indent=2) + "\n"
+
+    parent = index_path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(parent),
+            prefix=".00_INDEX.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp.write(new_text)
+            tmp_name = tmp.name
+        os.replace(tmp_name, index_path)
+        tmp_name = None
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+    return "updated", None
+
+
 def _first_plan_task_id(plan_text: str) -> str | None:
     """Return the first TASK id declared in a plan file."""
     _, blocks = _split_task_blocks(plan_text)
@@ -1723,16 +1833,80 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         # [disagreement] tag that D.2a might have already appended upstream.
         commit_msg = commit_msg.rstrip("\n") + "\n\n[remediation]\n"
 
+    # TASK-014B — roster auto-update must happen BEFORE `git add` so the
+    # updated `00_INDEX.json` is included in the same commit as the plan
+    # status bullet and implementation files. Otherwise the roster change
+    # is left as an uncommitted working-tree mutation, which is exactly
+    # the drift this task was supposed to prevent. On `invalid-index` or
+    # `missing-entry` we restore the plan text and exit with the structured
+    # error before any git state changes. A missing `00_INDEX.json` is a
+    # no-op — legacy plans that predate the roster MUST keep committing.
+    index_path = plan.parent / "00_INDEX.json"
+    # Capture pre-update roster bytes so downstream git failures can roll
+    # the roster write back alongside the plan text. `None` means the file
+    # did not exist beforehand — rollback in that branch is an unlink.
+    original_index_bytes: bytes | None
+    try:
+        original_index_bytes = index_path.read_bytes()
+    except FileNotFoundError:
+        original_index_bytes = None
+
+    outcome, err = _update_index_status(index_path, plan.name, "Done")
+    if outcome in ("invalid-index", "missing-entry"):
+        assert err is not None
+        _write_text(plan, original_plan)
+        _die(args, {"errors": [err]})
+
+    def _restore_roster() -> None:
+        """Roll the roster back through the same atomic pattern as the
+        forward write (tempfile + os.replace). A direct `write_bytes`
+        here would re-introduce a non-atomic write path — an interrupted
+        rollback could truncate `00_INDEX.json`, which is exactly the
+        failure mode V6's atomicity requirement forbids.
+        """
+        if outcome != "updated":
+            return
+        if original_index_bytes is None:
+            try:
+                index_path.unlink()
+            except FileNotFoundError:
+                pass
+            return
+        parent = index_path.parent
+        tmp_name = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=str(parent),
+                prefix=".00_INDEX.rollback.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp.write(original_index_bytes)
+                tmp_name = tmp.name
+            os.replace(tmp_name, index_path)
+            tmp_name = None
+        finally:
+            if tmp_name is not None:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+
     add_files = files + [str(plan)]
+    if outcome == "updated":
+        add_files.append(str(index_path))
     add = _git(["add", "--", *add_files])
     if add.returncode != 0:
         _write_text(plan, original_plan)
+        _restore_roster()
         _die(args, {"error": f"git add failed: {add.stderr.strip()}"})
 
     commit = _git(["commit", "-m", commit_msg, "--only", "--", *add_files])
     if commit.returncode != 0:
         _git(["reset", "HEAD", "--", *add_files])
         _write_text(plan, original_plan)
+        _restore_roster()
         _die(args, {"error": f"git commit failed: {commit.stderr.strip() or commit.stdout.strip()}"})
 
     sha_cp = _git(["rev-parse", "HEAD"])

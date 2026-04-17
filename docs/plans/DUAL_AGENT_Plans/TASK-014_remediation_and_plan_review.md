@@ -135,7 +135,7 @@ Safe to revert; remove Phase D.2a.5 section from SKILL.md, drop the `--remediati
 
 ### TASK-014B: `00_INDEX.json` roster status auto-update
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
