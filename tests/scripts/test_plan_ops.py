@@ -3555,3 +3555,459 @@ class TestRosterAutoUpdate:
         assert plan.read_text(encoding="utf-8") == original_plan_text
         # The malformed sidecar is left exactly as-is — we never rewrote it.
         assert index_path.read_text(encoding="utf-8") == "{ not valid json"
+
+
+# ---------------------------------------------------------------------------
+# TASK-014C — Phase 1.5 Codex plan review gate
+# ---------------------------------------------------------------------------
+#
+# V8  — event ordering (documented in SKILL.md; asserted here by prose
+#        assertion + the presence of the new event vocab in
+#        ALLOWED_LOG_EVENTS, which is the tripwire the orchestrator depends
+#        on).
+# V9  — verdict routing (validated via parse-plan-review-report on
+#        synthetic envelopes; each verdict lands in the output).
+# V10 — codex unavailable → degrade (wrapper's `codex_not_found` /
+#        `failure` outcomes surface as terminal-outcome envelopes that
+#        parse-plan-review-report accepts without raising schema errors).
+# V11 — --skip-plan-review bypass (documented in SKILL.md §Phase 1.5 and
+#        in the CLI flag list; prose-asserted here).
+
+
+_PLAN_REVIEW_SCHEMA = (
+    SCRIPTS_DIR / "codex_plan_review_schema.json"
+)
+
+
+def _plan_review_envelope(
+    *,
+    verdict: str | None = "approved",
+    outcome: str = "success",
+    findings: list | None = None,
+    plan_file: str = "sample.md",
+    schedule_ok: bool = True,
+    dependencies_ok: bool = True,
+    summary: str = "ok",
+    error: str | None = None,
+    drop_parsed: bool = False,
+) -> dict:
+    """Build a synthetic plan-review wrapper envelope for the parser tests."""
+    envelope: dict = {
+        "task_id": "plan",
+        "plan_file": plan_file,
+        "subcommand": "plan-review",
+        "outcome": outcome,
+        "codex_exit_code": 0,
+        "codex_output_raw": None,
+        "error": error,
+    }
+    if drop_parsed:
+        envelope["parsed"] = None
+        return envelope
+    parsed = {
+        "plan_file": plan_file,
+        "verdict": verdict,
+        "findings": findings if findings is not None else [],
+        "schedule_ok": schedule_ok,
+        "dependencies_ok": dependencies_ok,
+        "summary": summary,
+    }
+    envelope["parsed"] = parsed
+    return envelope
+
+
+class TestPlanReviewSchemaFile:
+    """V10 scaffold — the schema file exists and is valid JSON with the
+    expected verdict vocabulary. Codex unavailability is handled at the
+    parser level (terminal outcomes) but the schema must be on disk so
+    the wrapper can hand it to `codex exec --output-schema`."""
+
+    def test_schema_file_exists(self) -> None:
+        assert _PLAN_REVIEW_SCHEMA.is_file(), (
+            f"expected schema file at {_PLAN_REVIEW_SCHEMA}"
+        )
+
+    def test_schema_declares_verdict_enum(self) -> None:
+        schema = json.loads(_PLAN_REVIEW_SCHEMA.read_text(encoding="utf-8"))
+        verdict = schema["properties"]["verdict"]
+        assert set(verdict["enum"]) == {
+            "approved", "approved-with-notes", "needs-replan",
+        }
+        required = set(schema["required"])
+        assert required == {
+            "plan_file", "verdict", "findings",
+            "schedule_ok", "dependencies_ok", "summary",
+        }
+
+
+class TestParsePlanReviewReport:
+    """V9 — verdict routing. parse-plan-review-report extracts the verdict
+    from a valid envelope so the orchestrator can route on it.
+    """
+
+    def _run_parser(self, envelope: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input=json.dumps(envelope),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    @pytest.mark.parametrize(
+        "verdict",
+        ["approved", "approved-with-notes", "needs-replan"],
+    )
+    def test_accepts_each_verdict(self, verdict: str) -> None:
+        cp = self._run_parser(_plan_review_envelope(verdict=verdict))
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["verdict"] == verdict
+        assert body["plan_file"] == "sample.md"
+        assert body["findings_count"] == 0
+        assert body["errors"] == []
+
+    def test_findings_count_reflects_findings_len(self) -> None:
+        findings = [
+            {
+                "severity": "important",
+                "section": "TASK-014C Files",
+                "concern": "schema file missing",
+                "suggested_change": "add codex_plan_review_schema.json",
+            },
+            {
+                "severity": "minor",
+                "section": "Context",
+                "concern": "typo in §Scoped Context",
+                "suggested_change": "re-read paragraph and fix",
+            },
+        ]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="approved-with-notes", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["findings_count"] == 2
+        assert body["findings"] == findings
+
+    def test_rejects_invalid_verdict(self) -> None:
+        cp = self._run_parser(_plan_review_envelope(verdict="clean"))
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "invalid-plan-review-verdict" in codes
+
+    def test_rejects_missing_parsed(self) -> None:
+        cp = self._run_parser(_plan_review_envelope(drop_parsed=True))
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        # `parsed: null` surfaces as an invalid-type / missing-field error;
+        # either is acceptable for contract purposes as long as the run halts.
+        assert any(
+            code in codes
+            for code in ("invalid-type", "missing-field")
+        ), codes
+
+    def test_rejects_unknown_parsed_field(self) -> None:
+        env = _plan_review_envelope()
+        env["parsed"]["unexpected_top_field"] = "nope"
+        cp = self._run_parser(env)
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "unknown-parsed-field" in codes
+
+    def test_rejects_missing_required_parsed_field(self) -> None:
+        env = _plan_review_envelope()
+        env["parsed"].pop("schedule_ok")
+        cp = self._run_parser(env)
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "missing-field" in codes
+
+    def test_rejects_malformed_finding(self) -> None:
+        env = _plan_review_envelope(
+            verdict="needs-replan",
+            findings=[{"severity": "info", "section": "x"}],
+        )
+        cp = self._run_parser(env)
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        # Missing required fields + bad severity both land in errors[*].
+        assert "missing-plan-review-finding-field" in codes
+        assert "invalid-plan-review-finding-severity" in codes
+
+    def test_rejects_non_plan_review_subcommand(self) -> None:
+        env = _plan_review_envelope()
+        env["subcommand"] = "review"
+        cp = self._run_parser(env)
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "invalid-subcommand" in codes
+
+    def test_wrong_subcommand_with_terminal_outcome_still_rejected(self) -> None:
+        """Regression: envelope-level validation MUST run before the
+        terminal-outcome shortcut. Otherwise a malformed envelope like
+        `{"subcommand":"review","outcome":"failure"}` would slip through as
+        a 'codex unavailable' degradation signal, masking a real
+        contract violation.
+        """
+        env = {"subcommand": "review", "outcome": "failure", "error": "nope"}
+        cp = self._run_parser(env)
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "invalid-subcommand" in codes
+
+    def test_rejects_empty_stdin(self) -> None:
+        cp = subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input="",
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "empty-stdin" in codes
+
+    def test_rejects_non_json_stdin(self) -> None:
+        cp = subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input="not json at all",
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "json-decode" in codes
+
+    @pytest.mark.parametrize(
+        "outcome",
+        ["failure", "timeout", "parse_error", "scope_violation"],
+    )
+    def test_terminal_outcomes_surface_without_schema_violation(
+        self, outcome: str,
+    ) -> None:
+        """V10 — wrapper timeout / failure / parse_error envelopes don't
+        have a schema-compliant `parsed` body. parse-plan-review-report
+        must surface the outcome for orchestrator routing without raising
+        a schema violation, so the orchestrator can degrade Phase 1.5
+        to a warning (codex unavailable / plan review skipped) rather
+        than halt."""
+        env = _plan_review_envelope(outcome=outcome, error="codex not found")
+        # Clear parsed to simulate a non-success envelope.
+        env["parsed"] = None
+        cp = self._run_parser(env)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["outcome"] == outcome
+        assert body["verdict"] is None
+        assert body["envelope_error"] == "codex not found"
+
+
+class TestPlanReviewRunLogEvents:
+    """V8 — the new plan-review events must be in the ALLOWED_LOG_EVENTS
+    tripwire so typo'd events surface immediately and the orchestrator's
+    event-order documentation stays enforceable."""
+
+    def test_plan_review_events_allowed(self) -> None:
+        allowed = plan_ops.ALLOWED_LOG_EVENTS
+        assert "plan_review_start" in allowed
+        assert "plan_review_done" in allowed
+        assert "plan_review_skipped" in allowed
+
+
+class TestPlanReviewConstants:
+    """V9 — verdict vocabulary lives in a single constant so wrapper,
+    parser, and orchestrator routing can't drift."""
+
+    def test_verdict_vocab(self) -> None:
+        assert plan_ops.ALLOWED_PLAN_REVIEW_VERDICTS == {
+            "approved", "approved-with-notes", "needs-replan",
+        }
+
+    def test_severity_vocab(self) -> None:
+        assert plan_ops.ALLOWED_PLAN_REVIEW_FINDING_SEVERITIES == {
+            "critical", "important", "minor",
+        }
+
+
+class TestPlanReviewDocumentation:
+    """V8 + V11 — SKILL.md and dispatch-templates.md document the Phase 1.5
+    protocol. The orchestrator is a markdown reader; if the prose goes
+    missing, the gate silently stops running. Assert the load-bearing
+    anchor strings exist verbatim."""
+
+    SKILL = (
+        REPO_ROOT / "plugins" / "plan-executor"
+        / "skills" / "implement-plan" / "SKILL.md"
+    )
+    TEMPLATES = (
+        REPO_ROOT / "plugins" / "plan-executor"
+        / "skills" / "implement-plan" / "dispatch-templates.md"
+    )
+
+    def test_skill_md_has_phase_1_5_section(self) -> None:
+        text = self.SKILL.read_text(encoding="utf-8")
+        assert "### Phase 1.5 — Codex plan review" in text
+        # V8 event order must be documented for the orchestrator to follow.
+        assert "plan_review_start" in text
+        assert "plan_review_done" in text
+        # V9 verdict routing.
+        assert "approved" in text
+        assert "approved-with-notes" in text
+        assert "needs-replan" in text
+        # V10 degradation.
+        assert "codex_unavailable" in text
+
+    def test_skill_md_documents_skip_plan_review_flag(self) -> None:
+        # V11 — --skip-plan-review must appear in the CLI surface docs and
+        # be parallel-safe with --skip-cross-review.
+        text = self.SKILL.read_text(encoding="utf-8")
+        assert "--skip-plan-review" in text
+        # Parallel-safe caveat must be documented so the orchestrator
+        # doesn't invent a spurious conflict check.
+        assert "--skip-cross-review" in text
+
+    def test_phase_1_5_inserted_before_dry_run_mode(self) -> None:
+        """Acceptance criterion: Phase 1.5 inserts after schedule persist
+        and before Dry-run mode."""
+        text = self.SKILL.read_text(encoding="utf-8")
+        phase_1_5_idx = text.find("### Phase 1.5")
+        dry_run_idx = text.find("### Dry-run mode")
+        write_schedule_idx = text.find("write-schedule --schedule-file")
+        assert phase_1_5_idx >= 0
+        assert dry_run_idx >= 0
+        assert write_schedule_idx >= 0
+        assert write_schedule_idx < phase_1_5_idx < dry_run_idx
+
+    def test_dispatch_templates_has_phase_1_5_block(self) -> None:
+        text = self.TEMPLATES.read_text(encoding="utf-8")
+        assert "Phase 1.5" in text
+        assert "plan_codex_dispatch.py" in text
+        assert "plan-review" in text
+        assert "--plan-file" in text
+        assert "--schedule-file" in text
+
+
+class TestPlanCodexDispatchPlanReviewSubcommand:
+    """V9 — the wrapper exposes a plan-review subcommand with the expected
+    CLI shape. Use --dry-run so we don't need Codex on the test runner."""
+
+    WRAPPER = SCRIPTS_DIR / "plan_codex_dispatch.py"
+
+    def test_dry_run_emits_envelope(self, tmp_path: Path) -> None:
+        plan = tmp_path / "sample.md"
+        plan.write_text("# plan\n\n## Context\n\nprose\n", encoding="utf-8")
+        schedule = tmp_path / "sample.schedule.json"
+        schedule.write_text(json.dumps({
+            "outcome": "valid",
+            "tasks": [],
+            "batches": [],
+        }), encoding="utf-8")
+
+        cp = subprocess.run(
+            [
+                str(PY), str(self.WRAPPER), "plan-review",
+                "--plan-file", str(plan),
+                "--schedule-file", str(schedule),
+                "--repo-root", str(tmp_path),
+                "--dry-run",
+                "--timeout", "180",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = json.loads(cp.stdout)
+        assert body["subcommand"] == "plan-review"
+        assert body["outcome"] == "dry_run"
+        assert body["plan_file"] == "sample.md"
+        assert "prompt_preview" in body
+        # The prompt must carry the verdict vocab so Codex knows what to
+        # return; if this drifts, the wrapper silently corrupts the
+        # gating contract.
+        assert "approved" in body["prompt_preview"]
+        assert "needs-replan" in body["prompt_preview"]
+
+    def test_missing_plan_file_fails(self, tmp_path: Path) -> None:
+        schedule = tmp_path / "sample.schedule.json"
+        schedule.write_text("{}", encoding="utf-8")
+        cp = subprocess.run(
+            [
+                str(PY), str(self.WRAPPER), "plan-review",
+                "--plan-file", str(tmp_path / "nope.md"),
+                "--schedule-file", str(schedule),
+                "--repo-root", str(tmp_path),
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert cp.returncode == 1
+        body = json.loads(cp.stdout)
+        assert body["outcome"] == "failure"
+        assert "Plan file not found" in (body.get("error") or "")
+
+    def test_missing_schedule_file_fails(self, tmp_path: Path) -> None:
+        plan = tmp_path / "sample.md"
+        plan.write_text("# plan\n", encoding="utf-8")
+        cp = subprocess.run(
+            [
+                str(PY), str(self.WRAPPER), "plan-review",
+                "--plan-file", str(plan),
+                "--schedule-file", str(tmp_path / "nope.json"),
+                "--repo-root", str(tmp_path),
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert cp.returncode == 1
+        body = json.loads(cp.stdout)
+        assert body["outcome"] == "failure"
+        assert "Schedule file not found" in (body.get("error") or "")
+
+    def test_malformed_schedule_json_fails(self, tmp_path: Path) -> None:
+        plan = tmp_path / "sample.md"
+        plan.write_text("# plan\n", encoding="utf-8")
+        schedule = tmp_path / "sample.schedule.json"
+        schedule.write_text("{ not valid json", encoding="utf-8")
+        cp = subprocess.run(
+            [
+                str(PY), str(self.WRAPPER), "plan-review",
+                "--plan-file", str(plan),
+                "--schedule-file", str(schedule),
+                "--repo-root", str(tmp_path),
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert cp.returncode == 1
+        body = json.loads(cp.stdout)
+        assert body["outcome"] == "failure"
+        assert "not valid JSON" in (body.get("error") or "")

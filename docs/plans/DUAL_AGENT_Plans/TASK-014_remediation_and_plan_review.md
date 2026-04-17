@@ -162,7 +162,7 @@ Safe to revert; remove the `00_INDEX.json` mutation from `commit-task`. Roster d
 
 ### TASK-014C: Phase 1.5 — Codex plan review gate
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`

@@ -2,7 +2,7 @@
 """Codex CLI dispatch wrapper for the dual-agent plan executor.
 
 Standardizes Codex invocation with structured output, scope validation,
-and error handling. Two subcommands: implement and review.
+and error handling. Three subcommands: implement, review, and plan-review.
 
 Based on the Phase 0 CLI contract (docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md
 Appendix D): exit code is unreliable, -s read-only is advisory only,
@@ -16,6 +16,10 @@ Usage:
     venv/bin/python scripts/plan_codex_dispatch.py review \
         --plan-file PATH --task-id N --repo-root PATH \
         --files f1,f2 [--review-focus bugs] [--dry-run] [--timeout SECS]
+
+    venv/bin/python scripts/plan_codex_dispatch.py plan-review \
+        --plan-file PATH --schedule-file PATH [--repo-root PATH] \
+        [--dry-run] [--timeout SECS]
 """
 
 from __future__ import annotations
@@ -38,10 +42,12 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 IMPLEMENT_SCHEMA = SCRIPT_DIR / "codex_implement_schema.json"
 REVIEW_SCHEMA = SCRIPT_DIR / "codex_review_schema.json"
+PLAN_REVIEW_SCHEMA = SCRIPT_DIR / "codex_plan_review_schema.json"
 
 RAW_TRUNCATE_CHARS = 2000
 DEFAULT_TIMEOUT_IMPLEMENT = 300
 DEFAULT_TIMEOUT_REVIEW = 180
+DEFAULT_TIMEOUT_PLAN_REVIEW = 180
 GIT_TIMEOUT = 30
 TEST_TIMEOUT = 300
 
@@ -252,6 +258,43 @@ def render_implement_prompt(task: dict, context: str) -> str:
         f"On ambiguity: follow the nearest existing pattern in the codebase.\n\n"
         f"Output: Return schema-compliant JSON only, no markdown fences, "
         f"no trailing commentary. task_id must be \"{task['task_id']}\".\n"
+    )
+
+
+def render_plan_review_prompt(plan_text: str, schedule_json: str, plan_basename: str) -> str:
+    """Prompt template for Phase 1.5 — Codex reviews the plan + schedule.
+
+    The analyst (Claude/Opus) authored the plan; Codex provides an independent
+    pre-dispatch review. Input shape is the plan markdown plus the persisted
+    schedule JSON — not a diff — so this prompt is intentionally distinct
+    from the `review` subcommand prompt.
+    """
+    return (
+        f"Review the plan and its persisted schedule. The plan was authored "
+        f"by a peer analyst; you are an independent pre-dispatch reviewer.\n\n"
+        f"Plan file: {plan_basename}\n\n"
+        f"Your job:\n"
+        f"1. Read the full plan document below and confirm every task has "
+        f"clear acceptance criteria, a test command (or 'none' justification), "
+        f"and a well-scoped Files list.\n"
+        f"2. Cross-check the schedule against the plan. Every task in the "
+        f"plan should appear in tasks[]; every batch must hold file-disjoint "
+        f"tasks; dependencies must be acyclic and resolvable.\n"
+        f"3. Flag anything that would cost execution time to discover mid-run: "
+        f"missing context, contradictory file annotations, dependency cycles, "
+        f"scheduler traps, acceptance criteria that are untestable, etc.\n\n"
+        f"Verdict vocabulary (pick exactly one):\n"
+        f"- `approved` — plan is ready to execute as-is.\n"
+        f"- `approved-with-notes` — plan is ready; notes carried into run "
+        f"summary but no re-plan needed.\n"
+        f"- `needs-replan` — plan has a blocking issue; analyst must revise "
+        f"before any batch runs.\n\n"
+        f"Plan document (verbatim):\n\n"
+        f"```markdown\n{plan_text}\n```\n\n"
+        f"Persisted schedule JSON:\n\n"
+        f"```json\n{schedule_json}\n```\n\n"
+        f"Return schema-compliant JSON only, no markdown fences, no trailing "
+        f"commentary. `plan_file` must be \"{plan_basename}\".\n"
     )
 
 
@@ -1224,6 +1267,199 @@ def cmd_review(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: plan-review
+# ---------------------------------------------------------------------------
+
+
+def cmd_plan_review(args) -> int:
+    """Phase 1.5 — Codex independently reviews the plan + schedule.
+
+    Input shape: plan markdown + schedule JSON (not a diff).
+    Verdict vocabulary: approved | approved-with-notes | needs-replan.
+    Wrapper owns the sandbox baseline + cleanup, matching implement/review.
+    """
+    plan_path = Path(args.plan_file).resolve()
+    schedule_path = Path(args.schedule_file).resolve()
+    repo_root = str(Path(args.repo_root).resolve())
+
+    if not plan_path.exists():
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=f"Plan file not found: {plan_path}",
+        ))
+        return 1
+
+    if not schedule_path.exists():
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=f"Schedule file not found: {schedule_path}",
+        ))
+        return 1
+
+    try:
+        plan_text = plan_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=f"Cannot read plan file: {exc}",
+        ))
+        return 1
+
+    try:
+        schedule_text = schedule_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=f"Cannot read schedule file: {exc}",
+        ))
+        return 1
+
+    # Validate schedule JSON up-front so we surface a clean parse error
+    # before dispatching Codex on garbage.
+    try:
+        json.loads(schedule_text)
+    except json.JSONDecodeError as exc:
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=f"Schedule file is not valid JSON: {exc}",
+        ))
+        return 1
+
+    prompt = render_plan_review_prompt(plan_text, schedule_text, plan_path.name)
+
+    if args.dry_run:
+        emit({
+            "plan_file": plan_path.name,
+            "subcommand": "plan-review",
+            "outcome": "dry_run",
+            "dry_run": True,
+            "schedule_file": str(schedule_path),
+            "prompt_preview": prompt,
+        })
+        return 0
+
+    if not PLAN_REVIEW_SCHEMA.exists():
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=f"Schema file missing: {PLAN_REVIEW_SCHEMA}",
+        ))
+        return 1
+
+    tmp_out = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, prefix="codex_plan_review_",
+    )
+    tmp_out.close()
+    output_path = tmp_out.name
+
+    try:
+        baseline = _snapshot_baseline(repo_root)
+        codex = invoke_codex(
+            prompt=prompt,
+            workdir=repo_root,
+            schema_path=str(PLAN_REVIEW_SCHEMA),
+            output_path=output_path,
+            timeout_sec=args.timeout,
+            sandbox="read-only",  # Advisory (Appendix D F2); plan review reads only
+        )
+
+        if codex["status"] == "timeout":
+            # No allowed-files list for plan review — pass empty list so any
+            # observed write lands in out_of_scope_* for orchestrator visibility.
+            cleanup_details = _handle_timeout_cleanup(
+                repo_root, [], baseline,
+            )
+            emit(make_envelope(
+                "plan", "plan-review", "timeout",
+                exit_code=-1,
+                raw=codex["stdout"] or codex["stderr"],
+                error=f"Codex plan review timed out after {args.timeout}s",
+                extra={
+                    "wall_seconds": codex["wall_seconds"],
+                    "cleanup_strategy": cleanup_details["cleanup_strategy"],
+                    "baseline_captured": baseline["captured"],
+                    "cleanup_details": cleanup_details,
+                    "out_of_scope_tracked": cleanup_details.get(
+                        "out_of_scope_tracked", []),
+                    "out_of_scope_untracked": cleanup_details.get(
+                        "out_of_scope_untracked", []),
+                    "out_of_scope_observed": cleanup_details.get(
+                        "out_of_scope_observed", False),
+                },
+            ))
+            return 1
+
+        if codex["status"] == "codex_not_found":
+            emit(make_envelope(
+                "plan", "plan-review", "failure",
+                error="codex binary not found on PATH",
+            ))
+            return 1
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            emit(make_envelope(
+                "plan", "plan-review", "failure",
+                exit_code=codex["exit_code"],
+                raw=codex["stderr"] or codex["stdout"],
+                error="Codex produced no output file",
+                extra={"wall_seconds": codex["wall_seconds"]},
+            ))
+            return 1
+
+        output_text = Path(output_path).read_text(encoding="utf-8")
+        try:
+            parsed = json.loads(output_text)
+        except json.JSONDecodeError as e:
+            emit(make_envelope(
+                "plan", "plan-review", "parse_error",
+                exit_code=codex["exit_code"],
+                raw=output_text,
+                error=f"Failed to parse Codex output as JSON: {e}",
+                extra={"wall_seconds": codex["wall_seconds"]},
+            ))
+            return 1
+
+        # Observe-only post-dispatch scope: Codex should not have written
+        # anything. Pass empty allowed set; any new delta becomes out-of-scope.
+        scope = validate_scope(repo_root, [], baseline)
+        sandbox_escape_detected = bool(
+            scope["out_of_scope_observed"]
+            or scope["protected_skipped_tracked"]
+            or scope["protected_skipped_untracked"]
+        )
+
+        extra: dict = {
+            "wall_seconds": codex["wall_seconds"],
+            "scope": scope,
+            "sandbox_escape_detected": sandbox_escape_detected,
+            "out_of_scope_tracked": scope["out_of_scope_tracked"],
+            "out_of_scope_untracked": scope["out_of_scope_untracked"],
+            "out_of_scope_observed": scope["out_of_scope_observed"],
+            "cleanup_strategy": scope["cleanup_strategy"],
+            "baseline_captured": baseline["captured"],
+        }
+        if codex["file_changes"]:
+            extra["jsonl_file_changes"] = codex["file_changes"]
+
+        envelope = make_envelope(
+            "plan", "plan-review", "success",
+            exit_code=codex["exit_code"],
+            raw=output_text,
+            parsed=parsed,
+            extra=extra,
+        )
+        # Override the default `task_id` field with `plan_file` for plan-review
+        # envelopes; keeps the contract distinct from implement/review.
+        envelope["plan_file"] = plan_path.name
+        emit(envelope)
+        return 0
+    finally:
+        try:
+            os.unlink(output_path)
+        except (FileNotFoundError, OSError):
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Main / argparse
 # ---------------------------------------------------------------------------
 
@@ -1232,7 +1468,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Codex CLI dispatch wrapper for the dual-agent plan executor. "
-            "Subcommands: implement, review."
+            "Subcommands: implement, review, plan-review."
         ),
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
@@ -1269,6 +1505,33 @@ def _build_parser() -> argparse.ArgumentParser:
                      choices=["bugs", "regressions", "security", "tests"],
                      help="Review focus area (default: bugs)")
 
+    # plan-review subcommand: Phase 1.5 pre-dispatch plan-level review.
+    # Different input shape from `review` (plan markdown + schedule JSON,
+    # not a diff) and different verdict vocabulary
+    # (approved | approved-with-notes | needs-replan), so it is a sibling
+    # subcommand rather than a mode of `review`.
+    pr = subparsers.add_parser(
+        "plan-review",
+        help="Dispatch a plan-level review to Codex (Phase 1.5)",
+    )
+    pr.add_argument("--plan-file", required=True,
+                    help="Absolute path to plan document")
+    pr.add_argument("--schedule-file", required=True,
+                    help="Absolute path to persisted schedule JSON")
+    pr.add_argument("--repo-root", required=True,
+                    help="Absolute path to the repo root passed as `codex -C`. "
+                         "Required — plans typically live in a subdirectory "
+                         "(e.g. docs/plans/…), so the plan's parent is NOT a "
+                         "safe default for sandbox baseline/cleanup.")
+    pr.add_argument("--json", action="store_true",
+                    help=("Output structured JSON (always on; flag is a "
+                          "no-op reserved for future-compat)"))
+    pr.add_argument("--dry-run", action="store_true",
+                    help="Render prompt and metadata; do not invoke Codex")
+    pr.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_PLAN_REVIEW,
+                    help=f"Codex execution timeout in seconds "
+                         f"(default: {DEFAULT_TIMEOUT_PLAN_REVIEW})")
+
     return parser
 
 
@@ -1279,6 +1542,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_implement(args)
     if args.subcommand == "review":
         return cmd_review(args)
+    if args.subcommand == "plan-review":
+        return cmd_plan_review(args)
     parser.error(f"Unknown subcommand: {args.subcommand}")
     return 1
 

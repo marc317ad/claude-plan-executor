@@ -12,6 +12,44 @@ All Agent dispatches include the **"You do NOT have the Agent tool"** constraint
 >
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash.
 
+## Phase 1.5 — Codex plan review (pre-dispatch gate)
+
+Dispatched after schedule persist, before any batch runs. Codex is the reviewer because the plan was authored by Claude/Opus (analyst); this is the independent pre-exec check. Skipped entirely if `--skip-plan-review` is set OR `codex_available=false` from preflight.
+
+Bash command template:
+
+```
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
+  --plan-file <absolute plan path> \
+  --schedule-file <absolute schedule path> \
+  --repo-root <absolute repo root> \
+  --timeout 180
+```
+
+Timeout **180s**. Wrapper captures a pre-dispatch baseline and performs delta-bounded cleanup; the plan-review path runs Codex under `-s read-only` sandbox (advisory) because Codex has no legitimate reason to write during a plan-level review. Any sandbox escape surfaces in `extra.sandbox_escape_detected` without changing the outcome — this matches the `review` subcommand's observe-only semantics.
+
+Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, timeout, parse_error}`. On `success`, `parsed` conforms to `scripts/codex_plan_review_schema.json`:
+
+```json
+{
+  "plan_file": "<basename>",
+  "verdict": "approved | approved-with-notes | needs-replan",
+  "findings": [
+    {
+      "severity": "critical | important | minor",
+      "section": "<where in the plan>",
+      "concern": "<what is wrong or risky>",
+      "suggested_change": "<how to fix>"
+    }
+  ],
+  "schedule_ok": true,
+  "dependencies_ok": true,
+  "summary": "<one-paragraph rationale>"
+}
+```
+
+Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan`, re-dispatch Phase A (plan-analyst) once with the Codex findings appended to the analyst prompt as a *"Prior plan-review findings"* block, then re-run plan-review. A second `needs-replan` halts with `run_end reason=plan_review_failed`; no batches execute.
+
 ## Phase B — plan-implementer dispatch (Claude tier)
 
 > Implement this task from the plan at `<absolute plan path>`.

@@ -10,6 +10,7 @@ Usage:
     venv/bin/python scripts/plan_ops.py compute-schedule --stdin
     venv/bin/python scripts/plan_ops.py batch-next --schedule-file <path> ...
     venv/bin/python scripts/plan_ops.py parse-implementer-report --stdin
+    venv/bin/python scripts/plan_ops.py parse-plan-review-report --stdin
     venv/bin/python scripts/plan_ops.py commit-task --plan-file <abs> --task-id NNN ...
     venv/bin/python scripts/plan_ops.py fail-task --plan-file <abs> --task-id NNN ...
     venv/bin/python scripts/plan_ops.py update-plan-header --plan-file <abs> --status <s>
@@ -81,6 +82,12 @@ ALLOWED_PLAN_STATUSES = {"in-progress", "complete", "partial"}
 ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 ALLOWED_CODEX_REVIEW_VERDICTS = {"clean", "minor-findings", "needs-rework"}
 ALLOWED_CLAUDE_REVIEW_VERDICTS = {"ship", "ship-with-fixes", "needs-rework"}
+# Phase 1.5 Codex plan-review verdicts (TASK-014C). Distinct from the
+# code-level review verdicts above because a plan review operates on plan
+# markdown + schedule JSON, not a diff, and drives a different routing table
+# (see SKILL.md §Phase 1.5).
+ALLOWED_PLAN_REVIEW_VERDICTS = {"approved", "approved-with-notes", "needs-replan"}
+ALLOWED_PLAN_REVIEW_FINDING_SEVERITIES = {"critical", "important", "minor"}
 ALLOWED_ROW_FIELDS = {"task", "agent", "reviewer", "verdict", "commit", "notes"}
 # Known run-log event types. The orchestrator owns the vocabulary; this set
 # acts as a tripwire so typo'd events surface immediately rather than drifting
@@ -1780,6 +1787,262 @@ def cmd_parse_implementer_report(args: argparse.Namespace) -> None:
     _emit(args, result)
 
 
+def _validate_plan_review_finding(item: object, *, path: str) -> list[dict]:
+    errors: list[dict] = []
+    if not isinstance(item, dict):
+        return [{
+            "path": path,
+            "code": "invalid-plan-review-finding",
+            "message": "plan-review finding must be an object",
+        }]
+    required = {
+        "severity": str,
+        "section": str,
+        "concern": str,
+        "suggested_change": str,
+    }
+    for key, typ in required.items():
+        if key not in item:
+            errors.append({
+                "path": f"{path}.{key}",
+                "code": "missing-plan-review-finding-field",
+                "message": f"plan-review finding missing field {key!r}",
+            })
+            continue
+        value = item[key]
+        if not isinstance(value, typ):
+            errors.append({
+                "path": f"{path}.{key}",
+                "code": "invalid-plan-review-finding-field",
+                "message": (
+                    f"plan-review finding field {key!r} must be a "
+                    f"{typ.__name__}"
+                ),
+            })
+    severity = item.get("severity")
+    if (
+        isinstance(severity, str)
+        and severity not in ALLOWED_PLAN_REVIEW_FINDING_SEVERITIES
+    ):
+        errors.append({
+            "path": f"{path}.severity",
+            "code": "invalid-plan-review-finding-severity",
+            "message": (
+                f"plan-review finding severity must be one of "
+                f"{sorted(ALLOWED_PLAN_REVIEW_FINDING_SEVERITIES)}, "
+                f"got {severity!r}"
+            ),
+        })
+    for key in item.keys():
+        if key not in required:
+            errors.append({
+                "path": f"{path}.{key}",
+                "code": "unknown-plan-review-finding-field",
+                "message": (
+                    f"plan-review finding has unknown field {key!r}"
+                ),
+            })
+    return errors
+
+
+def _validate_plan_review_parsed(parsed: object) -> list[dict]:
+    """Validate the `parsed` body of a plan-review envelope against the
+    codex_plan_review_schema.json contract. Returns canonical `errors[*]`."""
+    errors: list[dict] = []
+    if not isinstance(parsed, dict):
+        return [{
+            "path": "$.parsed",
+            "code": "invalid-type",
+            "message": "parsed must be an object",
+        }]
+
+    required = {
+        "plan_file": str,
+        "verdict": str,
+        "findings": list,
+        "schedule_ok": bool,
+        "dependencies_ok": bool,
+        "summary": str,
+    }
+    for key, typ in required.items():
+        if key not in parsed:
+            errors.append({
+                "path": f"$.parsed.{key}",
+                "code": "missing-field",
+                "message": f"parsed missing field {key!r}",
+            })
+            continue
+        value = parsed[key]
+        if typ is bool:
+            ok = isinstance(value, bool)
+        elif typ is list:
+            ok = isinstance(value, list)
+        else:
+            ok = isinstance(value, typ)
+        if not ok:
+            errors.append({
+                "path": f"$.parsed.{key}",
+                "code": "invalid-type",
+                "message": (
+                    f"parsed field {key!r} must be a {typ.__name__}"
+                ),
+            })
+
+    verdict = parsed.get("verdict")
+    if (
+        isinstance(verdict, str)
+        and verdict not in ALLOWED_PLAN_REVIEW_VERDICTS
+    ):
+        errors.append({
+            "path": "$.parsed.verdict",
+            "code": "invalid-plan-review-verdict",
+            "message": (
+                f"verdict must be one of "
+                f"{sorted(ALLOWED_PLAN_REVIEW_VERDICTS)}, got {verdict!r}"
+            ),
+        })
+
+    findings = parsed.get("findings")
+    if isinstance(findings, list):
+        for i, item in enumerate(findings):
+            errors.extend(
+                _validate_plan_review_finding(
+                    item, path=f"$.parsed.findings[{i}]",
+                )
+            )
+
+    allowed_keys = set(required.keys())
+    for key in parsed.keys():
+        if key not in allowed_keys:
+            errors.append({
+                "path": f"$.parsed.{key}",
+                "code": "unknown-parsed-field",
+                "message": f"parsed has unknown field {key!r}",
+            })
+    return errors
+
+
+def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
+    """Validate a Phase 1.5 Codex plan-review envelope from stdin.
+
+    Input: full JSON envelope emitted by
+    `plan_codex_dispatch.py plan-review`. Expected shape (minimum):
+        {
+          "plan_file": "...",
+          "subcommand": "plan-review",
+          "outcome": "success" | "failure" | "timeout" | "parse_error",
+          "parsed": { ... },        # validated against codex_plan_review_schema
+          ...
+        }
+
+    Exits non-zero with canonical `errors[*]` on schema violations so the
+    orchestrator can halt the run before Phase 2. Successful validation
+    extracts `{plan_file, verdict, findings_count, findings, summary,
+    schedule_ok, dependencies_ok}` for the caller.
+    """
+    raw = sys.stdin.read()
+    if not raw.strip():
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "empty-stdin",
+            "message": "parse-plan-review-report expects a JSON envelope on stdin",
+        }]})
+
+    try:
+        envelope = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "json-decode",
+            "message": f"stdin is not valid JSON: {exc}",
+        }]})
+
+    if not isinstance(envelope, dict):
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "invalid-type",
+            "message": "envelope must be a JSON object",
+        }]})
+
+    # Envelope-level validation MUST run before the terminal-outcome shortcut
+    # so a malformed envelope (e.g. `subcommand:"review"`) can't slip through
+    # as a "degradation" signal. The terminal-outcome branch is only a
+    # structural exemption from the `parsed`-body schema, not from envelope
+    # contract checks.
+    subcommand = envelope.get("subcommand")
+    if subcommand != "plan-review":
+        _die(args, {"errors": [{
+            "path": "$.subcommand",
+            "code": "invalid-subcommand",
+            "message": (
+                f"envelope subcommand must be 'plan-review', got "
+                f"{subcommand!r}"
+            ),
+        }]})
+
+    errors: list[dict] = []
+
+    outcome = envelope.get("outcome")
+    # Only success envelopes carry a schema-compliant parsed body.
+    # Non-success outcomes (failure/timeout/parse_error) are permitted
+    # structurally; the caller branches on outcome + error before reading
+    # verdict.
+    terminal_outcomes = {"failure", "timeout", "parse_error", "scope_violation"}
+    if outcome in terminal_outcomes:
+        result: dict = {
+            "plan_file": envelope.get("plan_file") or envelope.get("task_id"),
+            "outcome": outcome,
+            "verdict": None,
+            "findings_count": 0,
+            "findings": [],
+            "summary": "",
+            "schedule_ok": None,
+            "dependencies_ok": None,
+            "errors": [],
+            "envelope_error": envelope.get("error"),
+        }
+        _emit(args, result)
+        return
+
+    if outcome != "success":
+        errors.append({
+            "path": "$.outcome",
+            "code": "invalid-outcome",
+            "message": (
+                f"envelope outcome must be 'success' for a parseable plan "
+                f"review; got {outcome!r}"
+            ),
+        })
+
+    parsed = envelope.get("parsed")
+    if parsed is None:
+        errors.append({
+            "path": "$.parsed",
+            "code": "missing-field",
+            "message": "envelope is missing required field 'parsed'",
+        })
+    else:
+        errors.extend(_validate_plan_review_parsed(parsed))
+
+    if errors:
+        _die(args, {"errors": errors})
+
+    assert isinstance(parsed, dict)
+    findings = parsed.get("findings") or []
+    result = {
+        "plan_file": parsed.get("plan_file"),
+        "outcome": outcome,
+        "verdict": parsed.get("verdict"),
+        "findings_count": len(findings),
+        "findings": findings,
+        "summary": parsed.get("summary", ""),
+        "schedule_ok": parsed.get("schedule_ok"),
+        "dependencies_ok": parsed.get("dependencies_ok"),
+        "errors": [],
+    }
+    _emit(args, result)
+
+
 def cmd_commit_task(args: argparse.Namespace) -> None:
     tid = _normalize_task_id(args.task_id)
     if not tid:
@@ -2196,6 +2459,17 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Read report markdown from stdin")
     _add_json(p_rep)
 
+    p_prr = sub.add_parser(
+        "parse-plan-review-report",
+        help=(
+            "Validate a Phase 1.5 Codex plan-review envelope against "
+            "codex_plan_review_schema.json; surface verdict + findings"
+        ),
+    )
+    p_prr.add_argument("--stdin", action="store_true", required=True,
+                       help="Read plan-review envelope JSON from stdin")
+    _add_json(p_prr)
+
     p_commit = sub.add_parser("commit-task", help="Narrow commit + status flip + run log append")
     p_commit.add_argument("--plan-file", required=True)
     p_commit.add_argument("--task-id", required=True)
@@ -2314,6 +2588,7 @@ def main(argv: list[str] | None = None) -> None:
         "batch-next": cmd_batch_next,
         "filter-schedule": cmd_filter_schedule,
         "parse-implementer-report": cmd_parse_implementer_report,
+        "parse-plan-review-report": cmd_parse_plan_review_report,
         "commit-task": cmd_commit_task,
         "fail-task": cmd_fail_task,
         "update-plan-header": cmd_update_plan_header,

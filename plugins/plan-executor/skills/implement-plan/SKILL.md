@@ -40,6 +40,7 @@ All subcommands accept `--json` for machine-readable output.
 | `plan_ops.py write-schedule --schedule-file <path> --stdin [--strict]` | Validate + atomically persist schedule JSON. Refuses to write on any validation error. |
 | `plan_ops.py batch-next --schedule-file ... --locked-files ... --done ... --failed ... --parallel N` | Pick next batch respecting file locks; flags `scheduler_stuck` |
 | `plan_ops.py parse-implementer-report --stdin` | Extract outcome / files_changed / diff_summary / test_outcome / concerns / plan_adaptations / reversion_guidance / warnings / **diagnostics** from the plan-implementer markdown report. `concerns` and `plan_adaptations` are lists of strings (one bullet each). |
+| `plan_ops.py parse-plan-review-report --stdin` | Validate a Phase 1.5 Codex plan-review envelope against `codex_plan_review_schema.json`; surface `{plan_file, verdict ∈ {approved, approved-with-notes, needs-replan}, findings_count, findings, schedule_ok, dependencies_ok, summary}`. Halts with structured `errors[*]` on schema violations. |
 | `plan_ops.py commit-task ...` | Full D.3: guard, plan-status mutate (→ done), narrow `git commit --only`, SHA capture, run-log `commit_done` append |
 | `plan_ops.py fail-task --stage implement\|review\|commit ...` | Full Phase C / D.4: git restore (if files), plan-status mutate (→ failed), run-log `failed` append |
 | `plan_ops.py update-plan-header --status in-progress\|complete\|partial` | Mutate the plan-file top-level `**Status:**` |
@@ -65,6 +66,8 @@ Optional:
   --claude-only           Filter schedule to claude tasks
   --task-ids 1,2,3        Restrict to exactly these task IDs; halt if any ID is unknown.
   --skip-cross-review     Commit without review (loud banner in summary)
+  --skip-plan-review      Skip Phase 1.5 Codex plan review (loud banner in summary);
+                          parallel-safe with --skip-cross-review
   --codex-review-binding  Codex critical on Claude goes straight to fail-task;
                           no §8.4 third-opinion escalation
   --allow-gaps            Proceed past analyst outcome=needs-enrichment
@@ -147,6 +150,56 @@ Apply filters:
 After any filter rewrite, re-compute file-disjoint batches by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" compute-schedule --stdin --json`, then replace the schedule's `batches` array with the returned `batches` before persisting.
 
 Persist the final schedule (after filter rewrites and any required batch recomputation) by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" write-schedule --schedule-file <schedule_file> --stdin --json`. This is the sole supported path for persistence; never write the file with the Write tool or inline Python (cf. rule at line 316). `write-schedule` runs the same shared validator as `parse-schedule` and refuses to write on any validation error.
+
+### Phase 1.5 — Codex plan review (independent pre-dispatch gate)
+
+The analyst (Claude/Opus) authored the plan *and* validated the schedule — the same family double-checking itself. Before any batch runs, dispatch Codex for an independent pre-dispatch review of the plan document + persisted schedule. Codex returns `approved | approved-with-notes | needs-replan`.
+
+**Skip conditions** (take the first that applies):
+
+- `--skip-plan-review` → log `plan_review_skipped {reason:"flag"}` and proceed. Final run summary MUST carry a loud banner: *"Plan review skipped via --skip-plan-review"*. This flag is parallel-safe with `--skip-cross-review` and works alongside `--dry-run`, `--codex-only`, `--claude-only`, and `--task-ids`.
+- `codex_available=false` (from preflight) → log `plan_review_skipped {reason:"codex_unavailable"}` and proceed with a summary warning *"lacking independent plan review"*. This degrades to a warning rather than halting because plan review is a safety net, not a correctness gate.
+
+Otherwise, proceed with the review:
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event plan_review_start \
+  --fields-json '{"reviewer":"codex","plan_file":"<basename>"}' --json
+
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
+  --plan-file <absolute plan> \
+  --schedule-file <schedule_file> \
+  --repo-root <absolute repo root> \
+  --timeout 180
+
+printf '%s' "<envelope>" | venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
+  parse-plan-review-report --stdin --json
+```
+
+`parse-plan-review-report` validates the envelope against `codex_plan_review_schema.json` and extracts `{plan_file, verdict, findings_count, findings, schedule_ok, dependencies_ok, summary}`. Schema violations halt with structured `errors[*]`. Wrapper timeout / parse_error / failure outcomes surface as `outcome ∈ {timeout, parse_error, failure}`; treat as `plan_review_skipped {reason:"codex_unavailable"}` for routing purposes — the pre-dispatch gate degrades on reviewer-side errors rather than blocking execution.
+
+Append `plan_review_done {verdict, findings_count, summary}` and route by verdict:
+
+| Verdict | Route |
+|---|---|
+| `approved` | Proceed to Phase 2 (batch dispatch). |
+| `approved-with-notes` | Proceed to Phase 2. Carry `findings[]` into the final run summary under a *"Plan review notes"* section. Do not gate execution on notes. |
+| `needs-replan` | Re-dispatch `plan-analyst` **once** using the Phase A template with Codex findings appended as a *"Prior plan-review findings"* block. The analyst emits a revised schedule; re-run `parse-schedule` + `write-schedule` to persist, then re-dispatch Codex `plan-review` on the revised plan. The second review is binding. |
+
+**Second `needs-replan`** (after one analyst re-dispatch): halt before any batch runs.
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event run_end \
+  --fields-json '{"run_id":"<id>","outcome":"failed","reason":"plan_review_failed","findings":[...]}' --json
+```
+
+Release the run-lock and print the failure envelope. Do NOT call `fail-task` (no task has started). Do NOT run batches. The run summary records `outcome=failed reason=plan_review_failed`.
+
+**Retry failures** — if the analyst re-dispatch itself fails (e.g., `outcome=invalid`), halt with `run_end reason=plan_review_failed` same as the second-`needs-replan` path.
+
+**Run-log event order** (V8): `run_start` → `analyst_done` → `schedule_written` → `plan_review_start {reviewer:"codex"}` → `plan_review_done {verdict, findings_count}` → `batch_start` (only if verdict permits).
 
 ### Dry-run mode
 

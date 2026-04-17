@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "plan_file": { "type": "string" },
+    "verdict": {
+      "type": "string",
+      "enum": ["approved", "approved-with-notes", "needs-replan"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "important", "minor"]
+          },
+          "section": { "type": "string" },
+          "concern": { "type": "string" },
+          "suggested_change": { "type": "string" }
+        },
+        "required": ["severity", "section", "concern", "suggested_change"],
+        "additionalProperties": false
+      }
+    },
+    "schedule_ok": { "type": "boolean" },
+    "dependencies_ok": { "type": "boolean" },
+    "summary": { "type": "string" }
+  },
+  "required": [
+    "plan_file",
+    "verdict",
+    "findings",
+    "schedule_ok",
+    "dependencies_ok",
+    "summary"
+  ],
+  "additionalProperties": false
+}
