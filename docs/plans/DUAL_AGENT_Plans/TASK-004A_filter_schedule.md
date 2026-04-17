@@ -190,7 +190,7 @@ The `write-schedule` invocation MUST exit 0. The written file MUST then parse ba
 
 ### TASK-004A: Implement `filter-schedule` subcommand
 
-- **Status:** pending
+- **Status:** failed
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
@@ -394,3 +394,11 @@ Run `venv/bin/pytest -q tests/scripts/test_plan_ops.py`. No prior tests should b
 ## Reversion guidance
 
 Safe to revert; `--task-ids` goes back to being documented-but-unimplemented. Only `SKILL.md` needs a compensating edit.
+
+## Execution log — 20260417T153553
+
+Starting SHA: `7751d0f49ebd6a77144fb1a9c5b0498e0dfca816`  → Ending SHA: `7751d0f49ebd6a77144fb1a9c5b0498e0dfca816`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004A | claude | codex+code-reviewer-d5 | needs-rework | — | reverted: SKILL.md:147 compute-schedule-after-filter conflicts with V9/V12 |
