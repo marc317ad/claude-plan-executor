@@ -270,11 +270,50 @@ Minor findings in either direction → commit; record in run summary AND commit 
 
 1. Log `disagreement {task_id, codex_findings[]}`.
 2. Dispatch the Phase D.5 template: `Agent(subagent_type: "code-reviewer", model: "sonnet", prompt: render(templates.PhaseD5, codex_findings, task_block))`.
-3. Parse verdict:
-   - `ship | ship-with-fixes` → code-reviewer disagreed → D.3 with `--disagreement-tag`. Summary row shows `[disagreement]`.
-   - `needs-rework` → code-reviewer agreed → D.4 with reason `codex+code-reviewer: critical findings`.
+3. Parse verdict and route per the table below:
 
-`--codex-review-binding` skips D.2a entirely.
+| Codex verdict | D.5 verdict | Route | Rationale |
+|---|---|---|---|
+| `needs-rework` | `ship` \| `ship-with-fixes` | → D.3 with `--disagreement-tag` (existing behavior, unchanged) | D.5 disagreed with Codex; commit wins. Summary row shows `[disagreement]`. |
+| `needs-rework` | `needs-rework` | → **D.2a.5** bounded remediation retry | Two independent reviewers agree the finding is load-bearing; give the implementer one chance to fix it narrowly. |
+
+`--codex-review-binding` skips D.2a entirely — binding mode means `needs-rework` → immediate `fail-task` with NO D.5 and NO D.2a.5.
+
+#### D.2a.5 — Bounded remediation retry (default, non-binding path only)
+
+Fires when Codex's `needs-rework` is independently confirmed by the D.5 code-reviewer. Strictly one attempt.
+
+1. Log `remediation_start {task_id, findings_count, d5_summary}`.
+2. Re-dispatch `plan-implementer` (Agent, `subagent_type: "plan-implementer"`, `model: "opus"`) using the **Phase B-rework** template from `dispatch-templates.md`. The template embeds `codex_findings_json` + `d5_summary` as a structured block and explicitly instructs the implementer to "fix narrowly, do not scope-inflate".
+3. Classify the retry with the standard Phase B rules. `outcome ≠ success` → halt per step 6 below (same awaiting-user pause path; do NOT call `fail-task`).
+4. On retry success, re-run D.1 (Codex review). The re-review is binding — no further retry regardless of verdict.
+5. Route the re-review:
+   - `clean | minor-findings` → D.3 commit with `--remediation-tag`. Summary row shows `[remediation]` (and `[disagreement]` if both apply).
+   - `needs-rework` (second failure) → proceed to step 6.
+6. **Awaiting-user pause** (second `needs-rework`, OR a failed retry implementer outcome):
+   - Payload shape depends on which branch triggered the pause:
+     - Second-review failure: `stage:"post_remediation_review"`, include `codex_findings:[...]` and `d5_summary:"..."`.
+     - Retry-implement failure: `stage:"post_remediation_implement"`, include `retry_outcome`, `diagnostics`, and `reversion_guidance` from the implementer report; omit `codex_findings` (no second review ran).
+   - `--ending-sha <sha>` MUST be `git rev-parse HEAD` at pause time — not the starting SHA. A paused run has uncommitted remediation edits in the working tree; the ending SHA captures the last committed state (which is typically the prior task's commit or the run's starting SHA if this is the first task). Log the paths of currently-dirty files in the `awaiting_user` event's `dirty_files` field so the next turn has a concrete handoff.
+   ```bash
+   venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+     --event awaiting_user \
+     --fields-json '{"task_id":"NNN","stage":"post_remediation_review","codex_findings":[...],"d5_summary":"...","dirty_files":[...]}' --json
+
+   venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" finalize-execution-log \
+     --run-id <id> --starting-sha <sha> --ending-sha "$(git rev-parse HEAD)" \
+     --outcome paused --rows-json '[...]' --json
+
+   venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+     --event run_end \
+     --fields-json '{"run_id":"<id>","outcome":"paused","done":N,"failed":M,"paused_on_task":"NNN"}' --json
+   ```
+   After the paused `run_end`, the End-of-run sequence (update-plan-header, regular finalize, housekeeping commit) is SKIPPED — the paused branch emits its own `finalize-execution-log --outcome paused` and `run_end outcome=paused` instead. Print the failure envelope, release the run-lock, and return control to the user with pending edits **still in the working tree**. Do NOT call `fail-task`. Do NOT `git restore`. The user's next conversation turn decides disposition:
+   - "revert" → user instructs orchestrator to run `fail-task`.
+   - "keep as-is" → user instructs orchestrator to run `commit-task` with `--remediation-tag` and an override rationale.
+   - "hand-fix" → user edits manually + re-runs review.
+
+   **Hard rule:** D.2a.5's second `needs-rework` MUST NOT trigger `fail-task` automatically. `fail-task` on a paused run requires an explicit user instruction in the next turn. See the "Never auto-`fail-task` on the D.2a.5 halt path" rule below.
 
 #### D.2b — Role-swap retry (Codex implements + Claude reviewer needs-rework)
 
@@ -295,8 +334,10 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" commit-task \
   --reviewer <codex|claude|none> \
   --reviewer-verdict "<verdict>" \
   --reviewer-minor-findings '<json array>' \
-  [--disagreement-tag] --json
+  [--disagreement-tag] [--remediation-tag] --json
 ```
+
+`--remediation-tag` appends a `[remediation]` line to the commit body; set it only when the commit follows a successful D.2a.5 retry.
 
 This: (1) guard check for unexpected staged overlap, (2) plan-status flip to `done`, (3) `git commit --only <files> <plan-file> -m "feat(TASK-NNN): <title>\n\n<diff summary>\n\nPlan: <basename>"`, (4) SHA capture, (5) run-log `commit_done` append.
 
@@ -320,8 +361,8 @@ Release this task's file locks. Loop to Phase A.
 ## End of run
 
 1. `plan_ops.py update-plan-header --status <complete|partial>` (complete iff `failed == 0`; else partial).
-2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --rows-json '[...]' ` — build the §5 table.
-3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total).
+2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. Use `--outcome paused` when exiting via the D.2a.5 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting.
+3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5).
 4. Print summary: counts `{done, failed}`, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
 5. Housekeeping commit (skip if `done == 0 AND failed == 0`):
    ```bash
@@ -337,7 +378,8 @@ Do NOT auto-push. Do NOT auto-PR.
 - **Never edit code files.** Orchestrator only touches plan files, `_run_log.jsonl`, `_run_lock.json`, and git staging. Implementer subagents / Codex wrapper own code changes.
 - **Never commit a reviewer-flagged `needs-rework`.** Only clean / minor-findings / ship / ship-with-fixes commit automatically.
 - **Never `git add -A` or `git add .`.** Stage specific files only — `commit-task` already uses `--only`.
-- **Never retry a failed task inside the same run** beyond the one D.2b role-swap and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.
+- **Never retry a failed task inside the same run** beyond the one D.2b role-swap, the one D.2a.5 bounded remediation retry, and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.
+- **Never auto-`fail-task` on the D.2a.5 halt path.** A second `needs-rework` after a D.2a.5 remediation retry triggers `log-event type=awaiting_user` + `finalize-execution-log --outcome paused` and returns control to the user with pending edits left in the working tree. Calling `fail-task` on the paused run is allowed ONLY when the user's next conversation turn explicitly instructs it. Silent auto-revert on the post-remediation `needs-rework` path is a protocol violation.
 - **Never modify plan-file body except `**Status:**` bullets and the tail execution-log section.** Append-only on the log.
 - **One commit per task** plus at most one `chore:` housekeeping commit per run. Narrow `git commit --only` in Phase D.3 is mandatory.
 - **Never auto-push, never auto-PR.**

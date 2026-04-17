@@ -81,6 +81,35 @@ ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 ALLOWED_CODEX_REVIEW_VERDICTS = {"clean", "minor-findings", "needs-rework"}
 ALLOWED_CLAUDE_REVIEW_VERDICTS = {"ship", "ship-with-fixes", "needs-rework"}
 ALLOWED_ROW_FIELDS = {"task", "agent", "reviewer", "verdict", "commit", "notes"}
+# Known run-log event types. The orchestrator owns the vocabulary; this set
+# acts as a tripwire so typo'd events surface immediately rather than drifting
+# silently into the log. `awaiting_user` is added per TASK-014A D.2a.5 to
+# signal the bounded-remediation pause state to the next conversation turn.
+ALLOWED_LOG_EVENTS = {
+    "run_start",
+    "run_end",
+    "analyst_done",
+    "batch_start",
+    "implement_start",
+    "implement_done",
+    "review_start",
+    "review_done",
+    "commit_done",
+    "failed",
+    "disagreement",
+    "fallback_used",
+    "review_skipped",
+    "remediation_start",
+    "plan_review_start",
+    "plan_review_done",
+    "plan_review_skipped",
+    "awaiting_user",
+    "schedule_written",
+}
+# Accepted values for `finalize-execution-log --outcome`. `paused` is added
+# per TASK-014A for the D.2a.5 awaiting-user pause — the run halted mid-flight
+# and the user's next turn decides disposition.
+ALLOWED_RUN_OUTCOMES = {"success", "partial", "failed", "paused"}
 
 CANONICAL_ID_RE = re.compile(r"^\d{3}[A-Z]?$")
 ALLOWED_SCHEDULE_TOP_LEVEL = {"outcome", "tasks", "batches", "gaps", "risks"}
@@ -1687,6 +1716,12 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         f"{args.diff_summary}\n\n"
         f"Plan: {plan.name}\n"
     )
+    if getattr(args, "remediation_tag", False):
+        # D.2a.5 post-remediation commit: a trailing [remediation] tag so the
+        # run summary and `git log --oneline` can distinguish retries from
+        # clean first-pass commits. Kept on its own line adjacent to any
+        # [disagreement] tag that D.2a might have already appended upstream.
+        commit_msg = commit_msg.rstrip("\n") + "\n\n[remediation]\n"
 
     add_files = files + [str(plan)]
     add = _git(["add", "--", *add_files])
@@ -1711,6 +1746,7 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         "reviewer_verdict": args.reviewer_verdict,
         "minor_findings_count": len(minor),
         "disagreement_tag": bool(args.disagreement_tag),
+        "remediation_tag": bool(getattr(args, "remediation_tag", False)),
     }
     _append_run_log("commit_done", event_fields)
 
@@ -1805,9 +1841,12 @@ def cmd_finalize_execution_log(args: argparse.Namespace) -> None:
 
     header = "| Task | Agent | Reviewer | Verdict | Commit | Notes |"
     sep = "|---|---|---|---|---|---|"
+    run_id_heading = f"## Execution log — {args.run_id}"
+    if args.outcome:
+        run_id_heading += f" ({args.outcome})"
     lines = [
         "",
-        f"## Execution log — {args.run_id}",
+        run_id_heading,
         "",
         f"Starting SHA: `{args.starting_sha}`  → Ending SHA: `{args.ending_sha}`",
         "",
@@ -1838,6 +1877,17 @@ def cmd_log_event(args: argparse.Namespace) -> None:
         _die(args, {"error": f"invalid --fields-json: {e}"})
     if not isinstance(fields, dict):
         _die(args, {"error": "--fields-json must be a JSON object"})
+    if args.event not in ALLOWED_LOG_EVENTS:
+        _die(args, {
+            "errors": [{
+                "path": "$.event",
+                "code": "unknown-event-type",
+                "message": (
+                    f"event {args.event!r} is not in the allowlist "
+                    f"{sorted(ALLOWED_LOG_EVENTS)}"
+                ),
+            }],
+        })
     try:
         written = _append_run_log(args.event, fields)
     except RuntimeError as e:
@@ -1985,6 +2035,11 @@ def build_parser() -> argparse.ArgumentParser:
                           help="JSON array of minor findings")
     p_commit.add_argument("--disagreement-tag", action="store_true",
                           help="Mark commit as §8.4 disagreement")
+    p_commit.add_argument("--remediation-tag", action="store_true",
+                          help=(
+                              "Mark commit as a D.2a.5 post-remediation retry. "
+                              "Appends a [remediation] tag line to the commit body."
+                          ))
     p_commit.add_argument("--dry-run", action="store_true")
     _add_json(p_commit)
 
@@ -2014,6 +2069,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_fin.add_argument("--starting-sha", required=True)
     p_fin.add_argument("--ending-sha", required=True)
     p_fin.add_argument("--rows-json", required=True, help="JSON array of row dicts")
+    p_fin.add_argument(
+        "--outcome",
+        default=None,
+        choices=sorted(ALLOWED_RUN_OUTCOMES),
+        help=(
+            "Run outcome recorded in the execution-log header. "
+            "`paused` signals a D.2a.5 awaiting-user halt; the next "
+            "conversation turn decides disposition. Optional; omitted "
+            "preserves the legacy (unlabelled) header for callers that "
+            "have not yet migrated."
+        ),
+    )
     _add_json(p_fin)
 
     p_log = sub.add_parser("log-event", help="Append JSONL event with && tail -1 verification")

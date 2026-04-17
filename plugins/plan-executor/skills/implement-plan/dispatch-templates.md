@@ -127,3 +127,53 @@ Same deliberate parallel-tree divergence from §10 as Phase D-Claude. Call out i
 Per design §8.3 line 692: Claude re-implements, Codex re-reviews. One attempt.
 
 **Retry implement** — re-use the Phase B template above verbatim with the same TASK-NNN block. Reviewer findings are NOT forwarded in v1 (see Open risks 1); Claude re-implements from the plan spec. After retry success, re-run Phase D-Codex (wrapper review) on the re-implementation. `needs-rework` on the re-review is terminal for this task — no further retries.
+
+## Phase B-rework — Bounded remediation retry (D.2a.5)
+
+Dispatched only when Codex reviewing Claude-implemented work returns `needs-rework` AND the Phase D.5 third-opinion code-reviewer independently agreed (verdict `needs-rework`). Strictly one attempt. Use `Agent(subagent_type: "plan-implementer", model: "opus")`.
+
+Unlike Phase D.2b, reviewer findings ARE forwarded here — the risk of the implementer blindly doing whatever Codex said is mitigated because D.5 already confirmed the findings are load-bearing. Keep the forwarded prompt structured; do NOT paraphrase into a free-form "fix what Codex flagged".
+
+> Apply a narrow remediation patch to this task's existing implementation at `<absolute plan path>`. The prior attempt is **still in the working tree** — it was NOT reverted. Codex (peer reviewer) returned `needs-rework` and the third-opinion code-reviewer independently agreed that the findings below are load-bearing. Your job is to patch the current working-tree edits with a minimal, surgical fix that addresses each finding. Do NOT rebuild from the base commit; do NOT re-do the work that is already correct; only edit what is necessary to resolve the findings.
+>
+> Plan context:
+>
+> ```markdown
+> <## Context section verbatim>
+> ```
+>
+> Task (verbatim from plan):
+>
+> ```markdown
+> <entire TASK-NNN block>
+> ```
+>
+> Base commit SHA: `<starting_sha>`
+>
+> Codex findings (verbatim from `parsed.findings` of the wrapper envelope):
+>
+> ```json
+> <codex_findings_json>
+> ```
+>
+> Third-opinion (D.5) summary — why these findings are load-bearing:
+>
+> ```
+> <d5_summary>
+> ```
+>
+> Analyst annotations (verbatim, may be empty):
+>
+> ```json
+> <analyst_annotations_json>
+> ```
+>
+> **Fix narrowly, do not scope-inflate.** Address each finding directly. Do NOT refactor unrelated code, do NOT add docstrings to untouched regions, do NOT tidy formatting outside the edited scope. If a finding cannot be reconciled with the plan's acceptance criteria, report `plan-incorrect` — do not invent a compromise.
+>
+> You may read the plan file for reference but do not modify it. Run the test command if specified — use `venv/bin/python ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec. Do not commit. Do not use `git stash`.
+>
+> **Parallel-mode caveat:** other implementers may be running concurrently on disjoint files. Trust the diff when classifying test failures; do NOT use `git stash` (it would collide).
+>
+> **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
+
+After retry success, re-run Phase D-Codex (wrapper review) on the re-implementation. `clean | minor-findings` → D.3 commit with `--remediation-tag`. `needs-rework` on the re-review triggers the D.2a.5 awaiting-user pause (see SKILL.md §D.2a.5 step 6); the orchestrator does NOT call `fail-task`.

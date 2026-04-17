@@ -2951,3 +2951,218 @@ class TestFilterSchedule:
         assert written.get("gaps") == []
         assert written["outcome"] == "valid"
         assert [t["id"] for t in written["tasks"]] == ["002"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-014A — D.2a.5 bounded remediation retry surface
+# ---------------------------------------------------------------------------
+
+
+class TestRemediationTag:
+    """V4 — `commit-task --remediation-tag` appends a `[remediation]` line to
+    the commit body and records `remediation_tag=true` in the `commit_done`
+    run-log event.
+    """
+
+    def test_remediation_tag_appears_in_commit_body(self, tmp_git_repo: Path) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x post-remediation",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--remediation-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body_json = _parse_json(cp)
+        assert body_json["commit_sha"]
+
+        # Commit body (git log -1 --pretty=%B) must contain the [remediation] tag.
+        body = subprocess.run(
+            ["git", "log", "-1", "--pretty=format:%B"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert "[remediation]" in body, (
+            f"expected [remediation] tag in commit body, got:\n{body}"
+        )
+
+    def test_remediation_tag_absent_by_default(self, tmp_git_repo: Path) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        body = subprocess.run(
+            ["git", "log", "-1", "--pretty=format:%B"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert "[remediation]" not in body
+
+    def test_remediation_tag_flag_logged_in_commit_done(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "retry fix",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--remediation-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        commit_events = [json.loads(ln) for ln in lines if '"commit_done"' in ln]
+        assert commit_events, f"no commit_done event in log: {lines}"
+        assert commit_events[-1]["remediation_tag"] is True
+
+
+class TestLogEventAllowlist:
+    """`log-event` MUST accept `awaiting_user` (per TASK-014A V2) and reject
+    typos to prevent silent vocabulary drift.
+    """
+
+    def test_accepts_awaiting_user(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "awaiting_user",
+            "--fields-json", (
+                '{"run_id":"R1","task_id":"001",'
+                '"stage":"post_remediation_review",'
+                '"codex_findings":[],"d5_summary":"agreed"}'
+            ),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["ok"] is True
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "awaiting_user"
+        assert rec["stage"] == "post_remediation_review"
+
+    def test_accepts_remediation_start(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "remediation_start",
+            "--fields-json",
+            '{"run_id":"R1","task_id":"001","findings_count":2}',
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+
+    def test_rejects_unknown_event(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "bogus_typo_event",
+            "--fields-json", '{"run_id":"R1"}',
+            "--json",
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body.get("errors", [])]
+        assert "unknown-event-type" in codes
+
+
+class TestFinalizeExecutionLogOutcome:
+    """`finalize-execution-log --outcome paused` must be accepted per
+    TASK-014A; legacy callers that omit `--outcome` must still work.
+    """
+
+    def test_accepts_paused_outcome(self, isolated_plan: Path) -> None:
+        rows = [{
+            "task": "TASK-001",
+            "agent": "claude",
+            "reviewer": "codex",
+            "verdict": "needs-rework",
+            "commit": "-",
+            "notes": "paused after retry",
+        }]
+        cp = _run(
+            "finalize-execution-log",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R1",
+            "--starting-sha", "1111111",
+            "--ending-sha", "1111111",
+            "--outcome", "paused",
+            "--rows-json", json.dumps(rows),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        text = isolated_plan.read_text(encoding="utf-8")
+        assert "## Execution log — R1 (paused)" in text
+
+    @pytest.mark.parametrize("outcome", ["success", "partial", "failed", "paused"])
+    def test_accepts_all_allowed_outcomes(
+        self, isolated_plan: Path, outcome: str,
+    ) -> None:
+        cp = _run(
+            "finalize-execution-log",
+            "--plan-file", str(isolated_plan),
+            "--run-id", f"R-{outcome}",
+            "--starting-sha", "aaa",
+            "--ending-sha", "bbb",
+            "--outcome", outcome,
+            "--rows-json", "[]",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+
+    def test_rejects_unknown_outcome(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "finalize-execution-log",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R1",
+            "--starting-sha", "aaa",
+            "--ending-sha", "bbb",
+            "--outcome", "bogus",
+            "--rows-json", "[]",
+            "--json",
+        )
+        # argparse rejects invalid choices with exit-code 2 and writes to stderr.
+        assert cp.returncode != 0
+
+    def test_outcome_is_optional(self, isolated_plan: Path) -> None:
+        """Callers that haven't migrated still work — heading omits the outcome
+        suffix when --outcome is not passed."""
+        cp = _run(
+            "finalize-execution-log",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R-legacy",
+            "--starting-sha", "aaa",
+            "--ending-sha", "bbb",
+            "--rows-json", "[]",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        text = isolated_plan.read_text(encoding="utf-8")
+        assert "## Execution log — R-legacy\n" in text
+        assert "## Execution log — R-legacy (" not in text

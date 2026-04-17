@@ -103,7 +103,7 @@ An explicit `--skip-plan-review` CLI flag skips Phase 1.5 entirely, logs `plan_r
 
 ### TASK-014A: Bounded remediation retry in Phase D.2a
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
@@ -169,7 +169,7 @@ Safe to revert; remove the `00_INDEX.json` mutation from `commit-task`. Roster d
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py`
   - `plugins/plan-executor/scripts/plan_ops.py` (new subcommand: `parse-plan-review-report`)
-  - `plugins/plan-executor/scripts/codex_plan_review_schema.json` (new schema file, mirror `codex_review_schema.json`)
+  - `plugins/plan-executor/scripts/codex_plan_review_schema.json` (create) — new schema file, mirror `codex_review_schema.json`
   - `tests/scripts/test_plan_ops.py`
 - **Dependencies:** TASK-014A (prompt-template conventions), TASK-001 (canonical error shape)
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
