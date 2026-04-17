@@ -1,0 +1,41 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "015",
+      "title": "Codex reviewer prompt tuning",
+      "agent": "claude",
+      "priority": "low",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_codex_review_prompt.py",
+        "tests/fixtures/codex_review_envelope.json"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_codex_review_prompt.py tests/scripts/test_plan_ops.py",
+      "classification_reason": "Prompt-engineering judgment, boundary scope"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "015"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/fixtures/codex_review_envelope.json",
+        "tests/scripts/test_codex_review_prompt.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [
+    {
+      "type": "scope-boundary",
+      "affected_tasks": [
+        "015"
+      ],
+      "detail": "Claude-tier task at the 3-file Codex threshold; prompt wording and fixture selection require design judgment affecting downstream reviewer behavior."
+    }
+  ]
+}
