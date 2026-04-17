@@ -1017,6 +1017,70 @@ class TestFailTask:
         assert "### TASK-001: First task\n\n- **Status:** failed" in text
 
 
+class TestPreflightDirtyCategorization:
+    """Preflight splits `git status` entries into plan_doc / infra_ignored /
+    source_blocking. The infra_ignored set must agree with the wrapper's
+    `_is_reconcile_protected()` rule (plan_ops.py:924), so orchestrator
+    infrastructure artifacts like a stray `.codex` file do not block runs.
+    """
+
+    def _preflight(self, repo: Path, plan: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(PY), str(SCRIPT), "preflight", "--plan-file", str(plan), "--json"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_codex_stray_file_is_infra_ignored(self, tmp_git_repo: Path) -> None:
+        (tmp_git_repo / ".codex").write_text("", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert ".codex" in body["dirty_files"]["infra_ignored"]
+        assert body["dirty_files"]["source_blocking"] == []
+        assert body["pass"] is True
+
+    def test_plan_dir_file_is_infra_ignored(self, tmp_git_repo: Path) -> None:
+        (tmp_git_repo / "docs" / "plans" / "_run_lock.json").write_text("{}", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert any("_run_lock.json" in p for p in body["dirty_files"]["infra_ignored"])
+        assert body["pass"] is True
+
+    def test_arbitrary_untracked_file_is_source_blocking(self, tmp_git_repo: Path) -> None:
+        (tmp_git_repo / "scratch.py").write_text("print('hi')\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan)
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert "scratch.py" in body["dirty_files"]["source_blocking"]
+        assert body["pass"] is False
+
+    def test_untracked_tests_dir_is_source_blocking(self, tmp_git_repo: Path) -> None:
+        tests_dir = tmp_git_repo / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "wip_test.py").write_text("def test_wip(): pass\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan)
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert "tests/" in body["dirty_files"]["source_blocking"]
+
+    def test_claude_dir_is_infra_ignored(self, tmp_git_repo: Path) -> None:
+        (tmp_git_repo / ".claude").mkdir()
+        (tmp_git_repo / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert ".claude/" in body["dirty_files"]["infra_ignored"]
+        assert body["pass"] is True
+
+
 # ---------------------------------------------------------------------------
 # TASK-002: Runtime contract validation at every executor seam
 # ---------------------------------------------------------------------------

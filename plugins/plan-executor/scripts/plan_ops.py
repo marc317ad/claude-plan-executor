@@ -1214,7 +1214,7 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         path = line[3:]
         if path == str(plan) or path.endswith(plan.name):
             dirty["plan_doc"].append(path)
-        elif path.startswith((".claude/", "docs/", "tests/")):
+        elif _is_reconcile_protected(path) or path.startswith(f"{_PLAN_DIR_POSIX}/"):
             dirty["infra_ignored"].append(path)
         else:
             dirty["source_blocking"].append(path)
