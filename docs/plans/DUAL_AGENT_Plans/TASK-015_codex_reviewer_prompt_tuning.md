@@ -60,7 +60,7 @@ Prompt text MUST include at least two worked examples: (1) a nit (e.g. outdated 
 
 ### TASK-015: Codex reviewer prompt tuning
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`
