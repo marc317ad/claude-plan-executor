@@ -49,6 +49,7 @@ Add ONE rule to `plugins/plan-executor/agents/plan-analyst.md`: when a TASK file
   - Fixture A (`task_type: gate` + `Test command: none`) → `outcome: valid` with NO `missing-test-command` gap.
   - Fixture B (`task_type: standard` + `Test command: none`) → reports `missing-test-command` gap (unchanged behavior).
   - Fixture C (no `task_type` field + `Test command: none`) → reports `missing-test-command` gap (backwards-compat fallback).
+  - **Chain, don't overwrite.** If the Step 4 `none`-branch already contains a deferred-testing signal check (the `Test command: none (... TASK-NNN ...)` / `deferred (TASK-NNN)` form that emits a `test-deferred` risk instead of a gap), the new `task_type: gate` suppression MUST be inserted AHEAD of it — do not delete or rewrite the deferred-testing logic. Final decision order: (1) frontmatter `task_type: gate` → suppress; (2) deferred-testing signal → `test-deferred` risk; (3) otherwise → `missing-test-command` gap. Add Fixture D (`task_type: standard` + `Test command: none (deferred to TASK-NNN)` where the reference resolves) asserting `test-deferred` still appears in `risks` and no `missing-test-command` gap fires — proves the chain didn't regress.
 
 **Description:**
 Unblocks Phase A's single out-of-plugin change: every gate TASK emitted by the decomposer must pass plan-analyst without `missing-test-command` noise. Backwards-compatible via the absent-field fallback.

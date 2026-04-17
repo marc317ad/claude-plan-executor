@@ -69,7 +69,13 @@ Stale paths are gaps (warnings), never hard failures.
 
 For each task's `Test command:`:
 
-- Literal `none` — allowed. If the task is Claude-tier (decided in Step 6), emit a `missing-test-command` gap.
+- Literal `none` — allowed. If the task is Claude-tier (decided in Step 6):
+  - **Deferred-testing signal** — if the `Test command:` line carries a deferred-testing signal, do NOT emit a `missing-test-command` gap; emit a `test-deferred` entry in `risks` instead (see Step 7). A signal is either:
+    - the canonical literal `Test command: deferred (TASK-NNN[A-Z]?)` (optional trailing note allowed), OR
+    - the back-compat literal `Test command: none` with a parenthetical that references a sibling task in this plan, e.g. `Test command: none (pure agent spec; end-to-end exercise lands in TASK-NNN[A-Z]?)`.
+
+    The referenced `TASK-NNN[A-Z]?` MUST resolve to a declared task in this plan; if it does not, fall through to the gap branch below.
+  - Otherwise, emit a `missing-test-command` gap.
 - Contains any shell operator (`&&`, `||`, `|`, `;`, backticks, `$(...)`) → emit an `unresolvable-test` gap and stop analyzing the command. Warning only.
 - Indirect / wrapper command (`make ...`, `npm test`, `yarn test`, `pnpm test`, any `./scripts/*.sh`, etc.) → emit `unresolvable-test` gap. Warning only.
 - Direct reference to a test runner with an explicit file path (e.g., `pytest tests/risk/test_sizer.py`, `venv/bin/pytest tests/foo.py::test_bar`, `go test ./pkg/foo`, `jest src/foo.test.ts`) → extract the first non-flag positional path (strip `::selector` and similar suffixes) and check via `test -f`. If missing, emit `unresolvable-test` gap.
@@ -154,14 +160,15 @@ Scope estimation approach:
 
 - `stale-path` — from Step 3.
 - `unresolvable-test` — from Step 4.
-- `missing-test-command` — Claude-tier task with `Test command: none`.
+- `missing-test-command` — Claude-tier task with `Test command: none` AND no deferred-testing signal on the line (see Step 4).
 - `vague-ac` — acceptance criteria lack concrete assertions (e.g., "should work correctly" with no measurable check).
 - `empty-implementation-notes` — Claude-tier task with no `Implementation notes:` block.
 
-**Risk types** (cross-task):
+**Risk types** (cross-task or informational):
 
 - Same file touched by tasks in different batches (safe because serial per batch, but noted).
 - Codex-tier task whose estimated scope is within 20% of the thresholds (≤3 files, ≤30 lines) — flag for reviewer attention.
+- `test-deferred` — Claude-tier task with `Test command: none` (or `deferred …`) that explicitly defers testing to a sibling task in this plan. `affected_tasks` lists `[deferring_task_id, deferred_to_task_id]`; `detail` restates the forwarded parenthetical verbatim. Informational only; does NOT flip outcome to `needs-enrichment`.
 
 ### Step 8 — Determine outcome
 
@@ -182,7 +189,7 @@ Scope estimation approach:
 **Edge-case matrix:**
 
 - `invalid`: missing `plan_path`; unreadable plan file; malformed frontmatter; duplicate task IDs; task ID not matching `TASK-NNN[A-Z]?`; missing required field (Status, Priority, Files, Test command, Acceptance criteria, Description, Reversion guidance).
-- `needs-enrichment`: stale file paths per Appendix C.4; unresolvable test command; vague acceptance criteria; empty implementation notes on a Claude-tier task; Claude-tier task with `Test command: none`.
+- `needs-enrichment`: stale file paths per Appendix C.4; unresolvable test command; vague acceptance criteria; empty implementation notes on a Claude-tier task; Claude-tier task with `Test command: none` AND no deferred-testing signal on the line (see Step 4).
 - `valid`: all required fields present, classification computable, gaps are empty.
 
 ## Report format
