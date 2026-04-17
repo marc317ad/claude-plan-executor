@@ -146,7 +146,7 @@ Safe to revert in isolation; remove `partial-agreement` from `ALLOWED_CLAUDE_REV
 
 ### TASK-016B: plan-remediator subagent
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/agents/plan-remediator.md` (create)
