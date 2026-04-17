@@ -170,7 +170,7 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
 venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
   --plan-file <absolute plan> \
   --schedule-file <schedule_file> \
-  --plans-dir <plan_dir> \
+  --plans-dir <dirname of plan-file> \
   --repo-root <absolute repo root> \
   --timeout 180
 
