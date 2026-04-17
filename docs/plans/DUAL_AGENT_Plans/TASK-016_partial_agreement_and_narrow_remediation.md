@@ -115,7 +115,7 @@ where `1,3` are the dismissed indices from D.5. Run summary row shows both tags.
 
 ### TASK-016A: D.5 partial-agreement verdict + payload schema
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`

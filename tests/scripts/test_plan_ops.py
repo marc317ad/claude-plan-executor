@@ -4020,3 +4020,307 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
         body = json.loads(cp.stdout)
         assert body["outcome"] == "failure"
         assert "not valid JSON" in (body.get("error") or "")
+
+
+# ---------------------------------------------------------------------------
+# TASK-016A — D.5 partial-agreement verdict + adjudication payload parser
+# ---------------------------------------------------------------------------
+#
+# V1 — parse-d5-adjudication accepts a partial-agreement payload whose
+#      buckets are non-empty, disjoint, and in-range; the structured
+#      dispatch fields are surfaced to the orchestrator.
+# V2 — empty or overlapping buckets emit partial-agreement-invalid-split.
+# V3 — out-of-range indices emit partial-agreement-unknown-index.
+
+
+class TestD5AdjudicationConstants:
+    """The verdict vocab MUST contain `partial-agreement` alongside the
+    three classical D.5 verdicts. Everything else in the routing chain
+    keys off this set; drift would silently break D.2a.6 routing.
+    """
+
+    def test_partial_agreement_in_allowed_claude_verdicts(self) -> None:
+        assert "partial-agreement" in plan_ops.ALLOWED_CLAUDE_REVIEW_VERDICTS
+        assert plan_ops.ALLOWED_CLAUDE_REVIEW_VERDICTS == {
+            "ship", "ship-with-fixes", "partial-agreement", "needs-rework",
+        }
+
+
+class TestParseD5Adjudication:
+    """V1–V3 — parse-d5-adjudication validates the adjudication payload
+    shape D.5 emits and surfaces the structured dispatch fields the
+    orchestrator forwards to D.2a.6.
+    """
+
+    def _run_parser(
+        self,
+        payload: dict | str,
+        *,
+        codex_findings_count: int,
+    ) -> subprocess.CompletedProcess:
+        stdin = (
+            payload if isinstance(payload, str) else json.dumps(payload)
+        )
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-d5-adjudication", "--stdin",
+                "--codex-findings-count", str(codex_findings_count),
+                "--json",
+            ],
+            input=stdin,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    # -- V1 -----------------------------------------------------------------
+
+    def test_accepts_partial_agreement_with_clean_split(self) -> None:
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [0, 2],
+                "dismissed": [1, 3],
+                "summary": "0 and 2 block ship; 1 and 3 are nits",
+            },
+            codex_findings_count=4,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["verdict"] == "partial-agreement"
+        assert body["load_bearing"] == [0, 2]
+        assert body["dismissed"] == [1, 3]
+        assert body["summary"].startswith("0 and 2 block")
+        assert body["errors"] == []
+
+    @pytest.mark.parametrize(
+        "verdict", ["ship", "ship-with-fixes", "needs-rework"],
+    )
+    def test_accepts_non_split_verdicts_without_buckets(
+        self, verdict: str,
+    ) -> None:
+        """The split fields are partial-agreement-only; other verdicts
+        pass through with load_bearing/dismissed left as null."""
+        cp = self._run_parser(
+            {"verdict": verdict, "summary": "justification"},
+            codex_findings_count=3,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["verdict"] == verdict
+        assert body["load_bearing"] is None
+        assert body["dismissed"] is None
+
+    def test_accepts_single_load_bearing_single_dismissed(self) -> None:
+        """Minimum non-empty split: one on each side."""
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [1],
+                "dismissed": [0],
+                "summary": "one each side",
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["load_bearing"] == [1]
+        assert body["dismissed"] == [0]
+
+    # -- V2 -----------------------------------------------------------------
+
+    def test_rejects_empty_load_bearing(self) -> None:
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [],
+                "dismissed": [0, 1],
+                "summary": "should have been ship-with-fixes",
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "partial-agreement-invalid-split" in codes
+
+    def test_rejects_empty_dismissed(self) -> None:
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [0, 1],
+                "dismissed": [],
+                "summary": "should have been needs-rework",
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "partial-agreement-invalid-split" in codes
+
+    def test_rejects_overlapping_buckets(self) -> None:
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [0, 2],
+                "dismissed": [1, 2],
+                "summary": "2 in both buckets is a contradiction",
+            },
+            codex_findings_count=3,
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "partial-agreement-invalid-split" in codes
+        msgs = " ".join(e["message"] for e in body["errors"])
+        assert "[2]" in msgs or "2" in msgs
+
+    # -- V3 -----------------------------------------------------------------
+
+    def test_rejects_out_of_range_index(self) -> None:
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [4],
+                "dismissed": [0],
+                "summary": "idx 4 hallucinated for a length-2 array",
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "partial-agreement-unknown-index" in codes
+
+    def test_rejects_negative_index(self) -> None:
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": [0],
+                "dismissed": [-1],
+                "summary": "negative indices are nonsense",
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "partial-agreement-unknown-index" in codes
+
+    # -- misc surface checks -----------------------------------------------
+
+    def test_rejects_invalid_verdict(self) -> None:
+        cp = self._run_parser(
+            {"verdict": "clean", "summary": "wrong vocab"},
+            codex_findings_count=1,
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "invalid-reviewer-verdict" in codes
+
+    def test_rejects_non_integer_bucket_entries(self) -> None:
+        cp = self._run_parser(
+            {
+                "verdict": "partial-agreement",
+                "load_bearing": ["0"],
+                "dismissed": [1],
+                "summary": "indices must be integers",
+            },
+            codex_findings_count=2,
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "invalid-type" in codes
+
+    def test_rejects_empty_stdin(self) -> None:
+        cp = self._run_parser("", codex_findings_count=1)
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "empty-stdin" in codes
+
+    def test_rejects_non_json_stdin(self) -> None:
+        cp = self._run_parser("not valid json", codex_findings_count=1)
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "json-decode" in codes
+
+
+class TestD5TemplateDocumentation:
+    """Acceptance-criterion anchor: the Phase D.5 template in
+    dispatch-templates.md must advertise `partial-agreement` in the
+    verdict enum AND include the output-shape example with both
+    `load_bearing` and `dismissed` arrays. These anchors are the
+    orchestrator's only contact with the reviewer's output schema;
+    prose drift would silently break D.2a.6 routing.
+    """
+
+    TEMPLATES = (
+        REPO_ROOT / "plugins" / "plan-executor"
+        / "skills" / "implement-plan" / "dispatch-templates.md"
+    )
+
+    def test_d5_template_lists_partial_agreement_in_verdict_enum(
+        self,
+    ) -> None:
+        text = self.TEMPLATES.read_text(encoding="utf-8")
+        # D.5 section heading exists.
+        assert "## Phase D.5" in text
+        # Verdict enum includes partial-agreement alongside the three
+        # classical verdicts.
+        d5_start = text.find("## Phase D.5")
+        d5_body = text[d5_start:]
+        # Next top-level section boundary.
+        next_section = d5_body.find("\n## ", 1)
+        if next_section >= 0:
+            d5_body = d5_body[:next_section]
+        assert "partial-agreement" in d5_body
+        assert "ship" in d5_body
+        assert "ship-with-fixes" in d5_body
+        assert "needs-rework" in d5_body
+        # Output-shape example MUST include both bucket fields.
+        assert "load_bearing" in d5_body
+        assert "dismissed" in d5_body
+
+    def test_d5_template_includes_decision_rubric(self) -> None:
+        text = self.TEMPLATES.read_text(encoding="utf-8")
+        d5_start = text.find("## Phase D.5")
+        d5_body = text[d5_start:]
+        next_section = d5_body.find("\n## ", 1)
+        if next_section >= 0:
+            d5_body = d5_body[:next_section]
+        # Rubric instructs the reviewer on when to pick partial-agreement.
+        assert "load-bearing" in d5_body.lower()
+        assert "dismissed" in d5_body
+        # The hard rule against a unanimous split must be named.
+        assert (
+            "non-empty" in d5_body.lower()
+            or "both" in d5_body.lower()
+        )
+
+
+class TestD5RouteTableDocumentation:
+    """The D.2a route table in SKILL.md is the structural switch that
+    actually routes partial-agreement to D.2a.6. Missing row = the
+    verdict becomes dead text.
+    """
+
+    SKILL = (
+        REPO_ROOT / "plugins" / "plan-executor"
+        / "skills" / "implement-plan" / "SKILL.md"
+    )
+
+    def test_route_table_has_partial_agreement_row(self) -> None:
+        text = self.SKILL.read_text(encoding="utf-8")
+        # The D.2a section and its route table must both exist.
+        assert "#### D.2a — Escalation" in text
+        # Row text (forward-reference to D.2a.6 is OK at this chunk;
+        # body lands in TASK-016C).
+        assert "partial-agreement" in text
+        # The route column must mention D.2a.6 (forward-referenced).
+        assert "D.2a.6" in text

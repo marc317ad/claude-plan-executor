@@ -158,7 +158,7 @@ Dispatched only when Codex reviewing a Claude-implemented task returns `needs-re
 
 > Scope: `<comma-separated files from Claude implementer's files_changed>`.
 >
-> Codex (a peer reviewer) returned `needs-rework` on this task and flagged the findings below. Independently review the change and decide whether Codex's findings are load-bearing (ship-blockers) or nitpicks that should be filed separately.
+> Codex (a peer reviewer) returned `needs-rework` on this task and flagged the findings below. Independently review the change and decide whether each Codex finding is load-bearing (a ship-blocker) or a nitpick that should be dismissed.
 >
 > Task (verbatim from plan):
 >
@@ -172,7 +172,38 @@ Dispatched only when Codex reviewing a Claude-implemented task returns `needs-re
 > <codex_findings_json>
 > ```
 >
-> Return your verdict (`ship | ship-with-fixes | needs-rework`) and a brief justification. `ship` / `ship-with-fixes` means you disagree with Codex and the commit proceeds with a `[disagreement]` tag. `needs-rework` means you agree and the task is failed.
+> Return your verdict (`ship | ship-with-fixes | partial-agreement | needs-rework`) and a brief justification.
+>
+> **Verdict decision rubric — pick the verdict that matches the split, not a stronger one:**
+>
+> 1. `ship` — you disagree with Codex entirely; none of the findings are load-bearing. Commit proceeds with a bare `[disagreement]` tag.
+> 2. `ship-with-fixes` — you disagree with Codex about ship-blockers; any residual concerns are minor follow-ups. Commit proceeds with a bare `[disagreement]` tag.
+> 3. `partial-agreement` — the findings split cleanly: at least one is load-bearing AND at least one can be safely dismissed. Use this verdict ONLY when both buckets are non-empty. Triggers the narrow-remediation retry (D.2a.6) scoped to the load-bearing subset; dismissed indices are recorded in the commit trailer.
+> 4. `needs-rework` — all findings are load-bearing. Triggers the full bounded-remediation retry (D.2a.5).
+>
+> **Hard rules for `partial-agreement`:**
+>
+> - Emit this verdict only when BOTH `load_bearing` and `dismissed` are non-empty. If every finding is load-bearing → use `needs-rework`. If no finding is → use `ship-with-fixes`. A unanimous split (empty bucket on either side) is a contract violation — the parser rejects it with `partial-agreement-invalid-split`.
+> - Indices in `load_bearing` and `dismissed` MUST be 0-based positions into the Codex `findings[]` array above, disjoint, and in range. There is no `id` field on Codex findings; array index is the reference.
+>
+> **Output shape:**
+>
+> - For `ship` / `ship-with-fixes` / `needs-rework`:
+>
+>   ```json
+>   {"verdict": "ship", "summary": "<one-line justification>"}
+>   ```
+>
+> - For `partial-agreement` (findings array of length 4, indices 0..3):
+>
+>   ```json
+>   {
+>     "verdict": "partial-agreement",
+>     "load_bearing": [0, 2],
+>     "dismissed": [1, 3],
+>     "summary": "<one-line justification naming which findings fall in which bucket>"
+>   }
+>   ```
 >
 > **Parallel-tree caveat:** other batch-mates' unstaged changes to disjoint files may be in the working tree — focus strictly on the scope files listed above.
 >

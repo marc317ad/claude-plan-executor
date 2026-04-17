@@ -81,7 +81,12 @@ SCHEDULE_FIELD_ALIASES = {"task_id": "id", "batch_index": "index"}
 ALLOWED_PLAN_STATUSES = {"in-progress", "complete", "partial"}
 ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 ALLOWED_CODEX_REVIEW_VERDICTS = {"clean", "minor-findings", "needs-rework"}
-ALLOWED_CLAUDE_REVIEW_VERDICTS = {"ship", "ship-with-fixes", "needs-rework"}
+ALLOWED_CLAUDE_REVIEW_VERDICTS = {
+    "ship",
+    "ship-with-fixes",
+    "partial-agreement",
+    "needs-rework",
+}
 # Phase 1.5 Codex plan-review verdicts (TASK-014C). Distinct from the
 # code-level review verdicts above because a plan review operates on plan
 # markdown + schedule JSON, not a diff, and drives a different routing table
@@ -664,6 +669,166 @@ def _validate_review_failure_payload(reviewer_findings: object) -> list[dict]:
                 "code": "unknown-reviewer-field",
                 "message": f"reviewer findings has unknown field {key!r}",
             })
+    return errors
+
+
+def _validate_d5_adjudication_payload(
+    payload: object,
+    *,
+    codex_findings_count: int,
+) -> list[dict]:
+    """Validate a D.5 adjudication payload per TASK-016A.
+
+    Shape (verdict-dependent):
+        {
+          "verdict": "ship" | "ship-with-fixes" | "partial-agreement" | "needs-rework",
+          "summary": "<one-line justification>",
+          # required when verdict == "partial-agreement":
+          "load_bearing": [int, ...],   # 0-based indices into codex_findings
+          "dismissed":   [int, ...],    # 0-based indices into codex_findings
+        }
+
+    For `partial-agreement`, `load_bearing` and `dismissed` MUST be
+    non-empty integer arrays, disjoint, and their union MUST be a
+    subset of `range(codex_findings_count)`. The split must be clean
+    (≥1 load-bearing AND ≥1 dismissed); an empty bucket collapses to
+    `needs-rework` / `ship-with-fixes` and the reviewer should have
+    chosen those verdicts instead.
+
+    Errors:
+      - `partial-agreement-invalid-split`: empty or overlapping buckets.
+      - `partial-agreement-unknown-index`: index < 0 or >= findings count.
+
+    The non-partial-agreement verdicts (`ship`, `ship-with-fixes`,
+    `needs-rework`) pass through without requiring the split fields;
+    their routing does not need finding-level indices.
+    """
+    errors: list[dict] = []
+    if not isinstance(payload, dict):
+        return [{
+            "path": "$",
+            "code": "invalid-type",
+            "message": "D.5 adjudication payload must be a JSON object",
+        }]
+
+    verdict = payload.get("verdict")
+    if not isinstance(verdict, str):
+        errors.append({
+            "path": "$.verdict",
+            "code": "missing-field",
+            "message": "D.5 payload missing required field 'verdict'",
+        })
+    elif verdict not in ALLOWED_CLAUDE_REVIEW_VERDICTS:
+        errors.append({
+            "path": "$.verdict",
+            "code": "invalid-reviewer-verdict",
+            "message": (
+                f"D.5 verdict must be one of "
+                f"{sorted(ALLOWED_CLAUDE_REVIEW_VERDICTS)}, got {verdict!r}"
+            ),
+        })
+
+    summary = payload.get("summary")
+    if summary is not None and not isinstance(summary, str):
+        errors.append({
+            "path": "$.summary",
+            "code": "invalid-field",
+            "message": "D.5 payload field 'summary' must be a string",
+        })
+
+    if verdict == "partial-agreement":
+        def _check_bucket(name: str) -> list[int] | None:
+            value = payload.get(name)
+            if value is None:
+                errors.append({
+                    "path": f"$.{name}",
+                    "code": "missing-field",
+                    "message": (
+                        f"partial-agreement payload missing required field "
+                        f"{name!r}"
+                    ),
+                })
+                return None
+            if not isinstance(value, list):
+                errors.append({
+                    "path": f"$.{name}",
+                    "code": "invalid-type",
+                    "message": (
+                        f"partial-agreement field {name!r} must be an array"
+                    ),
+                })
+                return None
+            cleaned: list[int] = []
+            for i, item in enumerate(value):
+                # bool is a subclass of int in Python; reject it explicitly so
+                # `[True]` does not pass as `[1]`.
+                if not isinstance(item, int) or isinstance(item, bool):
+                    errors.append({
+                        "path": f"$.{name}[{i}]",
+                        "code": "invalid-type",
+                        "message": (
+                            f"partial-agreement field {name!r}[{i}] must be "
+                            f"an integer index, got {type(item).__name__}"
+                        ),
+                    })
+                    continue
+                cleaned.append(item)
+            return cleaned
+
+        load_bearing = _check_bucket("load_bearing")
+        dismissed = _check_bucket("dismissed")
+
+        # Only proceed with split validation when both buckets were
+        # structurally valid; otherwise the type errors above are
+        # enough signal for the caller.
+        if load_bearing is not None and dismissed is not None:
+            if len(load_bearing) == 0:
+                errors.append({
+                    "path": "$.load_bearing",
+                    "code": "partial-agreement-invalid-split",
+                    "message": (
+                        "partial-agreement requires a non-empty "
+                        "'load_bearing' bucket; empty collapses to "
+                        "'ship-with-fixes' — pick that verdict instead"
+                    ),
+                })
+            if len(dismissed) == 0:
+                errors.append({
+                    "path": "$.dismissed",
+                    "code": "partial-agreement-invalid-split",
+                    "message": (
+                        "partial-agreement requires a non-empty "
+                        "'dismissed' bucket; empty collapses to "
+                        "'needs-rework' — pick that verdict instead"
+                    ),
+                })
+            overlap = sorted(set(load_bearing) & set(dismissed))
+            if overlap:
+                errors.append({
+                    "path": "$.load_bearing",
+                    "code": "partial-agreement-invalid-split",
+                    "message": (
+                        f"partial-agreement requires disjoint buckets; "
+                        f"indices {overlap} appear in both 'load_bearing' "
+                        f"and 'dismissed'"
+                    ),
+                })
+            for name, bucket in (
+                ("load_bearing", load_bearing),
+                ("dismissed", dismissed),
+            ):
+                for i, idx in enumerate(bucket):
+                    if idx < 0 or idx >= codex_findings_count:
+                        errors.append({
+                            "path": f"$.{name}[{i}]",
+                            "code": "partial-agreement-unknown-index",
+                            "message": (
+                                f"partial-agreement index {idx} in {name!r} "
+                                f"is out of range for codex_findings of "
+                                f"length {codex_findings_count}"
+                            ),
+                        })
+
     return errors
 
 
@@ -2068,6 +2233,83 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
     _emit(args, result)
 
 
+def cmd_parse_d5_adjudication(args: argparse.Namespace) -> None:
+    """Validate a D.5 adjudication payload from stdin per TASK-016A.
+
+    Input: single JSON object
+        {
+          "verdict": "ship" | "ship-with-fixes" | "partial-agreement" | "needs-rework",
+          "summary": "...",
+          # required when verdict == "partial-agreement":
+          "load_bearing": [0, 2],
+          "dismissed":    [1, 3]
+        }
+
+    The `--codex-findings-count` flag is the length of the Codex
+    `parsed.findings[]` array the D.5 reviewer was adjudicating;
+    partial-agreement indices MUST stay within `range(0, count)`.
+
+    On success emits the structured dispatch payload the orchestrator
+    forwards to D.2a.6: `{verdict, summary, load_bearing, dismissed,
+    errors:[]}`. The split fields are only present (as arrays) on
+    `partial-agreement`; other verdicts leave them as `null` for
+    explicit routing.
+    """
+    raw = sys.stdin.read()
+    if not raw.strip():
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "empty-stdin",
+            "message": "parse-d5-adjudication expects a JSON payload on stdin",
+        }]})
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "json-decode",
+            "message": f"stdin is not valid JSON: {exc}",
+        }]})
+
+    count = args.codex_findings_count
+    if count < 0:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "invalid-findings-count",
+            "message": (
+                f"--codex-findings-count must be non-negative, got {count}"
+            ),
+        }]})
+
+    errors = _validate_d5_adjudication_payload(
+        payload, codex_findings_count=count,
+    )
+    if errors:
+        _die(args, {"errors": errors})
+
+    assert isinstance(payload, dict)
+    verdict = payload.get("verdict")
+    load_bearing = (
+        payload.get("load_bearing")
+        if verdict == "partial-agreement"
+        else None
+    )
+    dismissed = (
+        payload.get("dismissed")
+        if verdict == "partial-agreement"
+        else None
+    )
+    result = {
+        "verdict": verdict,
+        "summary": payload.get("summary", ""),
+        "load_bearing": load_bearing,
+        "dismissed": dismissed,
+        "errors": [],
+    }
+    _emit(args, result)
+
+
 def cmd_commit_task(args: argparse.Namespace) -> None:
     tid = _normalize_task_id(args.task_id)
     if not tid:
@@ -2495,6 +2737,28 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Read plan-review envelope JSON from stdin")
     _add_json(p_prr)
 
+    p_d5 = sub.add_parser(
+        "parse-d5-adjudication",
+        help=(
+            "Validate a D.5 adjudication payload and surface the "
+            "structured dispatch fields (verdict, summary, load_bearing, "
+            "dismissed). Partial-agreement payloads are checked for "
+            "disjoint, in-range index splits; malformed splits exit with "
+            "partial-agreement-invalid-split / -unknown-index codes."
+        ),
+    )
+    p_d5.add_argument("--stdin", action="store_true", required=True,
+                      help="Read D.5 adjudication JSON payload from stdin")
+    p_d5.add_argument(
+        "--codex-findings-count", type=int, required=True,
+        help=(
+            "Length of the Codex parsed.findings[] array the D.5 reviewer "
+            "was adjudicating; partial-agreement indices must stay within "
+            "range(0, count)."
+        ),
+    )
+    _add_json(p_d5)
+
     p_commit = sub.add_parser("commit-task", help="Narrow commit + status flip + run log append")
     p_commit.add_argument("--plan-file", required=True)
     p_commit.add_argument("--task-id", required=True)
@@ -2614,6 +2878,7 @@ def main(argv: list[str] | None = None) -> None:
         "filter-schedule": cmd_filter_schedule,
         "parse-implementer-report": cmd_parse_implementer_report,
         "parse-plan-review-report": cmd_parse_plan_review_report,
+        "parse-d5-adjudication": cmd_parse_d5_adjudication,
         "commit-task": cmd_commit_task,
         "fail-task": cmd_fail_task,
         "update-plan-header": cmd_update_plan_header,
