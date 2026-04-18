@@ -2657,19 +2657,34 @@ def _full_schedule_fixture() -> dict:
 
 class TestFilterSchedule:
     def test_filter_schedule_happy_path(self, tmp_path: Path) -> None:
+        # V1 — request 002, transitive closure pulls in 001 (002's dep).
         sched = tmp_path / "full.schedule.json"
         sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
         cp = _run_filter_schedule(sched, "2")
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
         assert body["outcome"] == "valid"
-        assert [t["id"] for t in body["tasks"]] == ["002"]
-        assert body["tasks"][0]["dependencies"] == ["001"]
+        # Source order preserved: 001 appears first in fixture, 002 second.
+        assert [t["id"] for t in body["tasks"]] == ["001", "002"]
+        # 002's dep is kept.
+        ids_to_deps = {t["id"]: t.get("dependencies", []) for t in body["tasks"]}
+        assert ids_to_deps["002"] == ["001"]
+        # batch 1 was [001, 003] → retained as [001]; batch 2 = [002].
         assert body["batches"] == [
-            {"index": 2, "task_ids": ["002"], "file_locks": ["b"]}
+            {"index": 1, "task_ids": ["001"], "file_locks": ["a", "c"]},
+            {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
         ]
         assert body["gaps"] == []
         assert body["risks"] == []
+
+    def test_filter_schedule_transitive_prereqs(self, tmp_path: Path) -> None:
+        # V1 explicit: requesting 002 pulls in 001; source order preserved.
+        sched = tmp_path / "trans.schedule.json"
+        sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "2")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert [t["id"] for t in body["tasks"]] == ["001", "002"]
 
     def test_filter_schedule_unknown_id_rejected(self, tmp_path: Path) -> None:
         sched = tmp_path / "full.schedule.json"
@@ -2680,24 +2695,65 @@ class TestFilterSchedule:
         assert body["errors"][0]["code"] == "unknown-task-id"
         assert "999" in body["errors"][0]["message"]
 
-    def test_filter_returns_exact_selection_even_with_orphan_deps(
+    def test_filter_schedule_missing_dep_rejected(
         self, tmp_path: Path,
     ) -> None:
+        # V3 — source declares 002 with dep 999, 999 is absent from tasks[].
+        # filter-schedule MUST halt with structured `missing-dependency`, NOT
+        # a Python KeyError. The source schedule validates only because the
+        # batch reference-integrity check is scoped to known ids; the dep
+        # reference is what's broken here — filter-schedule is the consumer
+        # that guards against the dangling reference.
+        #
+        # NOTE: the source must pass _validate_schedule upfront. The batch
+        # here references only 001 (a known id) because the dep on 999 is
+        # inside a task's dependencies array — not in batch.task_ids — and
+        # _validate_schedule_refs only cross-checks batch.task_ids against
+        # known tasks.
         sched = tmp_path / "broken.schedule.json"
         sched.write_text(json.dumps({
             "outcome": "valid",
             "tasks": [
-                {"id": "002", "agent": "claude", "files": ["b"],
+                {"id": "001", "agent": "codex", "files": ["a"],
                  "dependencies": ["999"]},
             ],
-            "batches": [{"index": 1, "task_ids": ["002"], "file_locks": ["b"]}],
+            "batches": [{"index": 1, "task_ids": ["001"], "file_locks": ["a"]}],
         }), encoding="utf-8")
-        cp = _run_filter_schedule(sched, "2")
-        assert cp.returncode == 0, cp.stderr
+        cp = _run_filter_schedule(sched, "1")
+        assert cp.returncode == 1
         assert "KeyError" not in cp.stderr
+        assert "Traceback" not in cp.stderr
         body = _parse_json(cp)
-        assert [t["id"] for t in body["tasks"]] == ["002"]
-        assert body["tasks"][0]["dependencies"] == ["999"]
+        codes = [e["code"] for e in body["errors"]]
+        assert "missing-dependency" in codes
+        # Message names both ids per V3 contract.
+        msg = body["errors"][0]["message"]
+        assert "001" in msg and "999" in msg
+
+    def test_filter_schedule_cycle_rejected(self, tmp_path: Path) -> None:
+        # V6 — cycle in the filtered subgraph: 001 → 002 → 001.
+        # parse-schedule should also catch this upstream, but filter-schedule
+        # has its own defensive check so a cycle cannot escape into
+        # write-schedule downstream.
+        sched = tmp_path / "cycle.schedule.json"
+        sched.write_text(json.dumps({
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": ["002"]},
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": ["001"]},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"],
+                 "file_locks": ["a", "b"]},
+            ],
+        }), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "1")
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "dependency-cycle" in codes
 
     def test_filter_schedule_source_not_valid_rejected(self, tmp_path: Path) -> None:
         sched = tmp_path / "needs_enr.schedule.json"
@@ -2760,7 +2816,8 @@ class TestFilterSchedule:
 
     def test_filter_schedule_alias_task_id_field_supported(self, tmp_path: Path) -> None:
         # Legacy alias `task_id` must be processed without KeyError — the
-        # validator warns but does not normalize.
+        # validator warns but does not normalize. Transitive closure over
+        # 002 must still pull in 001 even through the alias.
         sched = tmp_path / "alias.schedule.json"
         sched.write_text(json.dumps({
             "outcome": "valid",
@@ -2783,7 +2840,8 @@ class TestFilterSchedule:
         ids = [
             (t.get("id") if "id" in t else t.get("task_id")) for t in body["tasks"]
         ]
-        assert ids == ["002"]
+        # Transitive closure: requesting 002 pulls in 001 via the alias.
+        assert ids == ["001", "002"]
 
     def test_filter_schedule_id_form_normalization(self, tmp_path: Path) -> None:
         # Accepts 001, 1, and TASK-001 forms; empty fragments skipped.
@@ -2828,22 +2886,28 @@ class TestFilterSchedule:
         assert body["batches"][0]["task_ids"] == ["002"]
 
     def test_filter_schedule_preserves_batch_index(self, tmp_path: Path) -> None:
+        # V9 — after transitive closure of {002} the kept set is {001, 002}.
+        # Source batches [1: (001,003), 2: (002)] survive filtering as
+        # [1: (001), 2: (002)] — original `index` values preserved.
         sched = tmp_path / "preserve.schedule.json"
         sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
         cp = _run_filter_schedule(sched, "2")
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
         indices = [b["index"] for b in body["batches"]]
-        assert indices == [2]
+        assert indices == [1, 2]
 
     def test_filter_schedule_filters_batch_task_ids(self, tmp_path: Path) -> None:
+        # V10 — batch 1 had [001, 003]; filtering on 002 (transitive: 001)
+        # keeps 001 only; 003 is filtered out of that batch's task_ids.
         sched = tmp_path / "filter_bids.schedule.json"
         sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
         cp = _run_filter_schedule(sched, "002")
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
-        assert [b["index"] for b in body["batches"]] == [2]
-        assert body["batches"][0]["task_ids"] == ["002"]
+        assert [b["index"] for b in body["batches"]] == [1, 2]
+        assert body["batches"][0]["task_ids"] == ["001"]
+        assert body["batches"][1]["task_ids"] == ["002"]
 
     def test_filter_schedule_success_stdout_is_canonical_only(
         self, tmp_path: Path,
@@ -2888,11 +2952,15 @@ class TestFilterSchedule:
             f"pipeline failed:\nstdout={cp.stdout}\nstderr={cp.stderr}"
         )
         assert dest.is_file()
-        # Verify write succeeded and file parses back cleanly.
+        # Verify write succeeded and file parses back cleanly. Transitive
+        # closure pulls 001 in so the persisted file has both tasks.
         written = json.loads(dest.read_text(encoding="utf-8"))
         assert written["outcome"] == "valid"
-        assert [t["id"] for t in written["tasks"]] == ["002"]
-        assert written["tasks"][0]["dependencies"] == ["001"]
+        assert [t["id"] for t in written["tasks"]] == ["001", "002"]
+        ids_to_deps = {
+            t["id"]: t.get("dependencies", []) for t in written["tasks"]
+        }
+        assert ids_to_deps["002"] == ["001"]
 
     def test_filter_schedule_full_round_trip_drops_source_risks(
         self, tmp_path: Path,
@@ -2945,12 +3013,13 @@ class TestFilterSchedule:
             capture_output=True, text=True, cwd=str(REPO_ROOT),
         )
         assert parse_cp.returncode == 0, parse_cp.stderr
-        # Persisted file MUST have risks=[] regardless of source.
+        # Persisted file MUST have risks=[] regardless of source. Transitive
+        # closure includes 001 (002's dep).
         written = json.loads(dest.read_text(encoding="utf-8"))
         assert written.get("risks") == []
         assert written.get("gaps") == []
         assert written["outcome"] == "valid"
-        assert [t["id"] for t in written["tasks"]] == ["002"]
+        assert [t["id"] for t in written["tasks"]] == ["001", "002"]
 
 
 # ---------------------------------------------------------------------------

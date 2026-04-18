@@ -101,7 +101,7 @@
         "002",
         "003"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -352,7 +352,7 @@
       "depends_on": [
         "001"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -365,6 +365,18 @@
         "016A",
         "016B",
         "014A"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "017",
+      "v3_task": "TASK-017",
+      "file": "TASK-017_skill_command_reference_and_cheatsheet.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [
+        "001"
       ],
       "status": "Pending",
       "superseded_by": []

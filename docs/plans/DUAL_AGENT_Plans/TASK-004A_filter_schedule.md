@@ -190,7 +190,7 @@ The `write-schedule` invocation MUST exit 0. The written file MUST then parse ba
 
 ### TASK-004A: Implement `filter-schedule` subcommand
 
-- **Status:** failed
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`

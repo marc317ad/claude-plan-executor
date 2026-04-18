@@ -145,7 +145,7 @@ Apply filters:
   | venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" write-schedule \
     --schedule-file <schedule_file> --stdin --json
   ```
-  `filter-schedule` emits exactly the requested IDs in source order. Unknown task ID halts with `unknown-task-id`. Missing dep references in the filtered subgraph are not an error — schedule dependencies are no longer interpreted.
+  `filter-schedule` emits the requested IDs plus their transitive prerequisites in source order. Unknown requested ID halts with `unknown-task-id`; a transitive dep missing from `tasks[]` halts with `missing-dependency`; a cycle in the filtered subgraph halts with `dependency-cycle`.
 
 After any filter rewrite, re-compute file-disjoint batches by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" compute-schedule --stdin --json`, then replace the schedule's `batches` array with the returned `batches` before persisting.
 

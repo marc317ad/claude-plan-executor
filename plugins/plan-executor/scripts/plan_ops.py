@@ -1908,9 +1908,36 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
             "message": f"unknown task id {tid}",
         } for tid in unknown]})
 
-    # 5. Exact selection. Legacy task fields pass through without affecting
-    # filtering.
-    closed = set(requested)
+    # 5. Transitive closure with guarded indexing (V1, V3). Case 2: "schedule
+    # is broken upstream" — a transitive dep that's absent from tasks[] MUST
+    # produce a structured `missing-dependency` error, NOT a Python
+    # KeyError. The guard on tasks_by_id.get(tid) is defensive in case
+    # step 4 was bypassed; the real missing-dep check is on each dep ref.
+    closed: set[str] = set()
+    stack = list(requested)
+    while stack:
+        tid = stack.pop()
+        if tid in closed:
+            continue
+        closed.add(tid)
+        task = tasks_by_id.get(tid)
+        if task is None:
+            # Defensive: step 4 should have caught this for requested IDs;
+            # for derived ones the dep-ref check below handles it first.
+            _die(args, {"errors": [{
+                "path": "$.tasks",
+                "code": "missing-dependency",
+                "message": f"task depends on missing id {tid}",
+            }]})
+        for dep in (task.get("dependencies") or []):
+            dep_norm = _normalize_task_id(str(dep))
+            if dep_norm is None or dep_norm not in tasks_by_id:
+                _die(args, {"errors": [{
+                    "path": f"$.tasks[id={tid}].dependencies",
+                    "code": "missing-dependency",
+                    "message": f"task {tid} depends on missing id {dep!r}",
+                }]})
+            stack.append(dep_norm)
 
     # 6. Build output tasks/batches in source order. Drop batches whose
     # task_ids become empty post-filter (V8); filter retained batch task_ids
@@ -1927,14 +1954,57 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
         if keep:
             out_batches.append({**b, "task_ids": keep})
 
-    # 7. Reference-integrity check on the filtered schedule.
+    # 7. DAG defensive check on the filtered subgraph (V6, ISSUE-019).
+    # parse-schedule is the primary cycle detector, but filter-schedule MUST
+    # also guard against a cycle surviving into its output because the
+    # orchestrator pipes our stdout straight to write-schedule and any cycle
+    # would then execute. Kahn's algorithm over the filtered closed set.
+    out_deps: dict[str, list[str]] = {}
+    for t in out_tasks:
+        raw = t.get("id") if "id" in t else t.get("task_id")
+        norm = _normalize_task_id(str(raw)) if raw is not None else None
+        if norm is None:
+            continue
+        deps: list[str] = []
+        for dep in (t.get("dependencies") or []):
+            dep_norm = _normalize_task_id(str(dep))
+            if dep_norm is not None and dep_norm in closed:
+                deps.append(dep_norm)
+        out_deps[norm] = deps
+    indeg: dict[str, int] = {tid: 0 for tid in out_deps}
+    for tid, deps in out_deps.items():
+        for d in deps:
+            if d in indeg:
+                indeg[tid] += 1
+    queue = [tid for tid, n in indeg.items() if n == 0]
+    visited = 0
+    while queue:
+        head = queue.pop(0)
+        visited += 1
+        for other, deps in out_deps.items():
+            if head in deps:
+                indeg[other] -= 1
+                if indeg[other] == 0:
+                    queue.append(other)
+    if visited != len(out_deps):
+        remaining = sorted(tid for tid, n in indeg.items() if n > 0)
+        _die(args, {"errors": [{
+            "path": "$.tasks",
+            "code": "dependency-cycle",
+            "message": (
+                f"dependency cycle in filtered subgraph involving tasks: "
+                f"{remaining}"
+            ),
+        }]})
+
+    # 8. Reference-integrity check on the filtered schedule.
     ref_errors = _validate_schedule_refs(out_tasks, out_batches)
     if ref_errors:
         _die(args, {"errors": ref_errors})
 
-    # 8. Emit canonical schedule. gaps=[] and risks=[] are intentional —
+    # 9. Emit canonical schedule. gaps=[] and risks=[] are intentional —
     # inheriting source-level gaps/risks would either contradict
-    # outcome=valid (per _validate_schedule:467-472) or carry stale
+    # outcome=valid (per _validate_schedule:381-386) or carry stale
     # references to filtered-out tasks. Success stdout MUST contain ONLY
     # these five keys so write-schedule --stdin accepts the output
     # byte-for-byte (V11, V12, V13). Do NOT add warnings/errors/other
