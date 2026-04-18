@@ -12,7 +12,7 @@
         "plugins/plan-executor/skills/implement-plan/SKILL.md"
       ],
       "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
-      "classification_reason": "Multi-file, design-sensitive CLI contract"
+      "classification_reason": "Multi-file new subcommand with DAG validation"
     }
   ],
   "batches": [

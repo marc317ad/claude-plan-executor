@@ -402,3 +402,11 @@ Starting SHA: `7751d0f49ebd6a77144fb1a9c5b0498e0dfca816`  → Ending SHA: `7751d
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 004A | claude | codex+code-reviewer-d5 | needs-rework | — | reverted: SKILL.md:147 compute-schedule-after-filter conflicts with V9/V12 |
+
+## Execution log — 20260418T010801 (success)
+
+Starting SHA: `1456687c3701ba9b27b7b77264327b25a2ab7ea9`  → Ending SHA: `f87e92db3b5cf95d1afc74d23ca6c6a8f5088eac`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004A | claude | codex+code-reviewer-d5 | ship-with-fixes | f87e92d | codex needs-rework (3 findings); D.5 dismissed all — [disagreement] |
