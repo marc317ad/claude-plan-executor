@@ -120,6 +120,8 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" acquire-lock --plan-
 
 Overlap on the same plan → halt with the conflicting run_id.
 
+The lock file at `docs/plans/_run_lock.json` follows a strict canonical shape: a JSON object keyed by absolute plan path, with each entry containing exactly `{"run_id": "<id>", "acquired_at": "<opaque non-empty string>"}`. Any other shape (invalid JSON, extra keys, missing keys, top-level not an object, non-string or empty values) is rejected by `acquire-lock`. `--force` is a manual recovery tool — use it only to recover from a corrupted or stuck lock file. `--force` discards all existing entries (including entries for other plans), so do not run it while a legitimate run is in progress.
+
 Append `run_start` via `plan_ops.py log-event`.
 
 ## Analysis (Phase 1)

@@ -351,7 +351,7 @@ def test_acquire_lock_force_discards_other_plans(isolated_plan, monkeypatch):
 
 ### TASK-004E: Enforce canonical lock-file shape + add `--force` escape hatch
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (rewrite `cmd_acquire_lock`; add `--force` arg; add `_validate_lock_shape`, `_atomic_write_json` helpers)

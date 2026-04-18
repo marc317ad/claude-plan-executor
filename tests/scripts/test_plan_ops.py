@@ -351,6 +351,566 @@ class TestLock:
         )
         assert cp.returncode == 0
 
+    # ------------------------------------------------------------------
+    # V1-V20 (ISSUE-018): strict canonical-shape validation + --force
+    # ------------------------------------------------------------------
+
+    # V1 — Canonical happy path.
+    def test_acquire_lock_canonical_happy_path(self, isolated_plan: Path) -> None:
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R1",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body.get("acquired") is True
+
+        contents = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        plan_abs = os.path.abspath(str(isolated_plan))
+        assert set(contents.keys()) == {plan_abs}
+        entry = contents[plan_abs]
+        assert set(entry.keys()) == {"run_id", "acquired_at"}
+        assert entry["run_id"] == "R1"
+        assert isinstance(entry["acquired_at"], str) and entry["acquired_at"]
+
+    # V2 — Top-level JSON is a list, not a dict.
+    def test_acquire_lock_rejects_toplevel_list(self, isolated_plan: Path) -> None:
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text('["oops"]', encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R1",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert body.get("acquired") is False
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-toplevel-not-object" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V3 — Entry value is not a dict.
+    def test_acquire_lock_rejects_entry_value_not_object(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"/abs/other/plan.md": "a string not a dict"}
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R1",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert body.get("acquired") is False
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-entry-not-object" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V4 — Entry missing required key.
+    def test_acquire_lock_rejects_entry_missing_acquired_at(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"/abs/other/plan.md": {"run_id": "R_old"}}
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R1",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-entry-missing-keys" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V5 — Entry has extra keys.
+    def test_acquire_lock_rejects_entry_with_extra_keys(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {plan_abs: {"run_id": "R", "acquired_at": "T", "pid": 999}}
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-entry-extra-keys" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V6 — Invalid JSON (not silently wiped).
+    def test_acquire_lock_rejects_invalid_json(self, isolated_plan: Path) -> None:
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text("not-json{", encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R1",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert body.get("acquired") is False
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-json-decode" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V7 — --force overwrites.
+    def test_acquire_lock_force_overwrites_malformed(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text('["malformed"]', encoding="utf-8")
+
+        cp = _run(
+            "acquire-lock",
+            "--force",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_new",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body.get("acquired") is True
+        assert body.get("forced") is True
+
+        contents = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        plan_abs = os.path.abspath(str(isolated_plan))
+        assert set(contents.keys()) == {plan_abs}
+        entry = contents[plan_abs]
+        assert entry["run_id"] == "R_new"
+        assert isinstance(entry["acquired_at"], str) and entry["acquired_at"]
+
+    # V8 — Canonical-shape with other-plan entry, no conflict for this plan.
+    def test_acquire_lock_merges_into_canonical_other_plan_entry(
+        self, isolated_plan: Path
+    ) -> None:
+        other_abs = "/abs/path/to/other/plan.md"
+        pre = {
+            other_abs: {
+                "run_id": "R_other",
+                "acquired_at": "2026-01-01T00:00:00Z",
+            }
+        }
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(pre, indent=2), encoding="utf-8")
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_new",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body.get("acquired") is True
+
+        contents = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        plan_abs = os.path.abspath(str(isolated_plan))
+        assert set(contents.keys()) == {other_abs, plan_abs}
+        assert contents[other_abs] == pre[other_abs]
+        new_entry = contents[plan_abs]
+        assert new_entry["run_id"] == "R_new"
+        assert isinstance(new_entry["acquired_at"], str) and new_entry["acquired_at"]
+
+    # V9 — Canonical-shape, conflict for THIS plan (different run_id).
+    def test_acquire_lock_refuses_conflicting_run_id(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        pre = {plan_abs: {"run_id": "R1", "acquired_at": "2026-01-01T00:00:00Z"}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(pre, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R2",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert body.get("acquired") is False
+        assert body.get("conflict_run_id") == "R1"
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V10 — Same run_id re-acquire is idempotent.
+    def test_acquire_lock_same_run_id_is_idempotent(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        pre = {plan_abs: {"run_id": "R1", "acquired_at": "2026-01-01T00:00:00Z"}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(pre, indent=2), encoding="utf-8")
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R1",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body.get("acquired") is True
+
+        contents = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        assert set(contents.keys()) == {plan_abs}
+        entry = contents[plan_abs]
+        assert entry["run_id"] == "R1"
+        # acquired_at may be refreshed or retained; both allowed.
+        assert isinstance(entry["acquired_at"], str) and entry["acquired_at"]
+
+    # V11 — Cross-plan entries untouched in non-force path.
+    def test_acquire_lock_preserves_unrelated_canonical_entries(
+        self, isolated_plan: Path
+    ) -> None:
+        pre = {
+            "/abs/a.md": {"run_id": "Ra", "acquired_at": "2026-01-01T00:00:00Z"},
+            "/abs/b.md": {"run_id": "Rb", "acquired_at": "2026-01-02T00:00:00Z"},
+            "/abs/c.md": {"run_id": "Rc", "acquired_at": "2026-01-03T00:00:00Z"},
+        }
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(pre, indent=2), encoding="utf-8")
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_new",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        contents = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        plan_abs = os.path.abspath(str(isolated_plan))
+        assert set(contents.keys()) == {"/abs/a.md", "/abs/b.md", "/abs/c.md", plan_abs}
+        for k, v in pre.items():
+            assert contents[k] == v
+
+    # V12 — Atomic write (torn-write prevention).
+    def test_acquire_lock_writes_atomically(
+        self,
+        isolated_plan: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        pre = {plan_abs: {"run_id": "R1", "acquired_at": "2026-01-01T00:00:00Z"}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(pre, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        def fake_replace(src, dst):
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(plan_ops.os, "replace", fake_replace)
+
+        # Call the acquire-lock function directly to let the OSError propagate.
+        import argparse as _argparse
+        args = _argparse.Namespace(
+            plan_file=str(isolated_plan),
+            run_id="R1",
+            force=False,
+            json=True,
+        )
+        with pytest.raises(OSError):
+            plan_ops.cmd_acquire_lock(args)
+
+        # File on disk byte-equal to pre-state.
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+        # No stray *.tmp file left.
+        parent = plan_ops.RUN_LOCK_PATH.parent
+        stray = [
+            p for p in parent.iterdir()
+            if p.name.startswith(plan_ops.RUN_LOCK_PATH.name + ".")
+            and p.name.endswith(".tmp")
+        ]
+        assert stray == [], f"unexpected stray tmp files: {stray}"
+
+    # V13 — --force with no pre-existing file is still canonical.
+    def test_acquire_lock_force_on_missing_file(
+        self, isolated_plan: Path
+    ) -> None:
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+
+        cp = _run(
+            "acquire-lock",
+            "--force",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_new",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body.get("acquired") is True
+        assert body.get("forced") is True
+
+        contents = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        plan_abs = os.path.abspath(str(isolated_plan))
+        assert set(contents.keys()) == {plan_abs}
+        entry = contents[plan_abs]
+        assert set(entry.keys()) == {"run_id", "acquired_at"}
+        assert entry["run_id"] == "R_new"
+        assert isinstance(entry["acquired_at"], str) and entry["acquired_at"]
+
+    # V14 — Empty-dict canonical pre-existing file is accepted.
+    def test_acquire_lock_accepts_empty_dict(self, isolated_plan: Path) -> None:
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text("{}", encoding="utf-8")
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_new",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body.get("acquired") is True
+
+        contents = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        plan_abs = os.path.abspath(str(isolated_plan))
+        assert set(contents.keys()) == {plan_abs}
+
+    # V15 — Entry with run_id = None is rejected.
+    def test_acquire_lock_rejects_none_run_id(self, isolated_plan: Path) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        payload = {plan_abs: {"run_id": None, "acquired_at": "T"}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-entry-value-empty" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V16 — Entry with run_id = 0 is rejected.
+    def test_acquire_lock_rejects_zero_run_id(self, isolated_plan: Path) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        payload = {plan_abs: {"run_id": 0, "acquired_at": "T"}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-entry-value-empty" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V17 — Entry with empty-string run_id is rejected.
+    def test_acquire_lock_rejects_empty_string_run_id(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        payload = {plan_abs: {"run_id": "", "acquired_at": "T"}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-entry-value-empty" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V15b — Entry with acquired_at = None is rejected.
+    def test_acquire_lock_rejects_none_acquired_at(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        payload = {plan_abs: {"run_id": "R", "acquired_at": None}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-entry-value-empty" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V16b — Entry with acquired_at = 0 is rejected.
+    def test_acquire_lock_rejects_zero_acquired_at(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        payload = {plan_abs: {"run_id": "R", "acquired_at": 0}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-entry-value-empty" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V17b — Entry with empty-string acquired_at is rejected.
+    def test_acquire_lock_rejects_empty_string_acquired_at(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+        payload = {plan_abs: {"run_id": "R", "acquired_at": ""}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-entry-value-empty" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V18 — Empty-string top-level key is rejected.
+    def test_acquire_lock_rejects_empty_string_plan_key(
+        self, isolated_plan: Path
+    ) -> None:
+        payload = {"": {"run_id": "R", "acquired_at": "T"}}
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_new",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert any(e.get("code") == "lock-key-invalid" for e in errors)
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V19 — Zero-byte lock file is rejected as decode error.
+    def test_acquire_lock_rejects_zero_byte_file(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text("", encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+        assert before == b""
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_new",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        errors = body.get("errors", [])
+        assert len(errors) >= 1
+        assert errors[0].get("code") == "lock-json-decode"
+
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # V20 — --force over a valid canonical file with other-plan entries
+    # overwrites them.
+    def test_acquire_lock_force_discards_other_plans(
+        self, isolated_plan: Path
+    ) -> None:
+        pre = {
+            "/abs/A.md": {"run_id": "Ra", "acquired_at": "2026-01-01T00:00:00Z"},
+            "/abs/B.md": {"run_id": "Rb", "acquired_at": "2026-01-02T00:00:00Z"},
+        }
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(pre, indent=2), encoding="utf-8")
+
+        cp = _run(
+            "acquire-lock",
+            "--force",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_new",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body.get("acquired") is True
+        assert body.get("forced") is True
+
+        contents = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        plan_abs = os.path.abspath(str(isolated_plan))
+        assert set(contents.keys()) == {plan_abs}
+        assert "/abs/A.md" not in contents
+        assert "/abs/B.md" not in contents
+
 
 # ---------------------------------------------------------------------------
 # update-plan-header

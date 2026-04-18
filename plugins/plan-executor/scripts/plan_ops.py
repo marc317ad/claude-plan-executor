@@ -3180,22 +3180,134 @@ def cmd_normalize_task_id(args: argparse.Namespace) -> None:
     _emit(args, {"normalized": normalized})
 
 
+LOCK_ENTRY_KEYS = frozenset({"run_id", "acquired_at"})
+
+
+def _validate_lock_shape(raw: object) -> list[dict]:
+    """Return [] if canonical; else a list of {code, message} violations.
+
+    Canonical shape:
+        {"<non-empty-string>": {"run_id": <non-empty str>,
+                                "acquired_at": <non-empty str>}, ...}
+
+    An empty top-level dict is canonical. Unicode is accepted in values.
+    `acquired_at` is validated as an opaque non-empty string (no ISO-8601
+    parse). Non-empty-string check is symmetric across run_id/acquired_at:
+    both use `isinstance(x, str) and x != ""`.
+    """
+    errors: list[dict] = []
+    if not isinstance(raw, dict):
+        return [{
+            "code": "lock-toplevel-not-object",
+            "message": f"lock file top-level is {type(raw).__name__}, expected object",
+        }]
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key:
+            errors.append({
+                "code": "lock-key-invalid",
+                "message": f"entry key {key!r} must be non-empty string",
+            })
+            continue
+        if not isinstance(value, dict):
+            errors.append({
+                "code": "lock-entry-not-object",
+                "message": f"entry {key!r} value is {type(value).__name__}, expected object",
+            })
+            continue
+        actual_keys = set(value.keys())
+        missing = LOCK_ENTRY_KEYS - actual_keys
+        extra = actual_keys - LOCK_ENTRY_KEYS
+        if missing:
+            errors.append({
+                "code": "lock-entry-missing-keys",
+                "message": f"entry {key!r} missing keys: {sorted(missing)}",
+            })
+        if extra:
+            errors.append({
+                "code": "lock-entry-extra-keys",
+                "message": f"entry {key!r} has extra keys: {sorted(extra)}",
+            })
+        for req in ("run_id", "acquired_at"):
+            if req in value and (not isinstance(value[req], str) or not value[req]):
+                errors.append({
+                    "code": "lock-entry-value-empty",
+                    "message": f"entry {key!r} field {req!r} must be non-empty string",
+                })
+    return errors
+
+
+def _atomic_write_json(path: Path, obj: dict) -> None:
+    """Torn-write-safe write.
+
+    Uses mkstemp in the same directory (so os.replace is a same-filesystem
+    atomic rename) and a unique suffix (so two concurrent acquires cannot
+    collide on a fixed .tmp name). Does NOT fsync — durability after power
+    loss is explicitly not a requirement here; the guarantee is that the
+    canonical path never holds a partial JSON body visible to a concurrent
+    reader.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=path.name + ".",
+        suffix=".tmp",
+    )
+    tmp = Path(tmp_name)
+    replaced = False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2)
+        os.replace(tmp, path)
+        replaced = True
+    finally:
+        if not replaced and tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def cmd_acquire_lock(args: argparse.Namespace) -> None:
     plan_abs = os.path.abspath(args.plan_file)
     RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    current: dict = {}
+
+    pre_raw: object | None = None
+    decode_err: str | None = None
     if RUN_LOCK_PATH.exists():
+        raw_text = RUN_LOCK_PATH.read_text(encoding="utf-8")
         try:
-            current = json.loads(RUN_LOCK_PATH.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            current = {}
+            pre_raw = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            decode_err = str(e)
+
+    if args.force:
+        new_state = {plan_abs: {"run_id": args.run_id, "acquired_at": _now()}}
+        _atomic_write_json(RUN_LOCK_PATH, new_state)
+        _emit(args, {"acquired": True, "forced": True})
+        return
+
+    if decode_err is not None:
+        _die(args, {
+            "acquired": False,
+            "errors": [{"code": "lock-json-decode", "message": decode_err}],
+        })
+
+    if pre_raw is not None:
+        shape_errors = _validate_lock_shape(pre_raw)
+        if shape_errors:
+            _die(args, {"acquired": False, "errors": shape_errors})
+        current = pre_raw
+    else:
+        current = {}
+
     if plan_abs in current and current[plan_abs].get("run_id") != args.run_id:
         _die(args, {
             "acquired": False,
             "conflict_run_id": current[plan_abs].get("run_id"),
         })
+
     current[plan_abs] = {"run_id": args.run_id, "acquired_at": _now()}
-    RUN_LOCK_PATH.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    _atomic_write_json(RUN_LOCK_PATH, current)
     _emit(args, {"acquired": True})
 
 
@@ -3462,6 +3574,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_acq = sub.add_parser("acquire-lock", help="Acquire run-lock for this plan file")
     p_acq.add_argument("--plan-file", required=True)
     p_acq.add_argument("--run-id", required=True)
+    p_acq.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite lock file even if malformed / owned by other plans",
+    )
     _add_json(p_acq)
 
     p_rel = sub.add_parser("release-lock", help="Release run-lock for this plan file")
