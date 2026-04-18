@@ -1906,6 +1906,652 @@ class TestFailTaskPartitionCleanup:
         assert body["status_updated"] is True
 
 
+# ---------------------------------------------------------------------------
+# TASK-004D: block-dependents must mutate plan markdown (V1-V16)
+# ---------------------------------------------------------------------------
+
+
+BLOCK_DEP_PLAN_BODY = """# Plan: block-dependents sample
+
+**Created:** 2026-04-15
+**Status:** in-progress
+**Base branch:** main
+
+## Context
+
+Prose.
+
+## Tasks
+
+### TASK-001: First task
+
+- **Status:** pending
+- **Agent:** claude
+- **Files:**
+  - src/foo.py
+- **Dependencies:** none
+
+### TASK-002: Second task
+
+- **Status:** pending
+- **Agent:** claude
+- **Files:**
+  - src/bar.py
+- **Dependencies:** [001]
+
+### TASK-003: Third task
+
+- **Status:** pending
+- **Agent:** claude
+- **Files:**
+  - src/baz.py
+- **Dependencies:** none
+
+### TASK-004: Fourth task
+
+- **Status:** pending
+- **Agent:** claude
+- **Files:**
+  - src/qux.py
+- **Dependencies:** [002]
+
+### TASK-005: Fifth task
+
+- **Status:** pending
+- **Agent:** claude
+- **Files:**
+  - src/quux.py
+- **Dependencies:** [003]
+"""
+
+
+def _bd_status_of(plan_text: str, task_id: str) -> str:
+    """Return the current `**Status:**` value of TASK-NNN in plan_text."""
+    m = re.search(
+        rf"### TASK-{task_id}:[^\n]*\n\n- \*\*Status:\*\* (\S+)",
+        plan_text,
+    )
+    assert m, f"could not find status for TASK-{task_id} in plan"
+    return m.group(1)
+
+
+def _bd_make_args(
+    *,
+    schedule_file: Path,
+    plan_file: Path,
+    failed: str = "001",
+    run_id: str = "RID1",
+    json_out: bool = True,
+) -> "argparse.Namespace":
+    import argparse as _argparse
+    ns = _argparse.Namespace(
+        command="block-dependents",
+        schedule_file=str(schedule_file),
+        plan_file=str(plan_file),
+        failed=failed,
+        run_id=run_id,
+        json=json_out,
+    )
+    return ns
+
+
+def _bd_call(ns) -> tuple[int, dict]:
+    """Invoke cmd_block_dependents in-process. Returns (exit_code, json_body).
+
+    `_emit` calls sys.exit; catch SystemExit and parse stdout as JSON.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    code = 0
+    with contextlib.redirect_stdout(buf):
+        try:
+            plan_ops.cmd_block_dependents(ns)
+        except SystemExit as e:
+            code = int(e.code) if e.code is not None else 0
+    raw = buf.getvalue()
+    try:
+        body = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        body = {"__raw__": raw}
+    return code, body
+
+
+def _bd_write_schedule(tmp_path: Path, tasks: list[dict]) -> Path:
+    p = tmp_path / "schedule.json"
+    p.write_text(
+        json.dumps({"outcome": "valid", "tasks": tasks, "batches": [], "gaps": [], "risks": []}),
+        encoding="utf-8",
+    )
+    return p
+
+
+@pytest.fixture()
+def isolated_bd_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Plan + sandboxed run-log path for block-dependents V1-V16 tests."""
+    plans_dir = tmp_path / "docs" / "plans"
+    plans_dir.mkdir(parents=True)
+    plan = plans_dir / "sample.md"
+    plan.write_text(BLOCK_DEP_PLAN_BODY, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(plan_ops, "PLAN_DIR", plans_dir)
+    monkeypatch.setattr(plan_ops, "RUN_LOG_PATH", plans_dir / "_run_log.jsonl")
+    monkeypatch.setattr(plan_ops, "RUN_LOCK_PATH", plans_dir / "_run_lock.json")
+    return plan
+
+
+def _bd_read_run_log_events(plan: Path, event: str = "blocked") -> list[dict]:
+    run_log = plan.parent / "_run_log.jsonl"
+    if not run_log.is_file():
+        return []
+    out: list[dict] = []
+    for line in run_log.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rec = json.loads(line)
+        if rec.get("event") == event:
+            out.append(rec)
+    return out
+
+
+class TestBlockDependents:
+    """TASK-004D V1-V16 coverage for `block-dependents`.
+
+    Locks in the source-of-truth invariant: the plan file (not the run-log)
+    is the authoritative state store for `blocked` cascades. I/O discipline
+    is single plan read + single plan write; ordering is mutate-all-in-memory
+    → plan write → run-log append per id.
+    """
+
+    # V1 -----------------------------------------------------------------
+    def test_v1_single_level_cascade_mutates_plan(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+    ) -> None:
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": []},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        assert body["blocked_task_ids"] == ["002"]
+        assert body["plan_mutations_applied"] == ["002"]
+        assert body["run_log_appended"] == ["002"]
+        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
+        assert _bd_status_of(plan_text, "002") == "blocked"
+        # 001 untouched (fail-task owns it), 003 untouched (not a dependent)
+        assert _bd_status_of(plan_text, "001") == "pending"
+        assert _bd_status_of(plan_text, "003") == "pending"
+        events = _bd_read_run_log_events(isolated_bd_plan)
+        assert len(events) == 1
+        assert events[0]["task_id"] == "002"
+
+    # V2 -----------------------------------------------------------------
+    def test_v2_transitive_chain_single_io(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": ["002"]},
+            {"id": "004", "dependencies": ["003"]},
+        ])
+
+        loads: list[Path] = []
+        writes: list[Path] = []
+        orig_load = plan_ops._load_text
+        orig_write = plan_ops._write_text
+
+        def counting_load(path):
+            loads.append(Path(path))
+            return orig_load(path)
+
+        def counting_write(path, text):
+            writes.append(Path(path))
+            return orig_write(path, text)
+
+        monkeypatch.setattr(plan_ops, "_load_text", counting_load)
+        monkeypatch.setattr(plan_ops, "_write_text", counting_write)
+
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        plan_reads = [p for p in loads if p == isolated_bd_plan]
+        plan_writes = [p for p in writes if p == isolated_bd_plan]
+        assert len(plan_reads) == 1
+        assert len(plan_writes) == 1
+        assert body["blocked_task_ids"] == ["002", "003", "004"]
+        assert body["plan_mutations_applied"] == ["002", "003", "004"]
+        assert body["run_log_appended"] == ["002", "003", "004"]
+        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
+        for tid in ("002", "003", "004"):
+            assert _bd_status_of(plan_text, tid) == "blocked"
+
+    # V3 -----------------------------------------------------------------
+    def test_v3_bfs_and_sibling_order_preserved(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+    ) -> None:
+        # tasks[] intentionally NOT numeric sort order: [001, 003, 002, 005, 004]
+        # 001 failed; direct deps on 001: 002, 003 (in tasks[] order: 003, 002)
+        # transitive: 004→002, 005→003 (in tasks[] order: 005, 004)
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "003", "dependencies": ["001"]},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "005", "dependencies": ["003"]},
+            {"id": "004", "dependencies": ["002"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        expected = ["003", "002", "005", "004"]
+        assert body["blocked_task_ids"] == expected
+        assert body["plan_mutations_applied"] == expected
+        assert body["run_log_appended"] == expected
+        events = _bd_read_run_log_events(isolated_bd_plan)
+        assert [e["task_id"] for e in events] == expected
+
+    # V4 -----------------------------------------------------------------
+    def test_v4_output_shape_subset(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+    ) -> None:
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        required = {"blocked_task_ids", "plan_mutations_applied", "run_log_appended"}
+        assert required.issubset(set(body.keys()))
+        for k in required:
+            assert isinstance(body[k], list)
+            assert all(isinstance(v, str) for v in body[k])
+
+    # V5 -----------------------------------------------------------------
+    def test_v5_mutate_failure_halts_with_full_payload(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+    ) -> None:
+        # Write a plan body with TASK-002 block MISSING → mutate_task_status
+        # raises ValueError for 002.
+        short_plan = (
+            "# Plan: short\n\n"
+            "**Status:** in-progress\n"
+            "**Base branch:** main\n\n"
+            "## Tasks\n\n"
+            "### TASK-001: Only task\n\n"
+            "- **Status:** pending\n"
+            "- **Dependencies:** none\n"
+        )
+        isolated_bd_plan.write_text(short_plan, encoding="utf-8")
+        original_on_disk = isolated_bd_plan.read_text(encoding="utf-8")
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["failed_stage"] == "plan_mutate"
+        assert err["failed_id"] == "002"
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+        assert err["remaining"] == []
+        # Plan on disk: unchanged.
+        assert isolated_bd_plan.read_text(encoding="utf-8") == original_on_disk
+        # No blocked events.
+        assert _bd_read_run_log_events(isolated_bd_plan) == []
+
+    # V6 -----------------------------------------------------------------
+    def test_v6_partial_mutate_failure_persists_partial(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+    ) -> None:
+        # Plan has TASK-002 block but NOT TASK-003. Both 002 and 003 are
+        # direct dependents of 001 in tasks[] order [002, 003].
+        partial_plan = (
+            "# Plan: partial\n\n"
+            "**Status:** in-progress\n"
+            "**Base branch:** main\n\n"
+            "## Tasks\n\n"
+            "### TASK-001: First\n\n"
+            "- **Status:** pending\n"
+            "- **Dependencies:** none\n\n"
+            "### TASK-002: Second\n\n"
+            "- **Status:** pending\n"
+            "- **Dependencies:** [001]\n"
+        )
+        isolated_bd_plan.write_text(partial_plan, encoding="utf-8")
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": ["001"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["failed_stage"] == "plan_mutate"
+        assert err["failed_id"] == "003"
+        assert err["plan_mutations_applied"] == ["002"]
+        assert err["run_log_appended"] == ["002"]
+        assert err["remaining"] == []
+        # Plan on disk: 002 flipped; 003 still missing.
+        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
+        assert _bd_status_of(plan_text, "002") == "blocked"
+        assert "TASK-003" not in plan_text
+        events = _bd_read_run_log_events(isolated_bd_plan)
+        assert [e["task_id"] for e in events] == ["002"]
+
+    # V7 -----------------------------------------------------------------
+    def test_v7_idempotent_on_already_blocked(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+    ) -> None:
+        # Pre-flip 002 to blocked (simulating a prior partial run).
+        text = isolated_bd_plan.read_text(encoding="utf-8")
+        text = text.replace(
+            "### TASK-002: Second task\n\n- **Status:** pending",
+            "### TASK-002: Second task\n\n- **Status:** blocked",
+        )
+        isolated_bd_plan.write_text(text, encoding="utf-8")
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        assert body["blocked_task_ids"] == ["002"]
+        assert body["plan_mutations_applied"] == ["002"]
+        assert body["run_log_appended"] == ["002"]
+        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
+        assert _bd_status_of(plan_text, "002") == "blocked"
+        events = _bd_read_run_log_events(isolated_bd_plan)
+        assert len(events) == 1
+        assert events[0]["task_id"] == "002"
+
+    # V8 -----------------------------------------------------------------
+    def test_v8_cli_signature_requires_plan_file(
+        self, tmp_path: Path,
+    ) -> None:
+        sched = _bd_write_schedule(tmp_path, [{"id": "001", "dependencies": []}])
+        cp = _run(
+            "block-dependents",
+            "--schedule-file", str(sched),
+            "--failed", "001",
+            "--run-id", "RID1",
+            "--json",
+        )
+        assert cp.returncode != 0
+        # argparse surfaces the missing argument on stderr.
+        combined = (cp.stderr or "") + (cp.stdout or "")
+        assert "--plan-file" in combined
+
+    # V9 -----------------------------------------------------------------
+    def test_v9_leaves_non_dependents_untouched(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+    ) -> None:
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": []},
+            {"id": "004", "dependencies": []},
+            {"id": "005", "dependencies": []},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        assert body["plan_mutations_applied"] == ["002"]
+        assert body["run_log_appended"] == ["002"]
+        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
+        for tid in ("003", "004", "005"):
+            assert _bd_status_of(plan_text, tid) == "pending"
+        assert _bd_status_of(plan_text, "002") == "blocked"
+
+    # V10 ----------------------------------------------------------------
+    def test_v10_plan_read_failure_halts_before_mutation(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_on_disk = isolated_bd_plan.read_text(encoding="utf-8")
+
+        def bad_load(path):
+            raise OSError("simulated read fail")
+
+        monkeypatch.setattr(plan_ops, "_load_text", bad_load)
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["failed_stage"] == "plan_read"
+        assert err["failed_id"] is None
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+        assert err["remaining"] == ["002"]
+        assert isolated_bd_plan.read_text(encoding="utf-8") == original_on_disk
+        assert _bd_read_run_log_events(isolated_bd_plan) == []
+
+    # V11 ----------------------------------------------------------------
+    def test_v11_plan_write_failure(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_on_disk = isolated_bd_plan.read_text(encoding="utf-8")
+
+        def bad_write(path, text):
+            raise OSError("simulated write fail")
+
+        monkeypatch.setattr(plan_ops, "_write_text", bad_write)
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": ["002"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["failed_stage"] == "plan_write"
+        assert err["failed_id"] is None
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+        assert err["remaining"] == []
+        assert isolated_bd_plan.read_text(encoding="utf-8") == original_on_disk
+        assert _bd_read_run_log_events(isolated_bd_plan) == []
+
+    # V12 ----------------------------------------------------------------
+    def test_v12_log_append_failure_mid_loop(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = {"n": 0}
+        orig_append = plan_ops._append_run_log
+
+        def flaky_append(event, fields):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated log-append fail on 003")
+            return orig_append(event, fields)
+
+        monkeypatch.setattr(plan_ops, "_append_run_log", flaky_append)
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": ["002"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["failed_stage"] == "run_log_append"
+        assert err["failed_id"] == "003"
+        assert err["plan_mutations_applied"] == ["002", "003"]
+        assert err["run_log_appended"] == ["002"]
+        assert err["remaining"] == []
+        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
+        assert _bd_status_of(plan_text, "002") == "blocked"
+        assert _bd_status_of(plan_text, "003") == "blocked"
+        events = _bd_read_run_log_events(isolated_bd_plan)
+        assert [e["task_id"] for e in events] == ["002"]
+
+    # V13 ----------------------------------------------------------------
+    def test_v13_log_append_failure_first_id(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def bad_append(event, fields):
+            raise RuntimeError("simulated log-append fail on first id")
+
+        monkeypatch.setattr(plan_ops, "_append_run_log", bad_append)
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["failed_stage"] == "run_log_append"
+        assert err["failed_id"] == "002"
+        assert err["plan_mutations_applied"] == ["002"]
+        assert err["run_log_appended"] == []
+        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
+        assert _bd_status_of(plan_text, "002") == "blocked"
+        assert _bd_read_run_log_events(isolated_bd_plan) == []
+
+    # V14 ----------------------------------------------------------------
+    def test_v14_no_dependents_no_plan_io(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_on_disk = isolated_bd_plan.read_text(encoding="utf-8")
+        plan_reads: list[Path] = []
+        plan_writes: list[Path] = []
+
+        def bad_load(path):
+            plan_reads.append(Path(path))
+            raise AssertionError("plan_path should not be read for empty cascade")
+
+        def bad_write(path, text):
+            plan_writes.append(Path(path))
+            raise AssertionError("plan_path should not be written for empty cascade")
+
+        monkeypatch.setattr(plan_ops, "_load_text", bad_load)
+        monkeypatch.setattr(plan_ops, "_write_text", bad_write)
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": []},
+            {"id": "003", "dependencies": []},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        assert body["blocked_task_ids"] == []
+        assert body["plan_mutations_applied"] == []
+        assert body["run_log_appended"] == []
+        assert plan_reads == []
+        assert plan_writes == []
+        assert isolated_bd_plan.read_text(encoding="utf-8") == original_on_disk
+        assert _bd_read_run_log_events(isolated_bd_plan) == []
+
+    # V15 ----------------------------------------------------------------
+    def test_v15_double_failure_mutate_then_write(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_on_disk = isolated_bd_plan.read_text(encoding="utf-8")
+
+        orig_mutate = plan_ops.mutate_task_status
+
+        def mutate_fails_on_004(text, task_id, new_status):
+            if task_id == "004":
+                raise ValueError("synthetic: no block for 004")
+            return orig_mutate(text, task_id, new_status)
+
+        def bad_write(path, text):
+            raise OSError("write refused")
+
+        monkeypatch.setattr(plan_ops, "mutate_task_status", mutate_fails_on_004)
+        monkeypatch.setattr(plan_ops, "_write_text", bad_write)
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": ["002"]},
+            {"id": "004", "dependencies": ["003"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["failed_stage"] == "plan_mutate"
+        assert err["failed_id"] == "004"
+        assert err["secondary_failed_stage"] == "plan_write"
+        assert err["secondary_failed_id"] is None
+        assert "write refused" in err["secondary_error"]
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+        assert isolated_bd_plan.read_text(encoding="utf-8") == original_on_disk
+
+    # V16 ----------------------------------------------------------------
+    def test_v16_double_failure_mutate_then_log(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        orig_mutate = plan_ops.mutate_task_status
+
+        def mutate_fails_on_004(text, task_id, new_status):
+            if task_id == "004":
+                raise ValueError("synthetic: no block for 004")
+            return orig_mutate(text, task_id, new_status)
+
+        log_calls = {"n": 0}
+        orig_append = plan_ops._append_run_log
+
+        def flaky_append(event, fields):
+            log_calls["n"] += 1
+            if log_calls["n"] == 2:
+                raise RuntimeError("synthetic log fail on second append")
+            return orig_append(event, fields)
+
+        monkeypatch.setattr(plan_ops, "mutate_task_status", mutate_fails_on_004)
+        monkeypatch.setattr(plan_ops, "_append_run_log", flaky_append)
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": ["002"]},
+            {"id": "004", "dependencies": ["003"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["failed_stage"] == "plan_mutate"
+        assert err["failed_id"] == "004"
+        assert err["secondary_failed_stage"] == "run_log_append"
+        assert err["secondary_failed_id"] == "003"
+        assert err["plan_mutations_applied"] == ["002", "003"]
+        assert err["run_log_appended"] == ["002"]
+        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
+        assert _bd_status_of(plan_text, "002") == "blocked"
+        assert _bd_status_of(plan_text, "003") == "blocked"
+        events = _bd_read_run_log_events(isolated_bd_plan)
+        assert [e["task_id"] for e in events] == ["002"]
+
+
 class TestPreflightDirtyCategorization:
     """Preflight splits `git status` entries into plan_doc / infra_ignored /
     source_blocking. The infra_ignored set must agree with the wrapper's

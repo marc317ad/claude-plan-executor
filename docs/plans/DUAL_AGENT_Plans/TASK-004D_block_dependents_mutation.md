@@ -368,7 +368,7 @@ def test_block_dependents_double_failure_mutate_then_log(
 
 ### TASK-004D: Mutate plan markdown in `block-dependents`
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (rewrite `cmd_block_dependents`; add `--plan-file` argparse entry; update module-level usage banner near line 14)

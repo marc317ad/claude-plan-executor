@@ -19,6 +19,7 @@ Usage:
     venv/bin/python scripts/plan_ops.py normalize-task-id --id <1|001|TASK-001>
     venv/bin/python scripts/plan_ops.py acquire-lock --plan-file <abs> --run-id RID
     venv/bin/python scripts/plan_ops.py release-lock --plan-file <abs> --run-id RID
+    venv/bin/python scripts/plan_ops.py block-dependents --schedule-file <path> --plan-file <abs> --failed NNN --run-id RID
 """
 
 import argparse
@@ -2797,6 +2798,174 @@ def _is_inside_submodule(abs_path: Path, rel: str, repo_root: Path) -> bool:
         return False
 
 
+def cmd_block_dependents(args: argparse.Namespace) -> None:
+    """Cascade `blocked` status onto dependents of a failed task.
+
+    TASK-004D / ISSUE-012: mutate the plan markdown (source of truth) as well
+    as append run-log events (observability). Single plan read, single plan
+    write; ordering is mutate-all-in-memory → single plan write → log each
+    applied id. See TASK-004D_block_dependents_mutation.md for the full
+    failure-stage semantics and double-failure precedence contract.
+    """
+    sched_path = Path(args.schedule_file)
+    plan_path = Path(args.plan_file)
+    if not sched_path.is_file():
+        _die(args, {"error": f"schedule file not found: {sched_path}"})
+    if not plan_path.is_file():
+        _die(args, {"error": f"plan file not found: {plan_path}"})
+    try:
+        data = json.loads(sched_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        _die(args, {"error": f"schedule json decode: {e}"})
+
+    failed_id = _normalize_task_id(args.failed)
+    if not failed_id:
+        _die(args, {"error": f"cannot normalize --failed: {args.failed!r}"})
+
+    # ---- PHASE 1: compute cascade (BFS; sibling order = tasks[] order) ----
+    blocked: list[str] = []
+    queue = [failed_id]
+    seen = set(queue)
+    tasks = data.get("tasks") or []
+    while queue:
+        cur = queue.pop(0)
+        for t in tasks:
+            raw_tid = t.get("id") if "id" in t else t.get("task_id")
+            if raw_tid is None:
+                continue
+            tid = _normalize_task_id(str(raw_tid))
+            if not tid or tid in seen:
+                continue
+            deps = [
+                _normalize_task_id(str(d))
+                for d in (t.get("dependencies") or [])
+            ]
+            if cur in deps:
+                blocked.append(tid)
+                seen.add(tid)
+                queue.append(tid)
+
+    # ---- Empty cascade: no plan I/O at all. ----
+    if not blocked:
+        _emit(args, {
+            "blocked_task_ids": [],
+            "plan_mutations_applied": [],
+            "run_log_appended": [],
+        })
+        return
+
+    plan_mutations_applied: list[str] = []
+    run_log_appended: list[str] = []
+    remaining: list[str] = list(blocked)
+
+    # ---- PHASE 2a: single plan read. ----
+    try:
+        original = _load_text(plan_path)
+    except OSError as e:
+        _die(args, {"errors": [{
+            "failed_stage": "plan_read",
+            "failed_id": None,
+            "error": str(e),
+            "plan_mutations_applied": [],
+            "run_log_appended": [],
+            "remaining": list(remaining),
+        }]})
+
+    # ---- PHASE 2b: in-memory mutate loop. Track ValueError; do NOT die yet. ----
+    mutated_text = original
+    mutated_in_memory: list[str] = []
+    mutate_failure: dict | None = None
+    for idx, bid in enumerate(remaining):
+        try:
+            mutated_text, _ = mutate_task_status(mutated_text, bid, "blocked")
+        except ValueError as e:
+            mutate_failure = {
+                "failed_stage": "plan_mutate",
+                "failed_id": bid,
+                "error": str(e),
+                "remaining": list(remaining[idx + 1:]),
+            }
+            break
+        mutated_in_memory.append(bid)
+
+    # ---- PHASE 2c: if NO id flipped, die now (nothing to persist or log). ----
+    if not mutated_in_memory:
+        assert mutate_failure is not None
+        mutate_failure["plan_mutations_applied"] = []
+        mutate_failure["run_log_appended"] = []
+        _die(args, {"errors": [mutate_failure]})
+
+    # ---- PHASE 2d: single plan write (at least one in-memory success). ----
+    try:
+        _write_text(plan_path, mutated_text)
+    except OSError as e:
+        # Write failed → nothing persisted. Per acceptance #5, a pending
+        # mutate_failure is ALWAYS primary and the plan_write failure is
+        # secondary. Otherwise plan_write is primary.
+        if mutate_failure is not None:
+            payload: dict = dict(mutate_failure)
+            payload["plan_mutations_applied"] = []
+            payload["run_log_appended"] = []
+            payload["secondary_failed_stage"] = "plan_write"
+            payload["secondary_failed_id"] = None
+            payload["secondary_error"] = str(e)
+        else:
+            payload = {
+                "failed_stage": "plan_write",
+                "failed_id": None,
+                "error": str(e),
+                "plan_mutations_applied": [],
+                "run_log_appended": [],
+                "remaining": [],
+            }
+        _die(args, {"errors": [payload]})
+    plan_mutations_applied = list(mutated_in_memory)
+
+    # ---- PHASE 3: run-log append for every id persisted to plan. ----
+    log_failure: dict | None = None
+    for bid in plan_mutations_applied:
+        try:
+            _append_run_log("blocked", {
+                "run_id": args.run_id,
+                "task_id": bid,
+                "blocker_task_id": failed_id,
+                "reason": f"dependency TASK-{failed_id} failed",
+            })
+        except Exception as e:  # _append_run_log raises on tail-verify failure
+            log_failure = {
+                "failed_stage": "run_log_append",
+                "failed_id": bid,
+                "error": str(e),
+            }
+            break
+        run_log_appended.append(bid)
+
+    # ---- PHASE 4: decide primary vs secondary stage for any pending failures.
+    # Per acceptance #5 double-failure precedence: a DEFERRED plan_mutate
+    # failure is ALWAYS primary; a concurrent run_log_append failure is
+    # secondary. run_log_appended truncates at the last success.
+    if mutate_failure is not None:
+        mutate_failure["plan_mutations_applied"] = list(plan_mutations_applied)
+        mutate_failure["run_log_appended"] = list(run_log_appended)
+        if log_failure is not None:
+            mutate_failure["secondary_failed_stage"] = "run_log_append"
+            mutate_failure["secondary_failed_id"] = log_failure["failed_id"]
+        _die(args, {"errors": [mutate_failure]})
+
+    if log_failure is not None:
+        log_failure["plan_mutations_applied"] = list(plan_mutations_applied)
+        log_failure["run_log_appended"] = list(run_log_appended)
+        log_failure["remaining"] = []
+        _die(args, {"errors": [log_failure]})
+
+    # ---- Success. ----
+    _emit(args, {
+        "blocked_task_ids": blocked,
+        "plan_mutations_applied": plan_mutations_applied,
+        "run_log_appended": run_log_appended,
+    })
+
+
 def cmd_fail_task(args: argparse.Namespace) -> None:
     tid = _normalize_task_id(args.task_id)
     if not tid:
@@ -3238,6 +3407,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_fail.add_argument("--dry-run", action="store_true")
     _add_json(p_fail)
 
+    p_block = sub.add_parser(
+        "block-dependents",
+        help=(
+            "Cascade `blocked` status onto dependents of a failed task. "
+            "Mutates the plan markdown (single read, single write) and "
+            "appends `blocked` run-log events."
+        ),
+    )
+    p_block.add_argument("--schedule-file", required=True,
+                         help="Path to schedule JSON")
+    p_block.add_argument("--plan-file", required=True,
+                         help="Absolute path to plan file")
+    p_block.add_argument("--failed", required=True,
+                         help="Task id whose failure triggers the cascade")
+    p_block.add_argument("--run-id", required=True, help="Run id for log events")
+    _add_json(p_block)
+
     p_hdr = sub.add_parser("update-plan-header", help="Mutate **Status:** in plan header block")
     p_hdr.add_argument("--plan-file", required=True)
     p_hdr.add_argument("--status", required=True, choices=sorted(ALLOWED_PLAN_STATUSES))
@@ -3376,6 +3562,7 @@ def main(argv: list[str] | None = None) -> None:
         "parse-d5-adjudication": cmd_parse_d5_adjudication,
         "commit-task": cmd_commit_task,
         "fail-task": cmd_fail_task,
+        "block-dependents": cmd_block_dependents,
         "update-plan-header": cmd_update_plan_header,
         "finalize-execution-log": cmd_finalize_execution_log,
         "log-event": cmd_log_event,

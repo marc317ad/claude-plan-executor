@@ -43,6 +43,7 @@ All subcommands accept `--json` for machine-readable output.
 | `plan_ops.py parse-plan-review-report --stdin` | Validate a Phase 1.5 Codex plan-review envelope against `codex_plan_review_schema.json`; surface `{plan_file, verdict ∈ {approved, approved-with-notes, needs-replan}, findings_count, findings, schedule_ok, summary}`. Halts with structured `errors[*]` on schema violations. |
 | `plan_ops.py commit-task ...` | Full D.3: guard, plan-status mutate (→ done), narrow `git commit --only`, SHA capture, run-log `commit_done` append |
 | `plan_ops.py fail-task --stage implement\|review\|commit ...` | Full Phase C / D.4: git restore (if files), plan-status mutate (→ failed), run-log `failed` append |
+| `plan_ops.py block-dependents --schedule-file <path> --plan-file <abs> --failed NNN --run-id <id>` | Cascade `blocked` onto transitive dependents: single plan read/write flips each dependent's `**Status:**` to `blocked`, then appends `blocked` run-log events. Source-of-truth invariant is the plan file. |
 | `plan_ops.py update-plan-header --status in-progress\|complete\|partial` | Mutate the plan-file top-level `**Status:**` |
 | `plan_ops.py finalize-execution-log ...` | Append §5 execution-log markdown table to plan |
 | `plan_ops.py log-event --event E --fields-json '{...}'` | Append JSONL event with tail re-verify |
@@ -283,6 +284,13 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
 
 This: (1) `git restore <files>` (Claude-side recovery; Codex-side restore was done inside the wrapper), (2) plan-status flip to `failed`, (3) run-log `failed {stage=implement, ...}` append.
 
+Then cascade `blocked` onto the failed task's transitive dependents (source-of-truth invariant: the plan file, not just the run-log):
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
+  --schedule-file <path> --plan-file <abs> --failed NNN --run-id <id> --json
+```
+
 Release this task's file locks. Remove the task from `ready`. Peer tasks in the same and later batches proceed independently. Do NOT proceed to Phase D for this task.
 
 ### Phase D — Review + commit (serial per task, analyst batch order)
@@ -440,6 +448,13 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
   --plan-file <abs> --task-id NNN --run-id <id> \
   --files <files> --stage review --reason "..." \
   --reviewer-findings '<json>' --json
+```
+
+Then cascade `blocked` onto transitive dependents (same contract as Phase C):
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
+  --schedule-file <path> --plan-file <abs> --failed NNN --run-id <id> --json
 ```
 
 Same atomic shape as Phase C.
