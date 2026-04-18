@@ -138,7 +138,7 @@ Emit the report using the exact shape below.
 <Non-obvious items the reviewer should look at — scope boundaries that were judgment calls, symbols imported that may create cycles, tests that were retested once for flakiness. "None" if nothing. Emit as a bulleted list (one `- ` entry per concern); the canonical label is `**Concerns for reviewer:**` per `DUAL_AGENT_PLAN_EXECUTOR.md` §5 "Canonical Contract (v1)".>
 
 **On failure — what to revert:**
-<Only if outcome is failed, partial, plan-incorrect, or scope-violation. Exact files/lines to restore. Should refine the task's Reversion guidance with what you actually touched.>
+<Only if outcome is failed, partial, plan-incorrect, or scope-violation. Exact files/lines to restore. Refine the task's Reversion guidance with what you actually touched; if the task did not supply one, synthesize it from scratch based on the files you edited.>
 ```
 
 ## Status vocabulary (Appendix C.3 — verbatim, plus `scope-violation`)

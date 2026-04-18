@@ -21,7 +21,7 @@ If `plan_path` is missing, unreadable, or malformed, emit `outcome: invalid` and
 - Header: `# Plan: <title>`, then `**Created:**`, `**Status:**`, `**Base branch:**`
 - `## Goal`, `## Context`, `## Verification` sections
 - `## Tasks` containing blocks of the form `### TASK-NNN[A-Z]?: <title>`
-- Each task has required fields: **Status, Priority, Files, Test command, Acceptance criteria, Description, Reversion guidance**. *Implementation notes* is optional.
+- Each task has required fields: **Status, Priority, Files, Test command, Acceptance criteria, Description**. *Implementation notes* and *Reversion guidance* are optional; the implementer/remediator synthesizes revert steps in its report when the task did not supply any.
 
 **File annotations (Appendix C.4 — verbatim semantics):**
 
@@ -45,7 +45,7 @@ Read `plan_path` in full. Extract the header metadata, the `## Goal` / `## Conte
 - Plan file missing, unreadable, or without parseable header metadata.
 - A task ID does not match `TASK-NNN[A-Z]?` (three-digit, zero-padded, with an optional single uppercase-letter suffix — e.g. `004A`).
 - Duplicate task IDs.
-- Any required field is missing from any task: Status, Priority, Files, Test command, Acceptance criteria, Description, Reversion guidance.
+- Any required field is missing from any task: Status, Priority, Files, Test command, Acceptance criteria, Description.
 
 Nothing else produces `invalid`. If a condition is not in this list, it is not a hard failure, even if it superficially resembles one.
 
@@ -188,7 +188,7 @@ Scope estimation approach:
 
 **Edge-case matrix:**
 
-- `invalid`: missing `plan_path`; unreadable plan file; malformed frontmatter; duplicate task IDs; task ID not matching `TASK-NNN[A-Z]?`; missing required field (Status, Priority, Files, Test command, Acceptance criteria, Description, Reversion guidance).
+- `invalid`: missing `plan_path`; unreadable plan file; malformed frontmatter; duplicate task IDs; task ID not matching `TASK-NNN[A-Z]?`; missing required field (Status, Priority, Files, Test command, Acceptance criteria, Description).
 - `needs-enrichment`: stale file paths per Appendix C.4; unresolvable test command; vague acceptance criteria; empty implementation notes on a Claude-tier task; Claude-tier task with `Test command: none` AND no deferred-testing signal on the line (see Step 4).
 - `valid`: all required fields present, classification computable, gaps are empty.
 
