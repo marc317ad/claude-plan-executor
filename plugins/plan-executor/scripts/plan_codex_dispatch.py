@@ -281,14 +281,14 @@ def render_plan_review_prompt(
     schedule JSON — not a diff — so this prompt is intentionally distinct
     from the `review` subcommand prompt.
     """
-    dep_cmd = (
-        f"venv/bin/python plugins/plan-executor/scripts/plan_ops.py "
-        f"check-plan-deps --plan-file {plan_abs_path} --plans-dir {plans_dir} --json"
-    )
     return (
         f"Review the plan and its persisted schedule. The plan was authored "
         f"by a peer analyst; you are an independent pre-dispatch reviewer.\n\n"
         f"Plan file: {plan_basename}\n\n"
+        f"Cross-plan dependency resolution has already been verified by the "
+        f"orchestrator in Phase 0 preflight — you do NOT need to check or "
+        f"report on dependencies. Focus strictly on plan structure, schedule "
+        f"sanity, and coordination risks.\n\n"
         f"Your job:\n"
         f"1. Read the full plan document below and confirm every task has "
         f"clear acceptance criteria, a test command (or an accepted "
@@ -309,11 +309,7 @@ def render_plan_review_prompt(
         f"tasks.\n"
         f"3. Flag anything that would cost execution time to discover mid-run: "
         f"missing context, contradictory file annotations, scheduler traps, "
-        f"acceptance criteria that are untestable, etc.\n"
-        f"4. To populate `dependencies_ok`, run this command and use the "
-        f"`pass` field from its JSON output verbatim:\n"
-        f"   {dep_cmd}\n"
-        f"   Do not parse dependencies from the plan or schedule yourself.\n\n"
+        f"acceptance criteria that are untestable, etc.\n\n"
         f"Verdict vocabulary (pick exactly one):\n"
         f"- `approved` — plan is ready to execute as-is.\n"
         f"- `approved-with-notes` — plan is ready; notes carried into run "
@@ -1538,9 +1534,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Absolute path to persisted schedule JSON")
     pr.add_argument("--plans-dir", required=True,
                     help="Absolute path to the plans directory containing "
-                         "00_INDEX.json. Embedded in the Codex prompt so the "
-                         "reviewer can shell out to `plan_ops.py "
-                         "check-plan-deps` for dependencies_ok.")
+                         "00_INDEX.json. Retained for wrapper-side diagnostics "
+                         "and forward-compat; the reviewer no longer performs "
+                         "its own dependency check (orchestrator Phase 0 owns "
+                         "that gate).")
     pr.add_argument("--repo-root", required=True,
                     help="Absolute path to the repo root passed as `codex -C`. "
                          "Required — plans typically live in a subdirectory "

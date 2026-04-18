@@ -2306,7 +2306,6 @@ def _validate_plan_review_parsed(parsed: object) -> list[dict]:
         "verdict": str,
         "findings": list,
         "schedule_ok": bool,
-        "dependencies_ok": bool,
         "summary": str,
     }
     for key, typ in required.items():
@@ -2383,7 +2382,9 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
     Exits non-zero with canonical `errors[*]` on schema violations so the
     orchestrator can halt the run before Phase 2. Successful validation
     extracts `{plan_file, verdict, findings_count, findings, summary,
-    schedule_ok, dependencies_ok}` for the caller.
+    schedule_ok}` for the caller. Cross-plan dependency resolution is
+    verified by the orchestrator in Phase 0 preflight; the reviewer no
+    longer reports on it.
     """
     raw = sys.stdin.read()
     if not raw.strip():
@@ -2442,7 +2443,6 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
             "findings": [],
             "summary": "",
             "schedule_ok": None,
-            "dependencies_ok": None,
             "errors": [],
             "envelope_error": envelope.get("error"),
         }
@@ -2482,7 +2482,6 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
         "findings": findings,
         "summary": parsed.get("summary", ""),
         "schedule_ok": parsed.get("schedule_ok"),
-        "dependencies_ok": parsed.get("dependencies_ok"),
         "errors": [],
     }
     _emit(args, result)

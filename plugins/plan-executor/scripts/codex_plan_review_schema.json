@@ -24,7 +24,6 @@
       }
     },
     "schedule_ok": { "type": "boolean" },
-    "dependencies_ok": { "type": "boolean" },
     "summary": { "type": "string" }
   },
   "required": [
@@ -32,7 +31,6 @@
     "verdict",
     "findings",
     "schedule_ok",
-    "dependencies_ok",
     "summary"
   ],
   "additionalProperties": false

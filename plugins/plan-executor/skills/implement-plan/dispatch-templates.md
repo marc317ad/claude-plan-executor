@@ -44,7 +44,6 @@ Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, t
     }
   ],
   "schedule_ok": true,
-  "dependencies_ok": true,
   "summary": "<one-paragraph rationale>"
 }
 ```

@@ -4544,7 +4544,6 @@ def _plan_review_envelope(
     findings: list | None = None,
     plan_file: str = "sample.md",
     schedule_ok: bool = True,
-    dependencies_ok: bool = True,
     summary: str = "ok",
     error: str | None = None,
     drop_parsed: bool = False,
@@ -4567,7 +4566,6 @@ def _plan_review_envelope(
         "verdict": verdict,
         "findings": findings if findings is not None else [],
         "schedule_ok": schedule_ok,
-        "dependencies_ok": dependencies_ok,
         "summary": summary,
     }
     envelope["parsed"] = parsed
@@ -4594,7 +4592,7 @@ class TestPlanReviewSchemaFile:
         required = set(schema["required"])
         assert required == {
             "plan_file", "verdict", "findings",
-            "schedule_ok", "dependencies_ok", "summary",
+            "schedule_ok", "summary",
         }
 
 
@@ -4908,11 +4906,10 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
         # gating contract.
         assert "approved" in body["prompt_preview"]
         assert "needs-replan" in body["prompt_preview"]
-        # The prompt must direct Codex to compute dependencies_ok via
-        # check-plan-deps rather than parsing it from the plan; otherwise
-        # Codex falls back to hunting for the legacy tasks[*].dependencies
-        # field and blocks the run on its absence.
-        assert "check-plan-deps" in body["prompt_preview"]
+        # The prompt must explicitly tell Codex the orchestrator owns the
+        # cross-plan dependency gate so the reviewer does not fabricate a
+        # `needs-replan` on dep-check grounds when it declines to run tools.
+        assert "Phase 0 preflight" in body["prompt_preview"]
 
     def test_missing_plan_file_fails(self, tmp_path: Path) -> None:
         schedule = tmp_path / "sample.schedule.json"
