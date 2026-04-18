@@ -1785,29 +1785,143 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
         if tid:
             tasks_by_id[tid] = t
 
+    # Defensive DAG check (ISSUE-019). `_validate_schedule` above covers shape
+    # and reference integrity, but does not catch dependency cycles. Run
+    # Kahn's algorithm over the full task graph so a cycle surfaces with a
+    # concrete error code rather than silently deadlocking the scheduler.
+    dag_deps: dict[str, list[str]] = {}
+    for tid, t in tasks_by_id.items():
+        deps: list[str] = []
+        for dep in (t.get("dependencies") or []):
+            dep_norm = _normalize_task_id(str(dep))
+            if dep_norm is not None and dep_norm in tasks_by_id:
+                deps.append(dep_norm)
+        dag_deps[tid] = deps
+    indeg: dict[str, int] = {tid: 0 for tid in dag_deps}
+    for tid, deps in dag_deps.items():
+        for d in deps:
+            if d in indeg:
+                indeg[tid] += 1
+    queue = [tid for tid, n in indeg.items() if n == 0]
+    visited = 0
+    while queue:
+        head = queue.pop(0)
+        visited += 1
+        for other, deps in dag_deps.items():
+            if head in deps:
+                indeg[other] -= 1
+                if indeg[other] == 0:
+                    queue.append(other)
+    if visited != len(dag_deps):
+        cyclic = sorted(tid for tid, n in indeg.items() if n > 0)
+        _die(args, {"errors": [{
+            "path": "$.tasks",
+            "code": "dependency-cycle",
+            "message": (
+                f"dependency cycle in schedule involving tasks: {cyclic}"
+            ),
+        }]})
+
     def _files(task: dict) -> list[str]:
         return list(task.get("files") or [])
 
-    remaining = [t for tid, t in tasks_by_id.items() if tid not in done and tid not in failed]
-    ready = remaining
+    def _ready(task: dict) -> bool:
+        """A task is ready iff every declared dep is in `done`.
 
+        Tasks with any dep in `failed` are NOT ready — V14 invariant. Unknown
+        or not-yet-done deps also block readiness. Dep references that do not
+        normalize (malformed) are ignored for readiness purposes but would
+        have been caught by `_validate_schedule_refs` upstream.
+        """
+        for dep in (task.get("dependencies") or []):
+            dep_norm = _normalize_task_id(str(dep))
+            if dep_norm is None:
+                continue
+            if dep_norm not in done:
+                return False
+        return True
+
+    remaining = [t for tid, t in tasks_by_id.items() if tid not in done and tid not in failed]
+    ready = [t for t in remaining if _ready(t)]
+
+    # 1. Find active batch: the FIRST batch whose tasks are NOT all
+    # done|failed. The `or tid in failed` clause is MANDATORY — without it,
+    # a mixed-resolution batch (one done + one failed) never advances and
+    # blocks dependents forever. See V4 / Run 20260415T022232 regression.
+    active_batch: dict | None = None
+    for b in (data.get("batches") or []):
+        bids = [_normalize_task_id(str(x)) for x in (b.get("task_ids") or [])]
+        bids = [tid for tid in bids if tid]
+        if not bids:
+            continue
+        if all(tid in done or tid in failed for tid in bids):
+            continue
+        active_batch = b
+        break
+
+    def _batch_index_of(b: dict) -> int:
+        raw = b.get("index") if "index" in b else b.get("batch_index")
+        return raw if isinstance(raw, int) else 0
+
+    if active_batch is None:
+        # Guard against malformed batch structure masquerading as "all done"
+        # (V11/V12/V13). Reasons active_batch may be None while work remains:
+        #   * batches=[] entirely,
+        #   * every batch has empty task_ids[] (or all entries fail to
+        #     normalize),
+        #   * an unresolved task is not listed in any batch.
+        # Policy lock-in: surface as scheduler_stuck=True, never silently
+        # succeed — the orchestrator relies on this to halt with a
+        # diagnostic.
+        unresolved = [tid for tid in tasks_by_id
+                      if tid not in done and tid not in failed]
+        if unresolved:
+            _emit(args, {
+                "batch_index": 0,
+                "task_ids": [],
+                "file_locks": [],
+                "scheduler_stuck": True,
+            })
+            return
+        _emit(args, {
+            "batch_index": 0,
+            "task_ids": [],
+            "file_locks": [],
+            "scheduler_stuck": False,
+        })
+        return
+
+    active_ids = {tid for tid in (
+        _normalize_task_id(str(x))
+        for x in (active_batch.get("task_ids") or [])
+    ) if tid}
+
+    # Guard: active_batch was selected because not-all-done|failed, but if
+    # active_ids is empty after normalization, treat as malformed batch data
+    # and surface scheduler_stuck — never silently succeed.
+    if not active_ids:
+        _emit(args, {
+            "batch_index": _batch_index_of(active_batch),
+            "task_ids": [],
+            "file_locks": [],
+            "scheduler_stuck": True,
+        })
+        return
+
+    # 2. Restrict ready candidates to the active batch. Tasks in later
+    # batches are never selected even when globally ready.
+    ready_in_batch: list[dict] = []
+    for t in ready:
+        raw_tid = t.get("id") if "id" in t else t.get("task_id")
+        tid = _normalize_task_id(str(raw_tid))
+        if tid in active_ids:
+            ready_in_batch.append(t)
+
+    # 3. Pick respecting file locks + --parallel.
     picked: list[str] = []
     picked_files: list[str] = []
     claimed = set(locked)
-    batch_index: int | None = None
-
-    for b in data.get("batches") or []:
-        bids = [_normalize_task_id(str(x)) for x in (b.get("task_ids") or [])]
-        if any(tid in done or tid in failed for tid in bids):
-            continue
-        if all(tid in done for tid in bids if tid):
-            continue
-        batch_index = b.get("index") if "index" in b else b.get("batch_index")
-        break
-    if batch_index is None:
-        batch_index = 0
-
-    for t in ready:
+    for t in ready_in_batch:
         raw_tid = t.get("id") if "id" in t else t.get("task_id")
         tid = _normalize_task_id(str(raw_tid))
         files = _files(t)
@@ -1819,10 +1933,23 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
         picked_files.extend(files)
         claimed.update(files)
 
-    scheduler_stuck = len(picked) == 0 and len(ready) > 0
+    # 4. scheduler_stuck — cross-batch-deadlock-aware. True iff nothing was
+    # picked AND the active batch still has at least one unfinished task
+    # (not in done|failed). This covers:
+    #   (a) ready_in_batch non-empty but every candidate is file-locked;
+    #   (b) ready_in_batch empty because the active batch's unfinished
+    #       tasks have unsatisfied deps in a later batch (cross-batch
+    #       deadlock).
+    # See V3 / Run 20260415T000811. The FORBIDDEN formulae
+    # `len(picked)==0 and len(ready_in_batch)>0` (masks case b) and
+    # `len(picked)==0 and len(ready)>0` (uses global ready) must not be
+    # shipped.
+    unfinished_active = [tid for tid in active_ids
+                         if tid not in done and tid not in failed]
+    scheduler_stuck = (len(picked) == 0) and (len(unfinished_active) > 0)
 
     _emit(args, {
-        "batch_index": batch_index,
+        "batch_index": _batch_index_of(active_batch),
         "task_ids": picked,
         "file_locks": picked_files,
         "scheduler_stuck": scheduler_stuck,

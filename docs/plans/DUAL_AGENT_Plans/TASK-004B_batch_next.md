@@ -195,7 +195,7 @@ def test_batch_next_skips_active_batch_task_with_failed_dep(tmp_path):
 
 ### TASK-004B: Enforce batch fidelity and cross-batch deadlock detection in `batch-next`
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`

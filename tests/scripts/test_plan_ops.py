@@ -744,6 +744,11 @@ class TestBatchNext:
         return p
 
     def test_first_batch(self, tmp_path: Path) -> None:
+        # Under authoritative batch semantics (TASK-004B), `batch-next` returns
+        # ONLY tasks from the first unresolved batch. VALID_SCHEDULE puts 001
+        # in batch 0 and 002 in batch 1 — 002 must NOT be picked until batch
+        # 0 resolves. Previously this test asserted [001, 002] globally,
+        # which was documenting the ISSUE-010 bug.
         sched = self._schedule_path(tmp_path)
         cp = _run(
             "batch-next",
@@ -756,11 +761,14 @@ class TestBatchNext:
         )
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
-        assert body["task_ids"] == ["001", "002"]
+        assert body["task_ids"] == ["001"]
         assert body["batch_index"] == 0
         assert body["scheduler_stuck"] is False
 
     def test_skip_locked_files(self, tmp_path: Path) -> None:
+        # Locking batch 0's file now yields picked=[] with scheduler_stuck=True
+        # because 002 is in batch 1 and ineligible until batch 0 finishes.
+        # Previously this test returned [002]; that was the ISSUE-010 bug.
         sched = self._schedule_path(tmp_path)
         cp = _run(
             "batch-next",
@@ -773,10 +781,17 @@ class TestBatchNext:
         )
         assert cp.returncode == 0
         body = _parse_json(cp)
-        assert body["task_ids"] == ["002"]
-        assert body["scheduler_stuck"] is False
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is True
 
-    def test_batch_next_ignores_upstream_failure(self, tmp_path: Path) -> None:
+    def test_batch_next_blocks_dependent_on_failed(self, tmp_path: Path) -> None:
+        # 001 failed → batch 0 is resolved (done|failed) → advance to batch 1.
+        # 002 depends on 001; dep in `failed` means _ready(002) is False, so
+        # 002 is NOT picked. scheduler_stuck=True because batch 1 has an
+        # unfinished task that cannot run. Previously the test (named
+        # test_batch_next_ignores_upstream_failure) asserted "002" IS picked,
+        # documenting the bug where failed deps were silently ignored. V14
+        # locks in the correct semantics.
         sched = self._schedule_path(tmp_path)
         cp = _run(
             "batch-next",
@@ -787,7 +802,8 @@ class TestBatchNext:
         )
         assert cp.returncode == 0
         body = _parse_json(cp)
-        assert "002" in body["task_ids"]
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is True
 
     def test_all_done_returns_empty(self, tmp_path: Path) -> None:
         sched = self._schedule_path(tmp_path)
@@ -802,6 +818,438 @@ class TestBatchNext:
         body = _parse_json(cp)
         assert body["task_ids"] == []
         assert body["scheduler_stuck"] is False
+
+
+# ---------------------------------------------------------------------------
+# batch-next — TASK-004B batch fidelity + deadlock detection (V1-V14)
+# ---------------------------------------------------------------------------
+
+
+def _write_schedule(tmp_path: Path, payload: dict) -> Path:
+    p = tmp_path / "schedule.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    return p
+
+
+def _run_batch_next(
+    sched: Path,
+    *,
+    locked: str = "",
+    done: str = "",
+    failed: str = "",
+    parallel: int = 2,
+) -> subprocess.CompletedProcess:
+    return _run(
+        "batch-next",
+        "--schedule-file", str(sched),
+        "--locked-files", locked,
+        "--done", done,
+        "--failed", failed,
+        "--parallel", str(parallel),
+        "--json",
+    )
+
+
+class TestBatchNextBatchFidelity:
+    """V1-V14 regressions for TASK-004B: authoritative batches + deadlock.
+
+    These tests lock in the `batch-next` contract:
+      * Later-batch ready tasks are ineligible until the active batch
+        resolves.
+      * `active_batch` advances past `done OR failed` batches.
+      * `scheduler_stuck` covers cross-batch deadlock.
+      * Malformed batch structure surfaces `scheduler_stuck=True`, never
+        silent success.
+      * Failed deps block pick even inside the active batch.
+    """
+
+    def test_batch_next_honors_declared_batch(self, tmp_path: Path) -> None:
+        # V1. batch 1 = [001, 003], batch 2 = [002]. All three are globally
+        # ready (001, 002, 003 all have empty deps). batch-next MUST return
+        # ONLY [001, 003] from batch 1. 002 is globally ready but in batch 2
+        # and therefore ineligible.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "003"], "file_locks": ["a", "c"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        })
+        cp = _run_batch_next(sched, parallel=3)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert sorted(body["task_ids"]) == ["001", "003"]
+        assert "002" not in body["task_ids"]
+        assert body["batch_index"] == 1
+        assert body["scheduler_stuck"] is False
+
+    def test_batch_next_waits_for_earlier_batch_completion(
+        self, tmp_path: Path
+    ) -> None:
+        # V2. Same schedule as V1; 001 and 003 done. batch-next must now
+        # advance to batch 2 and return [002].
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "003"], "file_locks": ["a", "c"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        })
+        cp = _run_batch_next(sched, done="001,003", parallel=3)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == ["002"]
+        assert body["batch_index"] == 2
+        assert body["scheduler_stuck"] is False
+
+    def test_batch_next_scheduler_stuck_on_cross_batch_deadlock(
+        self, tmp_path: Path
+    ) -> None:
+        # V3 — hard-won regression from run 20260415T000811.
+        # batch 1 = [001 dep 002], batch 2 = [002]. Nothing done/failed.
+        # active_batch = batch 1. 001 is not ready (dep 002 not done).
+        # ready_in_batch = []. scheduler_stuck MUST be True. The previous
+        # formula `picked==[] and len(ready_in_batch)>0` returned False
+        # here and let the orchestrator spin.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": ["002"]},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        })
+        cp = _run_batch_next(sched)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is True
+
+    def test_batch_next_scheduler_stuck_positive_control(
+        self, tmp_path: Path
+    ) -> None:
+        # V3 inverse: same cross-batch dep structure but with 002 done.
+        # batch 1's 001 is now ready; batch-next picks it and
+        # scheduler_stuck=False.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": ["002"]},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        })
+        cp = _run_batch_next(sched, done="002")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == ["001"]
+        assert body["scheduler_stuck"] is False
+
+    def test_batch_next_advances_past_done_or_failed_batch(
+        self, tmp_path: Path
+    ) -> None:
+        # V4 — hard-won regression from run 20260415T022232.
+        # batch 1 = [001, 002], batch 2 = [003]. 001 done, 002 failed.
+        # batch-next MUST advance to batch 2 and return [003]. The previous
+        # formula `all(tid in done for tid in bids)` returned False (002
+        # not in done) and never advanced.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
+                {"index": 2, "task_ids": ["003"], "file_locks": ["c"]},
+            ],
+        })
+        cp = _run_batch_next(sched, done="001", failed="002")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == ["003"]
+        assert body["batch_index"] == 2
+        assert body["scheduler_stuck"] is False
+
+    def test_batch_next_advances_past_all_done_batch(self, tmp_path: Path) -> None:
+        # V4 positive control: both tasks in batch 1 done. advance to
+        # batch 2 — proves the `or failed` extension didn't break the
+        # all-done case.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
+                {"index": 2, "task_ids": ["003"], "file_locks": ["c"]},
+            ],
+        })
+        cp = _run_batch_next(sched, done="001,002")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == ["003"]
+        assert body["batch_index"] == 2
+        assert body["scheduler_stuck"] is False
+
+    def test_batch_next_respects_parallel_cap(self, tmp_path: Path) -> None:
+        # V5 — batch 1 has three ready, file-disjoint tasks; --parallel 2
+        # returns exactly 2.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002", "003"],
+                 "file_locks": ["a", "b", "c"]},
+            ],
+        })
+        cp = _run_batch_next(sched, parallel=2)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert len(body["task_ids"]) == 2
+        assert set(body["task_ids"]).issubset({"001", "002", "003"})
+        assert body["scheduler_stuck"] is False
+
+    def test_batch_next_respects_file_locks_partial(self, tmp_path: Path) -> None:
+        # V6 case A: batch 1 = [001 files=[a], 002 files=[a]]. Both ready.
+        # batch-next returns exactly one; the other is file-claimed by the
+        # first pick. picked != [], so scheduler_stuck=False.
+        # Note: we disable _validate_schedule_refs's batch-file-overlap
+        # check by using two different files in the same batch... actually
+        # overlap within a batch fails validation. So model V6A as an
+        # external lock scenario instead — see V9 below. Here we only test
+        # the file-lock "partial pick" via --parallel=1 on two disjoint
+        # file tasks.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
+            ],
+        })
+        cp = _run_batch_next(sched, parallel=1)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert len(body["task_ids"]) == 1
+        assert body["scheduler_stuck"] is False
+
+    def test_batch_next_respects_file_locks_full(self, tmp_path: Path) -> None:
+        # V6 case B: batch 1 has a single ready task whose file is
+        # externally locked. batch-next returns picked=[] and
+        # scheduler_stuck=True (only unfinished active-batch task is
+        # blocked).
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+            ],
+        })
+        cp = _run_batch_next(sched, locked="a")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is True
+
+    def test_batch_next_empty_when_all_batches_done(self, tmp_path: Path) -> None:
+        # V7 — every task done. picked=[], scheduler_stuck=False.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        })
+        cp = _run_batch_next(sched, done="001,002")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is False
+
+    def test_batch_next_dag_cycle_rejected(self, tmp_path: Path) -> None:
+        # V8 — feed a cycle (001 <-> 002) through batch-next. Must halt
+        # with errors[*].code == "dependency-cycle".
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": ["002"]},
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": ["001"]},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"],
+                 "file_locks": ["a", "b"]},
+            ],
+        })
+        cp = _run_batch_next(sched)
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "dependency-cycle" in codes
+
+    def test_batch_next_external_lock_blocks_pick(self, tmp_path: Path) -> None:
+        # V9 — batch 1 = [001 files=[a], 002 files=[b]]. Both ready.
+        # --locked-files=a → returns [002], scheduler_stuck=False.
+        # --locked-files=a,b → returns [], scheduler_stuck=True.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
+            ],
+        })
+        cp = _run_batch_next(sched, locked="a")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == ["002"]
+        assert body["scheduler_stuck"] is False
+
+        cp2 = _run_batch_next(sched, locked="a,b")
+        assert cp2.returncode == 0, cp2.stderr
+        body2 = _parse_json(cp2)
+        assert body2["task_ids"] == []
+        assert body2["scheduler_stuck"] is True
+
+    def test_batch_next_output_shape(self, tmp_path: Path) -> None:
+        # V10 — output JSON has exactly {batch_index, task_ids, file_locks,
+        # scheduler_stuck}. No extras, no omissions.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+            ],
+        })
+        cp = _run_batch_next(sched)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert set(body.keys()) == {
+            "batch_index", "task_ids", "file_locks", "scheduler_stuck"
+        }
+
+    def test_batch_next_emits_stuck_when_batches_missing(
+        self, tmp_path: Path
+    ) -> None:
+        # V11 — tasks=[{id=001}], batches=[]. Nothing done/failed.
+        # scheduler_stuck=True required; silent scheduler_stuck=False
+        # would let the orchestrator spin forever.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+            ],
+            "batches": [],
+        })
+        cp = _run_batch_next(sched)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is True
+
+    def test_batch_next_emits_stuck_when_active_batch_is_empty(
+        self, tmp_path: Path
+    ) -> None:
+        # V12 — single task 001 pending, sole batch has empty task_ids=[].
+        # MUST surface scheduler_stuck=True.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": [], "file_locks": []},
+            ],
+        })
+        cp = _run_batch_next(sched)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is True
+
+    def test_batch_next_emits_stuck_when_task_is_not_in_any_batch(
+        self, tmp_path: Path
+    ) -> None:
+        # V13 — tasks=[001, 002], batches=[{1:[001]}]. 001 done, 002
+        # pending but not in any batch. MUST surface scheduler_stuck=True
+        # rather than silently returning []/False.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+            ],
+        })
+        cp = _run_batch_next(sched, done="001")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is True
+
+    def test_batch_next_skips_active_batch_task_with_failed_dep(
+        self, tmp_path: Path
+    ) -> None:
+        # V14 — batch 1 = [001], batch 2 = [002 dep 001]. 001 failed.
+        # batch-next advances past batch 1 (001 resolved as failed),
+        # active_batch = batch 2. 002's dep is failed so _ready(002) is
+        # False → not picked. scheduler_stuck=True.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"]},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        })
+        cp = _run_batch_next(sched, failed="001")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == []
+        assert body["batch_index"] == 2
+        assert body["scheduler_stuck"] is True
 
 
 # ---------------------------------------------------------------------------
