@@ -1,0 +1,33 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "004B",
+      "title": "Enforce batch fidelity and cross-batch deadlock detection in `batch-next`",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "classification_reason": "Multi-file scheduler semantics, 14 regressions"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "004B"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

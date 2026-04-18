@@ -405,3 +405,11 @@ If the existing Phase A→B description in `SKILL.md` implies global-ready behav
 ## Reversion guidance
 
 If a real plan requires global-ready selection, gate behind `--legacy-batch-next`. Never restore global-ready as the default. The cross-batch deadlock detection (V3) and the `done|failed` advancement (V4) MUST NEVER be reverted — both fix bugs that broke prior runs.
+
+## Execution log — 20260418T015713 (success)
+
+Starting SHA: `f783c9575389d2d60f345574cdac3018d49c372a`  → Ending SHA: `c0ea78648b9556acbd932ecfdf615d7af067ad6b`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004B | claude/opus | codex→code-reviewer(D.5) | ship-with-fixes [disagreement] | c0ea7864 | 23/23 batch-next tests pass; D.5 dismissed all 3 Codex findings (V8 cycle detect is explicit AC; empty-batch skip is vacuously correct; file-lock test naming is unreachable-path nit) |
