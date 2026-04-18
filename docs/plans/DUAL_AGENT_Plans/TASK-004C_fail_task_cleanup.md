@@ -741,3 +741,11 @@ The state-isolation test (`test_plan_codex_dispatch_state_isolation.py`) is the 
 - If the shared `_plan_paths.py` module can't be imported by the wrapper (shouldn't happen — only depends on stdlib), TEMPORARILY inline constants in both consumers AND file a bug. Never make the wrapper import from `plan_ops.py`.
 - If the submodule predicate misfires, prefer false-positive `submodule_skipped` (observable) over wrong restore/unlink (silent data loss).
 - If partition classification misfires on edge inputs, add a test mirroring V1–V17 before adjusting; this plan already enumerates the accepted edge cases.
+
+## Execution log — 20260418T023108 (success)
+
+Starting SHA: `4b96f897748f8b1a3580ed65f4305285b8a5b9ba`  → Ending SHA: `fdd193f5d123a1d677839404e5c3dee0328b07db`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004C | claude/opus | codex→code-reviewer(D.5) | ship [disagreement] | fdd193f5 | D.5 third-opinion dismissed all 6 Codex findings (1 critical + 3 important + 2 minor). 18/18 fail-task tests pass (V1–V17 + V14b). Pre-existing failure of slow real-producer roundtrip test is unrelated. |

@@ -1,0 +1,35 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "004C",
+      "title": "Implement tracked+untracked partition cleanup in `fail-task` + extract shared protected-paths module",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "scripts/_plan_paths.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py tests/scripts/test_plan_codex_dispatch_state_isolation.py tests/scripts/test_plan_codex_dispatch_integration.py",
+      "classification_reason": "Multi-file cross-cutting refactor, new module"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "004C"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "scripts/_plan_paths.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}
