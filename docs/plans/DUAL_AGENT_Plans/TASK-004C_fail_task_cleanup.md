@@ -359,7 +359,7 @@ def test_fail_task_silent_on_nonexistent_path(tmp_path_git_repo):
 
 ### TASK-004C: Implement tracked+untracked partition cleanup in `fail-task` + extract shared protected-paths module
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (rewrite `cmd_fail_task`; delete `RECONCILE_PROTECTED_*` + `_is_reconcile_protected` at lines 720-745 and replace with import from shared module; add `--repo-root` arg if absent)

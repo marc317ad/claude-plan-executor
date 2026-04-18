@@ -44,6 +44,26 @@ IMPLEMENT_SCHEMA = SCRIPT_DIR / "codex_implement_schema.json"
 REVIEW_SCHEMA = SCRIPT_DIR / "codex_review_schema.json"
 PLAN_REVIEW_SCHEMA = SCRIPT_DIR / "codex_plan_review_schema.json"
 
+# Ensure the sibling ``_plan_paths`` module is importable when this file is
+# loaded via ``importlib.util.spec_from_file_location`` (e.g., from tests).
+# Direct CLI invocation already adds SCRIPT_DIR to ``sys.path`` automatically.
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from _plan_paths import (  # noqa: E402
+    PROTECTED_EXACT_PATHS,
+    PROTECTED_PATH_PREFIXES,
+    PROTECTED_PATH_SUFFIXES,
+    PROTECTED_PATH_GLOBS,
+    is_protected_path,
+)
+
+# Backward-compatibility alias: callers (including
+# tests/scripts/test_plan_codex_dispatch_state_isolation.py) reference
+# ``wrapper._is_protected``. The shared module exposes the helper as
+# ``is_protected_path``; this alias is the sanctioned migration path.
+_is_protected = is_protected_path
+
 RAW_TRUNCATE_CHARS = 2000
 DEFAULT_TIMEOUT_IMPLEMENT = 300
 DEFAULT_TIMEOUT_REVIEW = 180
@@ -77,27 +97,13 @@ _PLAN_CFG = _load_plan_config()
 PLAN_DIR = Path(_PLAN_CFG.get("plan_dir", "docs/plans"))
 _PLAN_DIR_POSIX = PLAN_DIR.as_posix()
 
-# Executor-infrastructure paths that wrapper cleanup must never touch.
-# Root-file and directory forms are both covered: the integration test
-# commits `.codex` as a 0-byte root file, while production may have a
-# `.codex/` directory; same dual form for `.claude`.
-PROTECTED_EXACT_PATHS = frozenset({
-    "_run_lock.json",
-    ".claude",
-    ".codex",
-})
-PROTECTED_PATH_PREFIXES = (
-    f"{_PLAN_DIR_POSIX}/_run_log.jsonl",
-    f"{_PLAN_DIR_POSIX}/_run_lock.json",
-    ".claude/",
-    ".codex/",
-)
-PROTECTED_PATH_SUFFIXES: tuple[str, ...] = ()
-# Path globs (fnmatch) matched against repo-relative paths. Used for shapes
-# where exact name varies per plan (e.g. schedule sidecars).
-PROTECTED_PATH_GLOBS: tuple[str, ...] = (
-    f"{_PLAN_DIR_POSIX}/*.schedule.json",
-)
+# Executor-infrastructure protection set (``PROTECTED_EXACT_PATHS`` /
+# ``PROTECTED_PATH_PREFIXES`` / ``PROTECTED_PATH_SUFFIXES`` /
+# ``PROTECTED_PATH_GLOBS``) and the ``is_protected_path`` predicate are
+# imported from ``_plan_paths`` above. Three copies of these constants used
+# to live in this module, in ``plan_ops.reconcile-batch``, and in
+# ``plan_ops.cmd_fail_task``; they drifted. TASK-004C consolidates all three
+# into the single shared module.
 
 # ---------------------------------------------------------------------------
 # Plan parsing
@@ -408,26 +414,6 @@ def git_diff_for_files(repo_root: str, files: list[str]) -> str:
         return r.stdout
     r = _git(["diff", "--"] + files, cwd=repo_root)
     return r.stdout if r.returncode == 0 else ""
-
-
-def _is_protected(rel_path: str) -> bool:
-    """True iff the given repo-relative path is executor infrastructure.
-
-    Git emits forward-slash relative paths; we match those literally with no
-    normalization. Protection is symmetric across tracked + untracked sides.
-    """
-    if rel_path in PROTECTED_EXACT_PATHS:
-        return True
-    for prefix in PROTECTED_PATH_PREFIXES:
-        if rel_path == prefix or rel_path.startswith(prefix):
-            return True
-    for suffix in PROTECTED_PATH_SUFFIXES:
-        if rel_path.endswith(suffix):
-            return True
-    for pattern in PROTECTED_PATH_GLOBS:
-        if fnmatch.fnmatch(rel_path, pattern):
-            return True
-    return False
 
 
 def _snapshot_baseline(repo_root: str) -> dict:

@@ -33,6 +33,22 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Ensure the sibling ``_plan_paths`` module is importable when this file is
+# loaded via ``importlib.util.spec_from_file_location`` (e.g., from tests).
+# Direct CLI invocation already adds the script's directory to ``sys.path``.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+from _plan_paths import (  # noqa: E402
+    PROTECTED_EXACT_PATHS,
+    PROTECTED_PATH_PREFIXES,
+    PROTECTED_PATH_SUFFIXES,
+    PROTECTED_PATH_GLOBS,
+    canonicalize_file,
+    is_protected_path,
+)
+
 def _load_plan_config() -> dict:
     """Read `.claude/plan-executor.json` from cwd; return {} if missing.
 
@@ -1279,29 +1295,11 @@ def _git(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedPro
 # Batch reconciliation (Fix E)
 # ---------------------------------------------------------------------------
 #
-# Mirrored from scripts/plan_codex_dispatch.py. Defensive even if a wrapper
-# envelope somehow reports a protected path as out-of-scope: reconciliation
-# never restores/unlinks executor infrastructure.
-RECONCILE_PROTECTED_EXACT = frozenset({"_run_lock.json", ".claude", ".codex"})
-RECONCILE_PROTECTED_PREFIXES = (
-    f"{_PLAN_DIR_POSIX}/_run_log.jsonl",
-    f"{_PLAN_DIR_POSIX}/_run_lock.json",
-    ".claude/",
-    ".codex/",
-)
-RECONCILE_PROTECTED_GLOBS = (f"{_PLAN_DIR_POSIX}/*.schedule.json",)
-
-
-def _is_reconcile_protected(rel_path: str) -> bool:
-    if rel_path in RECONCILE_PROTECTED_EXACT:
-        return True
-    for prefix in RECONCILE_PROTECTED_PREFIXES:
-        if rel_path == prefix or rel_path.startswith(prefix):
-            return True
-    for pattern in RECONCILE_PROTECTED_GLOBS:
-        if fnmatch.fnmatch(rel_path, pattern):
-            return True
-    return False
+# Defensive even if a wrapper envelope somehow reports a protected path as
+# out-of-scope: reconciliation never restores/unlinks executor
+# infrastructure. The protection set + predicate are imported from
+# ``_plan_paths`` (the single source of truth shared with the wrapper and
+# ``cmd_fail_task``).
 
 
 def _envelope_field(env: dict, key: str, default=None):
@@ -1365,12 +1363,12 @@ def reconcile_batch(
         actionable_tracked: list[str] = []
         actionable_untracked: list[str] = []
         for p in tracked:
-            if _is_reconcile_protected(p):
+            if is_protected_path(p):
                 skipped.add(p)
             else:
                 actionable_tracked.append(p)
         for p in untracked:
-            if _is_reconcile_protected(p):
+            if is_protected_path(p):
                 skipped.add(p)
             else:
                 actionable_untracked.append(p)
@@ -1610,7 +1608,7 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         path = line[3:]
         if path == str(plan) or path.endswith(plan.name):
             dirty["plan_doc"].append(path)
-        elif _is_reconcile_protected(path) or path.startswith(f"{_PLAN_DIR_POSIX}/"):
+        elif is_protected_path(path) or path.startswith(f"{_PLAN_DIR_POSIX}/"):
             dirty["infra_ignored"].append(path)
         else:
             dirty["source_blocking"].append(path)
@@ -2748,21 +2746,137 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
     })
 
 
+def _is_inside_submodule(abs_path: Path, rel: str, repo_root: Path) -> bool:
+    """True if ``abs_path`` is a gitlink OR sits inside a nested git repo
+    distinct from ``repo_root``.
+
+    Covers the nonexistent-leaf case: for ``submods/foo/new.txt`` where
+    ``new.txt`` does not yet exist but ``submods/foo`` is a gitlink, the
+    probe walks up from ``abs_path.parent`` to the nearest existing ancestor
+    and runs ``git rev-parse --show-toplevel`` there. If that toplevel
+    differs from ``repo_root``, the path is inside a submodule.
+    """
+    probe_gitlink = _git(
+        ["ls-files", "--stage", "--", rel],
+        cwd=repo_root,
+    )
+    if probe_gitlink.returncode == 0 and probe_gitlink.stdout.startswith("160000"):
+        return True
+    # Walk up to the nearest existing ancestor so nonexistent leaves under
+    # a submodule still classify correctly.
+    probe_dir = abs_path if abs_path.exists() else None
+    if probe_dir is None:
+        cursor = abs_path.parent
+        try:
+            repo_root_resolved = repo_root.resolve()
+        except OSError:
+            return False
+        while cursor != cursor.parent:
+            try:
+                if cursor.resolve() == repo_root_resolved:
+                    break
+            except OSError:
+                break
+            if cursor.exists():
+                probe_dir = cursor
+                break
+            cursor = cursor.parent
+    if probe_dir is None:
+        return False
+    if probe_dir.is_file() or probe_dir.is_symlink():
+        probe_dir = probe_dir.parent
+    tl = _git(["rev-parse", "--show-toplevel"], cwd=probe_dir)
+    if tl.returncode != 0:
+        return False
+    try:
+        toplevel = Path(tl.stdout.strip()).resolve()
+    except OSError:
+        return False
+    try:
+        return toplevel != repo_root.resolve()
+    except OSError:
+        return False
+
+
 def cmd_fail_task(args: argparse.Namespace) -> None:
     tid = _normalize_task_id(args.task_id)
     if not tid:
         _die(args, {"error": f"bad --task-id: {args.task_id!r}"})
 
-    files = [f.strip() for f in (args.files or "").split(",") if f.strip()]
     plan = Path(args.plan_file)
     if not plan.is_file():
         _die(args, {"error": f"plan file not found: {plan}"})
 
+    repo_root_arg = getattr(args, "repo_root", None)
+    if repo_root_arg:
+        repo_root = Path(repo_root_arg).resolve()
+    else:
+        repo_root = Path.cwd().resolve()
+
+    raw_files = [f.strip() for f in (args.files or "").split(",") if f.strip()]
+
+    tracked: list[str] = []
+    untracked: list[str] = []
+    protected_skipped: list[str] = []
+    out_of_repo_skipped: list[str] = []
+    directory_skipped: list[str] = []
+    submodule_skipped: list[str] = []
+
+    for raw in raw_files:
+        rel = canonicalize_file(raw, repo_root)
+        if rel is None:
+            # canonicalize_file returns None for out-of-repo escapes.
+            # Preserve the caller's original spelling in the emit so
+            # operators can see what they passed.
+            out_of_repo_skipped.append(raw)
+            continue
+        if rel == "":
+            # Canonicalized to repo_root itself — a directory.
+            directory_skipped.append(rel)
+            continue
+        abs_path = repo_root / rel
+        # Order of checks matches the classification table -- submodule
+        # BEFORE directory (a gitlink is a directory in the worktree, so
+        # it must classify as submodule not directory).
+        if _is_inside_submodule(abs_path, rel, repo_root):
+            submodule_skipped.append(rel)
+            continue
+        if abs_path.is_dir() and not abs_path.is_symlink():
+            directory_skipped.append(rel)
+            continue
+        if is_protected_path(rel):
+            protected_skipped.append(rel)
+            continue
+        probe = _git(
+            ["ls-files", "--error-unmatch", "--", rel],
+            cwd=repo_root,
+        )
+        if probe.returncode == 0:
+            tracked.append(rel)
+        else:
+            untracked.append(rel)
+
     restore_ok = True
-    if files:
-        restore = _git(["restore", "--", *files])
+    if tracked:
+        restore = _git(
+            ["restore", "--staged", "--worktree", "--", *tracked],
+            cwd=repo_root,
+        )
         if restore.returncode != 0:
             restore_ok = False
+
+    removed_untracked: list[str] = []
+    for rel in untracked:
+        abs_path = repo_root / rel
+        if not abs_path.exists() and not abs_path.is_symlink():
+            continue
+        try:
+            abs_path.unlink()
+        except FileNotFoundError:
+            continue
+        except (IsADirectoryError, PermissionError, OSError):
+            continue
+        removed_untracked.append(rel)
 
     original = _load_text(plan)
     try:
@@ -2795,6 +2909,11 @@ def cmd_fail_task(args: argparse.Namespace) -> None:
         "restore_ok": restore_ok,
         "status_updated": True,
         "log_appended": True,
+        "removed_untracked": removed_untracked,
+        "protected_skipped": protected_skipped,
+        "out_of_repo_skipped": out_of_repo_skipped,
+        "directory_skipped": directory_skipped,
+        "submodule_skipped": submodule_skipped,
     })
 
 
@@ -3115,6 +3234,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="JSON blob of reviewer findings (stage=review)")
     p_fail.add_argument("--reversion-guidance", default="",
                         help="Implementer-supplied reversion guidance (stage=implement)")
+    p_fail.add_argument("--repo-root", default=None,
+                        help="Repo root for path resolution; defaults to CWD")
     p_fail.add_argument("--dry-run", action="store_true")
     _add_json(p_fail)
 

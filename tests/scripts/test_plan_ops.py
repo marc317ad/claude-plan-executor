@@ -1465,6 +1465,447 @@ class TestFailTask:
         assert "### TASK-001: First task\n\n- **Status:** failed" in text
 
 
+# ---------------------------------------------------------------------------
+# TASK-004C: fail-task tracked+untracked partition cleanup (V1-V17)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def tmp_fail_repo(tmp_path: Path) -> Path:
+    """Dedicated fresh git repo for the V1-V17 fail-task suite.
+
+    Seeds:
+        * ``tracked.txt`` committed with ``original\\n``
+        * ``docs/plans/<plan>.md`` with TASK-001 at status ``open``
+        * ``docs/plans/_run_log.jsonl`` committed (so V5 can verify the
+          tracked + protected branch without ``fail-task`` restoring it)
+    """
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    (tmp_path / "tracked.txt").write_text("original\n", encoding="utf-8")
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    plan = plans / "sample.md"
+    plan.write_text(SAMPLE_PLAN_BODY, encoding="utf-8")
+    (plans / "_run_log.jsonl").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def _fail_task_run(
+    repo: Path,
+    *,
+    files: str,
+    plan_name: str = "sample.md",
+    repo_root: Path | str | None = "__SELF__",
+    cwd: Path | None = None,
+    stage: str = "implement",
+    reason: str = "test_reason",
+) -> subprocess.CompletedProcess:
+    plan = repo / "docs" / "plans" / plan_name
+    args = [
+        "fail-task",
+        "--plan-file", str(plan),
+        "--task-id", "001",
+        "--run-id", "R1",
+        "--files", files,
+        "--stage", stage,
+        "--reason", reason,
+        "--json",
+    ]
+    if repo_root == "__SELF__":
+        args.extend(["--repo-root", str(repo)])
+    elif repo_root is not None:
+        args.extend(["--repo-root", str(repo_root)])
+    return _run(*args, cwd=cwd if cwd is not None else repo)
+
+
+class TestFailTaskPartitionCleanup:
+    """TASK-004C V1-V17 coverage: tracked+untracked partition cleanup in
+    ``fail-task`` plus shared protected-paths module."""
+
+    # V1 -----------------------------------------------------------------
+    def test_v1_restores_tracked_edit(self, tmp_fail_repo: Path) -> None:
+        (tmp_fail_repo / "tracked.txt").write_text("modded\n", encoding="utf-8")
+        cp = _fail_task_run(tmp_fail_repo, files="tracked.txt")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["restore_ok"] is True
+        assert body["removed_untracked"] == []
+        assert (tmp_fail_repo / "tracked.txt").read_text(encoding="utf-8") == "original\n"
+
+    # V2 -----------------------------------------------------------------
+    def test_v2_removes_untracked_creates(self, tmp_fail_repo: Path) -> None:
+        (tmp_fail_repo / "new.txt").write_text("leftover\n", encoding="utf-8")
+        cp = _fail_task_run(tmp_fail_repo, files="new.txt")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert (tmp_fail_repo / "new.txt").exists() is False
+        assert set(body["removed_untracked"]) == {"new.txt"}
+        assert body["restore_ok"] is True
+
+    # V3 -----------------------------------------------------------------
+    def test_v3_mixed_tracked_and_untracked(self, tmp_fail_repo: Path) -> None:
+        """Hard-won regression: previously ``git restore -- tracked untracked``
+        exited 1 on the pathspec error, leaving tracked unreverted."""
+        (tmp_fail_repo / "tracked.txt").write_text("modded\n", encoding="utf-8")
+        (tmp_fail_repo / "untracked.txt").write_text("new\n", encoding="utf-8")
+        cp = _fail_task_run(tmp_fail_repo, files="tracked.txt,untracked.txt")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # (a) tracked.txt restored
+        assert (tmp_fail_repo / "tracked.txt").read_text(encoding="utf-8") == "original\n"
+        # (b) untracked.txt removed
+        assert (tmp_fail_repo / "untracked.txt").exists() is False
+        # (c) restore_ok is True (not merely truthy)
+        assert body["restore_ok"] is True
+        # (d) removed_untracked == {"untracked.txt"}
+        assert set(body["removed_untracked"]) == {"untracked.txt"}
+        # (e) / (f)
+        assert body["protected_skipped"] == []
+        assert body["out_of_repo_skipped"] == []
+
+    # V4 -----------------------------------------------------------------
+    def test_v4_preserves_sibling_untracked(self, tmp_fail_repo: Path) -> None:
+        (tmp_fail_repo / "in_scope.txt").write_text("in\n", encoding="utf-8")
+        (tmp_fail_repo / "sibling.txt").write_text("keep\n", encoding="utf-8")
+        cp = _fail_task_run(tmp_fail_repo, files="in_scope.txt")
+        assert cp.returncode == 0, cp.stderr
+        assert (tmp_fail_repo / "in_scope.txt").exists() is False
+        assert (tmp_fail_repo / "sibling.txt").read_text(encoding="utf-8") == "keep\n"
+
+    # V5 -----------------------------------------------------------------
+    def test_v5_skips_protected_paths(self, tmp_fail_repo: Path) -> None:
+        run_log = tmp_fail_repo / "docs" / "plans" / "_run_log.jsonl"
+        run_log.write_text("modded\n", encoding="utf-8")
+        schedule = tmp_fail_repo / "docs" / "plans" / "sample.schedule.json"
+        schedule.write_text("{}\n", encoding="utf-8")
+        cp = _fail_task_run(
+            tmp_fail_repo,
+            files="docs/plans/_run_log.jsonl,docs/plans/sample.schedule.json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # Protected tracked file was NOT restored to its committed content.
+        # (fail-task still appends to the run log for its own event -- that is
+        # NOT the restore path under test here; the assertion is that the
+        # on-disk ``modded\n`` prefix survives, which it only does if
+        # ``git restore`` was NOT invoked against this file.)
+        assert run_log.read_text(encoding="utf-8").startswith("modded\n")
+        # Protected untracked file still present (NOT unlinked).
+        assert schedule.exists()
+        assert sorted(body["protected_skipped"]) == sorted(
+            ["docs/plans/_run_log.jsonl", "docs/plans/sample.schedule.json"]
+        )
+        assert body["restore_ok"] is True
+        assert body["removed_untracked"] == []
+
+    # V6 -----------------------------------------------------------------
+    def test_v6_idempotent_no_op_when_clean(
+        self, tmp_fail_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Exercise the legacy ``--repo-root``-not-passed path via monkeypatch.chdir.
+        monkeypatch.chdir(tmp_fail_repo)
+        cp = _fail_task_run(tmp_fail_repo, files="tracked.txt", repo_root=None)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["restore_ok"] is True
+        assert body["removed_untracked"] == []
+        assert (tmp_fail_repo / "tracked.txt").read_text(encoding="utf-8") == "original\n"
+
+    # V7 -----------------------------------------------------------------
+    def test_v7_status_mutation_runs_when_all_skipped(
+        self, tmp_fail_repo: Path
+    ) -> None:
+        # Directory entry, out-of-repo entry, and protected entry.
+        some_dir = tmp_fail_repo / "some_dir"
+        some_dir.mkdir()
+        # Use a sibling path of tmp_fail_repo to guarantee it is outside.
+        outside = tmp_fail_repo.parent / f"{tmp_fail_repo.name}_outsider.txt"
+        outside.write_text("x\n", encoding="utf-8")
+        cp = _fail_task_run(
+            tmp_fail_repo,
+            files=f"some_dir,{outside},docs/plans/_run_log.jsonl",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["restore_ok"] is True
+        assert body["removed_untracked"] == []
+        assert body["directory_skipped"] == ["some_dir"]
+        assert body["protected_skipped"] == ["docs/plans/_run_log.jsonl"]
+        assert body["out_of_repo_skipped"] == [str(outside)]
+        assert body["status_updated"] is True
+        plan_text = (tmp_fail_repo / "docs" / "plans" / "sample.md").read_text(
+            encoding="utf-8"
+        )
+        assert "### TASK-001: First task\n\n- **Status:** failed" in plan_text
+        # Outsider file still exists.
+        assert outside.exists()
+
+    # V8 -----------------------------------------------------------------
+    def test_v8_output_shape_is_stable(self, tmp_fail_repo: Path) -> None:
+        cp = _fail_task_run(tmp_fail_repo, files="tracked.txt")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        expected = {
+            "restore_ok",
+            "status_updated",
+            "log_appended",
+            "removed_untracked",
+            "protected_skipped",
+            "out_of_repo_skipped",
+            "directory_skipped",
+            "submodule_skipped",
+        }
+        assert set(body.keys()) == expected
+
+    # V9 -----------------------------------------------------------------
+    def test_v9_repo_root_threaded(
+        self, tmp_fail_repo: Path, tmp_path: Path
+    ) -> None:
+        alien_cwd = tmp_path / "elsewhere"
+        alien_cwd.mkdir()
+        # Decoy at alien cwd that MUST remain untouched.
+        (alien_cwd / "in_scope.txt").write_text("decoy\n", encoding="utf-8")
+        # Real target under repo root.
+        (tmp_fail_repo / "in_scope.txt").write_text("leftover\n", encoding="utf-8")
+        cp = _fail_task_run(
+            tmp_fail_repo,
+            files="in_scope.txt",
+            cwd=alien_cwd,
+        )
+        assert cp.returncode == 0, cp.stderr
+        # Repo-root copy removed.
+        assert (tmp_fail_repo / "in_scope.txt").exists() is False
+        # Alien-cwd decoy preserved.
+        assert (alien_cwd / "in_scope.txt").read_text(encoding="utf-8") == "decoy\n"
+
+    # V10 ----------------------------------------------------------------
+    def test_v10_protected_predicate_shared_across_callsites(self) -> None:
+        """Three-way parity: all callsites alias the same function from
+        ``_plan_paths``. Prevents the drift that motivated TASK-004C."""
+        import importlib
+
+        # Load the shared module directly.
+        _plan_paths = importlib.import_module("_plan_paths")
+        is_protected = _plan_paths.is_protected_path
+        # Fixture set covering exact, prefix, suffix, glob, ./-prefixed,
+        # a/../-containing. (Windows backslash normalization is handled at
+        # the canonicalize_file boundary, not in is_protected_path.)
+        positives = [
+            ".codex",
+            ".claude",
+            "_run_lock.json",
+            "docs/plans/_run_log.jsonl",
+            ".codex/session.json",
+            ".claude/skills/plan.md",
+            "docs/plans/anything.schedule.json",
+            "plugins/plan-executor/scripts/plan_ops.py",
+            "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        ]
+        for rel in positives:
+            assert is_protected(rel) is True, rel
+        # Load plan_codex_dispatch.py and plan_ops.py as independent modules
+        # and confirm they alias the SAME function object from _plan_paths.
+        import importlib.util
+
+        def _load_by_path(name: str, path: Path):
+            spec = importlib.util.spec_from_file_location(name, path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+
+        scripts_dir = (
+            REPO_ROOT / "plugins" / "plan-executor" / "scripts"
+        )
+        wrapper = _load_by_path(
+            "plan_codex_dispatch_v10", scripts_dir / "plan_codex_dispatch.py"
+        )
+        ops = _load_by_path("plan_ops_v10", scripts_dir / "plan_ops.py")
+        assert wrapper.is_protected_path is is_protected
+        assert wrapper._is_protected is is_protected  # alias compat
+        assert ops.is_protected_path is is_protected
+        # Wrapper + ops MUST NOT redefine the constants locally.
+        assert wrapper.PROTECTED_EXACT_PATHS is _plan_paths.PROTECTED_EXACT_PATHS
+        assert ops.PROTECTED_EXACT_PATHS is _plan_paths.PROTECTED_EXACT_PATHS
+
+    # V11 ----------------------------------------------------------------
+    def test_v11_absolute_path_outside_repo(
+        self, tmp_fail_repo: Path
+    ) -> None:
+        # Sibling of the repo dir is guaranteed outside repo_root.
+        outside = tmp_fail_repo.parent / f"{tmp_fail_repo.name}_v11_outside.txt"
+        outside.write_text("important", encoding="utf-8")
+        cp = _fail_task_run(tmp_fail_repo, files=str(outside))
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert outside.exists()
+        assert outside.read_text(encoding="utf-8") == "important"
+        assert body["out_of_repo_skipped"] == [str(outside)]
+        assert body["removed_untracked"] == []
+        assert body["restore_ok"] is True
+        assert body["status_updated"] is True
+
+    # V12 ----------------------------------------------------------------
+    def test_v12_dotdot_escape(
+        self, tmp_fail_repo: Path
+    ) -> None:
+        sibling = tmp_fail_repo.parent / f"{tmp_fail_repo.name}_v12_sib.txt"
+        sibling.write_text("keep\n", encoding="utf-8")
+        # Compute a ../ path relative to the repo root.
+        dotdot = f"../{sibling.name}"
+        cp = _fail_task_run(tmp_fail_repo, files=dotdot)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert sibling.read_text(encoding="utf-8") == "keep\n"
+        assert dotdot in body["out_of_repo_skipped"]
+        assert body["removed_untracked"] == []
+
+    # V13 ----------------------------------------------------------------
+    def test_v13_directory_entry(self, tmp_fail_repo: Path) -> None:
+        some = tmp_fail_repo / "some_dir"
+        some.mkdir()
+        (some / "tracked_child.txt").write_text("tc\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "some_dir/tracked_child.txt"],
+            cwd=tmp_fail_repo,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-qm", "add_child"],
+            cwd=tmp_fail_repo,
+            check=True,
+        )
+        # Also a fresh untracked child.
+        (some / "untracked_child.txt").write_text("uc\n", encoding="utf-8")
+        # Modify the tracked child.
+        (some / "tracked_child.txt").write_text("tc-modded\n", encoding="utf-8")
+        cp = _fail_task_run(tmp_fail_repo, files="some_dir")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # Directory itself and both children untouched.
+        assert some.is_dir()
+        assert (some / "tracked_child.txt").read_text(encoding="utf-8") == "tc-modded\n"
+        assert (some / "untracked_child.txt").read_text(encoding="utf-8") == "uc\n"
+        assert body["directory_skipped"] == ["some_dir"]
+        assert body["restore_ok"] is True
+        assert body["removed_untracked"] == []
+
+    # V14 ----------------------------------------------------------------
+    def test_v14_submodule_path(self, tmp_fail_repo: Path) -> None:
+        """Nested ``git init`` inside the repo (treated like a submodule
+        for classification purposes — same _is_inside_submodule path)."""
+        submod = tmp_fail_repo / "nested"
+        submod.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=submod, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=submod, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=submod, check=True)
+        (submod / "inner.txt").write_text("inner\n", encoding="utf-8")
+        subprocess.run(["git", "add", "inner.txt"], cwd=submod, check=True)
+        subprocess.run(["git", "commit", "-qm", "inner"], cwd=submod, check=True)
+        # Modify the inner file so "if fail-task restored it, we'd notice".
+        (submod / "inner.txt").write_text("modded\n", encoding="utf-8")
+        cp = _fail_task_run(tmp_fail_repo, files="nested/inner.txt")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # File untouched
+        assert (submod / "inner.txt").read_text(encoding="utf-8") == "modded\n"
+        assert "nested/inner.txt" in body["submodule_skipped"]
+        assert body["removed_untracked"] == []
+        assert body["restore_ok"] is True
+
+    # V14b ---------------------------------------------------------------
+    def test_v14b_submodule_root_classified_as_submodule(
+        self, tmp_fail_repo: Path
+    ) -> None:
+        """Gitlink root IS a directory in the worktree; classification order
+        must catch submodule BEFORE directory."""
+        # Create a real submodule-like gitlink via `git submodule add`.
+        upstream = tmp_fail_repo.parent / f"{tmp_fail_repo.name}_upstream"
+        upstream.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=upstream, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=upstream, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=upstream, check=True)
+        (upstream / "readme.txt").write_text("seed\n", encoding="utf-8")
+        subprocess.run(["git", "add", "readme.txt"], cwd=upstream, check=True)
+        subprocess.run(["git", "commit", "-qm", "seed"], cwd=upstream, check=True)
+        submod_path = "submods/foo"
+        env = os.environ.copy()
+        env["GIT_ALLOW_PROTOCOL"] = "file"
+        r = subprocess.run(
+            [
+                "git",
+                "-c", "protocol.file.allow=always",
+                "submodule", "add", "-q",
+                str(upstream),
+                submod_path,
+            ],
+            cwd=tmp_fail_repo,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            pytest.skip(
+                "git submodule add unavailable in this sandbox: "
+                + (r.stderr or r.stdout)
+            )
+        subprocess.run(
+            ["git", "commit", "-qm", "add_sub"],
+            cwd=tmp_fail_repo,
+            check=True,
+        )
+        cp = _fail_task_run(tmp_fail_repo, files=submod_path)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["submodule_skipped"] == [submod_path]
+        assert body["directory_skipped"] == []
+        assert body["removed_untracked"] == []
+        assert body["restore_ok"] is True
+        # Submodule dir still present.
+        assert (tmp_fail_repo / submod_path).exists()
+
+    # V15 ----------------------------------------------------------------
+    def test_v15_path_normalization(self, tmp_fail_repo: Path) -> None:
+        (tmp_fail_repo / "docs" / "plans" / "_run_log.jsonl").write_text(
+            "modded\n", encoding="utf-8"
+        )
+        cp = _fail_task_run(
+            tmp_fail_repo,
+            files="./docs/plans/_run_log.jsonl,plugins/plan-executor/scripts/./plan_ops.py",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert sorted(body["protected_skipped"]) == sorted(
+            [
+                "docs/plans/_run_log.jsonl",
+                "plugins/plan-executor/scripts/plan_ops.py",
+            ]
+        )
+
+    # V16 ----------------------------------------------------------------
+    def test_v16_tracked_deleted_is_restored(self, tmp_fail_repo: Path) -> None:
+        (tmp_fail_repo / "tracked.txt").unlink()
+        assert (tmp_fail_repo / "tracked.txt").exists() is False
+        cp = _fail_task_run(tmp_fail_repo, files="tracked.txt")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["restore_ok"] is True
+        assert body["removed_untracked"] == []
+        assert (tmp_fail_repo / "tracked.txt").read_text(encoding="utf-8") == "original\n"
+
+    # V17 ----------------------------------------------------------------
+    def test_v17_nonexistent_silent_noop(self, tmp_fail_repo: Path) -> None:
+        cp = _fail_task_run(tmp_fail_repo, files="nonexistent.txt")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["restore_ok"] is True
+        assert body["removed_untracked"] == []
+        assert body["status_updated"] is True
+
+
 class TestPreflightDirtyCategorization:
     """Preflight splits `git status` entries into plan_doc / infra_ignored /
     source_blocking. The infra_ignored set must agree with the wrapper's
