@@ -2,7 +2,7 @@
 
 **Parent plan:** TASK-004_scheduler_semantics.md (decomposed into A/B/C/D/E sub-plans after the bundled TASK-004 failed D.2a review twice due to scope/blast-radius issues).
 
-**Status:** pending
+**Status:** complete
 **Base branch:** main
 **Scope:** Single-issue sub-plan. Addresses **ISSUE-018** ONLY.
 
@@ -531,3 +531,11 @@ Append one paragraph (NOT a new section):
 - The `forced` key in the JSON emit is additive. Existing tests at `tests/scripts/test_plan_ops.py:255-276` only assert subsets of fields; no caller in `plugins/plan-executor/skills/implement-plan/SKILL.md` parses a strict keyset. Adding `forced` is backward-compatible.
 - No `.gitignore` entry or git hook mutates `docs/plans/_run_lock.json` today (the only ignored lock path is `docs/bugs/_run_lock.json` at `.gitignore:128`). Tightening `acquire-lock` therefore cannot trip CI or hook workflows.
 - `tempfile` must be imported at the top of `plugins/plan-executor/scripts/plan_ops.py`. Verify the existing import block includes it; add if absent.
+
+## Execution log — 20260418T193819 (success)
+
+Starting SHA: `e83d3cdf47b8f28c9e3b78ffacba8f3f27425655`  → Ending SHA: `bb51c479b15ee43a2ecabbd8096f794ac932c217`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004E | claude | codex | minor-findings | bb51c479 | 1 minor finding: empty --run-id edge case |
