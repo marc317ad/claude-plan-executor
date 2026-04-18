@@ -164,3 +164,23 @@
 {"ts": "2026-04-18T03:01:53Z", "event": "run_end", "run_id": "20260418T023108", "outcome": "success", "done": 1, "failed": 0, "disagreement_count": 1, "minor_findings_total": 6}
 {"ts": "2026-04-18T03:04:43Z", "event": "run_start", "run_id": "20260418T030402", "plan_file": "TASK-004D_block_dependents_mutation.md", "starting_sha": "c478a9a09afd3c24d81d321c749718200d364433"}
 {"ts": "2026-04-18T03:06:37Z", "event": "run_end", "run_id": "20260418T030402", "outcome": "failed", "reason": "analyst_invalid", "gaps": [{"task_id": "004D", "type": "missing-required-field", "detail": "Task block is missing the required Reversion guidance field."}]}
+{"ts": "2026-04-18T03:24:22Z", "event": "run_start", "run_id": "20260418T032343", "plan_file": "TASK-004D_block_dependents_mutation.md", "starting_sha": "978b10a3a8d077ca641eef60e62feafd9dc123bc"}
+{"ts": "2026-04-18T03:25:24Z", "event": "analyst_done", "run_id": "20260418T032343", "outcome": "valid", "tasks_count": 1, "batches_count": 1}
+{"ts": "2026-04-18T03:25:24Z", "event": "schedule_written", "run_id": "20260418T032343", "schedule_file": "TASK-004D_block_dependents_mutation.schedule.json"}
+{"ts": "2026-04-18T03:25:34Z", "event": "plan_review_start", "reviewer": "codex", "plan_file": "TASK-004D_block_dependents_mutation.md"}
+{"ts": "2026-04-18T03:26:15Z", "event": "plan_review_done", "verdict": "needs-replan", "findings_count": 1, "summary": "Codex could not run dep-check itself; schedule_ok true, dependencies_ok false"}
+{"ts": "2026-04-18T03:32:55Z", "event": "run_end", "run_id": "20260418T032343", "outcome": "aborted", "reason": "plan_review_dep_check_fix_first", "done": 0, "failed": 0}
+{"ts": "2026-04-18T03:49:00Z", "event": "run_start", "run_id": "20260418T034840", "plan_file": "TASK-004D_block_dependents_mutation.md", "starting_sha": "f13d016230a97a1c8248da78512ccd497f1fc36e"}
+{"ts": "2026-04-18T03:50:05Z", "event": "analyst_done", "run_id": "20260418T034840", "outcome": "valid", "tasks": 1, "batches": 1}
+{"ts": "2026-04-18T03:50:05Z", "event": "schedule_written", "run_id": "20260418T034840", "schedule_file": "TASK-004D_block_dependents_mutation.schedule.json"}
+{"ts": "2026-04-18T03:50:11Z", "event": "plan_review_start", "reviewer": "codex", "plan_file": "TASK-004D_block_dependents_mutation.md"}
+{"ts": "2026-04-18T03:50:41Z", "event": "plan_review_done", "verdict": "approved-with-notes", "findings_count": 1, "summary": "Plan ready; minor wording note on acceptance #1 vs V5."}
+{"ts": "2026-04-18T03:50:59Z", "event": "batch_start", "run_id": "20260418T034840", "batch_index": 1, "task_ids": ["004D"]}
+{"ts": "2026-04-18T03:50:59Z", "event": "implement_start", "run_id": "20260418T034840", "task_id": "004D", "agent": "claude", "model": "opus", "batch_index": 1}
+{"ts": "2026-04-18T04:01:20Z", "event": "implement_done", "run_id": "20260418T034840", "task_id": "004D", "outcome": "success", "files_changed": ["plugins/plan-executor/scripts/plan_ops.py", "plugins/plan-executor/skills/implement-plan/SKILL.md", "tests/scripts/test_plan_ops.py"], "test_outcome": "passed", "wall_seconds": 463.8}
+{"ts": "2026-04-18T04:01:22Z", "event": "review_start", "run_id": "20260418T034840", "task_id": "004D", "reviewer": "codex"}
+{"ts": "2026-04-18T04:02:05Z", "event": "review_done", "run_id": "20260418T034840", "task_id": "004D", "reviewer": "codex", "verdict": "needs-rework", "findings_count": 3}
+{"ts": "2026-04-18T04:02:05Z", "event": "disagreement", "run_id": "20260418T034840", "task_id": "004D", "codex_findings_count": 3}
+{"ts": "2026-04-18T04:03:48Z", "event": "review_done", "run_id": "20260418T034840", "task_id": "004D", "reviewer": "d5-code-reviewer", "verdict": "ship", "findings_count": 0, "disagreement_tag": true}
+{"ts": "2026-04-18T04:04:15Z", "event": "commit_done", "run_id": "20260418T034840", "task_id": "004D", "commit_sha": "0ee85c6177c17bb04704c86442210af46a141fdb", "files": ["plugins/plan-executor/scripts/plan_ops.py", "plugins/plan-executor/skills/implement-plan/SKILL.md", "tests/scripts/test_plan_ops.py"], "reviewer_verdict": "ship", "minor_findings_count": 0, "disagreement_tag": true, "remediation_tag": false, "narrow_remediation_tag": false, "dismissed_finding_ids": []}
+{"ts": "2026-04-18T04:04:53Z", "event": "run_end", "run_id": "20260418T034840", "outcome": "success", "done": 1, "failed": 0, "disagreement_count": 1, "minor_findings_total": 0}

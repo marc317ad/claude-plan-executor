@@ -2,7 +2,7 @@
 
 **Parent plan:** TASK-004_scheduler_semantics.md (decomposed into A/B/C/D/E sub-plans after the bundled TASK-004 failed D.2a review twice due to scope/blast-radius issues).
 
-**Status:** pending
+**Status:** complete
 **Base branch:** main
 **Scope:** Single-issue sub-plan. Addresses **ISSUE-012** ONLY.
 
@@ -592,3 +592,11 @@ Same update in Phase D.4 (same subcommand invocation).
 - Use `monkeypatch.setattr(plan_ops, "_load_text", ...)` and `_write_text` to count I/O in V2.
 - Use `_parse_json(cp)` helper (already in the test file) for stdout parsing.
 - Reset `plan_ops.RUN_LOG_PATH` per-test via the existing fixture (check `tests/scripts/test_plan_ops.py` top-of-file for the pattern — `isolated_plan` fixture likely handles it).
+
+## Execution log — 20260418T034840 (success)
+
+Starting SHA: `f13d016230a97a1c8248da78512ccd497f1fc36e`  → Ending SHA: `0ee85c6177c17bb04704c86442210af46a141fdb`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004D | claude | codex→d5-claude | ship [disagreement] | 0ee85c6 | codex:needs-rework -> D.5:ship; 3 findings dismissed |
