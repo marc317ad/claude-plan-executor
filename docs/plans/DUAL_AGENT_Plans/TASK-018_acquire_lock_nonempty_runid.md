@@ -2,7 +2,7 @@
 
 **Parent plan:** TASK-004E_acquire_lock_strict.md (follow-up to a minor-but-important reviewer finding on ISSUE-018).
 
-**Status:** pending
+**Status:** complete
 **Base branch:** main
 **Scope:** Single-issue follow-up. Closes the write-path invariant gap left open by TASK-004E.
 
@@ -186,3 +186,11 @@ Append ONE sentence to the same paragraph (not a new paragraph, not a new sectio
 - Additive guard only — the happy path (non-empty `--run-id`) is unchanged, so no caller in the orchestrator (`SKILL.md` Phase 0, `commit-task`, `fail-task` — none of which invoke `acquire-lock` except via `SKILL.md`'s documented command) is affected.
 - The orchestrator already produces run IDs from `_now()`-derived strings that are non-empty by construction, so the guard is a safety net against manual / out-of-orchestrator invocation, not a behavior change for normal runs.
 - No schema change. No migration. The guard is input validation, not lock-file format.
+
+## Execution log — 20260419T104003 (success)
+
+Starting SHA: `29ae2cebb09d6b6304d778a271af6f50ce7e6e5a`  → Ending SHA: `e8ed74518c83c3f3642f3ebbda833fc2e22c42be`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-018 | claude | codex | clean | e8ed7451 | acceptance_met=true |
