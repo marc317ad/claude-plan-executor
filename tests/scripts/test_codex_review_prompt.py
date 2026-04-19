@@ -46,6 +46,30 @@ def test_worked_examples_present():
     assert "Verdict: **`needs-rework`**" in section
 
 
+def test_evidence_gate_present():
+    section = _phase_d_codex_section()
+    # Heading is present between heuristic and worked examples.
+    assert "Evidence gate" in section
+    heuristic_idx = section.index("Heuristic when unsure")
+    gate_idx = section.index("Evidence gate")
+    examples_idx = section.index("Worked examples")
+    assert heuristic_idx < gate_idx < examples_idx, (
+        "Evidence gate subsection must sit between heuristic and worked examples"
+    )
+    # At least one named verification move the Codex sandbox can execute.
+    assert (
+        "pytest" in section
+        or "trace" in section.lower()
+        or "read the cited" in section.lower()
+    )
+    # Downgrade rule wording — hypothesis without verification becomes minor-findings.
+    lowered = section.lower()
+    assert "if you cannot verify" in lowered or "downgrade" in lowered
+    assert "minor-findings" in section
+    # The third worked example illustrates the downgrade path.
+    assert "unverified" in lowered or "without verification" in lowered
+
+
 def test_fixture_matches_review_schema():
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     env = json.loads(FIXTURE.read_text(encoding="utf-8"))

@@ -392,6 +392,55 @@
       ],
       "status": "Done",
       "superseded_by": []
+    },
+    {
+      "task_id": "019",
+      "v3_task": "TASK-019",
+      "file": "TASK-019_task002_backfill_and_orchestrator_polish.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [
+        "002",
+        "004E"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "020A",
+      "v3_task": "TASK-020A",
+      "file": "TASK-020_plan_status_integrity.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [
+        "004B"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "020B",
+      "v3_task": "TASK-020B",
+      "file": "TASK-020_plan_status_integrity.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [
+        "019"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "021",
+      "v3_task": "TASK-021",
+      "file": "TASK-021_codex_reviewer_evidence_gate.md",
+      "priority": "low",
+      "issues_absorbed": [],
+      "depends_on": [
+        "015"
+      ],
+      "status": "Done",
+      "superseded_by": []
     }
   ]
 }
