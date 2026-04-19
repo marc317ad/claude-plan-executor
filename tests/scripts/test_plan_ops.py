@@ -3680,9 +3680,15 @@ class TestWriteSchedule:
         assert not dest.exists()
         assert not (dest.parent / (dest.name + ".tmp")).exists()
 
-    def test_parse_and_write_schedule_tolerate_orphan_dependencies_field(
+    def test_write_schedule_tolerates_orphan_dependencies_field(
         self, tmp_path: Path,
     ) -> None:
+        # TASK-019 contract split: `write-schedule` runs `_validate_schedule`
+        # (shape + refs) but NOT `_validate_schedule_dag` (cycles + orphans),
+        # so persisting a schedule with a `dependencies: ["999"]` orphan is
+        # still permitted — callers that build intermediate schedules may
+        # legitimately stage orphan refs before cleanup. `parse-schedule` is
+        # the stricter seam (see TASK-019 V2) and is exercised separately.
         dest = tmp_path / "schedule.json"
         payload = {
             "outcome": "valid",
@@ -3696,14 +3702,14 @@ class TestWriteSchedule:
         written = json.loads(dest.read_text(encoding="utf-8"))
         assert written["tasks"][0]["dependencies"] == ["999"]
 
+        # TASK-019 V2 regression: parse-schedule MUST reject the same payload
+        # with `unknown-dependency`. Asserting both halves in one test keeps
+        # the write/parse contract split explicit.
         parse_cp = _parse_schedule_payload(payload)
-        assert parse_cp.returncode == 0, parse_cp.stderr
+        assert parse_cp.returncode == 1
         body = _parse_json(parse_cp)
         codes = [e.get("code", "") for e in body.get("errors") or []]
-        assert not any(
-            "orphan" in code or "unknown-dependency" in code or "dependency" in code
-            for code in codes
-        )
+        assert "unknown-dependency" in codes
 
     def test_atomic_replaces_existing_file(self, tmp_path: Path) -> None:
         dest = tmp_path / "schedule.json"
@@ -7329,3 +7335,318 @@ class TestD5AdjudicationFollowups:
         body = _parse_json(cp)
         codes = [e["code"] for e in body["errors"]]
         assert "partial-agreement-invalid-split" in codes
+
+
+# ---------------------------------------------------------------------------
+# TASK-019 — backfill TASK-002 V3/V4 and orchestrator paper-cuts
+# ---------------------------------------------------------------------------
+
+
+class TestTask019ScheduleDagHelper:
+    """V1-V5. `_validate_schedule_dag` helper and the three call sites."""
+
+    def test_parse_schedule_rejects_dependency_cycle(self) -> None:
+        # V1 — TASK-002 V3 backfill. A cycle must surface in parse-schedule
+        # (not only in batch-next / filter-schedule).
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": [],
+                 "dependencies": ["002"]},
+                {"id": "002", "agent": "codex", "files": [],
+                 "dependencies": ["001"]},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"], "file_locks": []},
+            ],
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
+            input=json.dumps(payload),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in (body.get("errors") or [])]
+        assert "dependency-cycle" in codes
+        # Message names both cyclic ids.
+        cycle_msgs = [e["message"] for e in body["errors"]
+                      if e["code"] == "dependency-cycle"]
+        assert any("001" in m and "002" in m for m in cycle_msgs), cycle_msgs
+
+    def test_parse_schedule_rejects_orphan_dependency(self) -> None:
+        # V2 — TASK-002 V4 backfill. Orphan dep must surface in parse-schedule.
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": [],
+                 "dependencies": ["999"]},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": []},
+            ],
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
+            input=json.dumps(payload),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in (body.get("errors") or [])]
+        assert "unknown-dependency" in codes
+        orphan_msgs = [e["message"] for e in body["errors"]
+                       if e["code"] == "unknown-dependency"]
+        assert any("999" in m for m in orphan_msgs), orphan_msgs
+
+    def test_validate_schedule_dag_shared_by_consumers(self) -> None:
+        # V3 — the helper is a single module-local definition with exactly
+        # three call sites. Inline Kahn's blocks in cmd_batch_next /
+        # cmd_filter_schedule are forbidden.
+        script_text = SCRIPT.read_text(encoding="utf-8")
+        occurrences = [
+            ln for ln in script_text.splitlines()
+            if "_validate_schedule_dag(" in ln
+        ]
+        # 1 def + 3 call sites (cmd_parse_schedule, cmd_batch_next,
+        # cmd_filter_schedule).
+        assert len(occurrences) == 4, (
+            f"expected 4 occurrences (1 def + 3 calls), got {len(occurrences)}:\n"
+            + "\n".join(occurrences)
+        )
+        defs = [ln for ln in occurrences if ln.lstrip().startswith("def ")]
+        assert len(defs) == 1, defs
+
+    def test_batch_next_cycle_still_emits_dependency_cycle(
+        self, tmp_path: Path
+    ) -> None:
+        # V4 — regression of TASK-004B V8 after the refactor.
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": ["002"]},
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": ["001"]},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"],
+                 "file_locks": ["a", "b"]},
+            ],
+        })
+        cp = _run_batch_next(sched)
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "dependency-cycle" in codes
+
+    def test_filter_schedule_cycle_still_emits_dependency_cycle(
+        self, tmp_path: Path
+    ) -> None:
+        # V5 — regression of TASK-004A after the refactor.
+        sched = tmp_path / "cycle.schedule.json"
+        sched.write_text(json.dumps({
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": ["002"]},
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": ["001"]},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"],
+                 "file_locks": ["a", "b"]},
+            ],
+        }), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "1")
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "dependency-cycle" in codes
+
+
+class TestTask019ReviewerFindingDisposition:
+    """V6-V8. Optional `disposition` field on reviewer minor-findings."""
+
+    def test_reviewer_minor_finding_disposition_accepted(self) -> None:
+        # V6 — finding with a valid disposition + reason is accepted.
+        finding = {
+            "severity": "minor",
+            "file": "a.py",
+            "line": 1,
+            "issue": "x",
+            "suggested_fix": "y",
+            "disposition": "dismissed",
+            "disposition_reason": "D.5 override",
+        }
+        errors = plan_ops._validate_reviewer_finding_item(finding, path="$.f")
+        assert errors == []
+
+    def test_reviewer_minor_finding_disposition_value_rejected(self) -> None:
+        # V7 — disposition value outside the allowed set is rejected.
+        finding = {
+            "severity": "minor",
+            "file": "a.py",
+            "line": 1,
+            "issue": "x",
+            "suggested_fix": "y",
+            "disposition": "bogus",
+        }
+        errors = plan_ops._validate_reviewer_finding_item(finding, path="$.f")
+        codes = [e["code"] for e in errors]
+        assert "invalid-reviewer-finding-disposition" in codes
+
+    def test_reviewer_minor_finding_no_disposition_ok(self) -> None:
+        # V8 — backward-compat. Finding without disposition is valid.
+        finding = {
+            "severity": "minor",
+            "file": "a.py",
+            "line": 1,
+            "issue": "x",
+            "suggested_fix": "y",
+        }
+        errors = plan_ops._validate_reviewer_finding_item(finding, path="$.f")
+        assert errors == []
+
+    def test_reviewer_minor_finding_reason_without_disposition_rejected(
+        self,
+    ) -> None:
+        # Extra coverage — disposition_reason without disposition is invalid
+        # per the helper's contract.
+        finding = {
+            "severity": "minor",
+            "file": "a.py",
+            "line": 1,
+            "issue": "x",
+            "suggested_fix": "y",
+            "disposition_reason": "stranded reason",
+        }
+        errors = plan_ops._validate_reviewer_finding_item(finding, path="$.f")
+        codes = [e["code"] for e in errors]
+        assert "disposition-reason-without-disposition" in codes
+
+
+class TestTask019UpdatePlanHeaderAbsent:
+    """V9. `update-plan-header` gracefully skips when Status is absent."""
+
+    def test_update_plan_header_absent_is_not_error(
+        self, tmp_path: Path
+    ) -> None:
+        # V9 — per-task-only plan format (DUAL_AGENT_Plans style) must not
+        # error out of the End-of-run Step 1.
+        plan = tmp_path / "p.md"
+        plan.write_text(
+            "# Plan\n\n## Tasks\n\n### TASK-001: x\n- **Status:** pending\n",
+            encoding="utf-8",
+        )
+        cp = _run(
+            "update-plan-header",
+            "--plan-file", str(plan),
+            "--status", "complete",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body.get("status") == "absent" or "warning" in body
+        # The per-task marker was NOT touched (it's the authoritative signal).
+        assert "- **Status:** pending" in plan.read_text(encoding="utf-8")
+
+    def test_update_plan_header_with_status_line_still_works(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression — existing behavior when the top-level Status line IS
+        # present is unchanged.
+        plan = tmp_path / "p.md"
+        plan.write_text(
+            "# Plan\n\n- **Status:** in-progress\n\n## Tasks\n\n"
+            "### TASK-001: x\n- **Status:** pending\n",
+            encoding="utf-8",
+        )
+        cp = _run(
+            "update-plan-header",
+            "--plan-file", str(plan),
+            "--status", "complete",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body.get("ok") is True
+        text = plan.read_text(encoding="utf-8")
+        assert "- **Status:** complete" in text
+
+
+class TestTask019ExecutionLogErrorMessages:
+    """V10. Execution-log error messages list allowed fields inline."""
+
+    def test_execution_log_missing_field_message_lists_allowed(
+        self,
+    ) -> None:
+        # V10 — missing-field message includes the full required-field list.
+        rows = [{"task": "001"}]  # missing the other five fields
+        errors = plan_ops._validate_execution_log_rows(rows)
+        missing = [e for e in errors
+                   if e["code"] == "missing-execution-log-field"]
+        assert missing, errors
+        # Each message must list the allowed fields so the orchestrator can
+        # see the full schema from the error alone.
+        for e in missing:
+            for field in ("agent", "reviewer", "verdict", "commit", "notes"):
+                assert field in e["message"], (field, e)
+
+    def test_execution_log_unknown_field_message_lists_allowed(
+        self,
+    ) -> None:
+        rows = [{
+            "task": "001",
+            "agent": "codex",
+            "reviewer": "claude",
+            "verdict": "ship",
+            "commit": "deadbeef",
+            "notes": "",
+            "stray": "extra",
+        }]
+        errors = plan_ops._validate_execution_log_rows(rows)
+        unknown = [e for e in errors
+                   if e["code"] == "unknown-execution-log-field"]
+        assert unknown, errors
+        for e in unknown:
+            for field in ("task", "agent", "reviewer",
+                          "verdict", "commit", "notes"):
+                assert field in e["message"], (field, e)
+
+
+class TestTask019SkillMdGrepRegressions:
+    """V11. SKILL.md documents D.2a reviewer-flip and execution-log schema."""
+
+    def test_skill_md_documents_d2a_reviewer_flip_and_row_schema(self) -> None:
+        # V11 — regression guard over SKILL.md text. Exact phrasing may drift,
+        # but the literal tokens the orchestrator needs to spot the pattern
+        # MUST remain greppable on a single line.
+        skill = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "SKILL.md"
+        )
+        text = skill.read_text(encoding="utf-8")
+        # Pattern A: the D.2a reviewer-flip guidance mentions --reviewer claude,
+        # ship-with-fixes, and --disagreement-tag on a single line.
+        flip_re = re.compile(
+            r"reviewer claude.*ship-with-fixes.*--disagreement-tag"
+        )
+        assert flip_re.search(text), (
+            "expected §D.3 reviewer-flip line mentioning "
+            "`--reviewer claude --reviewer-verdict ship-with-fixes "
+            "--disagreement-tag` on a single line"
+        )
+        # Pattern B: the End-of-run Step 2 row schema names all six keys on a
+        # single line in order.
+        schema_re = re.compile(
+            r"rows-json.*task.*agent.*reviewer.*verdict.*commit.*notes"
+        )
+        assert schema_re.search(text), (
+            "expected End-of-run Step 2 to list the rows-json row schema "
+            "with keys task/agent/reviewer/verdict/commit/notes"
+        )

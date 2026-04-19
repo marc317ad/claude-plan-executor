@@ -143,7 +143,8 @@ grep -n 'Write.*schedule.json' .claude/skills/implement-plan/SKILL.md
 
 ### TASK-002: Add runtime contract validation at every executor seam
 
-- **Status:** done
+- **Status:** partial
+  > V3 (cycle rejection in parse-schedule) and V4 (orphan-dep rejection) deferred to TASK-019. V1/V2/V5/V6/V7/V8 landed.
 - **Priority:** critical
 - **Files:**
   - `scripts/plan_ops.py`

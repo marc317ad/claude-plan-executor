@@ -441,6 +441,8 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" commit-task \
 
 This: (1) guard check for unexpected staged overlap, (2) plan-status flip to `done`, (3) `git commit --only <files> <plan-file> -m "feat(TASK-NNN): <title>\n\n<diff summary>\n\nPlan: <basename>"`, (4) SHA capture, (5) run-log `commit_done` append.
 
+**After a D.2a disagreement (Codex `needs-rework` → D.5 `ship` | `ship-with-fixes`):** pass `--reviewer claude --reviewer-verdict ship-with-fixes --disagreement-tag` (NOT `--reviewer codex --reviewer-verdict needs-rework` — that payload is rejected with `uncommittable-reviewer-verdict` because the D.5 third-opinion verdict is binding, not Codex's). Record Codex's original findings verbatim in `--reviewer-minor-findings`; set each dismissed finding's optional `disposition: "dismissed"` (with an optional `disposition_reason`) so the commit preserves the adjudication trail. For the D.2b role-swap path the same rule applies with the roles inverted: pass `--reviewer codex --reviewer-verdict clean|minor-findings --disagreement-tag`. D.2a.5 (bounded remediation) and D.2a.6 (narrow remediation) use `--remediation-tag` or `--narrow-remediation-tag --dismissed-finding-ids ...` respectively; the binding reviewer is always the one whose verdict satisfied the commit-allowed set (`ship` / `ship-with-fixes` for `--reviewer claude`, `clean` / `minor-findings` for `--reviewer codex`).
+
 Commit hook failure → subcommand auto-rolls back (`git reset HEAD`, restore plan text) and exits non-zero → treat as D.4 `stage=commit`.
 
 #### D.4 — Phase D fail
@@ -468,7 +470,7 @@ Release this task's file locks. Loop to Phase A.
 ## End of run
 
 1. `plan_ops.py update-plan-header --status <complete|partial>` (complete iff `failed == 0`; else partial).
-2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. Use `--outcome paused` when exiting via the D.2a.5 OR D.2a.6 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting.
+2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. `--rows-json` row schema: each row is an object with exactly these six required string keys — `task`, `agent`, `reviewer`, `verdict`, `commit`, `notes` (no extras; values must all be strings). Verdict cells should include any `[disagreement]` / `[remediation]` / `[narrow-remediation]` markers in prose. Missing or unknown keys exit 1 with the full allowed-field list in the error message. Use `--outcome paused` when exiting via the D.2a.5 OR D.2a.6 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting.
 3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5 or D.2a.6).
 4. Print summary: counts `{done, failed}`, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
 5. Housekeeping commit (skip if `done == 0 AND failed == 0`):

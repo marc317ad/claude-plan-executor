@@ -110,6 +110,11 @@ ALLOWED_CLAUDE_REVIEW_VERDICTS = {
 # (see SKILL.md §Phase 1.5).
 ALLOWED_PLAN_REVIEW_VERDICTS = {"approved", "approved-with-notes", "needs-replan"}
 ALLOWED_PLAN_REVIEW_FINDING_SEVERITIES = {"critical", "important", "minor"}
+# TASK-019: reviewer-minor-finding optional disposition vocabulary. Allows the
+# D.5 adjudicator to attach a structured "what happened to this finding"
+# annotation without stuffing it into the prose of `issue`/`suggested_fix`.
+ALLOWED_REVIEWER_FINDING_DISPOSITIONS = {"dismissed", "accepted", "deferred"}
+OPTIONAL_REVIEWER_FINDING_FIELDS = {"disposition", "disposition_reason"}
 ALLOWED_ROW_FIELDS = {"task", "agent", "reviewer", "verdict", "commit", "notes"}
 # Known run-log event types. The orchestrator owns the vocabulary; this set
 # acts as a tripwire so typo'd events surface immediately rather than drifting
@@ -363,6 +368,88 @@ def _validate_schedule_refs(tasks: list, batches: list) -> list[dict]:
     return errors
 
 
+def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
+    """Cycle + orphan-dep detection on a schedule's task graph.
+
+    Returns errors[*]; never calls `_die` — callers decide whether to halt or
+    merge into their own error list. Mirrors `_validate_schedule_refs`'s
+    contract. Error codes emitted:
+
+      * ``unknown-dependency`` — one per ``task.dependencies[j]`` entry that
+        does not normalize to a known task id. The orphan is reported, but
+        the dep is still dropped before cycle analysis so a cycle among the
+        remaining known tasks still surfaces.
+      * ``dependency-cycle`` — at most one entry; message names the residual
+        cyclic task ids (sorted, canonical form).
+    """
+    errors: list[dict] = []
+    known_ids: set[str] = set()
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        raw = t.get("id") if "id" in t else t.get("task_id")
+        if raw is None:
+            continue
+        tid = _normalize_task_id(str(raw))
+        if tid:
+            known_ids.add(tid)
+
+    # 1. Orphan-dependency pre-check. A dep that doesn't resolve to any known
+    # task is reported individually and then dropped from the cycle graph so
+    # the subsequent Kahn's pass is over the cleaned subgraph.
+    dag_deps: dict[str, list[str]] = {}
+    for i, t in enumerate(tasks):
+        if not isinstance(t, dict):
+            continue
+        raw = t.get("id") if "id" in t else t.get("task_id")
+        if raw is None:
+            continue
+        tid = _normalize_task_id(str(raw))
+        if not tid:
+            continue
+        deps_norm: list[str] = []
+        for j, dep in enumerate(t.get("dependencies") or []):
+            dep_norm = _normalize_task_id(str(dep))
+            if dep_norm is None:
+                continue
+            if dep_norm not in known_ids:
+                errors.append({
+                    "path": f"$.tasks[{i}].dependencies[{j}]",
+                    "code": "unknown-dependency",
+                    "message": (
+                        f"tasks[{i}].dependencies[{j}]={str(dep)!r} is not a known task id"
+                    ),
+                })
+                continue
+            deps_norm.append(dep_norm)
+        dag_deps[tid] = deps_norm
+
+    # 2. Kahn's algorithm — cycle detection over the cleaned dep graph.
+    indeg: dict[str, int] = {tid: 0 for tid in dag_deps}
+    for tid, deps in dag_deps.items():
+        for d in deps:
+            if d in indeg:
+                indeg[tid] += 1
+    queue = [tid for tid, n in indeg.items() if n == 0]
+    visited = 0
+    while queue:
+        head = queue.pop(0)
+        visited += 1
+        for other, deps in dag_deps.items():
+            if head in deps:
+                indeg[other] -= 1
+                if indeg[other] == 0:
+                    queue.append(other)
+    if visited != len(dag_deps):
+        cyclic = sorted(tid for tid, n in indeg.items() if n > 0)
+        errors.append({
+            "path": "$.tasks",
+            "code": "dependency-cycle",
+            "message": f"dependency cycle in schedule involving tasks: {cyclic}",
+        })
+    return errors
+
+
 def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list[dict], list[str]]:
     errors: list[dict] = []
     warnings: list[str] = []
@@ -561,12 +648,47 @@ def _validate_reviewer_finding_item(item: object, *, path: str) -> list[dict]:
             "message": f"reviewer finding severity must be one of ['critical', 'important', 'minor'], got {severity!r}",
         })
     for key in item.keys():
-        if key not in required:
+        if key in required or key in OPTIONAL_REVIEWER_FINDING_FIELDS:
+            continue
+        errors.append({
+            "path": f"{path}.{key}",
+            "code": "unknown-reviewer-finding-field",
+            "message": f"reviewer finding has unknown field {key!r}",
+        })
+
+    # TASK-019: optional disposition + disposition_reason fields. Both are
+    # additive — absent is fine. Value constraints are enforced only when the
+    # field is present, so existing callers continue to pass unchanged.
+    disposition_present = "disposition" in item
+    disposition = item.get("disposition") if disposition_present else None
+    if disposition_present and disposition is not None:
+        if disposition not in ALLOWED_REVIEWER_FINDING_DISPOSITIONS:
             errors.append({
-                "path": f"{path}.{key}",
-                "code": "unknown-reviewer-finding-field",
-                "message": f"reviewer finding has unknown field {key!r}",
+                "path": f"{path}.disposition",
+                "code": "invalid-reviewer-finding-disposition",
+                "message": (
+                    "reviewer finding disposition must be one of "
+                    f"{sorted(ALLOWED_REVIEWER_FINDING_DISPOSITIONS)}, "
+                    f"got {disposition!r}"
+                ),
             })
+    reason_present = "disposition_reason" in item
+    reason = item.get("disposition_reason") if reason_present else None
+    if reason_present and reason is not None and not isinstance(reason, str):
+        errors.append({
+            "path": f"{path}.disposition_reason",
+            "code": "invalid-reviewer-finding-disposition-reason",
+            "message": "reviewer finding disposition_reason must be a string",
+        })
+    if reason_present and reason is not None and (not disposition_present or disposition is None):
+        errors.append({
+            "path": f"{path}.disposition_reason",
+            "code": "disposition-reason-without-disposition",
+            "message": (
+                "reviewer finding has disposition_reason but no disposition; "
+                "the reason cannot be interpreted without an accompanying disposition"
+            ),
+        })
     return errors
 
 
@@ -917,6 +1039,10 @@ def _validate_execution_log_rows(rows: object) -> list[dict]:
             "message": "execution-log rows must be a JSON array",
         }]
 
+    # TASK-019: render the allowed-field list inline on both missing-field
+    # and unknown-field error messages so an orchestrator hitting the error
+    # can see the full schema without consulting SKILL.md.
+    allowed_display = sorted(ALLOWED_ROW_FIELDS)
     errors: list[dict] = []
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -931,7 +1057,10 @@ def _validate_execution_log_rows(rows: object) -> list[dict]:
                 errors.append({
                     "path": f"$.rows[{i}].{key}",
                     "code": "missing-execution-log-field",
-                    "message": f"execution-log row missing field {key!r}",
+                    "message": (
+                        f"execution-log row missing field {key!r}; "
+                        f"required fields: {allowed_display}"
+                    ),
                 })
             elif not isinstance(row[key], str):
                 errors.append({
@@ -944,7 +1073,10 @@ def _validate_execution_log_rows(rows: object) -> list[dict]:
                 errors.append({
                     "path": f"$.rows[{i}].{key}",
                     "code": "unknown-execution-log-field",
-                    "message": f"execution-log row has unknown field {key!r}",
+                    "message": (
+                        f"execution-log row has unknown field {key!r}; "
+                        f"allowed fields: {allowed_display}"
+                    ),
                 })
     return errors
 
@@ -1665,6 +1797,14 @@ def cmd_parse_schedule(args: argparse.Namespace) -> None:
 
     errors, warnings = _validate_schedule(data, strict_nested=bool(getattr(args, "strict", False)))
 
+    # TASK-019: cycle + orphan-dep detection in the canonical parse-schedule
+    # seam. Matches `cmd_batch_next` / `cmd_filter_schedule` behavior so
+    # cycles cannot silently flow through the analyst → orchestrator handoff.
+    if not errors:
+        tasks_list = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+        batches_list = data.get("batches") if isinstance(data.get("batches"), list) else []
+        errors.extend(_validate_schedule_dag(tasks_list, batches_list))
+
     result = {
         "outcome": data.get("outcome"),
         "tasks": data.get("tasks") if isinstance(data.get("tasks"), list) else [],
@@ -1784,42 +1924,17 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
         if tid:
             tasks_by_id[tid] = t
 
-    # Defensive DAG check (ISSUE-019). `_validate_schedule` above covers shape
-    # and reference integrity, but does not catch dependency cycles. Run
-    # Kahn's algorithm over the full task graph so a cycle surfaces with a
-    # concrete error code rather than silently deadlocking the scheduler.
-    dag_deps: dict[str, list[str]] = {}
-    for tid, t in tasks_by_id.items():
-        deps: list[str] = []
-        for dep in (t.get("dependencies") or []):
-            dep_norm = _normalize_task_id(str(dep))
-            if dep_norm is not None and dep_norm in tasks_by_id:
-                deps.append(dep_norm)
-        dag_deps[tid] = deps
-    indeg: dict[str, int] = {tid: 0 for tid in dag_deps}
-    for tid, deps in dag_deps.items():
-        for d in deps:
-            if d in indeg:
-                indeg[tid] += 1
-    queue = [tid for tid, n in indeg.items() if n == 0]
-    visited = 0
-    while queue:
-        head = queue.pop(0)
-        visited += 1
-        for other, deps in dag_deps.items():
-            if head in deps:
-                indeg[other] -= 1
-                if indeg[other] == 0:
-                    queue.append(other)
-    if visited != len(dag_deps):
-        cyclic = sorted(tid for tid, n in indeg.items() if n > 0)
-        _die(args, {"errors": [{
-            "path": "$.tasks",
-            "code": "dependency-cycle",
-            "message": (
-                f"dependency cycle in schedule involving tasks: {cyclic}"
-            ),
-        }]})
+    # Defensive DAG check (ISSUE-019; TASK-019 refactor). `_validate_schedule`
+    # above covers shape and reference integrity, but does not catch cycles or
+    # orphan deps. Delegates to the shared `_validate_schedule_dag` helper so
+    # `parse-schedule`, `batch-next`, and `filter-schedule` emit identical
+    # `dependency-cycle` / `unknown-dependency` payloads.
+    dag_errors = _validate_schedule_dag(
+        list(data.get("tasks") or []),
+        list(data.get("batches") or []),
+    )
+    if dag_errors:
+        _die(args, {"errors": dag_errors})
 
     def _files(task: dict) -> list[str]:
         return list(task.get("files") or [])
@@ -2080,48 +2195,14 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
         if keep:
             out_batches.append({**b, "task_ids": keep})
 
-    # 7. DAG defensive check on the filtered subgraph (V6, ISSUE-019).
-    # parse-schedule is the primary cycle detector, but filter-schedule MUST
-    # also guard against a cycle surviving into its output because the
-    # orchestrator pipes our stdout straight to write-schedule and any cycle
-    # would then execute. Kahn's algorithm over the filtered closed set.
-    out_deps: dict[str, list[str]] = {}
-    for t in out_tasks:
-        raw = t.get("id") if "id" in t else t.get("task_id")
-        norm = _normalize_task_id(str(raw)) if raw is not None else None
-        if norm is None:
-            continue
-        deps: list[str] = []
-        for dep in (t.get("dependencies") or []):
-            dep_norm = _normalize_task_id(str(dep))
-            if dep_norm is not None and dep_norm in closed:
-                deps.append(dep_norm)
-        out_deps[norm] = deps
-    indeg: dict[str, int] = {tid: 0 for tid in out_deps}
-    for tid, deps in out_deps.items():
-        for d in deps:
-            if d in indeg:
-                indeg[tid] += 1
-    queue = [tid for tid, n in indeg.items() if n == 0]
-    visited = 0
-    while queue:
-        head = queue.pop(0)
-        visited += 1
-        for other, deps in out_deps.items():
-            if head in deps:
-                indeg[other] -= 1
-                if indeg[other] == 0:
-                    queue.append(other)
-    if visited != len(out_deps):
-        remaining = sorted(tid for tid, n in indeg.items() if n > 0)
-        _die(args, {"errors": [{
-            "path": "$.tasks",
-            "code": "dependency-cycle",
-            "message": (
-                f"dependency cycle in filtered subgraph involving tasks: "
-                f"{remaining}"
-            ),
-        }]})
+    # 7. DAG defensive check on the filtered subgraph (V6, ISSUE-019;
+    # TASK-019 refactor). parse-schedule is the primary cycle detector, but
+    # filter-schedule MUST also guard against a cycle surviving into its
+    # output because the orchestrator pipes our stdout straight to
+    # write-schedule. Delegates to the shared `_validate_schedule_dag` helper.
+    dag_errors = _validate_schedule_dag(out_tasks, out_batches)
+    if dag_errors:
+        _die(args, {"errors": dag_errors})
 
     # 8. Reference-integrity check on the filtered schedule.
     ref_errors = _validate_schedule_refs(out_tasks, out_batches)
@@ -3097,7 +3178,15 @@ def cmd_update_plan_header(args: argparse.Namespace) -> None:
     if not m:
         bold = re.search(r"^\*\*Status:\*\*\s*(.+?)\s*$", header_slice, re.MULTILINE)
         if not bold:
-            _die(args, {"error": "plan header has no **Status:** line"})
+            # TASK-019 fallback: plans authored without a top-level Status
+            # bullet (e.g. the DUAL_AGENT_Plans format, where per-task Status
+            # is authoritative) are not an error — `commit-task` maintains the
+            # per-task markers. Skip the header update rather than erroring.
+            _emit(args, {
+                "status": "absent",
+                "warning": "no plan-level **Status:** line to update; skipping",
+            })
+            return
         new_header = header_slice[: bold.start()] + f"**Status:** {args.status}" + header_slice[bold.end():]
     else:
         new_header = header_slice[: m.start()] + f"{m.group(1)} {args.status}" + header_slice[m.end():]
