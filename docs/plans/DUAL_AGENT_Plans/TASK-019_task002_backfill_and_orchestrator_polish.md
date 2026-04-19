@@ -408,3 +408,11 @@ Expected: new V1-V11 tests pass; existing batch-next / filter-schedule / parse-s
 - See per-step reversion notes in the Description / Implementation notes. V1/V2 (parse-schedule cycle + orphan rejection) are the primary deliverables and must NEVER be reverted; doing so re-opens the exact silent-cycle bug that run `20260415T000811` caught inside `batch-next`.
 - The `disposition` field, the `update-plan-header` fallback, the execution-log error-message extension, and the SKILL.md docs are all additive and trivially revertable.
 - The TASK-002 status-flip is a docs-only change.
+
+## Execution log — 20260419T200147 (success)
+
+Starting SHA: `b4449ef893d2770fc4d3b468194f84bce4582458`  → Ending SHA: `df608016f5aa7c205fb0a7a932a6d11f58611c6c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 019 | claude/opus | codex+claude/sonnet(D.5) | ship-with-fixes [disagreement] | df60801 | Codex needs-rework (3 findings) overridden by D.5 ship-with-fixes; all dismissed |
