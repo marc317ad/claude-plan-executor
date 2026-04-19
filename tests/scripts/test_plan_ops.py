@@ -911,6 +911,201 @@ class TestLock:
         assert "/abs/A.md" not in contents
         assert "/abs/B.md" not in contents
 
+    # ------------------------------------------------------------------
+    # VA-VE (TASK-018): non-empty --run-id guard at write entry
+    # ------------------------------------------------------------------
+
+    # VA — Empty --run-id is rejected on the non-force path.
+    def test_acquire_lock_rejects_empty_run_id_nonforce(
+        self, isolated_plan: Path
+    ) -> None:
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+
+        cp = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert body.get("acquired") is False
+        errors = body.get("errors", [])
+        assert len(errors) >= 1
+        assert errors[0].get("code") == "lock-run-id-empty"
+
+        # No file created — guard fires before any file operation.
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+
+    # VB — Empty --run-id is rejected on the --force path.
+    def test_acquire_lock_rejects_empty_run_id_force(
+        self, isolated_plan: Path
+    ) -> None:
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+
+        cp = _run(
+            "acquire-lock",
+            "--force",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "",
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert body.get("acquired") is False
+        errors = body.get("errors", [])
+        assert len(errors) >= 1
+        assert errors[0].get("code") == "lock-run-id-empty"
+
+        # --force did NOT bypass the guard — no file created.
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+
+    # VC — Empty --run-id does not mutate a pre-existing canonical lock file
+    # (both force and non-force paths).
+    def test_acquire_lock_empty_run_id_preserves_existing_file(
+        self, isolated_plan: Path
+    ) -> None:
+        other_abs = "/abs/path/to/other/plan.md"
+        pre = {
+            other_abs: {
+                "run_id": "R_other",
+                "acquired_at": "2026-01-01T00:00:00Z",
+            }
+        }
+        plan_ops.RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(pre, indent=2), encoding="utf-8")
+        before = plan_ops.RUN_LOCK_PATH.read_bytes()
+
+        # Non-force empty run_id.
+        cp_nonforce = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "",
+            "--json",
+        )
+        assert cp_nonforce.returncode != 0
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+        # Force empty run_id.
+        cp_force = _run(
+            "acquire-lock",
+            "--force",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "",
+            "--json",
+        )
+        assert cp_force.returncode != 0
+        assert plan_ops.RUN_LOCK_PATH.read_bytes() == before
+
+    # VD — Non-string --run-id is rejected with the same error code.
+    # Argparse cannot produce a non-string from a required= flag; simulate
+    # by calling cmd_acquire_lock directly with an argparse.Namespace.
+    def test_acquire_lock_rejects_non_string_run_id(
+        self, isolated_plan: Path
+    ) -> None:
+        import argparse as _argparse
+
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+
+        # run_id=None case.
+        ns_none = _argparse.Namespace(
+            plan_file=str(isolated_plan),
+            run_id=None,
+            force=False,
+            json=True,
+        )
+        with pytest.raises(SystemExit) as exc_none:
+            plan_ops.cmd_acquire_lock(ns_none)
+        assert exc_none.value.code != 0
+
+        # run_id=0 case (also non-string; also symmetric with read-side).
+        ns_zero = _argparse.Namespace(
+            plan_file=str(isolated_plan),
+            run_id=0,
+            force=False,
+            json=True,
+        )
+        with pytest.raises(SystemExit) as exc_zero:
+            plan_ops.cmd_acquire_lock(ns_zero)
+        assert exc_zero.value.code != 0
+
+        # Guard fired before any file operation in both cases.
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+
+    # VE — Non-empty --run-id happy path regressions.
+    # Three sub-cases mirroring TASK-004E V1 / V13 / V8.
+    def test_acquire_lock_nonempty_run_id_happy_paths(
+        self, isolated_plan: Path
+    ) -> None:
+        plan_abs = os.path.abspath(str(isolated_plan))
+
+        # Sub-case 1 — no pre-existing file, normal path.
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+        cp1 = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R1",
+            "--json",
+        )
+        assert cp1.returncode == 0, cp1.stderr
+        body1 = _parse_json(cp1)
+        assert body1.get("acquired") is True
+        contents1 = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        assert set(contents1.keys()) == {plan_abs}
+        entry1 = contents1[plan_abs]
+        assert set(entry1.keys()) == {"run_id", "acquired_at"}
+        assert entry1["run_id"] == "R1"
+        assert isinstance(entry1["acquired_at"], str) and entry1["acquired_at"]
+
+        # Clean up for sub-case 2.
+        plan_ops.RUN_LOCK_PATH.unlink()
+
+        # Sub-case 2 — no pre-existing file, --force path.
+        assert not plan_ops.RUN_LOCK_PATH.exists()
+        cp2 = _run(
+            "acquire-lock",
+            "--force",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_force",
+            "--json",
+        )
+        assert cp2.returncode == 0, cp2.stderr
+        body2 = _parse_json(cp2)
+        assert body2.get("acquired") is True
+        assert body2.get("forced") is True
+        contents2 = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        assert set(contents2.keys()) == {plan_abs}
+        entry2 = contents2[plan_abs]
+        assert set(entry2.keys()) == {"run_id", "acquired_at"}
+        assert entry2["run_id"] == "R_force"
+        assert isinstance(entry2["acquired_at"], str) and entry2["acquired_at"]
+
+        # Reset for sub-case 3 — canonical pre-existing with OTHER plan entry.
+        other_abs = "/abs/path/to/other/plan.md"
+        pre = {
+            other_abs: {
+                "run_id": "R_other",
+                "acquired_at": "2026-01-01T00:00:00Z",
+            }
+        }
+        plan_ops.RUN_LOCK_PATH.write_text(json.dumps(pre, indent=2), encoding="utf-8")
+
+        cp3 = _run(
+            "acquire-lock",
+            "--plan-file", str(isolated_plan),
+            "--run-id", "R_merged",
+            "--json",
+        )
+        assert cp3.returncode == 0, cp3.stderr
+        body3 = _parse_json(cp3)
+        assert body3.get("acquired") is True
+        contents3 = json.loads(plan_ops.RUN_LOCK_PATH.read_text(encoding="utf-8"))
+        assert set(contents3.keys()) == {other_abs, plan_abs}
+        assert contents3[other_abs] == pre[other_abs]
+        entry3 = contents3[plan_abs]
+        assert entry3["run_id"] == "R_merged"
+        assert isinstance(entry3["acquired_at"], str) and entry3["acquired_at"]
+
 
 # ---------------------------------------------------------------------------
 # update-plan-header

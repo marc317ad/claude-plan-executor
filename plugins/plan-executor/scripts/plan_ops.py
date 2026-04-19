@@ -3268,6 +3268,14 @@ def _atomic_write_json(path: Path, obj: dict) -> None:
 
 
 def cmd_acquire_lock(args: argparse.Namespace) -> None:
+    if not isinstance(args.run_id, str) or args.run_id == "":
+        _die(args, {
+            "acquired": False,
+            "errors": [{
+                "code": "lock-run-id-empty",
+                "message": "--run-id must be a non-empty string",
+            }],
+        })
     plan_abs = os.path.abspath(args.plan_file)
     RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
 

@@ -121,7 +121,7 @@ def test_acquire_lock_nonempty_run_id_happy_paths(isolated_plan, monkeypatch):
 
 ### TASK-018: Guard non-empty `--run-id` at acquire-lock write entry
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (add guard at the top of `cmd_acquire_lock`, before the `--force` branch)

@@ -380,6 +380,18 @@
       ],
       "status": "Pending",
       "superseded_by": []
+    },
+    {
+      "task_id": "018",
+      "v3_task": "TASK-018",
+      "file": "TASK-018_acquire_lock_nonempty_runid.md",
+      "priority": "low",
+      "issues_absorbed": [],
+      "depends_on": [
+        "004E"
+      ],
+      "status": "Done",
+      "superseded_by": []
     }
   ]
 }
