@@ -454,6 +454,19 @@
       ],
       "status": "Done",
       "superseded_by": []
+    },
+    {
+      "task_id": "023",
+      "v3_task": "TASK-023",
+      "file": "TASK-023_parse_plan_review_envelope_clarity.md",
+      "priority": "low",
+      "issues_absorbed": [],
+      "depends_on": [
+        "013",
+        "022"
+      ],
+      "status": "Pending",
+      "superseded_by": []
     }
   ]
 }
