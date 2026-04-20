@@ -7985,6 +7985,200 @@ class TestTask022SpecDeferenceValidator:
         )
 
 
+class TestTask025PlanAuthorSubagent:
+    """V1–V6 — TASK-025 plan-author subagent, auto-revise wiring, and the
+    two new run-log events (`plan_author_start` / `plan_author_done`).
+
+    - V1: `plugins/plan-executor/agents/plan-author.md` exists with the
+      required frontmatter fields (`name`, `tools` including Edit+Write,
+      `model: opus`) and body sections per the task's acceptance
+      criteria.
+    - V2: `ALLOWED_LOG_EVENTS` carries both new event names.
+    - V3: end-to-end `log-event` round-trip for both events (the tail
+      line parses back with the correct event type).
+    - V4: `dispatch-templates.md` declares the Phase 1.5a section and
+      mentions the `needs-replan auto-revise` trigger.
+    - V5: `SKILL.md` carries the `--no-auto-revise` flag, references
+      `plan-author`, and does NOT carry the obsolete
+      "Re-dispatch `plan-analyst` **once**" paragraph (the replaced
+      path).
+    - V6: `run-log-schema.md` documents both new events.
+    """
+
+    def test_v1_plan_author_md_has_required_frontmatter_and_sections(
+        self,
+    ) -> None:
+        path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "agents"
+            / "plan-author.md"
+        )
+        assert path.exists(), f"plan-author.md missing at {path}"
+        text = path.read_text(encoding="utf-8")
+
+        # Frontmatter fields — these are the exact regex hits V1 greps for.
+        assert re.search(r"(?m)^name: plan-author$", text), (
+            "plan-author.md must declare `name: plan-author` in "
+            "frontmatter"
+        )
+        assert re.search(r"(?m)^tools:.*\bEdit\b.*", text), (
+            "plan-author.md frontmatter must list `Edit` in tools"
+        )
+        assert re.search(r"(?m)^tools:.*\bWrite\b.*", text), (
+            "plan-author.md frontmatter must list `Write` in tools"
+        )
+        assert re.search(r"(?m)^model: opus$", text), (
+            "plan-author.md must declare `model: opus` in frontmatter"
+        )
+
+        # Body must describe the three-section report format; these
+        # strings are load-bearing (the orchestrator's Phase 1.5a prompt
+        # references them verbatim).
+        assert "**Findings actioned:**" in text, text
+        assert "**Findings skipped:**" in text, text
+        assert "**Files edited:**" in text, text
+
+        # Write-scope invariant: the agent is bound to the single input
+        # plan path, not a directory glob. The acceptance criterion
+        # calls out this phrasing.
+        assert (
+            "single plan file passed" in text
+            or "single plan file passed as input" in text
+            or "single plan file" in text
+        ), text
+
+    def test_v2_allowed_log_events_includes_plan_author_events(
+        self,
+    ) -> None:
+        assert "plan_author_start" in plan_ops.ALLOWED_LOG_EVENTS, (
+            "ALLOWED_LOG_EVENTS must carry `plan_author_start` per "
+            "TASK-025"
+        )
+        assert "plan_author_done" in plan_ops.ALLOWED_LOG_EVENTS, (
+            "ALLOWED_LOG_EVENTS must carry `plan_author_done` per "
+            "TASK-025"
+        )
+
+    def test_v3_log_event_plan_author_events_roundtrip(
+        self, isolated_plan: Path
+    ) -> None:
+        # `plan_author_start` — required fields: run_id, plan_file,
+        # findings_count.
+        start_fields = {
+            "run_id": "R1",
+            "plan_file": "sample.md",
+            "findings_count": 3,
+        }
+        cp = _run(
+            "log-event",
+            "--event", "plan_author_start",
+            "--fields-json", json.dumps(start_fields),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "plan_author_start"
+        assert rec["run_id"] == "R1"
+        assert rec["plan_file"] == "sample.md"
+        assert rec["findings_count"] == 3
+
+        # `plan_author_done` — required: run_id, plan_file; optional:
+        # files_edited[], findings_actioned[], findings_skipped[].
+        done_fields = {
+            "run_id": "R1",
+            "plan_file": "sample.md",
+            "files_edited": ["/abs/path/to/sample.md"],
+            "findings_actioned": [0, 2],
+            "findings_skipped": [1],
+        }
+        cp2 = _run(
+            "log-event",
+            "--event", "plan_author_done",
+            "--fields-json", json.dumps(done_fields),
+            "--json",
+        )
+        assert cp2.returncode == 0, cp2.stderr
+        body2 = _parse_json(cp2)
+        rec2 = json.loads(body2["written_line"])
+        assert rec2["event"] == "plan_author_done"
+        assert rec2["run_id"] == "R1"
+        assert rec2["plan_file"] == "sample.md"
+        assert rec2["files_edited"] == ["/abs/path/to/sample.md"]
+        assert rec2["findings_actioned"] == [0, 2]
+        assert rec2["findings_skipped"] == [1]
+
+        # The on-disk tail must match the emitted line byte-for-byte
+        # (log-event already re-verifies internally, but re-check here
+        # so the test class directly exercises the file).
+        lines = plan_ops.RUN_LOG_PATH.read_text(
+            encoding="utf-8"
+        ).splitlines()
+        assert len(lines) == 2
+        assert json.loads(lines[0])["event"] == "plan_author_start"
+        assert json.loads(lines[1])["event"] == "plan_author_done"
+
+    def test_v4_dispatch_templates_has_phase_15a_section(self) -> None:
+        path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "dispatch-templates.md"
+        )
+        text = path.read_text(encoding="utf-8")
+        assert re.search(
+            r"(?m)^## Phase 1\.5a — plan-author dispatch",
+            text,
+        ), (
+            "dispatch-templates.md must declare a "
+            "`## Phase 1.5a — plan-author dispatch` section"
+        )
+        assert "needs-replan auto-revise" in text, (
+            "Phase 1.5a section header must name the "
+            "`needs-replan auto-revise` trigger"
+        )
+
+    def test_v5_skill_md_has_no_auto_revise_and_no_obsolete_paragraph(
+        self,
+    ) -> None:
+        path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "SKILL.md"
+        )
+        text = path.read_text(encoding="utf-8")
+        # `--no-auto-revise` appears in the CLI flags table indented
+        # under Optional (two-space prefix, same as sibling flags).
+        assert re.search(r"(?m)^  --no-auto-revise", text), (
+            "SKILL.md must list `--no-auto-revise` under Optional "
+            "flags"
+        )
+        # `plan-author` must be named somewhere in the needs-replan
+        # branch documentation — either the routing-table row or the
+        # subsequent prose.
+        assert "plan-author" in text, (
+            "SKILL.md §Phase 1.5 must reference `plan-author` for the "
+            "needs-replan branch"
+        )
+        # The obsolete "Re-dispatch `plan-analyst` **once**" paragraph
+        # MUST be gone — the auto-revise rewrite replaces it, not
+        # augments it. Keeping both would confuse implementers.
+        assert "Re-dispatch `plan-analyst` **once**" not in text, (
+            "SKILL.md still carries the obsolete "
+            "'Re-dispatch plan-analyst once' paragraph; TASK-025 "
+            "replaces it with the author→analyst→review sequence"
+        )
+
+    def test_v6_run_log_schema_documents_plan_author_events(self) -> None:
+        path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "run-log-schema.md"
+        )
+        text = path.read_text(encoding="utf-8")
+        assert "plan_author_start" in text, (
+            "run-log-schema.md must document `plan_author_start`"
+        )
+        assert "plan_author_done" in text, (
+            "run-log-schema.md must document `plan_author_done`"
+        )
+
+
 # ---------------------------------------------------------------------------
 # TASK-020A: lint-plans subcommand
 # ---------------------------------------------------------------------------

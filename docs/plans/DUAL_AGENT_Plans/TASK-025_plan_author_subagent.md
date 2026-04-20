@@ -119,7 +119,7 @@ Both greps must hit.
 
 ### TASK-025: Auto-revise on `needs-replan` via new `plan-author` subagent
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/agents/plan-author.md` (create)
@@ -129,7 +129,7 @@ Both greps must hit.
   - `plugins/plan-executor/skills/implement-plan/run-log-schema.md`
   - `tests/scripts/test_plan_ops.py`
 - **Dependencies:** TASK-014A, TASK-022
-- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
+- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestTask025PlanAuthorSubagent`
 - **Acceptance criteria:**
   - V1-V6 pass.
   - `plan-author.md` frontmatter declares `tools: Read, Grep, Glob, Edit, Write, Bash` and `model: opus`. Body specifies: (a) inputs are the plan path + Codex findings JSON + optional analyst annotations; (b) the author edits the plan file in place, minimum change per finding, preserving untouched sections verbatim; (c) the author emits a markdown report with three sections — `**Findings actioned:**`, `**Findings skipped:**` (with rationale per skip, e.g., "dismissed — finding contradicts project norm"), `**Files edited:**`; (d) the author's write scope is **the single plan file passed in as input** — it MUST NOT edit any other file, whether under `docs/plans/` or elsewhere. The restriction is keyed on the input path, not a directory glob, so the constraint holds regardless of where the plan lives on disk. (Codex plan-review finding #1, approved.)
@@ -198,7 +198,7 @@ Introduce a new `plan-author` subagent with `Edit`/`Write` tools that applies Co
 
 ### Step 1 — Create `plan-author.md`
 
-Author the new subagent spec at `plugins/plan-executor/agents/plan-author.md`. Frontmatter: `name: plan-author`, `description: ...`, `tools: Read, Grep, Glob, Edit, Write, Bash`, `model: opus`. Body sections: Inputs, Process (three steps per Implementation notes), Report format, Rules (allowed/forbidden commands; ban on editing files outside `docs/plans/**/*.md`; ban on `git` mutation commands; no Agent tool). Mirror the tone of `plan-analyst.md`.
+Author the new subagent spec at `plugins/plan-executor/agents/plan-author.md`. Frontmatter: `name: plan-author`, `description: ...`, `tools: Read, Grep, Glob, Edit, Write, Bash`, `model: opus`. Body sections: Inputs, Process (three steps per Implementation notes), Report format, Rules (allowed/forbidden commands; ban on editing any file other than the exact plan file path passed in as input — bind the input path at dispatch time; no directory globs; ban on `git` mutation commands; no Agent tool). Mirror the tone of `plan-analyst.md`.
 
 ### Step 2 — `plan_ops.py` allowlist extension
 
@@ -225,11 +225,13 @@ Add `class TestTask025PlanAuthorSubagent` with V1-V6 per the Verification sectio
 
 ### Step 7 — Regression sweep
 
+Primary pass/fail signal for this task (scoped to the new class so the pre-existing `test_analyst_to_parse_schedule_roundtrip` failure, out of scope per TASK-019's Playbook, does not mask TASK-025's result):
+
 ```bash
-venv/bin/pytest -q tests/scripts/test_plan_ops.py
+venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestTask025PlanAuthorSubagent
 ```
 
-V1-V6 green; existing TASK-013 through TASK-023 coverage unchanged. The pre-existing `test_analyst_to_parse_schedule_roundtrip` failure remains out of scope per TASK-019's Playbook.
+V1-V6 green on that narrowed run; existing TASK-013 through TASK-023 coverage unchanged. If you also want a broader regression view for context, run the full file (`venv/bin/pytest -q tests/scripts/test_plan_ops.py`); expect the pre-existing out-of-scope failure but no other regressions.
 
 ---
 

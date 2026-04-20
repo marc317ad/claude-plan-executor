@@ -48,7 +48,59 @@ Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, t
 }
 ```
 
-Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan`, re-dispatch Phase A (plan-analyst) once with the Codex findings appended to the analyst prompt as a *"Prior plan-review findings"* block, then re-run plan-review. A second `needs-replan` halts with `run_end reason=plan_review_failed`; no batches execute.
+Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan` (when auto-revise is on — default), dispatch `plan-author` to apply findings to the plan file in place, then re-dispatch Phase A (plan-analyst) for structural re-validation, then re-run plan-review. A second `needs-replan` halts with `run_end reason=plan_review_failed`; no batches execute. If `--no-auto-revise` is set, the `needs-replan` route halts immediately with `run_end reason=plan_review_failed` instead of dispatching the author.
+
+## Phase 1.5a — plan-author dispatch (needs-replan auto-revise)
+
+Dispatched only when the first Phase 1.5 Codex `plan-review` returns `needs-replan` AND auto-revise is on (default; disabled by `--no-auto-revise`). The author revises the plan text in place so a second review can proceed. Agent dispatch, `subagent_type: "plan-author"`, `model: "opus"`.
+
+Orchestrator-side log emission wraps the dispatch:
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event plan_author_start \
+  --fields-json '{"run_id":"<id>","plan_file":"<basename>","findings_count":<N>}' --json
+
+# Agent dispatch (plan-author, model: opus) using the template below.
+
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event plan_author_done \
+  --fields-json '{"run_id":"<id>","plan_file":"<basename>","files_edited":[...],"findings_actioned":[...],"findings_skipped":[...]}' --json
+```
+
+Dispatch prompt template:
+
+> Apply Codex plan-review findings to the plan at `<absolute plan path>`. The first plan-review pass returned `needs-replan`; your job is to revise the plan text so a second review can proceed.
+>
+> Plan path: `<absolute plan path>` (edit this file in place)
+>
+> Codex findings (verbatim from `parsed.findings` of the wrapper envelope):
+>
+> ```json
+> <codex_findings_json>
+> ```
+>
+> Codex summary (verbatim from `parsed.summary`):
+>
+> ```
+> <codex_summary>
+> ```
+>
+> Analyst annotations (verbatim, may be empty):
+>
+> ```json
+> <analyst_annotations_json>
+> ```
+>
+> Apply a minimum-change edit per finding. Preserve untouched sections verbatim — do not re-flow or re-format text the findings do not reference. If a finding is vague, contradictory, or contradicts the plan's existing acceptance criteria, skip it with a written rationale in your report rather than invent intent. Your write scope is **exactly the plan path above** — do NOT edit any other file, including other plan documents. Do NOT edit source code, tests, or configuration.
+>
+> Emit a markdown report with three sections: `**Findings actioned:**` (one bullet per finding applied, with the file:line anchor), `**Findings skipped:**` (one bullet per finding not applied, with rationale), `**Files edited:**` (the list of plan paths you touched — typically just the one input plan).
+>
+> The `--no-auto-revise` orchestrator flag exists for users who prefer to apply revisions by hand; if you are seeing this prompt, auto-revise is on and you are expected to revise.
+>
+> **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
+
+After the author returns, the orchestrator re-dispatches `plan-analyst` (Phase A template) for structural re-validation of the revised plan file. If re-validation returns `invalid`, the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (valid or needs-enrichment — same allow-gaps routing as the first pass), Codex `plan-review` runs once more; that second verdict is binding.
 
 ## Phase B — plan-implementer dispatch (Claude tier)
 

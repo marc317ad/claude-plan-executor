@@ -154,6 +154,13 @@ ALLOWED_LOG_EVENTS = {
     "plan_review_start",
     "plan_review_done",
     "plan_review_skipped",
+    # `plan_author_start` / `plan_author_done` are added per TASK-025 for the
+    # needs-replan auto-revise path: when Codex returns `needs-replan` on the
+    # first plan-review pass and auto-revise is on, the orchestrator dispatches
+    # `plan-author` to apply the findings to the plan file in place before the
+    # second binding review.
+    "plan_author_start",
+    "plan_author_done",
     "awaiting_user",
     "schedule_written",
 }

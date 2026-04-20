@@ -18,6 +18,8 @@ All events carry `ts` (ISO-8601 UTC, e.g. `2026-04-13T17:02:04Z`) and `run_id`.
 | `commit_done` | `ts, run_id, task_id, commit_sha, files, reviewer_verdict, minor_findings_count, disagreement_tag` |
 | `failed` | `ts, run_id, task_id, stage, reason, reversion_guidance?, reviewer_findings?` |
 | `review_skipped` | `ts, run_id, task_id, reason` |
+| `plan_author_start` | `ts, run_id, plan_file, findings_count` |
+| `plan_author_done` | `ts, run_id, plan_file` + optional `files_edited[], findings_actioned[], findings_skipped[]` |
 
 ## Field definitions
 
@@ -30,6 +32,7 @@ All events carry `ts` (ISO-8601 UTC, e.g. `2026-04-13T17:02:04Z`) and `run_id`.
 - **`minor_findings`** (on `review_done`): array of `{severity, file, line, issue, suggested_fix}` objects. `minor_findings_count` (on `commit_done`) is the integer length of that array.
 - **`reviewer_findings`** (on `failed` with `stage=review`): full findings blob that drove the failure, for post-mortem inspection.
 - **`reversion_guidance`** (on `failed` with `stage=implement`): text from the Claude implementer's "On failure — what to revert" section, captured as-written; not replayed automatically.
+- **`plan_author_start` / `plan_author_done`** (per TASK-025): emitted by the orchestrator around the Phase 1.5a `plan-author` dispatch that runs on the first `needs-replan` verdict when auto-revise is on (default; disabled by `--no-auto-revise`). `plan_author_start` carries `{run_id, plan_file, findings_count}` where `findings_count` is the length of Codex's first-pass `findings[]`. `plan_author_done` carries `{run_id, plan_file}` required and `{files_edited[], findings_actioned[], findings_skipped[]}` optional — `files_edited[]` is the list of plan paths the author touched (typically the single input plan), `findings_actioned[]` and `findings_skipped[]` are arrays of finding identifiers (index or section+concern) from the author's report.
 
 ## Events not logged
 

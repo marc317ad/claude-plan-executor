@@ -69,6 +69,7 @@ Optional:
   --skip-cross-review     Commit without review (loud banner in summary)
   --skip-plan-review      Skip Phase 1.5 Codex plan review (loud banner in summary);
                           parallel-safe with --skip-cross-review
+  --no-auto-revise        Disable auto-revise on needs-replan — halt instead of dispatching plan-author.
   --codex-review-binding  Codex critical on Claude goes straight to fail-task;
                           no §8.4 third-opinion escalation
   --allow-gaps            Proceed past analyst outcome=needs-enrichment
@@ -189,9 +190,35 @@ Append `plan_review_done {verdict, findings_count, summary}` and route by verdic
 |---|---|
 | `approved` | Proceed to Phase 2 (batch dispatch). |
 | `approved-with-notes` | Proceed to Phase 2. Carry `findings[]` into the final run summary under a *"Plan review notes"* section. Do not gate execution on notes. |
-| `needs-replan` | Re-dispatch `plan-analyst` **once** using the Phase A template with Codex findings appended as a *"Prior plan-review findings"* block. The analyst emits a revised schedule; re-run `parse-schedule` + `write-schedule` to persist, then re-dispatch Codex `plan-review` on the revised plan. The second review is binding. |
+| `needs-replan` | Dispatch `plan-author` (if auto-revise on), then re-validate via `plan-analyst`, then re-run Codex `plan-review`. Second `needs-replan` halts. |
 
-**Second `needs-replan`** (after one analyst re-dispatch): halt before any batch runs.
+**`needs-replan` branch — auto-revise path (default).** Auto-revise is on unless `--no-auto-revise` is set. When on, the orchestrator runs a three-step author → analyst → review sequence before the second verdict is accepted:
+
+1. **Dispatch `plan-author`** (Agent, `subagent_type: "plan-author"`, `model: "opus"`) using the Phase 1.5a template from `dispatch-templates.md`. Embed the plan path, the Codex findings array verbatim, the Codex summary verbatim, and the analyst annotations. The author edits the single plan file in place; its write scope is keyed on the input plan path, not a directory glob. Wrap the dispatch with `plan_author_start` before and `plan_author_done` after:
+
+   ```bash
+   venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+     --event plan_author_start \
+     --fields-json '{"run_id":"<id>","plan_file":"<basename>","findings_count":<N>}' --json
+
+   # Agent dispatch (plan-author, model: opus) — Phase 1.5a template.
+
+   venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+     --event plan_author_done \
+     --fields-json '{"run_id":"<id>","plan_file":"<basename>","files_edited":[...],"findings_actioned":[...],"findings_skipped":[...]}' --json
+   ```
+
+2. **Re-dispatch `plan-analyst`** (Phase A template) for structural re-validation of the revised plan file. The analyst reads the plan from disk — do NOT forward the author's edit report (that would invite ping-pong). Route on the re-validation outcome:
+
+   - `invalid` → halt with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. The author produced a structurally broken revision; do not run the second review against a malformed plan.
+   - `needs-enrichment` → same allow-gaps routing as the first pass (halt if `--allow-gaps` is not set; warn and proceed otherwise).
+   - `valid` → proceed to step 3.
+
+3. **Re-run Codex `plan-review`** on the revised plan. The second verdict is binding: `approved | approved-with-notes` → proceed to batch dispatch; `needs-replan` → halt per the "Second `needs-replan`" block below.
+
+**`needs-replan` branch — `--no-auto-revise` path (opt-out).** When `--no-auto-revise` is set, the first `needs-replan` verdict halts immediately without dispatching `plan-author`. This preserves the pre-TASK-025 behavior for users who prefer to apply revisions by hand; halt with `run_end reason=plan_review_failed` per the block below. No silent retry without revision.
+
+**Second `needs-replan`** (after one author → analyst → review retry, on the auto-revise path), OR the first `needs-replan` when `--no-auto-revise` is set: halt before any batch runs.
 
 ```bash
 venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
@@ -201,9 +228,9 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
 
 Release the run-lock and print the failure envelope. Do NOT call `fail-task` (no task has started). Do NOT run batches. The run summary records `outcome=failed reason=plan_review_failed`.
 
-**Retry failures** — if the analyst re-dispatch itself fails (e.g., `outcome=invalid`), halt with `run_end reason=plan_review_failed` same as the second-`needs-replan` path.
+**Retry failures** — if the `plan-author` dispatch itself fails (malformed report, out-of-scope writes) or the re-validation analyst returns `outcome=invalid`, halt with `run_end reason=plan_review_failed` same as the second-`needs-replan` path.
 
-**Run-log event order** (V8): `run_start` → `analyst_done` → `schedule_written` → `plan_review_start {reviewer:"codex"}` → `plan_review_done {verdict, findings_count}` → `batch_start` (only if verdict permits).
+**Run-log event order** (V8): `run_start` → `analyst_done` → `schedule_written` → `plan_review_start {reviewer:"codex"}` → `plan_review_done {verdict, findings_count}` → (on `needs-replan` with auto-revise on) `plan_author_start` → `plan_author_done` → `analyst_done` → `plan_review_start` → `plan_review_done` → `batch_start` (only if verdict permits).
 
 ### Dry-run mode
 
