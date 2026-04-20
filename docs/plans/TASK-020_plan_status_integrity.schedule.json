@@ -1,0 +1,66 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "020A",
+      "title": "`lint-plans` subcommand",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "classification_reason": "New subcommand, multi-file, git subprocess"
+    },
+    {
+      "id": "020B",
+      "title": "`acceptance_v_check` runtime enforcement in `commit-task`",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "classification_reason": "Behavior change, subprocess/timeout/shell invariants"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "020A"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "020B"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [
+    {
+      "type": "same-file-across-batches",
+      "affected_tasks": [
+        "020A",
+        "020B"
+      ],
+      "detail": "Both tasks modify plan_ops.py, test_plan_ops.py, and SKILL.md; safely serialized across batches."
+    }
+  ]
+}

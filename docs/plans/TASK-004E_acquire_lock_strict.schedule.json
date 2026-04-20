@@ -1,0 +1,56 @@
+{
+  "outcome": "needs-enrichment",
+  "tasks": [
+    {
+      "id": "004E",
+      "title": "Enforce canonical lock-file shape + add `--force` escape hatch",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py",
+        "tests/scripts/test_plan_codex_dispatch_integration.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestLock \\\n    && venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch_integration.py -k \"preserves_run_lock_json\" --no-header",
+      "classification_reason": "Multi-file correctness-critical I/O rewrite"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "004E"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_codex_dispatch_integration.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "task_id": "004E",
+      "type": "unresolvable-test",
+      "detail": "Test command uses compound shell operator `&&`; analyst does not evaluate chained invocations."
+    }
+  ],
+  "risks": [
+    {
+      "type": "external-dependency-reference",
+      "affected_tasks": [
+        "004E"
+      ],
+      "detail": "Task declares `Dependencies: TASK-001` but TASK-001 is not present in this sub-plan."
+    },
+    {
+      "type": "conditional-test-skip",
+      "affected_tasks": [
+        "004E"
+      ],
+      "detail": "Integration leg marked @pytest.mark.slow and skips without Codex CLI."
+    }
+  ]
+}

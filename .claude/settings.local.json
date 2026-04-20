@@ -22,7 +22,14 @@
       "Bash(git check-attr *)",
       "Bash(venv/bin/pytest tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_log_jsonl -m slow -v -s)",
       "Bash(venv/bin/pytest tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_log_jsonl tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_run_lock_json tests/scripts/test_plan_codex_dispatch_integration.py::test_parallel_preserves_schedule_json_tracked -m slow -v)",
-      "Bash(venv/bin/python *)"
+      "Bash(venv/bin/python *)",
+      "Bash(venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"PlanReview or plan_review\")",
+      "Bash(venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch_schema.py tests/scripts/test_plan_codex_dispatch_parsing.py)",
+      "Bash(venv/bin/pytest -q tests/scripts/ --ignore=tests/scripts/test_plan_codex_dispatch_integration.py)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git -C /mnt/d/claude-plan-executor log --oneline --all --grep \"TASK-002\")",
+      "Bash(bash *)"
     ]
   }
 }

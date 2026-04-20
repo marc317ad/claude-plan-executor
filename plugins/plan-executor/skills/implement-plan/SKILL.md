@@ -447,6 +447,8 @@ This: (1) guard check for unexpected staged overlap, (2) plan-status flip to `do
 
 Commit hook failure → subcommand auto-rolls back (`git reset HEAD`, restore plan text) and exits non-zero → treat as D.4 `stage=commit`.
 
+**Lint reference:** `plan_ops.py lint-plans --plans-dir docs/plans --run-log <run_log> --git-dir . --json` cross-references every `**Status:** done` (or `partial`) task against the run log and git history. A `done`/`partial` marker without a matching `commit_done` event AND `feat(TASK-NNN)` commit flags the task as a hand-edit. Run manually during review or before shipping a plan; the PR-gate wiring is a follow-up (TASK-020C).
+
 #### D.4 — Phase D fail
 
 ```bash

@@ -1,0 +1,35 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "022",
+      "title": "Persist full reviewer findings in run log + D.5 dismissal-evidence gate",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "classification_reason": "Multi-file persistence and prompt wiring"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "022"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

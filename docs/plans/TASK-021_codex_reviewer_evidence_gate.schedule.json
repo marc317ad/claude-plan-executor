@@ -1,0 +1,31 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "021",
+      "title": "Codex reviewer evidence gate",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_codex_review_prompt.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_codex_review_prompt.py",
+      "classification_reason": "Prompt-engineering, shared template, design-sensitive"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "021"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_codex_review_prompt.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

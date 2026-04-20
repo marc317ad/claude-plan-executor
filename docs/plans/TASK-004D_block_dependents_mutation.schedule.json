@@ -1,0 +1,33 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "004D",
+      "title": "Mutate plan markdown in `block-dependents`",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestBlockDependents",
+      "classification_reason": "Multi-file, complex failure-mode contract"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "004D"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

@@ -1,4 +1,4 @@
-# TASK-021 — Codex reviewer evidence gate for `needs-rework`
+# TASK-024 — Codex reviewer evidence gate for `needs-rework`
 
 **Base branch:** `main`
 **Audit anchor commit:** `f783c95`
@@ -11,7 +11,7 @@
 
 Add an **evidence gate** to the Phase D-Codex reviewer prompt: before assigning `needs-rework` for a claimed semantic bug or contract violation, Codex must cite a concrete observation (a reproduced failure, a traced control-flow step, a failing test run, or a cited invariant violation). A finding phrased as *"if X is true, then..."* or *"this is only safe if..."* is a hypothesis, not an observation — such findings belong at `minor-findings` phrased as a question, not at `needs-rework`.
 
-TASK-015 calibrated *which rung a finding belongs on*. TASK-021 calibrates *what Codex must do before picking the top rung*.
+TASK-015 calibrated *which rung a finding belongs on*. TASK-024 calibrates *what Codex must do before picking the top rung*.
 
 The verdict vocabulary itself is unchanged.
 
@@ -80,7 +80,7 @@ The `test_fixture_matches_review_schema` test must still pass. No changes to `co
 
 ## Tasks
 
-### TASK-021: Codex reviewer evidence gate
+### TASK-024: Codex reviewer evidence gate
 
 - **Status:** done
 - **Priority:** medium
@@ -132,4 +132,4 @@ Starting SHA: `09817ce474b76c66366a9ea231658eebdd82024a`  → Ending SHA: `3d53c
 
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
-| TASK-021 | claude | codex | clean | 3d53c8d |  |
+| TASK-024 | claude | codex | clean | 3d53c8d |  |

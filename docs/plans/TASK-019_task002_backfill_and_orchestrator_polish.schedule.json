@@ -1,0 +1,35 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "019",
+      "title": "Backfill TASK-002 V3/V4 and close orchestrator paper-cuts from run 20260418T015713",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py",
+        "docs/plans/DUAL_AGENT_Plans/TASK-002_runtime_validation.md"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "classification_reason": "Multi-file refactor, shared helper across 3 consumers"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "019"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_Plans/TASK-002_runtime_validation.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

@@ -281,6 +281,7 @@ dispatch:
     - PLAN_EXEC_*
   required_env: []
   cost_cap_usd: 1.50            # per-call hard cap
+  cache_ttl: "5m"               # "5m" (default) | "1h"; per-agent guidance in §3.2
   permission_mode: bypassPermissions
   tools_override:               # optional; else derived from frontmatter `tools`
     allowed: [Read, Grep, Glob, Edit, Write, Bash]
@@ -345,6 +346,10 @@ claude -p
 ```
 
 The caller-facing **user prompt** is kept thin ("Perform the task per your system prompt and the attached payload. Emit output per the output_instructions. Payload: <inline JSON>"). The heavy lifting — role, constraints, schema — goes in the system prompt so the API prompt cache can reuse it across hops.
+
+**Prompt assembly.** The backend assembles segments [1]–[4] per §3.2 in fixed order (manifest body → tool defs → output contract → append tail). Any caller `overrides` that would mutate segments [1]–[4] is rejected with `status: denied, code: cache_prefix_mutation`. Caller-specific data is placed in segment [5] (user prompt) exclusively.
+
+**Cache TTL.** The backend maps `manifest.dispatch.cache_ttl` onto the Anthropic API's `cache_control.ttl` for the cached prefix. Where the deployed CLI does not expose a direct flag, the backend routes through `--settings` or falls back to the `anthropic` SDK; see §3.3 for the preference order and degrade behavior.
 
 ### 7.2 `codex-cli` backend
 
@@ -697,6 +702,8 @@ Everything else (`effort`, tool overrides, `system_prompt_append`, settings prof
   - `claude_cli` builds the argv per §7.1, captures stdout, parses JSON, maps fields into envelope; TimeoutExpired → `status: timeout`; non-JSON stdout → `status: backend_error`.
   - `codex_cli` shells to `plan_codex_dispatch.py <subcommand>` in `--envelope` mode and passes through.
   - `local_llm` OpenAI-compatible reference impl hits `POST /v1/chat/completions`, schema-validates the content, returns envelope; missing endpoint → `status: backend_error`.
+  - `claude_cli` honors `manifest.dispatch.cache_ttl` via the §3.3 preference order (settings → SDK → degrade-with-warning). A unit test asserts the correct TTL is plumbed for both `"5m"` and `"1h"` manifests.
+  - `claude_cli` rejects any `overrides` that would mutate the §3.2 cached prefix segments ([1]–[4]) with `status: denied, code: cache_prefix_mutation`.
   - Tests use a `--backend-binary` test seam (a tiny shim script) rather than real CLIs; real-CLI paths are gated on an env flag.
 
 **Description:** The actual spawn layer, one adapter per backend kind. Adapters are the only code that shells out.

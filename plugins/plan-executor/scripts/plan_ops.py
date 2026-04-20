@@ -1734,6 +1734,176 @@ def cmd_check_plan_deps(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# lint-plans (TASK-020A)
+# ---------------------------------------------------------------------------
+
+
+# Top-level plan `**Status:**` bullet. Per §D.3, a plan whose header status is
+# `superseded` has its decomposition tracked by children; duplicating the
+# done-pairing gate at the parent level produces noise. Match case-insensitive
+# (plan authors occasionally write `Superseded`). Unlike STATUS_BULLET_RE this
+# matches bold prose lines without the leading hyphen bullet, because parent
+# plan headers tend to use that shape (e.g. `**Status:** superseded`).
+_SUPERSEDED_HEADER_RE = re.compile(
+    r"^\s*(?:-\s*)?\*\*Status:\*\*\s*superseded\b",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# Match a canonical `feat(TASK-NNN[A-Z]?):` commit subject. We grep subjects
+# only (via `--pretty=%s`) so TASK-019's concern-prose references in commit
+# bodies don't falsely mark a task as "shipped".
+_FEAT_COMMIT_SUBJECT_RE = re.compile(r"^feat\(TASK-(\d{3}[A-Z]?)\):")
+
+
+def _load_commit_done_ids(run_log: Path) -> set[str]:
+    """Collect normalized task ids that have a `commit_done` event in run log.
+
+    Missing file or malformed lines are tolerated: the lint's job is to flag
+    missing pairings, not to validate the run log's integrity.
+    """
+    ids: set[str] = set()
+    if not run_log.exists():
+        return ids
+    try:
+        lines = run_log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ids
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("event") != "commit_done":
+            continue
+        tid = _normalize_task_id(str(ev.get("task_id", "")))
+        if tid:
+            ids.add(tid)
+    return ids
+
+
+def _load_feat_commit_ids(git_dir: Path) -> set[str]:
+    """Collect normalized task ids shipped via `feat(TASK-NNN):` commits.
+
+    Uses `git log --all --pretty=%s` so commit bodies (which may reference
+    other tasks in prose) are ignored.
+    """
+    ids: set[str] = set()
+    try:
+        result = subprocess.run(
+            ["git", "log", "--all", "--pretty=%s"],
+            cwd=str(git_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return ids
+    if result.returncode != 0:
+        return ids
+    for line in result.stdout.splitlines():
+        m = _FEAT_COMMIT_SUBJECT_RE.match(line.strip())
+        if not m:
+            continue
+        tid = _normalize_task_id(m.group(1))
+        if tid:
+            ids.add(tid)
+    return ids
+
+
+def cmd_lint_plans(args: argparse.Namespace) -> None:
+    """Flag `**Status:** done`/`partial` tasks without matching commit pairings.
+
+    Read-only. Scans every `*.md` file under --plans-dir, enumerates tasks
+    via `_split_task_blocks`, and for each task whose Status bullet reads
+    `done` or `partial` asserts both (a) a `commit_done` event exists in the
+    run log with a matching task_id and (b) a `feat(TASK-NNN):` commit exists
+    in the repo's git log (across all refs).
+
+    Parent plans whose top-level Status is `superseded` are skipped per the
+    §D.3 guidance: their decomposition is tracked by the superseding children.
+    """
+    plans_dir = Path(args.plans_dir).resolve()
+    run_log_path = Path(args.run_log).resolve() if args.run_log else None
+    git_dir = Path(args.git_dir or ".").resolve()
+
+    findings: list[dict] = []
+    scanned = 0
+    done_tasks = 0
+
+    commit_done_ids = (
+        _load_commit_done_ids(run_log_path) if run_log_path else set()
+    )
+    feat_commit_ids = _load_feat_commit_ids(git_dir)
+
+    # Anchor the relative path against plans_dir's parent so findings carry
+    # `docs/plans/<file>.md` rather than a bare basename. Falls back to the
+    # absolute path if the plan file is outside the plans-dir subtree
+    # (shouldn't happen via rglob, but defensive).
+    anchor = plans_dir.parent
+
+    for md in sorted(plans_dir.rglob("*.md")):
+        scanned += 1
+        try:
+            text = _load_text(md)
+        except (OSError, UnicodeDecodeError):
+            # Skip unreadable files silently — lint is best-effort.
+            continue
+        # Skip parent plans whose top-level Status is `superseded`. The
+        # preamble is the slice of `text` before the first `### TASK-NNN:`
+        # header; that is where plan-level `**Status:**` lives.
+        preamble, blocks_for_check = _split_task_blocks(text)
+        if _SUPERSEDED_HEADER_RE.search(preamble):
+            continue
+        for raw_id, block in blocks_for_check:
+            status_m = _find_status_bullet(block)
+            if not status_m:
+                continue
+            status = status_m.group(2).strip().lower()
+            if status not in {"done", "partial"}:
+                continue
+            done_tasks += 1
+            tid = _normalize_task_id(raw_id)
+            if tid is None:
+                continue
+            try:
+                rel_path = str(md.relative_to(anchor))
+            except ValueError:
+                rel_path = str(md)
+            if tid not in commit_done_ids:
+                findings.append({
+                    "plan_file": rel_path,
+                    "task_id": tid,
+                    "code": "missing-commit-done-event",
+                    "message": (
+                        f"plan marks TASK-{tid} as {status!r} but no "
+                        f"commit_done event found in run log"
+                    ),
+                })
+            if tid not in feat_commit_ids:
+                findings.append({
+                    "plan_file": rel_path,
+                    "task_id": tid,
+                    "code": "missing-feat-commit",
+                    "message": (
+                        f"plan marks TASK-{tid} as {status!r} but no "
+                        f"'feat(TASK-{tid}):' commit found"
+                    ),
+                })
+
+    result = {
+        "scanned": scanned,
+        "done_tasks": done_tasks,
+        "findings": findings,
+    }
+    _emit(args, result, exit_code=1 if findings else 0)
+
+
+# ---------------------------------------------------------------------------
 # Subcommand stubs
 # ---------------------------------------------------------------------------
 
@@ -3770,6 +3940,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_pi)
 
+    # TASK-020A: read-only lint that cross-references `**Status:** done` /
+    # `partial` task markers against the run log's `commit_done` events and
+    # the git log's `feat(TASK-NNN):` commits. Hand-edited status markers
+    # that bypassed `commit-task` flunk the lint. CI wiring is deferred to
+    # TASK-020C.
+    p_lint = sub.add_parser(
+        "lint-plans",
+        help=(
+            "Cross-reference **Status:** done/partial task markers against "
+            "commit_done run-log events and feat(TASK-NNN) git commits. "
+            "Read-only; exit 1 on any finding."
+        ),
+    )
+    p_lint.add_argument(
+        "--plans-dir", required=True,
+        help="Directory containing plan markdown files (scanned recursively)",
+    )
+    p_lint.add_argument(
+        "--run-log", default=None,
+        help="Path to _run_log.jsonl; omitted = empty run log",
+    )
+    p_lint.add_argument(
+        "--git-dir", default=None,
+        help="Path to git work tree root; defaults to CWD",
+    )
+    _add_json(p_lint)
+
     return parser
 
 
@@ -3849,6 +4046,7 @@ def main(argv: list[str] | None = None) -> None:
         "reconcile-batch": cmd_reconcile_batch,
         "check-plan-deps": cmd_check_plan_deps,
         "path-info": cmd_path_info,
+        "lint-plans": cmd_lint_plans,
     }
     handlers[args.command](args)
 

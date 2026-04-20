@@ -1,0 +1,37 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "025",
+      "title": "Auto-revise on needs-replan via new plan-author subagent",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/agents/plan-author.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/run-log-schema.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "classification_reason": "New subagent, multi-file wiring, prompt authoring"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": ["025"],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-author.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/skills/implement-plan/run-log-schema.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

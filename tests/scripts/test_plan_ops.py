@@ -7983,3 +7983,344 @@ class TestTask022SpecDeferenceValidator:
             "spec-deference"
             in plan_ops.ALLOWED_REVIEWER_FINDING_DISPOSITIONS
         )
+
+
+# ---------------------------------------------------------------------------
+# TASK-020A: lint-plans subcommand
+# ---------------------------------------------------------------------------
+
+
+def _init_lint_git_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "lint@test"], cwd=repo, check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "lint"], cwd=repo, check=True,
+    )
+    (repo / "README.md").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+
+
+def _make_feat_commit(repo: Path, task_id: str, title: str = "ship") -> None:
+    """Create an empty commit with subject `feat(TASK-<id>): <title>`.
+
+    Uses `--allow-empty` so no filesystem state is required; the lint only
+    looks at commit subjects via `git log --pretty=%s`.
+    """
+    subprocess.run(
+        [
+            "git", "commit", "--allow-empty", "-q",
+            "-m", f"feat(TASK-{task_id}): {title}",
+        ],
+        cwd=repo, check=True,
+    )
+
+
+def _write_commit_done_event(run_log: Path, task_id: str) -> None:
+    """Append a commit_done event to `run_log` (creating it if absent)."""
+    run_log.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({
+        "event": "commit_done",
+        "task_id": task_id,
+        "run_id": "R1",
+        "ts": "2026-04-20T00:00:00Z",
+    })
+    with run_log.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
+def _lint_plan_body(task_id: str, status: str) -> str:
+    """Minimal plan body with a single task block at the requested status."""
+    return (
+        "# Plan: lint fixture\n\n"
+        "**Base branch:** main\n\n"
+        "## Tasks\n\n"
+        f"### TASK-{task_id}: lint fixture task\n\n"
+        f"- **Status:** {status}\n"
+        "- **Files:**\n"
+        "  - src/fixture.py\n"
+        "- **Dependencies:** none\n"
+    )
+
+
+@pytest.fixture()
+def lint_workspace(tmp_path: Path) -> dict:
+    """Isolated git repo + plans dir + empty run log for lint-plans tests."""
+    repo = tmp_path / "repo"
+    _init_lint_git_repo(repo)
+    plans_dir = repo / "docs" / "plans"
+    plans_dir.mkdir(parents=True)
+    run_log = plans_dir / "_run_log.jsonl"
+    return {"repo": repo, "plans_dir": plans_dir, "run_log": run_log}
+
+
+def _run_lint(
+    plans_dir: Path,
+    run_log: Path | None,
+    git_dir: Path,
+    *,
+    extra: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess:
+    argv = [
+        "lint-plans",
+        "--plans-dir", str(plans_dir),
+        "--git-dir", str(git_dir),
+        "--json",
+    ]
+    if run_log is not None:
+        argv.extend(["--run-log", str(run_log)])
+    argv.extend(extra)
+    return _run(*argv)
+
+
+class TestLintPlans:
+    """V1-V5 coverage for the TASK-020A `lint-plans` subcommand."""
+
+    def test_v1_clean_tree_exits_zero(self, lint_workspace: dict) -> None:
+        """V1: a tree with one done task + matching commit_done + matching
+        feat commit passes the lint with no findings."""
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-999.md"
+        plan.write_text(_lint_plan_body("999", "done"), encoding="utf-8")
+        _write_commit_done_event(ws["run_log"], "999")
+        _make_feat_commit(ws["repo"], "999")
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 0, f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
+        body = _parse_json(cp)
+        assert body["findings"] == []
+        assert body["scanned"] == 1
+        assert body["done_tasks"] == 1
+
+    def test_v2_flags_missing_commit_done_event(
+        self, lint_workspace: dict,
+    ) -> None:
+        """V2: status=done without any commit_done in the run log is flagged
+        with code `missing-commit-done-event`. (Git commit also missing so we
+        also see `missing-feat-commit`; assert the commit-done code is
+        present.)
+        """
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-999.md"
+        plan.write_text(_lint_plan_body("999", "done"), encoding="utf-8")
+        # No commit_done event, no feat commit.
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        codes = [f["code"] for f in body["findings"]]
+        assert "missing-commit-done-event" in codes, body
+        missing_ev = next(
+            f for f in body["findings"]
+            if f["code"] == "missing-commit-done-event"
+        )
+        assert missing_ev["task_id"] == "999"
+        assert "plan-999.md" in missing_ev["plan_file"]
+
+    def test_v3_flags_missing_git_commit(
+        self, lint_workspace: dict,
+    ) -> None:
+        """V3: commit_done event exists but no matching feat commit → flagged
+        with code `missing-feat-commit` (and only that code; the commit_done
+        check passes)."""
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-999.md"
+        plan.write_text(_lint_plan_body("999", "done"), encoding="utf-8")
+        _write_commit_done_event(ws["run_log"], "999")
+        # Do not create a feat(TASK-999) commit.
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        codes = [f["code"] for f in body["findings"]]
+        assert "missing-feat-commit" in codes, body
+        assert "missing-commit-done-event" not in codes, body
+
+    def test_v4_ignores_non_done_statuses(
+        self, lint_workspace: dict,
+    ) -> None:
+        """V4: superseded / failed / pending / in-progress do NOT trigger the
+        pairing check."""
+        ws = lint_workspace
+        for i, status in enumerate(
+            ["superseded", "failed", "pending", "in-progress"], start=1,
+        ):
+            plan = ws["plans_dir"] / f"plan-{i:03d}.md"
+            plan.write_text(
+                _lint_plan_body(f"{i:03d}", status), encoding="utf-8",
+            )
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 0, f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
+        body = _parse_json(cp)
+        assert body["findings"] == []
+        assert body["done_tasks"] == 0
+
+    def test_v4_partial_triggers_the_pairing_check(
+        self, lint_workspace: dict,
+    ) -> None:
+        """`partial` status must trigger the same commit-pairing check as
+        `done`: whatever DID land still requires a commit pair."""
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-777.md"
+        plan.write_text(_lint_plan_body("777", "partial"), encoding="utf-8")
+        # Neither event nor commit present → both codes must fire.
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        codes = [f["code"] for f in body["findings"]]
+        assert "missing-commit-done-event" in codes
+        assert "missing-feat-commit" in codes
+        assert body["done_tasks"] == 1
+
+    def test_v5_json_envelope_shape(
+        self, lint_workspace: dict,
+    ) -> None:
+        """V5: --json emits `{scanned, done_tasks, findings:[{plan_file,
+        task_id, code, message}]}` with exactly these keys at each level."""
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-042.md"
+        plan.write_text(_lint_plan_body("042", "done"), encoding="utf-8")
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        assert set(body.keys()) == {"scanned", "done_tasks", "findings"}
+        assert isinstance(body["scanned"], int)
+        assert isinstance(body["done_tasks"], int)
+        assert isinstance(body["findings"], list)
+        for f in body["findings"]:
+            assert set(f.keys()) == {
+                "plan_file", "task_id", "code", "message",
+            }
+            assert isinstance(f["plan_file"], str) and f["plan_file"]
+            assert re.fullmatch(r"\d{3}[A-Z]?", f["task_id"]), f
+            assert f["code"] in {
+                "missing-commit-done-event", "missing-feat-commit",
+            }
+            assert isinstance(f["message"], str) and f["message"]
+
+    def test_skips_superseded_parent_plans(
+        self, lint_workspace: dict,
+    ) -> None:
+        """A plan whose top-level `**Status:** superseded` header is present
+        must skip the per-task done-pairing check entirely — the parent
+        plan's decomposition is tracked by its children."""
+        ws = lint_workspace
+        body = (
+            "# Plan: superseded parent\n\n"
+            "**Base branch:** main\n"
+            "**Status:** superseded\n\n"
+            "## Tasks\n\n"
+            "### TASK-555: child task\n\n"
+            "- **Status:** done\n"
+            "- **Files:**\n"
+            "  - src/x.py\n"
+            "- **Dependencies:** none\n"
+        )
+        (ws["plans_dir"] / "parent.md").write_text(body, encoding="utf-8")
+        # No matching commit_done / feat(TASK-555) — but lint must NOT flag.
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 0, f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
+        body_json = _parse_json(cp)
+        assert body_json["findings"] == []
+        # The superseded plan contributes to `scanned` but NOT `done_tasks`,
+        # because the per-task iteration is skipped for superseded parents.
+        assert body_json["scanned"] == 1
+        assert body_json["done_tasks"] == 0
+
+    def test_feat_grep_is_subject_only_not_body(
+        self, lint_workspace: dict,
+    ) -> None:
+        """Regression: the feat-commit check must grep commit SUBJECTS, not
+        bodies. A commit whose body mentions `feat(TASK-999)` in prose (e.g.
+        a task-019 concern reference) must NOT satisfy the gate for 999."""
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-999.md"
+        plan.write_text(_lint_plan_body("999", "done"), encoding="utf-8")
+        _write_commit_done_event(ws["run_log"], "999")
+        # Commit whose SUBJECT does NOT match feat(TASK-999) but BODY does.
+        subprocess.run(
+            [
+                "git", "commit", "--allow-empty", "-q",
+                "-m",
+                "chore: unrelated\n\nConcern references feat(TASK-999): ...",
+            ],
+            cwd=ws["repo"], check=True,
+        )
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        codes = [f["code"] for f in body["findings"]]
+        assert "missing-feat-commit" in codes, body
+
+    def test_missing_run_log_is_tolerated(
+        self, lint_workspace: dict,
+    ) -> None:
+        """A non-existent --run-log path must not crash the lint; every done
+        task is simply reported as missing its commit_done event."""
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-001.md"
+        plan.write_text(_lint_plan_body("001", "done"), encoding="utf-8")
+        _make_feat_commit(ws["repo"], "001")
+        nonexistent_log = ws["plans_dir"] / "absent.jsonl"
+
+        cp = _run_lint(ws["plans_dir"], nonexistent_log, ws["repo"])
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        codes = [f["code"] for f in body["findings"]]
+        assert "missing-commit-done-event" in codes
+        assert "missing-feat-commit" not in codes
+
+    def test_read_only_no_writes(
+        self, lint_workspace: dict,
+    ) -> None:
+        """The lint must be read-only: no files get written, no git state
+        mutates. Snapshot the run log + HEAD before and after the run."""
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-123.md"
+        plan.write_text(_lint_plan_body("123", "done"), encoding="utf-8")
+        pre_log = ws["run_log"].read_text() if ws["run_log"].exists() else ""
+        pre_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ws["repo"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        pre_plan = plan.read_text()
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode in (0, 1), cp.stderr
+
+        post_log = ws["run_log"].read_text() if ws["run_log"].exists() else ""
+        post_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ws["repo"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert pre_log == post_log
+        assert pre_head == post_head
+        assert plan.read_text() == pre_plan
+
+    def test_accepts_short_task_id_forms(
+        self, lint_workspace: dict,
+    ) -> None:
+        """The matcher uses `_normalize_task_id` so a plan declaring
+        `### TASK-007:` and a commit `feat(TASK-007): ...` pair correctly
+        (no confusion with TASK-007A / TASK-070 etc)."""
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan.md"
+        plan.write_text(_lint_plan_body("007", "done"), encoding="utf-8")
+        _write_commit_done_event(ws["run_log"], "007")
+        _make_feat_commit(ws["repo"], "007")
+        # Also create a feat(TASK-007A) commit to ensure the match doesn't
+        # bleed between suffixed and plain forms.
+        _make_feat_commit(ws["repo"], "007A", title="unrelated")
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 0, f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
+        body = _parse_json(cp)
+        assert body["findings"] == []

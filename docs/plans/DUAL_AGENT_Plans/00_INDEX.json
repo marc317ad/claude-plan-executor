@@ -439,8 +439,10 @@
       "depends_on": [
         "015"
       ],
-      "status": "Done",
-      "superseded_by": []
+      "status": "Superseded",
+      "superseded_by": [
+        "024"
+      ]
     },
     {
       "task_id": "022",
@@ -460,6 +462,31 @@
       "v3_task": "TASK-023",
       "file": "TASK-023_parse_plan_review_envelope_clarity.md",
       "priority": "low",
+      "issues_absorbed": [],
+      "depends_on": [
+        "013",
+        "022"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "024",
+      "v3_task": "TASK-024",
+      "file": "TASK-024_codex_reviewer_evidence_gate.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [
+        "015"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "025",
+      "v3_task": "TASK-025",
+      "file": "TASK-025_plan_author_subagent.md",
+      "priority": "medium",
       "issues_absorbed": [],
       "depends_on": [
         "013",
