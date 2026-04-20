@@ -6244,6 +6244,66 @@ class TestParsePlanReviewReport:
         codes = [e["code"] for e in body["errors"]]
         assert "invalid-subcommand" in codes
 
+    def test_invalid_subcommand_hints_inner_payload(self) -> None:
+        """TASK-023 V2 — when `subcommand` is absent entirely (a likely
+        symptom of piping the inner `parsed` body by mistake), the
+        invalid-subcommand message names that failure mode explicitly so
+        the caller can self-diagnose without reading the parser source."""
+        # Inner-payload-shaped input: no subcommand key, but has
+        # verdict + findings + plan_file at top level.
+        inner = {
+            "plan_file": "sample.md",
+            "verdict": "approved-with-notes",
+            "findings": [],
+            "schedule_ok": True,
+            "summary": "ok",
+        }
+        cp = self._run_parser(inner)
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        assert body["errors"][0]["code"] == "invalid-subcommand"
+        msg = body["errors"][0]["message"]
+        assert "parsed" in msg, msg
+        assert "envelope" in msg, msg
+
+    def test_invalid_subcommand_wrong_value(self) -> None:
+        """TASK-023 V3 — when `subcommand` is present but wrong, the
+        message quotes the actual value and omits the inner-payload
+        hint (the hint is noise for genuine wrong-value mistakes)."""
+        env = _plan_review_envelope()
+        env["subcommand"] = "implement"
+        cp = self._run_parser(env)
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        assert body["errors"][0]["code"] == "invalid-subcommand"
+        msg = body["errors"][0]["message"]
+        assert "'implement'" in msg, msg
+        # The inner-payload hint (shorthand: "did you pipe") is reserved
+        # for the None case; it must not appear here.
+        assert "did you pipe" not in msg, msg
+
+    def test_invalid_subcommand_code_unchanged(self) -> None:
+        """TASK-023 V4 — both the absent-field and wrong-value branches
+        emit the same error code so callers that pattern-match on
+        `errors[*].code` remain unaffected by the TASK-023 message
+        sharpening."""
+        inner = {
+            "plan_file": "sample.md",
+            "verdict": "approved",
+            "findings": [],
+            "schedule_ok": True,
+            "summary": "ok",
+        }
+        cp_absent = self._run_parser(inner)
+        assert cp_absent.returncode == 1, cp_absent.stdout
+        assert _parse_json(cp_absent)["errors"][0]["code"] == "invalid-subcommand"
+
+        env = _plan_review_envelope()
+        env["subcommand"] = "implement"
+        cp_wrong = self._run_parser(env)
+        assert cp_wrong.returncode == 1, cp_wrong.stdout
+        assert _parse_json(cp_wrong)["errors"][0]["code"] == "invalid-subcommand"
+
     def test_rejects_empty_stdin(self) -> None:
         cp = subprocess.run(
             [

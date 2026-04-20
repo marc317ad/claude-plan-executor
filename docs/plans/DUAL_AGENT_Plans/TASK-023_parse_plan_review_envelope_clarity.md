@@ -111,7 +111,7 @@ def test_parse_plan_review_report_invalid_subcommand_code_unchanged():
 
 ### TASK-023: Sharpen `parse-plan-review-report` envelope guidance
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
@@ -221,7 +221,18 @@ Add `test_parse_plan_review_report_invalid_subcommand_hints_inner_payload`, `tes
 venv/bin/pytest -q tests/scripts/test_plan_ops.py
 ```
 
-Expect V1-V4 green; existing TASK-013/TASK-019/TASK-021/TASK-022 tests unchanged. The pre-existing `test_analyst_to_parse_schedule_roundtrip` failure remains out of scope per TASK-019.
+**Accepted result:** the full-file run is expected to finish with exactly **one** failing test, `test_analyst_to_parse_schedule_roundtrip` (a pre-existing failure owned by TASK-019, unrelated to this task's surfaces). All other tests — including V1-V4 newly added here and the existing TASK-013/TASK-021/TASK-022 coverage — must pass.
+
+**How to report:** the implementer must capture the pytest summary line (e.g. `1 failed, N passed`), verify that the single failure is exactly `test_analyst_to_parse_schedule_roundtrip`, and record that verification in the task's run notes. Any additional failure — or any change in the failing test's name or file — is a regression and must block acceptance.
+
+If the implementer prefers a clean-green signal instead, they may additionally run the scoped command below and attach its output; it is informational, not a substitute for the full-file run above:
+
+```bash
+venv/bin/pytest -q tests/scripts/test_plan_ops.py \
+  -k "parse_plan_review_report or Task023 or invalid_subcommand"
+```
+
+Expect this scoped run to finish with zero failures.
 
 ---
 

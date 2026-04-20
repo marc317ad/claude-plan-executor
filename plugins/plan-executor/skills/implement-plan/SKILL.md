@@ -179,6 +179,23 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-revi
   --timeout 180 \
   [--allow-gaps]
 
+```
+
+The full wrapper envelope (produced by `plan_codex_dispatch.py plan-review`) has shape:
+
+```json
+{
+  "task_id": "plan",
+  "subcommand": "plan-review",
+  "outcome": "success",
+  "codex_exit_code": 0,
+  "parsed": { "plan_file": "...", "verdict": "...", "findings": [...], "schedule_ok": true, "summary": "..." }
+}
+```
+
+Pipe the entire envelope (not just `parsed`) into `parse-plan-review-report`:
+
+```bash
 printf '%s' "<envelope>" | venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
   parse-plan-review-report --stdin --json
 ```

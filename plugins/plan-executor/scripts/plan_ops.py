@@ -2728,13 +2728,21 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
     # contract checks.
     subcommand = envelope.get("subcommand")
     if subcommand != "plan-review":
+        if subcommand is None:
+            msg = (
+                "envelope subcommand missing — did you pipe only the inner "
+                "`parsed` object? Expected full wrapper envelope with "
+                "top-level `task_id`, `subcommand`, `outcome`, and `parsed`."
+            )
+        else:
+            msg = (
+                f"envelope subcommand must be 'plan-review', got "
+                f"{subcommand!r}"
+            )
         _die(args, {"errors": [{
             "path": "$.subcommand",
             "code": "invalid-subcommand",
-            "message": (
-                f"envelope subcommand must be 'plan-review', got "
-                f"{subcommand!r}"
-            ),
+            "message": msg,
         }]})
 
     errors: list[dict] = []
