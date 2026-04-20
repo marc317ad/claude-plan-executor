@@ -1,7 +1,7 @@
 # Plan: Analyst Gap Ergonomics — Post-TASK-025 Finish
 
 **Created:** 2026-04-20
-**Status:** pending
+**Status:** complete
 **Base branch:** main
 **Target repo:** `/mnt/d/claude-plan-executor/`
 **Anchor commit:** `a3a947d` (TASK-025 — `plan-author` subagent landed)
@@ -239,3 +239,13 @@ Starting SHA: `650671693b8764dbe913f11c03f34c9d72065e9d`  → Ending SHA: `57ca6
 | 001 | claude | codex/D5 | ship-with-fixes [disagreement] | 7002dac | Codex needs-rework (diff-visibility artifact, untracked files); D.5 ship; commit proceeded with disagreement tag. |
 | 002 | claude | codex | clean | 57ca604 | No findings. |
 | 003 | claude | codex/D5 partial-agreement/codex re-review | needs-rework [narrow-remediation] | paused | First D.5: load_bearing=[0,1] dismissed=[2]. Narrow remediation fixed code gate + test. Re-review flagged SKILL.md + dispatch-templates.md docs still describe old outcome!=invalid. Awaiting user. |
+
+## Execution log — 20260420T185422 (success)
+
+Starting SHA: `650671693b8764dbe913f11c03f34c9d72065e9d`  → Ending SHA: `cf0523d0b276b90ad34907ce367b9c30f832aaee`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | codex→D.5 | ship-with-fixes [disagreement] | 7002dac | Codex needs-rework (diff-visibility on untracked files); D.5 ship. |
+| 002 | claude | codex | clean | 57ca604 | No findings. |
+| 003 | claude | codex→D.5 partial-agreement→hand-fix | ship-with-fixes [disagreement] [narrow-remediation, user-resumed] | cf0523d | D.5 partial-agreement (load_bearing=[0 outcome gate, 1 self-ref test] dismissed=[2 CRLF]); narrow-remediation fixed code+test; hand-fix updated SKILL.md+dispatch-templates.md and tightened allowlist to outcome==needs-enrichment; Codex re-reviews kept churning (validator-in-wrapper + golden-fixture) — dismissed as scope creep per user disposition. |
