@@ -1,0 +1,41 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "023",
+      "title": "Sharpen `parse-plan-review-report` envelope guidance",
+      "agent": "claude",
+      "priority": "low",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "classification_reason": "Multi-surface code+docs+tests, phrasing judgment"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "023"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [
+    {
+      "type": "codex-threshold-adjacent",
+      "affected_tasks": [
+        "023"
+      ],
+      "detail": "At Codex \u22643 file ceiling (3 files); routed claude due to multi-surface coordination and phrasing-sensitive test anchors (V2 requires parsed and envelope substrings in the None branch but absent from the wrong-value branch)."
+    }
+  ]
+}
