@@ -177,6 +177,25 @@ ALLOWED_TASK_FIELDS = {
     "test_command", "classification_reason", "acceptance_criteria",
 }
 ALLOWED_BATCH_FIELDS = {"index", "batch_index", "task_ids", "file_locks"}
+# TASK-002: formalize hard-vs-soft gap severity. Hard gaps block execution
+# without explicit operator override; soft gaps are advisory and can be
+# demoted to warnings by --allow-gaps (TASK-003). Unknown gap types default
+# to "hard" as a fail-safe — better to over-block than silently allow an
+# unclassified gap to flow through.
+GAP_SEVERITY = {
+    "stale-path": "hard",
+    "missing-test-command": "hard",
+    "vague-ac": "hard",
+    "unresolvable-test": "soft",
+    "empty-implementation-notes": "soft",
+}
+
+
+def classify_gap_severity(gap_type: str) -> str:
+    """Return "hard" or "soft" for a gap type. Unknown types → "hard"."""
+    return GAP_SEVERITY.get(gap_type, "hard")
+
+
 PRIORITY_RANKS = {
     "critical": 0,
     "high": 1,
@@ -1992,11 +2011,34 @@ def cmd_parse_schedule(args: argparse.Namespace) -> None:
         batches_list = data.get("batches") if isinstance(data.get("batches"), list) else []
         errors.extend(_validate_schedule_dag(tasks_list, batches_list))
 
+    # TASK-002: backfill gaps[i].severity on legacy schedules. Dict-shaped
+    # gap entries without a `severity` field get populated via
+    # classify_gap_severity and a single `warnings` entry is appended,
+    # matching the shape used by the `task_id` → `id` alias warning above.
+    raw_gaps = data.get("gaps", [])
+    backfilled_gaps = raw_gaps
+    if isinstance(raw_gaps, list):
+        legacy_backfilled = False
+        new_gaps: list = []
+        for g in raw_gaps:
+            if isinstance(g, dict) and "severity" not in g:
+                gtype = g.get("type")
+                severity = classify_gap_severity(gtype if isinstance(gtype, str) else "")
+                g = {**g, "severity": severity}
+                legacy_backfilled = True
+            new_gaps.append(g)
+        backfilled_gaps = new_gaps
+        if legacy_backfilled:
+            warnings.append(
+                "schedule gaps[] missing 'severity' field; backfilled via "
+                "classify_gap_severity (unknown types default to 'hard')"
+            )
+
     result = {
         "outcome": data.get("outcome"),
         "tasks": data.get("tasks") if isinstance(data.get("tasks"), list) else [],
         "batches": data.get("batches") if isinstance(data.get("batches"), list) else [],
-        "gaps": data.get("gaps", []),
+        "gaps": backfilled_gaps,
         "risks": data.get("risks", []),
         "warnings": warnings,
         "errors": errors,

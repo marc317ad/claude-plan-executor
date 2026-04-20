@@ -164,6 +164,20 @@ Scope estimation approach:
 - `vague-ac` — acceptance criteria lack concrete assertions (e.g., "should work correctly" with no measurable check).
 - `empty-implementation-notes` — Claude-tier task with no `Implementation notes:` block.
 
+**Gap severity classification (emit inline on every gap entry):**
+
+Every `gaps[]` entry MUST carry a `severity` field set to either `"hard"` or `"soft"`:
+
+| Gap type | Severity |
+|----------|----------|
+| `stale-path` | `hard` |
+| `missing-test-command` | `hard` |
+| `vague-ac` | `hard` |
+| `unresolvable-test` | `soft` |
+| `empty-implementation-notes` | `soft` |
+
+**Hard** gaps block execution unless the operator explicitly opts in (e.g., `--allow-gaps`). **Soft** gaps are advisory and may be demoted to warnings. Downstream consumers treat any unknown gap type as `hard` for safety — do not rely on that fallback; always emit the canonical severity from the table above.
+
 **Risk types** (cross-task or informational):
 
 - Same file touched by tasks in different batches (safe because serial per batch, but noted).
@@ -265,7 +279,7 @@ Then the authoritative JSON (use a fenced ```json block):
     {"index": 2, "task_ids": ["002"], "file_locks": ["src/signals/engine.py", "src/signals/sentiment.py"]}
   ],
   "gaps": [
-    {"task_id": "002", "type": "missing-test-command", "detail": "Claude-tier task with Test command: none"}
+    {"task_id": "002", "type": "missing-test-command", "severity": "hard", "detail": "Claude-tier task with Test command: none"}
   ],
   "risks": []
 }
@@ -277,7 +291,7 @@ Then the authoritative JSON (use a fenced ```json block):
 - `tasks[*].test_command` preserves the plan's literal string, including `"none"`.
 - `batches` are in execution order; `index` starts at 1.
 - `batches[*].file_locks` is the sorted union of `files` across every task in the batch.
-- `gaps[*].type` values: `stale-path`, `unresolvable-test`, `missing-test-command`, `vague-ac`, `empty-implementation-notes`. Consumers must tolerate unknown values. Every gap type carries a `detail` string only.
+- `gaps[*].type` values: `stale-path`, `unresolvable-test`, `missing-test-command`, `vague-ac`, `empty-implementation-notes`. Consumers must tolerate unknown values. Every gap entry carries these required fields: `type` (string), `task_id` (string, bare `NNN[A-Z]?`), `detail` (string), and `severity` (`"hard" | "soft"` per the Step 7 table; unknown types are treated as `hard` downstream).
 - `risks[*].affected_tasks` lists bare task IDs involved in the risk.
 - When `outcome != "valid"`, emit whatever `tasks` and `batches` you could parse — the orchestrator will not execute them but will surface them to the user.
 - **Canonical field names (v1).** Emit `tasks[*].id` and `batches[*].index`. The orchestrator helper (`scripts/plan_ops.py parse-schedule`) accepts legacy `task_id` / `batch_index` during the alias window and emits a `warnings` entry; always emit the canonical form to keep the warnings list empty. See `DUAL_AGENT_PLAN_EXECUTOR.md` §5 "Canonical Contract (v1)".

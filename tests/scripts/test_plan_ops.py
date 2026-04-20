@@ -1348,6 +1348,119 @@ class TestParseSchedule:
         assert body["outcome"] == "invalid"
         assert not any(e.get("code") == "outcome-gap-mismatch" for e in (body.get("errors") or []))
 
+    # TASK-002: gap severity classification ---------------------------------
+
+    def test_gap_severity_classification_table_matches_analyst_spec(self) -> None:
+        """The Step 7 classification table in plan-analyst.md must match
+        the GAP_SEVERITY constant in plan_ops.py — they are the single
+        source of truth for which gaps block execution."""
+        analyst_md = (
+            REPO_ROOT
+            / "plugins"
+            / "plan-executor"
+            / "agents"
+            / "plan-analyst.md"
+        ).read_text()
+        # Extract the markdown table rows of the form:
+        #   | `gap-type` | `hard` |
+        row_re = re.compile(r"\|\s*`([a-z-]+)`\s*\|\s*`(hard|soft)`\s*\|")
+        table = dict(row_re.findall(analyst_md))
+        # Must include every canonical gap type.
+        expected_types = {
+            "stale-path",
+            "missing-test-command",
+            "vague-ac",
+            "unresolvable-test",
+            "empty-implementation-notes",
+        }
+        assert expected_types.issubset(table.keys()), (
+            f"plan-analyst.md Step 7 table missing gap types: "
+            f"{expected_types - table.keys()}"
+        )
+        for gtype in expected_types:
+            assert table[gtype] == plan_ops.GAP_SEVERITY[gtype], (
+                f"severity mismatch for {gtype!r}: analyst={table[gtype]} "
+                f"vs plan_ops={plan_ops.GAP_SEVERITY[gtype]}"
+            )
+        # Fail-safe default for unknown types must be "hard".
+        assert plan_ops.classify_gap_severity("not-a-real-gap") == "hard"
+        # Every constant entry round-trips through the helper.
+        for gtype, sev in plan_ops.GAP_SEVERITY.items():
+            assert plan_ops.classify_gap_severity(gtype) == sev
+
+    def test_parse_schedule_gap_severity_passthrough(self) -> None:
+        """An analyst-emitted `severity` field must be preserved verbatim
+        and must NOT trigger the legacy-backfill warning."""
+        data = json.loads(json.dumps(VALID_SCHEDULE))
+        data["outcome"] = "needs-enrichment"
+        data["gaps"] = [
+            {
+                "task_id": "002",
+                "type": "missing-test-command",
+                "severity": "hard",
+                "detail": "Claude-tier task with Test command: none",
+            },
+            {
+                "task_id": "002",
+                "type": "unresolvable-test",
+                "severity": "soft",
+                "detail": "wrapper command",
+            },
+        ]
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
+            input=json.dumps(data),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["errors"] == []
+        gaps = body["gaps"]
+        assert [g["severity"] for g in gaps] == ["hard", "soft"]
+        warnings = body.get("warnings") or []
+        assert not any("severity" in w for w in warnings), warnings
+
+    def test_parse_schedule_gap_severity_legacy_fallback(self) -> None:
+        """Legacy schedules without `severity` get backfilled via
+        classify_gap_severity and emit a single `warnings` entry."""
+        data = json.loads(json.dumps(VALID_SCHEDULE))
+        data["outcome"] = "needs-enrichment"
+        data["gaps"] = [
+            {
+                "task_id": "002",
+                "type": "vague-ac",
+                "detail": "AC says 'should work'",
+            },
+            {
+                "task_id": "002",
+                "type": "unresolvable-test",
+                "detail": "wrapper command",
+            },
+            {
+                "task_id": "002",
+                "type": "not-a-known-type",
+                "detail": "future gap type",
+            },
+        ]
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
+            input=json.dumps(data),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["errors"] == []
+        gaps = body["gaps"]
+        assert gaps[0]["severity"] == "hard"  # vague-ac
+        assert gaps[1]["severity"] == "soft"  # unresolvable-test
+        assert gaps[2]["severity"] == "hard"  # unknown → hard fail-safe
+        warnings = body.get("warnings") or []
+        assert any("severity" in w for w in warnings), warnings
+
 
 # ---------------------------------------------------------------------------
 # compute-schedule

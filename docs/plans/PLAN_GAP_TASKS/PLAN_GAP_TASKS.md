@@ -129,7 +129,7 @@ Delete `plugins/plan-executor/templates/TASK.md.template`, `plugins/plan-executo
 
 ### TASK-002: Classify gap severity via inline `gaps[i].severity`
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/agents/plan-analyst.md` — amend Step 7 to classify each gap type as `hard` or `soft` at emission time; amend the JSON contract (around line 280) to document the new required `severity` field on each `gaps[]` entry
