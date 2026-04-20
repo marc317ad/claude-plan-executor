@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "chunks": [
+    {
+      "task_id": "001",
+      "v3_task": "TASK-001",
+      "file": "PLAN_GAP_TASKS.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "v3_task": "TASK-002",
+      "file": "PLAN_GAP_TASKS.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "v3_task": "TASK-003",
+      "file": "PLAN_GAP_TASKS.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": [
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

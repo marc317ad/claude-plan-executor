@@ -8518,3 +8518,43 @@ class TestLintPlans:
         assert cp.returncode == 0, f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
         body = _parse_json(cp)
         assert body["findings"] == []
+
+
+def test_task_template_has_all_required_fields() -> None:
+    """The canonical TASK authoring template must expose every required field
+    plus `Implementation notes:` by default, so authors who copy it produce
+    plans `plan-analyst` can parse without enrichment gaps."""
+    template_path = (
+        REPO_ROOT
+        / "plugins"
+        / "plan-executor"
+        / "templates"
+        / "TASK.md.template"
+    )
+    assert template_path.exists(), f"missing template at {template_path}"
+    body = template_path.read_text(encoding="utf-8")
+
+    # Header must match the TASK-id regex used by plan-analyst.
+    header_re = re.compile(r"^###\s+TASK-\d{3}[A-Z]?:", re.MULTILINE)
+    assert header_re.search(body), (
+        "template header must match ^### TASK-\\d{3}[A-Z]?:"
+    )
+
+    required_labels = [
+        "Status",
+        "Priority",
+        "Files",
+        "Dependencies",
+        "Test command",
+        "Acceptance criteria",
+        "Description",
+        "Implementation notes",
+        "Reversion guidance",
+    ]
+    for label in required_labels:
+        # Accept either a bolded bullet form (`- **Label:**`) or a bolded
+        # section header (`**Label:**`) — both are parsed by plan-analyst.
+        pattern = re.compile(rf"\*\*{re.escape(label)}:\*\*")
+        assert pattern.search(body), (
+            f"template missing required field: {label}"
+        )

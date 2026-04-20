@@ -1,0 +1,26 @@
+<!-- Copy this block into your plan. Replace `001` with the next unused
+     task number (zero-padded to 3 digits; optional `A`/`B`/... suffix for
+     splits — matches `^### TASK-\d{3}[A-Z]?:`). Replace `<title>` with a
+     short imperative title. -->
+
+### TASK-001: <title>
+
+- **Status:** pending
+- **Priority:** high
+- **Files:**
+  - `<file_path>` (create|modify|delete) — <one-line reason this file is touched>
+- **Dependencies:** none
+- **Test command:** `venv/bin/pytest <path_to_test_file>`
+- **Acceptance criteria:**
+  - <Measurable assertion 1 — reference a file/line/symbol or observable behavior>
+  - <Measurable assertion 2 — reference a test that passes or a specific invariant>
+  - <Measurable assertion 3 — scope boundary, e.g. "no other files modified">
+
+**Description:**
+<Two to five sentences explaining what this task changes and why. State the user-visible or system-visible outcome. Avoid restating the file list; explain intent.>
+
+**Implementation notes:**
+<One to three sentences of concrete guidance: the specific function to edit, the enum member to add, the regex to adjust, or the shape of the new data. Name symbols and line ranges when useful. This block must be non-empty — `plan-analyst` flags empty Implementation notes as an `empty-implementation-notes` gap on Claude-tier tasks.>
+
+**Reversion guidance:**
+<One sentence naming the exact files to restore or delete if this task must be rolled back. Example: "Revert `<file_path>` to base SHA and delete any new test added under `tests/`.">
