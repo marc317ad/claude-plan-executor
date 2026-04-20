@@ -18,6 +18,23 @@ user_invocable: true
 6. **Subagent errors.** If a dispatch returns `[Tool result missing due to internal error]` or no parseable report, treat as failure. Log it, restore partial changes, do NOT retry silently. Claude-implementer `malformed` outcome goes to `fail-task stage=implement reason=malformed_report`.
 7. **Cross-review asymmetry.** Claude implements → Codex reviews; Codex implements → Claude reviews. Escalation path differs by direction — see Phase D.2.
 
+## Promotion criteria
+
+The executor promotes from dry-run to execute (and from execute to "certified-clean") via six canonical phase gates. Each gate returns `{name, status ∈ pass|fail|not_applicable, reason}`. Invoke them through `plan_ops.py gates` — never reimplement the predicates inline.
+
+| Gate | Phase | What it asserts |
+|---|---|---|
+| `schema-valid` | Phase 0 preflight | Plan markdown conforms to §5: `## Goal`, a `## Context` or `## Scoped Context`, `## Verification`, and every `### TASK-NNN` block carries Status / Priority / Files / Test command / Acceptance criteria bullets + Description prose header. |
+| `schedule-valid` | Phase 0 preflight | Analyst JSON passes `_validate_schedule` + `_validate_schedule_dag` (shape + DAG). |
+| `fixture-valid` | Phase 0 preflight | The sample fixture (`sample_phase4.md`) itself passes `schema-valid` + `schedule-valid`. Pre-TASK-006 this is expected to fail — TASK-005 establishes the predicate; the rewrite is TASK-006's scope. |
+| `execution-safe` | Phase 0 preflight | `plan_codex_dispatch.py` implement path carries the always-ignore / protected-paths seam, `_snapshot_baseline(` is called at implement + timeout sites, and there is no `git clean -fd` in executable code. Predicate-only — does NOT invoke the wrapper. |
+| `review-safe` | Phase 0 preflight | `plan_codex_dispatch.py cmd_review` carries `_snapshot_baseline(` and respects `is_protected_path` / `PROTECTED_EXACT_PATHS`. |
+| `commit-safe` | Phase D.3 (per commit) + End-of-run certification | `git show --name-only <sha>` minus TASK-NNN's declared `Files:` list and the always-ignore set is empty. Dry-run mode → `not_applicable`. Execute mode → verified post-hoc from every `commit_done` run-log event for the run. |
+
+**Dry-run pass condition:** `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe` all `pass`; `commit-safe` is `not_applicable` (no commits in dry-run).
+
+**Execute pass condition:** all six gates `pass`, with `commit-safe` re-verified per `commit_done` event via `plan_ops.py gates --certify --mode execute --run-id <id>`.
+
 ## Bash command idioms
 
 Standard commands used by this skill:
@@ -50,6 +67,7 @@ All subcommands accept `--json` for machine-readable output.
 | `plan_ops.py normalize-task-id --id 1\|001\|TASK-001\|004A\|TASK-004A` | Canonicalize to `^\d{3}[A-Z]?$` form |
 | `plan_ops.py acquire-lock / release-lock --plan-file ... --run-id ...` | Per-plan-file run-lock against `<run_lock>` |
 | `plan_ops.py path-info` | Emit configured `plan_dir` + derived `run_log` / `run_lock` / `schedule_glob` paths. Run once at Phase 0 to bind the `<plan_dir>` / `<run_log>` / `<run_lock>` / `<schedule_file>` placeholders used throughout this skill. |
+| `plan_ops.py gates --list\|--check <csv>\|--certify --mode dry-run\|execute` | Phase-gate predicates. The six canonical gates — `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`, `commit-safe` — return `{name, status ∈ pass\|fail\|not_applicable, reason}`. Used at Phase 0 preflight (schema + schedule + fixture + execution-safe + review-safe), after each Phase D.3 commit (`commit-safe` for that SHA), and at End-of-run (`--certify --mode execute --run-id <id>` for the full bundle). See §9.7 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
 
 ## Parse arguments
 
@@ -113,6 +131,16 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" check-plan-deps \
 
 Halts on `pass: false` with the `unresolved[]` list. Halts on non-empty `errors[]` as internal-error. There is no `--allow-gaps` override — cross-plan deps are hard blockers.
 
+Then run the five pre-dispatch phase gates (`schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`). The schedule file is written later in Phase 1, so the preflight batch runs `schema-valid`, `fixture-valid`, `execution-safe`, `review-safe` here; `schedule-valid` moves just before Phase 2 dispatch — see below.
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
+  --check schema-valid,fixture-valid,execution-safe,review-safe \
+  --plan-file <absolute plan> --json
+```
+
+Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`. `fixture-valid` may legitimately fail against the pre-TASK-006 sample fixture — if the plan under execution is the sample itself (it will not be in production runs), demote to warning; for any other plan, halt as usual.
+
 Then acquire the run-lock:
 
 ```bash
@@ -154,6 +182,15 @@ Apply filters:
 After any filter rewrite, re-compute file-disjoint batches by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" compute-schedule --stdin --json`, then replace the schedule's `batches` array with the returned `batches` before persisting.
 
 Persist the final schedule (after filter rewrites and any required batch recomputation) by piping the in-memory JSON through `venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" write-schedule --schedule-file <schedule_file> --stdin --json`. This is the sole supported path for persistence; never write the file with the Write tool or inline Python (cf. rule at line 316). `write-schedule` runs the same shared validator as `parse-schedule` and refuses to write on any validation error.
+
+Immediately after the schedule is persisted, run the `schedule-valid` phase gate so the dry-run / execute promotion bundle is complete (the Phase 0 preflight batch excluded this gate because the schedule file did not exist yet):
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
+  --check schedule-valid --schedule-file <schedule_file> --json
+```
+
+Halt on `status: fail` with `run_end reason=schedule_gate_failed`. `write-schedule` already refuses to persist on validation errors, so this gate is a redundant belt-and-braces check that the gate model and the writer agree by construction.
 
 ### Phase 1.5 — Codex plan review (independent pre-dispatch gate)
 
@@ -494,6 +531,17 @@ This: (1) guard check for unexpected staged overlap, (2) plan-status flip to `do
 
 Commit hook failure → subcommand auto-rolls back (`git reset HEAD`, restore plan text) and exits non-zero → treat as D.4 `stage=commit`.
 
+**Post-commit `commit-safe` gate.** On a successful `commit-task`, capture the returned `commit_sha` and verify that the commit touched only TASK-NNN's declared `Files:` list (plus the always-ignore set + the plan file itself):
+
+```bash
+venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
+  --check commit-safe \
+  --plan-file <absolute plan> \
+  --task-id NNN --commit-sha <sha> --json
+```
+
+`status: fail` here means the narrow-commit seam leaked — log `commit_safe_gate_failed {task_id, commit_sha, reason}` and halt before moving to the next batch. This is the post-hoc counterpart to `commit-task`'s pre-commit guard; the two together close the execute-bundle loop.
+
 **Lint reference:** `plan_ops.py lint-plans --plans-dir docs/plans --run-log <run_log> --git-dir . --json` cross-references every `**Status:** done` (or `partial`) task against the run log and git history. A `done`/`partial` marker without a matching `commit_done` event AND `feat(TASK-NNN)` commit flags the task as a hand-edit. Run manually during review or before shipping a plan; the PR-gate wiring is a follow-up (TASK-020C).
 
 #### D.4 — Phase D fail
@@ -529,7 +577,19 @@ Release this task's file locks. Loop to Phase A.
    git add <plan-file> <run_log>
    git commit -m "chore(implement-plan): run <run_id> bookkeeping"
    ```
-6. `plan_ops.py release-lock` (finally-style; runs on early halt too).
+6. **Certify the execute bundle.** Before releasing the lock and after the housekeeping commit (if any), run the full phase-gate bundle in execute mode so the run's pass/fail determination is recorded in the run log and visible to downstream tooling:
+
+   ```bash
+   venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
+     --certify --mode execute \
+     --plan-file <absolute plan> \
+     --schedule-file <schedule_file> \
+     --run-id <id> --json
+   ```
+
+   The bundle re-checks `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`, and re-verifies `commit-safe` against every `commit_done` event for this run. A run with zero commits reports `commit-safe: not_applicable` — that is not a failure. `certified: false` in the output means a gate failed; emit `certify_failed {run_id, gates: {...}}` via `log-event` and surface the failing gate name in the final summary, but do NOT retroactively reopen already-committed tasks. The certify step is a report, not a retry trigger.
+
+7. `plan_ops.py release-lock` (finally-style; runs on early halt too).
 
 Do NOT auto-push. Do NOT auto-PR.
 

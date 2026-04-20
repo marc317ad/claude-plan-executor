@@ -3716,6 +3716,995 @@ def cmd_path_info(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase gates (TASK-005)
+# ---------------------------------------------------------------------------
+#
+# Six explicit gate predicates that the orchestrator uses to promote the run
+# through the plan → schedule → execute → commit lifecycle. Each predicate is
+# a small function returning a `{name, status, reason}` dict where status is
+# one of `pass`, `fail`, `not_applicable`. The gate model is the vocabulary
+# downstream chunks reference (self-audit, sample-fixture conformance, and
+# the Phase 5 certification rerun). See DUAL_AGENT_PLAN_EXECUTOR.md §9.7.
+#
+# Dry-run pass condition: schema-valid + schedule-valid + fixture-valid must
+# hold; execution-safe / review-safe are asserted by predicate against
+# `plan_codex_dispatch.py`; commit-safe is `not_applicable` because no
+# commits exist in dry-run.
+#
+# Execute pass condition: all six gates hold, with commit-safe re-verified
+# post-hoc for every committed task via `--run-id` bundle mode.
+
+GATE_NAMES: tuple[str, ...] = (
+    "schema-valid",
+    "schedule-valid",
+    "fixture-valid",
+    "execution-safe",
+    "review-safe",
+    "commit-safe",
+)
+
+# Fixture the `_gate_fixture_valid` predicate reads. The sample plan rewrite
+# is TASK-006's scope; TASK-005 establishes the gate and its unit tests via
+# synthetic fixtures. Running this gate against the live fixture pre-TASK-006
+# is expected to return `fail` until the rewrite lands.
+#
+# Path is derived from `__file__` so the gate resolves the fixture at the
+# repo root regardless of the process cwd. `plan_ops.py` lives at
+# `plugins/plan-executor/scripts/plan_ops.py`, so the repo root is three
+# parents up from the script dir. Phase 0 / skill invocations that export
+# `CLAUDE_PLUGIN_ROOT` but don't chdir to the repo root still pick up the
+# correct fixture, and unit tests that run from an arbitrary tmp_path are
+# unaffected.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_FIXTURE_RELATIVE_PATH = "docs/plans/sample_phase4.md"
+_FIXTURE_ABSOLUTE_PATH = _REPO_ROOT / _FIXTURE_RELATIVE_PATH
+
+# Canonical locations of wrapper predicates. `_gate_execution_safe` and
+# `_gate_review_safe` grep this file — they never invoke the wrapper.
+_WRAPPER_PATH = (
+    Path(__file__).resolve().parent / "plan_codex_dispatch.py"
+)
+
+
+def _gate_result(name: str, status: str, reason: str) -> dict:
+    """Shape helper for gate predicates."""
+    if status not in {"pass", "fail", "not_applicable"}:
+        raise ValueError(f"gate status must be pass|fail|not_applicable, got {status!r}")
+    return {"name": name, "status": status, "reason": reason}
+
+
+# Required top-level sections in a plan markdown file, per §5 of the design
+# doc. Context accepts either `## Context` or `## Scoped Context` — the plan
+# schema allows both (chunked plans use `## Scoped Context` per-TASK files).
+_PLAN_TOP_LEVEL_REQUIRED = (
+    ("## Goal", "Goal section"),
+)
+_PLAN_CONTEXT_SECTIONS = ("## Context", "## Scoped Context")
+
+
+# Fields every `### TASK-NNN` block must declare (per §5). Bullets are
+# required; Description and Reversion guidance are paragraph-form headers.
+_TASK_REQUIRED_BULLETS = (
+    "Status",
+    "Priority",
+    "Files",
+    "Test command",
+    "Acceptance criteria",
+)
+_TASK_REQUIRED_PROSE_HEADERS = (
+    "Description",
+)
+
+
+def _gate_schema_valid(plan_file: str | Path) -> dict:
+    """Plan markdown conforms to §5 of the design doc.
+
+    Pass iff: `## Goal`, a context section (`## Context` or
+    `## Scoped Context`), and `## Verification` top-level sections are
+    present; every `### TASK-NNN` block carries the required bullets
+    (Status, Priority, Files, Test command, Acceptance criteria) plus
+    the required prose headers (Description). Returns `fail` on any
+    missing element; the reason string names the first few problems
+    concretely so an operator can fix them without guessing.
+    """
+    path = Path(plan_file)
+    if not path.is_file():
+        return _gate_result(
+            "schema-valid",
+            "fail",
+            f"plan file not found: {path}",
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return _gate_result(
+            "schema-valid",
+            "fail",
+            f"plan file unreadable: {e}",
+        )
+
+    problems: list[str] = []
+    # Top-level sections. Matched on `^## <name>` (leading `##` exactly,
+    # so a `### ...` subtask header does not satisfy `## ...`).
+    for header, label in _PLAN_TOP_LEVEL_REQUIRED:
+        if not re.search(rf"^{re.escape(header)}\b", text, re.MULTILINE):
+            problems.append(f"missing {label} (`{header}`)")
+    if not any(
+        re.search(rf"^{re.escape(sec)}\b", text, re.MULTILINE)
+        for sec in _PLAN_CONTEXT_SECTIONS
+    ):
+        problems.append(
+            "missing Context section (`## Context` or `## Scoped Context`)"
+        )
+    # Verification: §5 authors this as `## Verification` in whole-plan files.
+    # Per-chunk `## Verification` files under DUAL_AGENT_Plans/ satisfy it
+    # too — grep is top-level so subsections do not match accidentally.
+    if not re.search(r"^## Verification\b", text, re.MULTILINE):
+        problems.append("missing Verification section (`## Verification`)")
+
+    _, task_blocks = _split_task_blocks(text)
+    if not task_blocks:
+        problems.append("no `### TASK-NNN` blocks found")
+    for tid, block in task_blocks:
+        for field in _TASK_REQUIRED_BULLETS:
+            if not re.search(
+                rf"^\s*-\s*\*\*{re.escape(field)}:\*\*",
+                block,
+                re.MULTILINE,
+            ):
+                problems.append(f"TASK-{tid} missing bullet **{field}:**")
+        for field in _TASK_REQUIRED_PROSE_HEADERS:
+            if not re.search(
+                rf"^\*\*{re.escape(field)}:\*\*",
+                block,
+                re.MULTILINE,
+            ):
+                problems.append(
+                    f"TASK-{tid} missing prose header **{field}:**"
+                )
+
+    if problems:
+        # Show up to five problems inline so the reason stays scannable.
+        preview = "; ".join(problems[:5])
+        if len(problems) > 5:
+            preview += f"; … ({len(problems) - 5} more)"
+        return _gate_result(
+            "schema-valid",
+            "fail",
+            f"schema violations: {preview}",
+        )
+    return _gate_result(
+        "schema-valid",
+        "pass",
+        f"plan {path.name} conforms to §5 schema",
+    )
+
+
+def _gate_schedule_valid(schedule_file: str | Path | None) -> dict:
+    """Analyst schedule JSON passes shape + DAG validation.
+
+    Pass iff the schedule file exists, parses as JSON, and `_validate_schedule`
+    + `_validate_schedule_dag` both return no errors. Same validators used by
+    `parse-schedule` so the gate and the helper agree by construction.
+    """
+    if schedule_file is None:
+        return _gate_result(
+            "schedule-valid",
+            "fail",
+            "schedule-file argument is required",
+        )
+    path = Path(schedule_file)
+    if not path.is_file():
+        return _gate_result(
+            "schedule-valid",
+            "fail",
+            f"schedule file not found: {path}",
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return _gate_result(
+            "schedule-valid",
+            "fail",
+            f"schedule json decode: {e}",
+        )
+    if not isinstance(data, dict):
+        return _gate_result(
+            "schedule-valid",
+            "fail",
+            "top-level schedule must be an object",
+        )
+    errors, _ = _validate_schedule(data)
+    if not errors:
+        tasks_raw = data.get("tasks")
+        batches_raw = data.get("batches")
+        # Preserve the validator contract: `_validate_schedule` currently
+        # reports shape errors for non-list `tasks`/`batches`, but collapsing
+        # them to `[]` here would silently pass an invalid schedule if that
+        # contract ever regresses. Treat a missing or wrong-shape value as
+        # its own DAG-level failure instead.
+        if not isinstance(tasks_raw, list) or not isinstance(batches_raw, list):
+            errors.append({
+                "code": "invalid_shape",
+                "message": "`tasks` and `batches` must both be lists for DAG validation",
+            })
+        else:
+            errors.extend(_validate_schedule_dag(tasks_raw, batches_raw))
+    if errors:
+        first = errors[0]
+        return _gate_result(
+            "schedule-valid",
+            "fail",
+            f"{len(errors)} schedule error(s); first: {first.get('code')} — {first.get('message')}",
+        )
+    return _gate_result(
+        "schedule-valid",
+        "pass",
+        f"schedule {path.name} passes shape + DAG validation",
+    )
+
+
+def _gate_fixture_valid(plan_file: str | Path | None = None) -> dict:
+    """Sample fixture passes schema-valid and schedule-valid.
+
+    TASK-006 rewrites `docs/plans/sample_phase4.md` to the canonical schema.
+    Running this gate against the pre-rewrite fixture is **expected to
+    return `fail`** — the gate vocabulary is established here, its live-tree
+    green status lands with TASK-006. Unit tests drive this predicate via
+    synthetic fixtures (see `tests/scripts/test_plan_ops.py`); the live
+    fixture run is deferred.
+
+    Invariant: fixture-valid is the aggregate of schema-valid AND
+    schedule-valid on the fixture; a missing `<basename>.schedule.json`
+    sidecar is a `fail` (the sidecar is the schedule input and cannot be
+    skipped without defeating the aggregate).
+    """
+    # Default to the cwd-independent absolute fixture path so Phase 0 and
+    # certification bundles resolve the same file regardless of how the
+    # caller was invoked. Tests can still override by passing `plan_file`.
+    path = Path(plan_file) if plan_file is not None else _FIXTURE_ABSOLUTE_PATH
+    if not path.is_file():
+        return _gate_result(
+            "fixture-valid",
+            "fail",
+            f"fixture not found: {path}",
+        )
+    schema = _gate_schema_valid(path)
+    if schema["status"] != "pass":
+        return _gate_result(
+            "fixture-valid",
+            "fail",
+            f"schema-valid failed: {schema['reason']}",
+        )
+    # Schedule sidecar convention: `<basename>.schedule.json` under plan_dir.
+    # fixture-valid is the aggregate schema + schedule certification, so a
+    # missing sidecar is a fail — otherwise dry-run/execute certification
+    # could go green without exercising schedule validation on the fixture.
+    sidecar = path.with_suffix(".schedule.json")
+    if not sidecar.is_file():
+        return _gate_result(
+            "fixture-valid",
+            "fail",
+            f"schedule sidecar missing: {sidecar.name} "
+            f"(fixture-valid requires schema + schedule; sidecar absent)",
+        )
+    sched = _gate_schedule_valid(sidecar)
+    if sched["status"] != "pass":
+        return _gate_result(
+            "fixture-valid",
+            "fail",
+            f"schedule-valid failed on {sidecar.name}: {sched['reason']}",
+        )
+    return _gate_result(
+        "fixture-valid",
+        "pass",
+        f"fixture {path.name} + sidecar pass schema + schedule gates",
+    )
+
+
+def _grep_file(path: Path, pattern: str) -> bool:
+    """Return True iff `pattern` (regex) matches anywhere in `path`."""
+    if not path.is_file():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return re.search(pattern, text, re.MULTILINE) is not None
+
+
+def _strip_python_comments_and_docstrings(text: str) -> str:
+    """Elide line comments and triple-quoted string regions from Python
+    source so executable-code-only grep targets (used by
+    `execution-safe` / `review-safe`) cannot be fooled by commented-out
+    or docstring-mentioned tokens. Returns text with elided regions
+    replaced by blank lines so line offsets inside the remaining
+    executable lines are preserved — callers that search with regex or
+    substring will see only real call sites.
+
+    Lightweight heuristic: toggles triple-quote state on triple-double
+    or triple-single marks per-line and strips a single unquoted hash
+    on each line. Does not handle f-string nesting or backslash-escaped
+    quotes — the wrapper source stays within that tolerance.
+    """
+    out_lines: list[str] = []
+    in_triple_double = False
+    in_triple_single = False
+    # Pre-compiled: non-greedy inline triple-quoted regions. Single-line
+    # docstrings/strings (e.g. `"""one-liner"""`) never toggle the
+    # per-line state tracker because their mark count is even; elide
+    # their contents here so a token mentioned only inside such a
+    # string cannot fool the grep targets.
+    _TRIPLE_INLINE = re.compile(r'""".*?"""|\'\'\'.*?\'\'\'')
+    for raw_line in text.splitlines():
+        # Strip any self-contained triple-quoted regions first so the
+        # state tracker below sees only the unbalanced marks that span
+        # line boundaries.
+        line = _TRIPLE_INLINE.sub("", raw_line)
+        double_marks = line.count('"""')
+        single_marks = line.count("'''")
+        line_was_in_string = in_triple_double or in_triple_single
+        if double_marks % 2 == 1:
+            in_triple_double = not in_triple_double
+        if single_marks % 2 == 1:
+            in_triple_single = not in_triple_single
+        if line_was_in_string or in_triple_double or in_triple_single:
+            out_lines.append("")
+            continue
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            out_lines.append("")
+            continue
+        # Strip inline `# comment` suffix, respecting simple single/double
+        # quoted strings on the same line. A bare `#` inside a string
+        # literal is NOT a comment; a `#` outside any open quote is.
+        in_s_single = False
+        in_s_double = False
+        cut_idx: int | None = None
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if ch == "\\" and i + 1 < len(line) and (in_s_single or in_s_double):
+                i += 2
+                continue
+            if ch == "'" and not in_s_double:
+                in_s_single = not in_s_single
+            elif ch == '"' and not in_s_single:
+                in_s_double = not in_s_double
+            elif ch == "#" and not in_s_single and not in_s_double:
+                cut_idx = i
+                break
+            i += 1
+        if cut_idx is not None:
+            line = line[:cut_idx]
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+def _gate_execution_safe(wrapper_path: Path | None = None) -> dict:
+    """Wrapper's implement path has baseline-snapshot + always-ignore.
+
+    Predicate-only — does NOT invoke the wrapper. Greps for:
+      (1) the shared always-ignore / protected-paths seam
+          (`from _plan_paths import … PROTECTED_…`),
+      (2) `_snapshot_baseline(` called from both `cmd_implement` and the
+          timeout cleanup path,
+      (3) absence of `git clean -fd` outside comments (the observe-only
+          cleanup contract — see §4 State Isolation Contract).
+    """
+    path = wrapper_path or _WRAPPER_PATH
+    if not path.is_file():
+        return _gate_result(
+            "execution-safe",
+            "fail",
+            f"wrapper not found: {path}",
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return _gate_result(
+            "execution-safe",
+            "fail",
+            f"wrapper unreadable: {e}",
+        )
+
+    # Strip `#` comments and triple-quoted docstrings before scanning for
+    # executable call sites. Without this, a commented-out
+    # `# _snapshot_baseline(...)` or a docstring mentioning the cleanup
+    # helper would satisfy the predicate even with no real call. Raw
+    # `text` is still used for the module-wide import seam check below
+    # (imports are code, not comments) and the `git clean -fd` scan has
+    # its own inline comment tracker.
+    code_text = _strip_python_comments_and_docstrings(text)
+
+    checks: list[tuple[str, bool]] = []
+    # (1) always-ignore / protected-paths seam.
+    checks.append((
+        "PROTECTED_EXACT_PATHS import from _plan_paths",
+        "PROTECTED_EXACT_PATHS" in code_text and "_plan_paths" in code_text,
+    ))
+    # (2) baseline snapshot at the implement dispatch seam AND within the
+    # cmd_implement timeout cleanup branch. Scoped to the `cmd_implement`
+    # function body so a wrapper with unrelated snapshot calls (e.g., only
+    # in review/helper code) cannot pass this gate.
+    m_impl = re.search(r"^def cmd_implement\s*\(", code_text, re.MULTILINE)
+    if not m_impl:
+        checks.append((
+            "`def cmd_implement(` definition present",
+            False,
+        ))
+    else:
+        tail_impl = code_text[m_impl.end():]
+        next_def_impl = re.search(r"^def\s+\w+", tail_impl, re.MULTILINE)
+        impl_body = tail_impl[: next_def_impl.start()] if next_def_impl else tail_impl
+        # Baseline must be captured somewhere inside cmd_implement so the
+        # timeout branch has a pre-dispatch snapshot to compare against.
+        checks.append((
+            "_snapshot_baseline called in cmd_implement",
+            "_snapshot_baseline(" in impl_body,
+        ))
+        # The timeout-cleanup branch inside cmd_implement must reference the
+        # captured baseline (via `_handle_timeout_cleanup(..., baseline)`).
+        # We locate the `if codex["status"] == "timeout":` region and check
+        # that _handle_timeout_cleanup is invoked there, carrying baseline.
+        timeout_match = re.search(
+            r"if\s+codex\[[\"']status[\"']\]\s*==\s*[\"']timeout[\"']\s*:",
+            impl_body,
+        )
+        if not timeout_match:
+            checks.append((
+                "cmd_implement has a timeout cleanup branch",
+                False,
+            ))
+        else:
+            # Scan a bounded window after the branch header to find the
+            # cleanup call. The window stops at the next `return` at the
+            # branch's indentation level, a subsequent top-level `if`, or
+            # 2500 chars — whichever comes first.
+            region = impl_body[timeout_match.end(): timeout_match.end() + 2500]
+            checks.append((
+                "cmd_implement timeout branch calls _handle_timeout_cleanup with baseline",
+                bool(
+                    re.search(
+                        r"_handle_timeout_cleanup\s*\([^)]*baseline",
+                        region,
+                        re.DOTALL,
+                    )
+                ),
+            ))
+    # (3) `git clean -fd` must not appear in executable code. Lines starting
+    # with `#` in the source are allowed — the wrapper's own comments document
+    # the prohibition. Triple-quoted docstrings also legitimately reference the
+    # token (e.g. "Never invokes `git clean -fd`.") and are skipped via a
+    # single-pass string-state tracker that toggles on `"""`/`'''` opens and
+    # closes. This is a lightweight parser — it does not handle f-strings or
+    # nested quoting edge cases, but the wrapper source stays within its
+    # tolerance.
+    forbidden_hits: list[str] = []
+    in_triple_double = False
+    in_triple_single = False
+    for idx, line in enumerate(text.splitlines(), 1):
+        stripped = line.lstrip()
+        # Track triple-quote state first so the skip logic matches reality.
+        # Count unescaped occurrences per line; an odd count toggles state.
+        double_marks = line.count('"""')
+        single_marks = line.count("'''")
+        line_was_in_string = in_triple_double or in_triple_single
+        if double_marks % 2 == 1:
+            in_triple_double = not in_triple_double
+        if single_marks % 2 == 1:
+            in_triple_single = not in_triple_single
+        if line_was_in_string or in_triple_double or in_triple_single:
+            continue
+        if stripped.startswith("#"):
+            continue
+        if re.search(r"git\s+clean\s+-fd", line):
+            forbidden_hits.append(f"line {idx}")
+    checks.append((
+        "no `git clean -fd` outside comments",
+        not forbidden_hits,
+    ))
+
+    failures = [desc for desc, ok in checks if not ok]
+    if failures:
+        detail = "; ".join(failures)
+        if forbidden_hits:
+            detail += f" (forbidden hits at {', '.join(forbidden_hits)})"
+        return _gate_result(
+            "execution-safe",
+            "fail",
+            f"wrapper missing execution-safe invariants: {detail}",
+        )
+    return _gate_result(
+        "execution-safe",
+        "pass",
+        f"wrapper {path.name} carries always-ignore + baseline-snapshot + no raw `git clean -fd`",
+    )
+
+
+def _gate_review_safe(wrapper_path: Path | None = None) -> dict:
+    """Wrapper's review path has baseline-snapshot + always-ignore.
+
+    Predicate-only. Greps for `_snapshot_baseline(` inside `cmd_review` and
+    for the `is_protected_path` predicate the wrapper uses to skip protected
+    paths in cleanup. Distinct from `_gate_execution_safe` because the
+    review path has different failure modes (sibling state must be
+    protected even when review dispatches in parallel with implement).
+    """
+    path = wrapper_path or _WRAPPER_PATH
+    if not path.is_file():
+        return _gate_result(
+            "review-safe",
+            "fail",
+            f"wrapper not found: {path}",
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return _gate_result(
+            "review-safe",
+            "fail",
+            f"wrapper unreadable: {e}",
+        )
+
+    # Strip comments/docstrings before scanning so the grep targets
+    # identify real call sites, not commented-out tokens or docstring
+    # mentions of the cleanup helpers.
+    code_text = _strip_python_comments_and_docstrings(text)
+
+    # Find `def cmd_review(` and take the body up to the next top-level `def`
+    # so we can grep inside the review path specifically.
+    m = re.search(r"^def cmd_review\s*\(", code_text, re.MULTILINE)
+    if not m:
+        return _gate_result(
+            "review-safe",
+            "fail",
+            "wrapper has no `def cmd_review(` definition",
+        )
+    tail = code_text[m.end():]
+    next_def = re.search(r"^def\s+\w+", tail, re.MULTILINE)
+    review_body = tail[: next_def.start()] if next_def else tail
+
+    checks: list[tuple[str, bool]] = []
+    checks.append((
+        "_snapshot_baseline called in cmd_review",
+        "_snapshot_baseline(" in review_body,
+    ))
+    checks.append((
+        "is_protected_path or PROTECTED_ constants referenced module-wide",
+        ("is_protected_path" in code_text or "PROTECTED_EXACT_PATHS" in code_text),
+    ))
+
+    failures = [desc for desc, ok in checks if not ok]
+    if failures:
+        return _gate_result(
+            "review-safe",
+            "fail",
+            f"wrapper review path missing invariants: {'; '.join(failures)}",
+        )
+    return _gate_result(
+        "review-safe",
+        "pass",
+        f"wrapper {path.name} cmd_review carries baseline-snapshot + protected-path respect",
+    )
+
+
+def _normalize_files_entry(raw: str) -> str:
+    """Strip backticks, `(create|modify|delete)` annotations, and `:line`
+    suffixes from a raw Files: entry. Mirrors the wrapper's
+    `normalize_file_path` so the commit guard/gate agree on allowlist keys.
+    """
+    cleaned = raw.strip()
+    # Strip trailing (create), (modify), (delete), ...
+    cleaned = re.sub(r"\s*\([^)]+\)\s*$", "", cleaned)
+    cleaned = cleaned.strip()
+    # Strip wrapping backticks; `git show --name-only` never emits them.
+    if cleaned.startswith("`") and cleaned.endswith("`") and len(cleaned) >= 2:
+        cleaned = cleaned[1:-1]
+    # Strip :N-M or :N–M ranges, then a single :N reference.
+    cleaned = re.sub(r":\d+[-\u2013]\d+$", "", cleaned)
+    cleaned = re.sub(r":\d+$", "", cleaned)
+    return cleaned.strip()
+
+
+def _extract_task_files_from_plan(plan_text: str, task_id: str) -> list[str] | None:
+    """Extract the normalized allowed_files list for TASK-NNN.
+
+    Returns the parsed list (possibly empty) or None if the task block is
+    absent. Mirrors the wrapper's `parse_task_block` + `normalize_file_path`
+    logic but stays inside `plan_ops.py` so the gate has no wrapper import
+    dependency.
+
+    Accepts both the multi-line form
+
+        - **Files:**
+          - path/a.py
+          - `path/b.py` (modify)
+
+    and the inline form
+
+        - **Files:** path/a.py
+        - **Files:** `path/a.py`, `path/b.py`
+
+    In both cases each entry is normalized (backticks/annotations/line
+    suffixes stripped) before being returned.
+    """
+    normalized = _normalize_task_id(task_id)
+    if normalized is None:
+        return None
+    _, blocks = _split_task_blocks(plan_text)
+    for tid, block in blocks:
+        if tid != normalized:
+            continue
+        # Multi-line `- **Files:**\n  - path\n  - path` form.
+        m = re.search(
+            r"^-\s*\*\*Files:\*\*\s*$",
+            block,
+            re.MULTILINE,
+        )
+        if m:
+            items: list[str] = []
+            for line in block[m.end():].splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                is_indented_bullet = (
+                    stripped.startswith("-")
+                    and (line.startswith(" ") or line.startswith("\t"))
+                )
+                if is_indented_bullet:
+                    raw = stripped[1:].strip()
+                    items.append(_normalize_files_entry(raw))
+                else:
+                    break
+            return items
+        # Inline `- **Files:** path[, path, ...]` form. `_extract_inline_field`
+        # semantics: value is the text after the `:**` marker on the same line.
+        # Split on commas so comma-separated inline entries land as distinct
+        # allowlist keys.
+        m_inline = re.search(
+            r"^-\s*\*\*Files:\*\*\s+(.+?)\s*$",
+            block,
+            re.MULTILINE,
+        )
+        if m_inline:
+            raw_value = m_inline.group(1).strip()
+            if not raw_value:
+                return []
+            return [
+                _normalize_files_entry(piece)
+                for piece in raw_value.split(",")
+                if piece.strip()
+            ]
+        return []
+    return None
+
+
+def _gate_commit_safe(
+    commit_sha: str | None,
+    task_id: str | None,
+    plan_file: str | Path | None,
+    *,
+    repo_root: Path | None = None,
+) -> dict:
+    """Post-hoc verification that `<commit_sha>` touched only allowed files.
+
+    Fetches the commit's file list via `git show --name-only` and subtracts
+    the explicit commit-task implicit allowlist:
+
+      - the task's declared `Files:` list (normalized),
+      - `<plan_dir>/<plan_basename>` (the plan file itself; `commit-task`
+        stages it alongside each task commit per §D.3 step 3),
+      - `<plan_dir>/00_INDEX.json` (auto-updated by `commit-task` when the
+        roster bullet flips to `Done`).
+
+    Pass iff the residual set is empty. We deliberately do NOT fall back
+    to `is_protected_path` / `PROTECTED_PATH_PREFIXES` as a broader
+    always-ignore filter: those cover paths like `plan_ops.py` itself,
+    which a task MUST declare in Files: to commit against. Using the
+    protected-path predicate as an always-allow filter silently green-lit
+    commits that mutated executor code without declaration.
+    """
+    if not commit_sha or not task_id or plan_file is None:
+        return _gate_result(
+            "commit-safe",
+            "fail",
+            "commit-safe requires commit_sha, task_id, and plan_file",
+        )
+    plan_path = Path(plan_file)
+    if not plan_path.is_file():
+        return _gate_result(
+            "commit-safe",
+            "fail",
+            f"plan file not found: {plan_path}",
+        )
+    try:
+        plan_text = plan_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return _gate_result(
+            "commit-safe",
+            "fail",
+            f"plan file unreadable: {e}",
+        )
+    allowed_raw = _extract_task_files_from_plan(plan_text, task_id)
+    if allowed_raw is None:
+        return _gate_result(
+            "commit-safe",
+            "fail",
+            f"TASK-{task_id} not found in plan {plan_path.name}",
+        )
+    allowed = set(allowed_raw)
+    # Mirror the explicit `--only` list that `cmd_commit_task` passes to
+    # `git commit`: user-declared Files + plan file + `00_INDEX.json` next
+    # to the plan (auto-updated by `commit-task`). Anything outside that
+    # set is out-of-scope — we do NOT fall back to the broader
+    # `is_protected_path` predicate, because that covers executor scripts
+    # (plan_ops.py, plan_codex_dispatch.py) which a task MUST declare in
+    # Files: to commit against. Using the predicate as an always-allow
+    # filter silently green-lighted commits that mutated executor code
+    # without declaration.
+    try:
+        rel_plan = str(
+            plan_path.resolve().relative_to(
+                (repo_root or Path.cwd()).resolve()
+            )
+        )
+        allowed.add(rel_plan)
+    except ValueError:
+        pass
+    # Plan-dir-relative path, covering both layouts a plan_ops invocation
+    # might see (cwd repo root vs cwd plan dir).
+    allowed.add(str(plan_path))
+    allowed.add(plan_path.as_posix())
+    # `commit-task` stages `00_INDEX.json` alongside the task commit when
+    # the roster auto-update succeeds (`outcome == "updated"`). That path
+    # is part of the orchestrator's authored footprint and is always
+    # allowed even when the task's Files list omits it.
+    index_path = plan_path.parent / "00_INDEX.json"
+    try:
+        rel_index = str(
+            index_path.resolve().relative_to(
+                (repo_root or Path.cwd()).resolve()
+            )
+        )
+        allowed.add(rel_index)
+    except (ValueError, OSError):
+        pass
+    allowed.add(str(index_path))
+    allowed.add(index_path.as_posix())
+
+    proc = _git(
+        ["show", "--name-only", "--pretty=format:", commit_sha],
+        cwd=repo_root,
+    )
+    if proc.returncode != 0:
+        return _gate_result(
+            "commit-safe",
+            "fail",
+            (
+                f"git show failed for {commit_sha}: "
+                f"{proc.stderr.strip() or proc.stdout.strip()}"
+            ),
+        )
+    changed = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    offending: list[str] = []
+    for path in changed:
+        if path in allowed:
+            continue
+        offending.append(path)
+    if offending:
+        return _gate_result(
+            "commit-safe",
+            "fail",
+            (
+                f"commit {commit_sha[:12]} touched {len(offending)} "
+                f"file(s) outside TASK-{task_id} scope: {offending[:5]}"
+            ),
+        )
+    return _gate_result(
+        "commit-safe",
+        "pass",
+        f"commit {commit_sha[:12]} touched only TASK-{task_id} allowed files",
+    )
+
+
+def _certify_dry_run(plan_file: str | Path, schedule_file: str | Path | None = None) -> list[dict]:
+    """Bundle of gates exercised in dry-run mode.
+
+    schema-valid + schedule-valid + fixture-valid + execution-safe +
+    review-safe run as predicates; commit-safe is `not_applicable`
+    because no commits exist in dry-run. `schedule-valid` is required
+    for certification — a missing `schedule_file` fails the bundle
+    rather than collapsing to `not_applicable`.
+    """
+    gates: list[dict] = [
+        _gate_schema_valid(plan_file),
+        _gate_schedule_valid(schedule_file),
+        _gate_fixture_valid(),
+        _gate_execution_safe(),
+        _gate_review_safe(),
+        _gate_result(
+            "commit-safe",
+            "not_applicable",
+            "dry-run mode; no commits to verify",
+        ),
+    ]
+    return gates
+
+
+def _certify_execute(
+    plan_file: str | Path,
+    run_id: str | None,
+    schedule_file: str | Path | None = None,
+) -> list[dict]:
+    """Bundle of gates exercised in execute mode.
+
+    Includes the dry-run set plus a post-hoc commit-safe check per
+    `commit_done` event in the run log for this run_id. A run with zero
+    commits (successful no-op) reports `commit-safe: not_applicable`.
+    `schedule-valid` is required for certification — a missing
+    `schedule_file` fails the bundle rather than collapsing to
+    `not_applicable`.
+    """
+    gates: list[dict] = [
+        _gate_schema_valid(plan_file),
+        _gate_schedule_valid(schedule_file),
+        _gate_fixture_valid(),
+        _gate_execution_safe(),
+        _gate_review_safe(),
+    ]
+    commits: list[tuple[str, str]] = []
+    if run_id and RUN_LOG_PATH.is_file():
+        try:
+            for line in RUN_LOG_PATH.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    ev = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(ev, dict):
+                    continue
+                if ev.get("event") != "commit_done":
+                    continue
+                if ev.get("run_id") != run_id:
+                    continue
+                tid = _normalize_task_id(str(ev.get("task_id", "")))
+                sha = ev.get("commit_sha") or ev.get("sha") or ""
+                if tid and sha:
+                    commits.append((tid, str(sha)))
+        except OSError:
+            pass
+    if not commits:
+        gates.append(_gate_result(
+            "commit-safe",
+            "not_applicable",
+            f"execute mode: no commit_done events for run_id={run_id!r}",
+        ))
+    else:
+        # Derive the repo root from the plan file's git toplevel so
+        # `git show --name-only` inside `_gate_commit_safe` targets the
+        # same repository that produced the run log, not the caller's
+        # cwd. Falls back to Path.cwd() semantics on git failure, matching
+        # the helper's existing default.
+        plan_dir = Path(plan_file).resolve().parent
+        toplevel = _git(["rev-parse", "--show-toplevel"], cwd=plan_dir)
+        repo_root = (
+            Path(toplevel.stdout.strip())
+            if toplevel.returncode == 0 and toplevel.stdout.strip()
+            else None
+        )
+        failures: list[str] = []
+        for tid, sha in commits:
+            res = _gate_commit_safe(sha, tid, plan_file, repo_root=repo_root)
+            if res["status"] != "pass":
+                failures.append(f"TASK-{tid}@{sha[:12]}: {res['reason']}")
+        if failures:
+            gates.append(_gate_result(
+                "commit-safe",
+                "fail",
+                f"{len(failures)}/{len(commits)} commit(s) failed: {failures[:3]}",
+            ))
+        else:
+            gates.append(_gate_result(
+                "commit-safe",
+                "pass",
+                f"all {len(commits)} commit(s) for run_id={run_id} touched only allowed files",
+            ))
+    return gates
+
+
+def cmd_gates(args: argparse.Namespace) -> None:
+    """Phase-gate CLI: --list | --check <csv> | --certify --mode <m>.
+
+    --list emits the six canonical gate names.
+    --check runs the subset named on the CLI; each gate returns the
+      documented `{name, status, reason}` shape.
+    --certify runs the dry-run or execute bundle against a plan file;
+      emits `{certified: bool, gates: {...}}`.
+    """
+    if args.list:
+        _emit(args, {"gates": list(GATE_NAMES)})
+        return
+
+    if args.certify:
+        if args.mode not in {"dry-run", "execute"}:
+            _die(args, {"error": "mode must be dry-run|execute"})
+        if not args.plan_file:
+            _die(args, {"error": "--certify requires --plan-file"})
+        # `schedule-valid` is a required member of the certification bundle
+        # (acceptance criteria: dry-run pass requires it green; execute is
+        # the dry-run set plus commit-safe). Skipping it when --schedule-file
+        # is absent produced a false-positive certification path, so fail
+        # fast at the CLI seam instead of emitting `not_applicable`.
+        if not args.schedule_file:
+            _die(args, {"error": "--certify requires --schedule-file"})
+        if args.mode == "dry-run":
+            gates = _certify_dry_run(args.plan_file, args.schedule_file)
+        else:
+            # Execute certification re-verifies commit-safe per landed
+            # commit; without a --run-id there is no way to identify the
+            # bundle of commits to check, so certification would silently
+            # report commit-safe: not_applicable and pass.
+            if not args.run_id:
+                _die(args, {
+                    "error": "--certify --mode execute requires --run-id",
+                })
+            gates = _certify_execute(
+                args.plan_file, args.run_id, args.schedule_file,
+            )
+        by_name = {g["name"]: {"status": g["status"], "reason": g["reason"]} for g in gates}
+        # Canonical status vocabulary: pass | fail | not_applicable.
+        # Certification passes iff every applicable gate is `pass`; a
+        # `not_applicable` gate does not block certification.
+        certified = all(g["status"] in {"pass", "not_applicable"} for g in gates)
+        _emit(
+            args,
+            {"certified": certified, "mode": args.mode, "gates": by_name},
+            exit_code=0 if certified else 1,
+        )
+        return
+
+    if not args.check:
+        _die(args, {
+            "error": "gates requires one of --list, --check, or --certify",
+        })
+    requested = [s.strip() for s in args.check.split(",") if s.strip()]
+    unknown = [g for g in requested if g not in GATE_NAMES]
+    if unknown:
+        _die(args, {"error": f"unknown gate name(s): {unknown}; known: {list(GATE_NAMES)}"})
+
+    results: list[dict] = []
+    for name in requested:
+        if name == "schema-valid":
+            results.append(_gate_schema_valid(args.plan_file))
+        elif name == "schedule-valid":
+            results.append(_gate_schedule_valid(args.schedule_file))
+        elif name == "fixture-valid":
+            # The gate invariant is about the canonical sample fixture
+            # (`docs/plans/sample_phase4.md`), not the user's plan file.
+            # Passing `args.plan_file` here caused Phase 0 to validate the
+            # execution plan twice (via schema-valid and fixture-valid) and
+            # skip the sample fixture gate entirely — the opposite of the
+            # acceptance criteria.
+            results.append(_gate_fixture_valid())
+        elif name == "execution-safe":
+            results.append(_gate_execution_safe())
+        elif name == "review-safe":
+            results.append(_gate_review_safe())
+        elif name == "commit-safe":
+            results.append(_gate_commit_safe(
+                args.commit_sha, args.task_id, args.plan_file,
+            ))
+    any_failed = any(r["status"] == "fail" for r in results)
+    _emit(
+        args,
+        {"gates": results, "failed": any_failed},
+        exit_code=1 if any_failed else 0,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
@@ -4024,6 +5013,66 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_lint)
 
+    # TASK-005: phase-gate and promotion-criteria subcommand. Six canonical
+    # gates — schema-valid, schedule-valid, fixture-valid, execution-safe,
+    # review-safe, commit-safe — each returning {name, status, reason}.
+    # --list enumerates names, --check runs one-or-more predicates, and
+    # --certify bundles the dry-run or execute subset for end-of-phase
+    # promotion. See §9.7 of DUAL_AGENT_PLAN_EXECUTOR.md.
+    p_gates = sub.add_parser(
+        "gates",
+        help=(
+            "Run the six canonical phase gates (schema-valid, schedule-valid, "
+            "fixture-valid, execution-safe, review-safe, commit-safe) either "
+            "individually (--check) or as a dry-run/execute certification "
+            "bundle (--certify)."
+        ),
+    )
+    mx_gates = p_gates.add_mutually_exclusive_group(required=True)
+    mx_gates.add_argument(
+        "--list", action="store_true",
+        help="Emit the canonical list of gate names",
+    )
+    mx_gates.add_argument(
+        "--check", default=None,
+        help=(
+            "Comma-separated gate names to evaluate; fails with exit 1 if "
+            "any checked gate returns status=fail"
+        ),
+    )
+    mx_gates.add_argument(
+        "--certify", action="store_true",
+        help=(
+            "Certify the promotion bundle for --mode (dry-run|execute); "
+            "exit 1 if any required gate in the bundle returns status=fail"
+        ),
+    )
+    p_gates.add_argument(
+        "--mode", choices=("dry-run", "execute"), default=None,
+        help="Required with --certify; selects the promotion bundle",
+    )
+    p_gates.add_argument(
+        "--plan-file", default=None,
+        help="Path to plan markdown file (for schema-valid/fixture-valid)",
+    )
+    p_gates.add_argument(
+        "--schedule-file", default=None,
+        help="Path to schedule JSON file (for schedule-valid)",
+    )
+    p_gates.add_argument(
+        "--commit-sha", default=None,
+        help="Commit SHA to inspect for commit-safe",
+    )
+    p_gates.add_argument(
+        "--task-id", default=None,
+        help="Task id whose Files: list scopes commit-safe allowed paths",
+    )
+    p_gates.add_argument(
+        "--run-id", default=None,
+        help="Run identifier for certify-execute commit-safe verification",
+    )
+    _add_json(p_gates)
+
     return parser
 
 
@@ -4104,6 +5153,7 @@ def main(argv: list[str] | None = None) -> None:
         "check-plan-deps": cmd_check_plan_deps,
         "path-info": cmd_path_info,
         "lint-plans": cmd_lint_plans,
+        "gates": cmd_gates,
     }
     handlers[args.command](args)
 

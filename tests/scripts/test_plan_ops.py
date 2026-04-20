@@ -7578,17 +7578,17 @@ class TestTask019ScheduleDagHelper:
 
     def test_validate_schedule_dag_shared_by_consumers(self) -> None:
         # V3 — the helper is a single module-local definition with exactly
-        # three call sites. Inline Kahn's blocks in cmd_batch_next /
+        # four call sites. Inline Kahn's blocks in cmd_batch_next /
         # cmd_filter_schedule are forbidden.
         script_text = SCRIPT.read_text(encoding="utf-8")
         occurrences = [
             ln for ln in script_text.splitlines()
             if "_validate_schedule_dag(" in ln
         ]
-        # 1 def + 3 call sites (cmd_parse_schedule, cmd_batch_next,
-        # cmd_filter_schedule).
-        assert len(occurrences) == 4, (
-            f"expected 4 occurrences (1 def + 3 calls), got {len(occurrences)}:\n"
+        # 1 def + 4 call sites (cmd_parse_schedule, cmd_batch_next,
+        # cmd_filter_schedule, _gate_schedule_valid).
+        assert len(occurrences) == 5, (
+            f"expected 5 occurrences (1 def + 4 calls), got {len(occurrences)}:\n"
             + "\n".join(occurrences)
         )
         defs = [ln for ln in occurrences if ln.lstrip().startswith("def ")]
@@ -8731,3 +8731,1027 @@ def test_task_template_has_all_required_fields() -> None:
         assert pattern.search(body), (
             f"template missing required field: {label}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TASK-005: phase gates (gates --list / --check / --certify).
+#
+# Gate predicates are pure — they grep artifacts on disk, never invoke the
+# wrapper. Tests use synthetic fixtures rather than the live sample plan
+# because the sample rewrite is TASK-006's scope.
+# ---------------------------------------------------------------------------
+
+
+_GATES_SYNTHETIC_PLAN = """# Plan: gates-synthetic
+
+**Created:** 2026-04-20
+**Status:** in-progress
+**Base branch:** main
+
+## Goal
+
+Exercise the TASK-005 gate predicates against a known-good plan body.
+
+## Context
+
+Synthetic plan used by the TASK-005 gate tests. Does not touch the live repo.
+
+## Tasks
+
+### TASK-001: Seed task
+
+- **Status:** pending
+- **Priority:** P1
+- **Files:**
+  - `example/seed.py` (create)
+- **Dependencies:** none
+- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py -k gates`
+- **Acceptance criteria:**
+  - Seed file created.
+
+**Description:** Placeholder task for the gate schema predicate.
+
+## Verification
+
+Verification prose.
+"""
+
+
+def _write_gates_plan(tmp_path: Path, body: str = _GATES_SYNTHETIC_PLAN) -> Path:
+    path = tmp_path / "plan.md"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _write_gates_schedule(tmp_path: Path, payload: dict | None = None) -> Path:
+    if payload is None:
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {
+                    "id": "001",
+                    "agent": "claude",
+                    "priority": "P1",
+                    "files": ["example/seed.py"],
+                    "dependencies": [],
+                }
+            ],
+            "batches": [
+                {
+                    "index": 0,
+                    "task_ids": ["001"],
+                    "file_locks": ["example/seed.py"],
+                }
+            ],
+            "gaps": [],
+            "risks": [],
+        }
+    path = tmp_path / "plan.schedule.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+class TestGatesCli:
+    """`gates --list` and the CLI shape contract."""
+
+    def test_gates_list_returns_six_names(self) -> None:
+        """`gates --list --json` returns the six canonical gate names."""
+        cp = _run("gates", "--list", "--json")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body == {
+            "gates": [
+                "schema-valid",
+                "schedule-valid",
+                "fixture-valid",
+                "execution-safe",
+                "review-safe",
+                "commit-safe",
+            ]
+        }
+
+    def test_gates_module_constant_matches(self) -> None:
+        """The exported `GATE_NAMES` tuple and the `--list` output agree."""
+        assert tuple(plan_ops.GATE_NAMES) == (
+            "schema-valid",
+            "schedule-valid",
+            "fixture-valid",
+            "execution-safe",
+            "review-safe",
+            "commit-safe",
+        )
+
+    def test_unknown_gate_name_errors(self, tmp_path: Path) -> None:
+        """--check rejects gate names outside the canonical set."""
+        plan = _write_gates_plan(tmp_path)
+        cp = _run("gates", "--check", "no-such-gate", "--plan-file", str(plan), "--json")
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert "unknown gate name" in body.get("error", "")
+
+
+class TestGateSchemaValid:
+    """`schema-valid` asserts §5 conformance on the plan markdown."""
+
+    def test_passes_on_conforming_plan(self, tmp_path: Path) -> None:
+        plan = _write_gates_plan(tmp_path)
+        cp = _run("gates", "--check", "schema-valid", "--plan-file", str(plan), "--json")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["gates"][0]["name"] == "schema-valid"
+        assert body["gates"][0]["status"] == "pass"
+
+    def test_fails_on_missing_verification_section(self, tmp_path: Path) -> None:
+        body = _GATES_SYNTHETIC_PLAN.replace(
+            "## Verification\n\nVerification prose.\n", ""
+        )
+        plan = _write_gates_plan(tmp_path, body)
+        cp = _run("gates", "--check", "schema-valid", "--plan-file", str(plan), "--json")
+        assert cp.returncode == 1
+        payload = _parse_json(cp)
+        gate = payload["gates"][0]
+        assert gate["status"] == "fail"
+        assert "Verification" in gate["reason"]
+
+    def test_fails_on_missing_task_bullet(self, tmp_path: Path) -> None:
+        body = _GATES_SYNTHETIC_PLAN.replace("- **Priority:** P1\n", "")
+        plan = _write_gates_plan(tmp_path, body)
+        cp = _run("gates", "--check", "schema-valid", "--plan-file", str(plan), "--json")
+        assert cp.returncode == 1
+        gate = _parse_json(cp)["gates"][0]
+        assert gate["status"] == "fail"
+        assert "Priority" in gate["reason"]
+
+    def test_fails_on_missing_file(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does-not-exist.md"
+        cp = _run("gates", "--check", "schema-valid", "--plan-file", str(missing), "--json")
+        assert cp.returncode == 1
+        gate = _parse_json(cp)["gates"][0]
+        assert gate["status"] == "fail"
+        assert "not found" in gate["reason"]
+
+    def test_scoped_context_header_is_accepted(self, tmp_path: Path) -> None:
+        """Per-chunk plans use `## Scoped Context` instead of `## Context`."""
+        body = _GATES_SYNTHETIC_PLAN.replace("## Context", "## Scoped Context")
+        plan = _write_gates_plan(tmp_path, body)
+        cp = _run("gates", "--check", "schema-valid", "--plan-file", str(plan), "--json")
+        assert cp.returncode == 0, cp.stderr
+        gate = _parse_json(cp)["gates"][0]
+        assert gate["status"] == "pass"
+
+
+class TestGateScheduleValid:
+    """`schedule-valid` reuses `_validate_schedule` + `_validate_schedule_dag`."""
+
+    def test_passes_on_valid_schedule(self, tmp_path: Path) -> None:
+        sched = _write_gates_schedule(tmp_path)
+        cp = _run("gates", "--check", "schedule-valid", "--schedule-file", str(sched), "--json")
+        assert cp.returncode == 0, cp.stderr
+        gate = _parse_json(cp)["gates"][0]
+        assert gate["name"] == "schedule-valid"
+        assert gate["status"] == "pass"
+
+    def test_fails_on_invalid_schedule_shape(self, tmp_path: Path) -> None:
+        """Dropping required fields makes `_validate_schedule` flag errors."""
+        sched = _write_gates_schedule(
+            tmp_path,
+            payload={"outcome": "valid"},  # missing tasks[], batches[]
+        )
+        cp = _run("gates", "--check", "schedule-valid", "--schedule-file", str(sched), "--json")
+        assert cp.returncode == 1
+        gate = _parse_json(cp)["gates"][0]
+        assert gate["status"] == "fail"
+
+    def test_fails_on_dag_cycle(self, tmp_path: Path) -> None:
+        """`_validate_schedule_dag` catches cycles in the dependency graph."""
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "claude", "priority": "P1",
+                 "files": ["a.py"], "dependencies": ["002"]},
+                {"id": "002", "agent": "claude", "priority": "P1",
+                 "files": ["b.py"], "dependencies": ["001"]},
+            ],
+            "batches": [
+                {
+                    "index": 0,
+                    "task_ids": ["001", "002"],
+                    "file_locks": ["a.py", "b.py"],
+                }
+            ],
+            "gaps": [],
+            "risks": [],
+        }
+        sched = _write_gates_schedule(tmp_path, payload)
+        cp = _run("gates", "--check", "schedule-valid", "--schedule-file", str(sched), "--json")
+        assert cp.returncode == 1
+        gate = _parse_json(cp)["gates"][0]
+        assert gate["status"] == "fail"
+
+    def test_fails_when_schedule_file_missing(self, tmp_path: Path) -> None:
+        cp = _run(
+            "gates", "--check", "schedule-valid",
+            "--schedule-file", str(tmp_path / "absent.json"),
+            "--json",
+        )
+        assert cp.returncode == 1
+        gate = _parse_json(cp)["gates"][0]
+        assert gate["status"] == "fail"
+
+
+class TestGateExecutionAndReviewSafe:
+    """Wrapper-predicate gates: greps of `plan_codex_dispatch.py`."""
+
+    def test_execution_safe_passes_on_live_wrapper(self) -> None:
+        """The live wrapper carries the always-ignore + baseline-snapshot seams."""
+        cp = _run("gates", "--check", "execution-safe", "--json")
+        assert cp.returncode == 0, cp.stderr
+        gate = _parse_json(cp)["gates"][0]
+        assert gate["name"] == "execution-safe"
+        assert gate["status"] == "pass"
+
+    def test_review_safe_passes_on_live_wrapper(self) -> None:
+        cp = _run("gates", "--check", "review-safe", "--json")
+        assert cp.returncode == 0, cp.stderr
+        gate = _parse_json(cp)["gates"][0]
+        assert gate["name"] == "review-safe"
+        assert gate["status"] == "pass"
+
+    def test_execution_safe_fails_on_stub_wrapper(self, tmp_path: Path) -> None:
+        """A wrapper lacking the invariants fails the predicate."""
+        stub = tmp_path / "stub_wrapper.py"
+        stub.write_text("# empty wrapper\n", encoding="utf-8")
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["name"] == "execution-safe"
+        assert result["status"] == "fail"
+
+    def test_execution_safe_flags_raw_git_clean_invocation(self, tmp_path: Path) -> None:
+        """A wrapper that actually runs `git clean -fd` fails the predicate."""
+        stub = tmp_path / "bad_wrapper.py"
+        stub.write_text(
+            "from _plan_paths import PROTECTED_EXACT_PATHS\n"
+            "def _snapshot_baseline(): pass\n"
+            "def cmd_implement():\n"
+            "    _snapshot_baseline()\n"
+            "    os.system('git clean -fd')\n"
+            "def cmd_timeout():\n"
+            "    _snapshot_baseline()\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "fail"
+        assert "git clean -fd" in result["reason"]
+
+    def test_execution_safe_accepts_docstring_reference(self, tmp_path: Path) -> None:
+        """The prohibition string inside a docstring must not trip the gate."""
+        stub = tmp_path / "ok_wrapper.py"
+        stub.write_text(
+            '"""Docs.\n\nNever invokes `git clean -fd` outside scope.\n"""\n'
+            "from _plan_paths import PROTECTED_EXACT_PATHS\n"
+            "def _snapshot_baseline(): pass\n"
+            "def _handle_timeout_cleanup(a, b, baseline): pass\n"
+            "def cmd_implement(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    codex = {'status': 'timeout'}\n"
+            "    if codex['status'] == 'timeout':\n"
+            "        _handle_timeout_cleanup('x', [], baseline)\n"
+            "    return 0\n"
+            "def cmd_review(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "pass", result
+
+    def test_review_safe_fails_without_snapshot_in_cmd_review(self, tmp_path: Path) -> None:
+        stub = tmp_path / "stub_no_review.py"
+        stub.write_text(
+            "PROTECTED_EXACT_PATHS = set()\n"
+            "def is_protected_path(x): return False\n"
+            "def _snapshot_baseline(): pass\n"
+            "def cmd_review():\n"
+            "    return None  # no snapshot\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_review_safe(stub)
+        assert result["status"] == "fail"
+
+
+class TestGateCommitSafe:
+    """`commit-safe` verifies a landed commit's footprint against Files:."""
+
+    def _make_repo_with_plan(self, tmp_path: Path) -> tuple[Path, Path]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@x"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        plan = repo / "plan.md"
+        plan.write_text(_GATES_SYNTHETIC_PLAN, encoding="utf-8")
+        (repo / "example").mkdir()
+        subprocess.run(["git", "add", "plan.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+        return repo, plan
+
+    def test_happy_path_touches_only_allowed_files(self, tmp_path: Path) -> None:
+        """Commit staging exactly the declared `Files:` entry passes commit-safe."""
+        repo, plan = self._make_repo_with_plan(tmp_path)
+        seed = repo / "example" / "seed.py"
+        seed.write_text("# seed\n", encoding="utf-8")
+        subprocess.run(["git", "add", "example/seed.py"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat(TASK-001): seed"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["name"] == "commit-safe"
+        assert result["status"] == "pass", result
+
+    def test_detects_scope_violation(self, tmp_path: Path) -> None:
+        """Commit touching a file outside `Files:` fails commit-safe."""
+        repo, plan = self._make_repo_with_plan(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        (repo / "other.py").write_text("# leak\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "example/seed.py", "other.py"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat(TASK-001): leak"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "fail"
+        assert "other.py" in result["reason"]
+
+    def test_plan_file_is_allowed(self, tmp_path: Path) -> None:
+        """The plan file itself is always-ignored from commit-safe's violation set."""
+        repo, plan = self._make_repo_with_plan(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        plan.write_text(
+            _GATES_SYNTHETIC_PLAN.replace("**Status:** pending", "**Status:** done"),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "add", "example/seed.py", "plan.md"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat(TASK-001): seed + plan flip"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "pass", result
+
+    def test_unknown_task_id_fails(self, tmp_path: Path) -> None:
+        repo, plan = self._make_repo_with_plan(tmp_path)
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "999", plan, repo_root=repo,
+        )
+        assert result["status"] == "fail"
+        assert "999" in result["reason"]
+
+    def test_missing_required_args_fails(self, tmp_path: Path) -> None:
+        result = plan_ops._gate_commit_safe(None, None, None)
+        assert result["status"] == "fail"
+
+
+class TestCertifyBundles:
+    """`--certify --mode dry-run|execute` bundles."""
+
+    def test_certify_dry_run_bundle_shape(self, tmp_path: Path) -> None:
+        """Dry-run bundle: commit-safe is `not_applicable`."""
+        plan = _write_gates_plan(tmp_path)
+        sched = _write_gates_schedule(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--mode", "dry-run",
+            "--plan-file", str(plan),
+            "--schedule-file", str(sched),
+            "--json",
+        )
+        # Might fail because the live sample fixture gate returns fail pre-TASK-006.
+        body = _parse_json(cp)
+        assert body["mode"] == "dry-run"
+        assert "commit-safe" in body["gates"]
+        assert body["gates"]["commit-safe"]["status"] == "not_applicable"
+        assert body["gates"]["schema-valid"]["status"] == "pass"
+        assert body["gates"]["schedule-valid"]["status"] == "pass"
+        assert body["gates"]["execution-safe"]["status"] == "pass"
+        assert body["gates"]["review-safe"]["status"] == "pass"
+
+    def test_certify_dry_run_without_schedule_file_fails(
+        self, tmp_path: Path,
+    ) -> None:
+        """--certify requires --schedule-file; omission must fail at the CLI seam.
+
+        Previously the bundle collapsed `schedule-valid` to `not_applicable`
+        when no schedule file was supplied, which let a certify pass without
+        exercising schedule validation at all. The acceptance criteria make
+        schedule-valid a mandatory gate for dry-run, so this path now dies.
+        """
+        plan = _write_gates_plan(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--mode", "dry-run",
+            "--plan-file", str(plan), "--json",
+        )
+        assert cp.returncode != 0, cp.stdout
+        body = _parse_json(cp)
+        assert "schedule-file" in body.get("error", "").lower()
+
+    def test_certify_execute_without_schedule_file_fails(
+        self, tmp_path: Path,
+    ) -> None:
+        """Execute certification also requires --schedule-file."""
+        plan = _write_gates_plan(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--mode", "execute",
+            "--plan-file", str(plan),
+            "--run-id", "some-run-id",
+            "--json",
+        )
+        assert cp.returncode != 0, cp.stdout
+        body = _parse_json(cp)
+        assert "schedule-file" in body.get("error", "").lower()
+
+    def test_certify_execute_with_no_commits_reports_not_applicable(
+        self, tmp_path: Path,
+    ) -> None:
+        """Execute mode with zero `commit_done` events → commit-safe not_applicable."""
+        plan = _write_gates_plan(tmp_path)
+        sched = _write_gates_schedule(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--mode", "execute",
+            "--plan-file", str(plan),
+            "--schedule-file", str(sched),
+            "--run-id", "does-not-exist-run-id-zzz",
+            "--json",
+        )
+        body = _parse_json(cp)
+        assert body["mode"] == "execute"
+        assert body["gates"]["commit-safe"]["status"] == "not_applicable"
+
+    def test_certify_without_mode_fails(self, tmp_path: Path) -> None:
+        plan = _write_gates_plan(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--plan-file", str(plan), "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert "mode" in body.get("error", "").lower()
+
+    def test_certify_without_plan_file_fails(self, tmp_path: Path) -> None:
+        cp = _run(
+            "gates", "--certify", "--mode", "dry-run", "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert "plan-file" in body.get("error", "").lower()
+
+
+class TestExtractTaskFiles:
+    """`_extract_task_files_from_plan` is shared with commit-safe."""
+
+    def test_strips_create_annotation(self) -> None:
+        """Multiline `Files:` bullets must be fully normalized — backticks,
+        `(create|modify|delete)` annotations, and `:line` suffixes all
+        stripped. Anything less would desync from `normalize_file_path`
+        in the wrapper and from `git show --name-only` output (which
+        never emits backticks), breaking commit-safe scope checks."""
+        files = plan_ops._extract_task_files_from_plan(
+            _GATES_SYNTHETIC_PLAN, "001",
+        )
+        assert files == ["example/seed.py"], files
+
+    def test_unknown_task_returns_none(self) -> None:
+        files = plan_ops._extract_task_files_from_plan(
+            _GATES_SYNTHETIC_PLAN, "999",
+        )
+        assert files is None
+
+    def test_strips_line_range_suffix(self) -> None:
+        body = _GATES_SYNTHETIC_PLAN.replace(
+            "- `example/seed.py` (create)",
+            "- `example/seed.py:10-20`",
+        )
+        files = plan_ops._extract_task_files_from_plan(body, "001")
+        # The colon + line range suffix should be stripped.
+        assert files is not None
+        assert all(":10-20" not in f for f in files)
+
+    def test_inline_single_file_form(self) -> None:
+        """`- **Files:** path` (inline form) yields a single normalized entry."""
+        body = _GATES_SYNTHETIC_PLAN.replace(
+            "- **Files:**\n  - `example/seed.py` (create)\n",
+            "- **Files:** `example/seed.py`\n",
+        )
+        files = plan_ops._extract_task_files_from_plan(body, "001")
+        assert files == ["example/seed.py"], files
+
+    def test_inline_comma_separated_form(self) -> None:
+        """Inline comma-separated paths split into distinct allowlist keys."""
+        body = _GATES_SYNTHETIC_PLAN.replace(
+            "- **Files:**\n  - `example/seed.py` (create)\n",
+            "- **Files:** `example/seed.py`, `example/other.py` (modify)\n",
+        )
+        files = plan_ops._extract_task_files_from_plan(body, "001")
+        assert files == ["example/seed.py", "example/other.py"], files
+
+
+class TestGateFixtureValidSidecar:
+    """`fixture-valid` is the schema+schedule aggregate; sidecar is required."""
+
+    def test_gates_fixture_valid_fails_when_sidecar_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        """A schema-valid fixture with no `.schedule.json` sidecar fails."""
+        plan = _write_gates_plan(tmp_path)
+        # No sidecar written. fixture-valid must fail and the reason must
+        # name the missing sidecar.
+        result = plan_ops._gate_fixture_valid(plan)
+        assert result["name"] == "fixture-valid"
+        assert result["status"] == "fail"
+        assert "sidecar" in result["reason"].lower()
+        assert "plan.schedule.json" in result["reason"]
+
+    def test_gates_fixture_valid_passes_when_sidecar_present(
+        self, tmp_path: Path,
+    ) -> None:
+        """Schema-valid fixture + valid sidecar passes."""
+        plan = _write_gates_plan(tmp_path)
+        _write_gates_schedule(tmp_path)
+        result = plan_ops._gate_fixture_valid(plan)
+        assert result["status"] == "pass", result
+
+    def test_gates_fixture_valid_fails_when_sidecar_invalid(
+        self, tmp_path: Path,
+    ) -> None:
+        """Schema-valid fixture + invalid sidecar fails with schedule reason."""
+        plan = _write_gates_plan(tmp_path)
+        _write_gates_schedule(tmp_path, payload={"outcome": "valid"})
+        result = plan_ops._gate_fixture_valid(plan)
+        assert result["status"] == "fail"
+        assert "schedule-valid failed" in result["reason"]
+
+
+class TestGateExecutionSafeScopedRegions:
+    """`execution-safe` must locate snapshot inside cmd_implement + timeout."""
+
+    def test_gates_execution_safe_fails_when_snapshots_outside_cmd_implement(
+        self, tmp_path: Path,
+    ) -> None:
+        """Two snapshot calls in helper/review code, none in cmd_implement, fails."""
+        stub = tmp_path / "bad_placement_wrapper.py"
+        stub.write_text(
+            "from _plan_paths import PROTECTED_EXACT_PATHS\n"
+            "def _snapshot_baseline(): pass\n"
+            "def _handle_timeout_cleanup(a, b, baseline): pass\n"
+            "def cmd_implement(args):\n"
+            "    # no snapshot here\n"
+            "    return 0\n"
+            "def cmd_review(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    return 0\n"
+            "def helper():\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    return baseline\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "fail", result
+        assert "cmd_implement" in result["reason"]
+
+    def test_gates_execution_safe_fails_when_timeout_branch_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        """Snapshot in cmd_implement but no timeout cleanup branch fails."""
+        stub = tmp_path / "no_timeout_wrapper.py"
+        stub.write_text(
+            "from _plan_paths import PROTECTED_EXACT_PATHS\n"
+            "def _snapshot_baseline(): pass\n"
+            "def cmd_implement(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    return 0  # no timeout handling\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "fail", result
+
+    def test_gates_execution_safe_fails_when_timeout_omits_baseline(
+        self, tmp_path: Path,
+    ) -> None:
+        """Timeout branch that forgets to carry baseline through fails."""
+        stub = tmp_path / "no_baseline_in_timeout_wrapper.py"
+        stub.write_text(
+            "from _plan_paths import PROTECTED_EXACT_PATHS\n"
+            "def _snapshot_baseline(): pass\n"
+            "def _handle_timeout_cleanup(a, b): pass\n"
+            "def cmd_implement(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    codex = {'status': 'timeout'}\n"
+            "    if codex['status'] == 'timeout':\n"
+            "        _handle_timeout_cleanup('x', [])  # baseline not passed\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "fail", result
+
+    def test_gates_execution_safe_passes_with_proper_placement(
+        self, tmp_path: Path,
+    ) -> None:
+        """cmd_implement contains both snapshot and baseline-carrying timeout call."""
+        stub = tmp_path / "ok_placement_wrapper.py"
+        stub.write_text(
+            "from _plan_paths import PROTECTED_EXACT_PATHS\n"
+            "def _snapshot_baseline(): pass\n"
+            "def _handle_timeout_cleanup(a, b, baseline): pass\n"
+            "def cmd_implement(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    codex = {'status': 'timeout'}\n"
+            "    if codex['status'] == 'timeout':\n"
+            "        _handle_timeout_cleanup('x', [], baseline)\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "pass", result
+
+
+class TestCertifyExecuteRequiresRunId:
+    """`--certify --mode execute` must require --run-id at the CLI layer."""
+
+    def test_gates_certify_execute_without_run_id_fails(
+        self, tmp_path: Path,
+    ) -> None:
+        """Execute certification without --run-id must not silently pass."""
+        plan = _write_gates_plan(tmp_path)
+        sched = _write_gates_schedule(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--mode", "execute",
+            "--plan-file", str(plan),
+            "--schedule-file", str(sched),
+            "--json",
+        )
+        assert cp.returncode != 0, cp.stdout
+        body = _parse_json(cp)
+        assert "run-id" in body.get("error", "").lower()
+
+
+class TestGatesFixtureCheckUsesCanonicalSample:
+    """`gates --check fixture-valid` always targets the canonical sample
+    fixture, never the `--plan-file` that Phase 0 passes in for the other
+    gates. The docstring invariant is explicit about `sample_phase4.md`; a
+    --plan-file-driven fixture-valid would validate the user plan twice."""
+
+    def test_fixture_valid_via_cli_ignores_plan_file_arg(
+        self, tmp_path: Path,
+    ) -> None:
+        """Even a well-formed --plan-file must not short-circuit
+        fixture-valid; the gate result comes from the canonical sample."""
+        plan = _write_gates_plan(tmp_path)
+        # Run the CLI with a valid plan passed as --plan-file. The
+        # resulting fixture-valid gate must reflect the REAL sample
+        # fixture state (pre-TASK-006: fail), not the in-memory synthetic
+        # plan + sidecar we just wrote under tmp_path.
+        cp_synthetic = _run(
+            "gates", "--check", "fixture-valid",
+            "--plan-file", str(plan), "--json",
+        )
+        # Drop the --plan-file entirely; result should be identical.
+        cp_bare = _run("gates", "--check", "fixture-valid", "--json")
+        body_synth = _parse_json(cp_synthetic)
+        body_bare = _parse_json(cp_bare)
+        assert body_synth["gates"][0]["name"] == "fixture-valid"
+        assert body_bare["gates"][0]["name"] == "fixture-valid"
+        # Status + reason must match — the CLI ignored the --plan-file arg
+        # and used the canonical sample for both invocations.
+        assert body_synth["gates"][0]["status"] == body_bare["gates"][0]["status"]
+        assert body_synth["gates"][0]["reason"] == body_bare["gates"][0]["reason"]
+
+
+class TestGateCommitSafeNoProtectedPathFallback:
+    """`commit-safe` must not rely on `is_protected_path` as an always-allow
+    filter. Protected paths (plan_ops.py, plan_codex_dispatch.py, etc.) are
+    NOT in the commit-task implicit allowlist; a task that commits against
+    them without declaring them in Files: is out of scope."""
+
+    def _make_repo_with_plan(self, tmp_path: Path) -> tuple[Path, Path]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@x"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        plan = repo / "plan.md"
+        plan.write_text(_GATES_SYNTHETIC_PLAN, encoding="utf-8")
+        (repo / "example").mkdir()
+        (repo / "plugins" / "plan-executor" / "scripts").mkdir(parents=True)
+        subprocess.run(["git", "add", "plan.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+        return repo, plan
+
+    def test_commit_touching_undeclared_protected_path_fails(
+        self, tmp_path: Path,
+    ) -> None:
+        """A commit that mutates `plan_ops.py` without declaring it fails
+        commit-safe. Previously the `is_protected_path` fallback allowed
+        the path through because it matches PROTECTED_PATH_PREFIXES."""
+        repo, plan = self._make_repo_with_plan(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        protected_path = (
+            repo / "plugins" / "plan-executor" / "scripts" / "plan_ops.py"
+        )
+        protected_path.write_text("# stray mutation\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "example/seed.py",
+             "plugins/plan-executor/scripts/plan_ops.py"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m",
+             "feat(TASK-001): seed + undeclared protected edit"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "fail", result
+        assert "plan_ops.py" in result["reason"]
+
+    def test_index_json_alongside_plan_is_allowed(
+        self, tmp_path: Path,
+    ) -> None:
+        """`00_INDEX.json` in the plan's directory IS always-allowed
+        because `commit-task` auto-updates it. This is the commit-task
+        implicit allowlist we DO honor; contrast with the test above."""
+        repo, plan = self._make_repo_with_plan(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        index_path = plan.parent / "00_INDEX.json"
+        index_path.write_text("{}\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "example/seed.py", "plan.md", "00_INDEX.json"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m",
+             "feat(TASK-001): seed + plan + index"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "pass", result
+
+
+class TestGateSafeCommentHardening:
+    """`execution-safe` and `review-safe` predicates must not be fooled by
+    commented-out or docstring-mentioned occurrences of the required call
+    sites. Strip comments/docstrings before matching."""
+
+    def test_execution_safe_fails_when_snapshot_only_in_comment(
+        self, tmp_path: Path,
+    ) -> None:
+        """A wrapper whose only snapshot call is inside a `#` comment
+        must not pass execution-safe."""
+        stub = tmp_path / "commented_snapshot_wrapper.py"
+        stub.write_text(
+            "from _plan_paths import PROTECTED_EXACT_PATHS\n"
+            "def _handle_timeout_cleanup(a, b, baseline): pass\n"
+            "def cmd_implement(args):\n"
+            "    # baseline = _snapshot_baseline()\n"
+            "    codex = {'status': 'timeout'}\n"
+            "    if codex['status'] == 'timeout':\n"
+            "        _handle_timeout_cleanup('x', [], baseline)\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "fail", result
+        assert "_snapshot_baseline" in result["reason"]
+
+    def test_execution_safe_fails_when_timeout_call_only_in_comment(
+        self, tmp_path: Path,
+    ) -> None:
+        """A wrapper whose only `_handle_timeout_cleanup(...baseline)` call
+        is commented out must not pass execution-safe."""
+        stub = tmp_path / "commented_cleanup_wrapper.py"
+        stub.write_text(
+            "from _plan_paths import PROTECTED_EXACT_PATHS\n"
+            "def _snapshot_baseline(): pass\n"
+            "def _handle_timeout_cleanup(a, b, baseline): pass\n"
+            "def cmd_implement(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    codex = {'status': 'timeout'}\n"
+            "    if codex['status'] == 'timeout':\n"
+            "        # _handle_timeout_cleanup('x', [], baseline)\n"
+            "        pass\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "fail", result
+
+    def test_execution_safe_fails_when_snapshot_only_in_docstring(
+        self, tmp_path: Path,
+    ) -> None:
+        """Triple-quoted docstring mentions of the helper must not pass."""
+        stub = tmp_path / "docstring_snapshot_wrapper.py"
+        stub.write_text(
+            'from _plan_paths import PROTECTED_EXACT_PATHS\n'
+            'def _handle_timeout_cleanup(a, b, baseline): pass\n'
+            'def cmd_implement(args):\n'
+            '    """See _snapshot_baseline() for context."""\n'
+            '    codex = {"status": "timeout"}\n'
+            '    if codex["status"] == "timeout":\n'
+            '        _handle_timeout_cleanup("x", [], baseline)\n'
+            '    return 0\n',
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "fail", result
+
+    def test_review_safe_fails_when_snapshot_only_in_comment(
+        self, tmp_path: Path,
+    ) -> None:
+        """A wrapper whose only snapshot in cmd_review is commented out
+        must not pass review-safe."""
+        stub = tmp_path / "commented_review_wrapper.py"
+        stub.write_text(
+            "from _plan_paths import PROTECTED_EXACT_PATHS, is_protected_path\n"
+            "def cmd_review(args):\n"
+            "    # baseline = _snapshot_baseline()\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_review_safe(stub)
+        assert result["status"] == "fail", result
+
+
+class TestGateFixturePathIsCwdIndependent:
+    """`_gate_fixture_valid()` (no arg) must resolve the sample fixture
+    from the repo root regardless of the process cwd; Phase 0 invocations
+    do not require cwd == repo root, so a cwd-relative fixture path makes
+    the gate fail spuriously from other directories."""
+
+    def test_gate_fixture_valid_resolves_same_from_any_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Invoking from tmp_path yields the same gate result as from the
+        repo root. The expected status depends on whether the live
+        sample fixture is schema-conformant (pre-TASK-006: fail;
+        post: pass); we assert equality across cwds, not the status.
+        Critically, neither invocation may report `fixture not found`
+        — that would mean the gate was looking in the wrong place."""
+        result_from_repo = plan_ops._gate_fixture_valid()
+        monkeypatch.chdir(tmp_path)
+        result_from_tmp = plan_ops._gate_fixture_valid()
+        assert result_from_repo["name"] == "fixture-valid"
+        assert result_from_tmp["name"] == "fixture-valid"
+        # Neither cwd should produce a "fixture not found" reason — that
+        # is the specific failure mode the cwd-independent path fix was
+        # meant to prevent.
+        assert "fixture not found" not in result_from_repo["reason"].lower()
+        assert "fixture not found" not in result_from_tmp["reason"].lower()
+        # Both invocations must produce identical status + reason; any
+        # divergence proves the gate is cwd-sensitive.
+        assert result_from_tmp["status"] == result_from_repo["status"], (
+            result_from_tmp, result_from_repo,
+        )
+        assert result_from_tmp["reason"] == result_from_repo["reason"], (
+            result_from_tmp, result_from_repo,
+        )
+
+
+class TestCertifyExecutePlumbsRepoRoot:
+    """`_certify_execute` must pass a repo_root derived from the plan file
+    through to `_gate_commit_safe` so `git show --name-only` targets the
+    correct repository instead of the caller's cwd."""
+
+    def test_execute_certify_commit_safe_uses_plan_git_toplevel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A staged task commit in a tmp-path git repo is verified even
+        when the process cwd is outside that repo. Previously
+        `_gate_commit_safe` ran `git show` in cwd and would return empty
+        output, making commit-safe silently pass as `not_applicable` or
+        fail with a git error."""
+        # Build a tiny repo with a plan + a task commit.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@x"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        plan = repo / "plan.md"
+        plan.write_text(_GATES_SYNTHETIC_PLAN, encoding="utf-8")
+        (repo / "example").mkdir()
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "plan.md", "example/seed.py"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat(TASK-001): seed"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+
+        # Fake a run log with a commit_done event for TASK-001.
+        fake_log = tmp_path / "run_log.jsonl"
+        fake_log.write_text(
+            json.dumps({
+                "event": "commit_done",
+                "run_id": "rid-1",
+                "task_id": "001",
+                "commit_sha": sha,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(plan_ops, "RUN_LOG_PATH", fake_log)
+
+        # Invoke _certify_execute from a cwd OUTSIDE the tmp repo.
+        outside_cwd = tmp_path / "elsewhere"
+        outside_cwd.mkdir()
+        monkeypatch.chdir(outside_cwd)
+
+        # Need a schedule file too so schedule-valid doesn't fail the bundle.
+        sched = _write_gates_schedule(repo)
+
+        gates = plan_ops._certify_execute(plan, "rid-1", sched)
+        commit_safe = next(
+            g for g in gates if g["name"] == "commit-safe"
+        )
+        # With the repo-root-from-plan plumbing, the commit lookup lands
+        # inside `repo/` and the gate can evaluate the commit's file
+        # footprint against the Files: allowlist. Without the fix, this
+        # would fail with a git error (cwd outside any repo) or with a
+        # mismatched-repo false negative.
+        assert commit_safe["status"] == "pass", commit_safe
+
+
+class TestGateScheduleValidShapeContract:
+    """`schedule-valid` must treat non-list `tasks`/`batches` as a failure,
+    not collapse to empty lists. Defends against regressions in the
+    underlying `_validate_schedule` contract."""
+
+    def test_non_list_tasks_fails_schedule_valid(
+        self, tmp_path: Path,
+    ) -> None:
+        """`tasks: "oops"` (string instead of list) fails, does not silently
+        pass via the DAG validator seeing an empty graph."""
+        sched = tmp_path / "bad_shape.schedule.json"
+        # Craft a payload that might or might not trigger
+        # _validate_schedule's shape error; the gate's own shape guard
+        # must catch non-list tasks regardless.
+        sched.write_text(
+            json.dumps({
+                "outcome": "valid",
+                "tasks": "not-a-list",
+                "batches": [],
+            }),
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_schedule_valid(sched)
+        assert result["name"] == "schedule-valid"
+        assert result["status"] == "fail", result
+
+    def test_non_list_batches_fails_schedule_valid(
+        self, tmp_path: Path,
+    ) -> None:
+        """`batches: 42` (number instead of list) fails."""
+        sched = tmp_path / "bad_shape2.schedule.json"
+        sched.write_text(
+            json.dumps({
+                "outcome": "valid",
+                "tasks": [],
+                "batches": 42,
+            }),
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_schedule_valid(sched)
+        assert result["status"] == "fail", result

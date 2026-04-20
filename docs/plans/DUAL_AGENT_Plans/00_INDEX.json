@@ -172,7 +172,7 @@
       "depends_on": [
         "004"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -497,6 +497,19 @@
       ],
       "status": "Done",
       "superseded_by": []
+    },
+    {
+      "task_id": "026",
+      "v3_task": "TASK-026",
+      "file": "TASK-026_phase_gate_review_drift_followup.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [
+        "005"
+      ],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Surfaced during TASK-005 run 20260420T220109 Codex review pass-4 (post-narrow-remediation-2); user elected option A (commit TASK-005 + follow-up chunk) over a fourth hand-fix round."
     }
   ]
 }

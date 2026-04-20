@@ -930,6 +930,29 @@ After all tasks:
 
 **Do NOT auto-push. Do NOT auto-PR.**
 
+### 9.7 Promotion criteria and gates
+
+The executor promotes from dry-run to execute (and from execute to "certified-clean") through six canonical phase gates. Each gate is a pure predicate — the gate code **never invokes the wrapper or dispatches any agent**; it grep-validates artifacts already on disk.
+
+**Gate vocabulary.** Each gate returns `{name, status, reason}` where `status ∈ {pass, fail, not_applicable}`. The dry-run qualifier lives in `reason`, not in `status` — a gate that is inherently skipped in dry-run (e.g., `commit-safe`) returns `not_applicable` with `reason = "dry-run mode; no commits to verify"`. Canonical list (exact names, invoked via `plan_ops.py gates --check <csv>`):
+
+| Gate | Asserted invariant |
+|---|---|
+| `schema-valid` | Plan markdown conforms to §5 of this document: `## Goal`, `## Context` (or `## Scoped Context`), `## Verification`, and every `### TASK-NNN` block carries the required bullets Status / Priority / Files / Test command / Acceptance criteria + the prose header Description. |
+| `schedule-valid` | Analyst JSON passes `_validate_schedule` + `_validate_schedule_dag`. Same validators used by `parse-schedule` — the gate and the writer agree by construction. |
+| `fixture-valid` | The sample fixture (`docs/plans/sample_phase4.md`) itself passes `schema-valid` + `schedule-valid` as a self-test that the schema predicates are exercised on a realistic artifact. |
+| `execution-safe` | `plan_codex_dispatch.py` implement path carries the always-ignore / protected-paths seam (imports from `_plan_paths`), calls `_snapshot_baseline(` at both the implement dispatch seam and the timeout cleanup path, and contains no `git clean -fd` in executable code (docstring and comment references to the prohibition are allowed). |
+| `review-safe` | `plan_codex_dispatch.py cmd_review` calls `_snapshot_baseline(` and the module references `is_protected_path` / `PROTECTED_EXACT_PATHS` for protected-path respect. |
+| `commit-safe` | Post-hoc: `git show --name-only <commit_sha>` minus TASK-NNN's declared `Files:` list (after stripping `(create)`/`(modify)`/`(delete)` annotations and `:line` range suffixes) minus the always-ignore set (plus the plan file itself, which `commit-task` legitimately stages alongside each task) is empty. Inapplicable in dry-run. |
+
+**Dry-run pass condition.** `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe` all return `pass`; `commit-safe` is `not_applicable`. Bundled as `plan_ops.py gates --certify --mode dry-run --plan-file <path> --schedule-file <path>`.
+
+**Execute pass condition.** The dry-run set plus `commit-safe` verified post-hoc against every `commit_done` event for the run. Bundled as `plan_ops.py gates --certify --mode execute --plan-file <path> --schedule-file <path> --run-id <id>`. A run with zero commits reports `commit-safe: not_applicable` — that is not a failure.
+
+**Where the gates run in the skill.** `schema-valid`, `fixture-valid`, `execution-safe`, `review-safe` gate Phase 0 preflight (before the first batch dispatch). `schedule-valid` runs immediately after `write-schedule` persists the analyst JSON in Phase 1. `commit-safe` runs per-commit after each Phase D.3 `commit-task` and again as part of the end-of-run `--certify --mode execute` bundle. The end-of-run certification is a report, not a retry trigger — a failure is surfaced in the summary but does not reopen already-committed tasks.
+
+**Certification vs. pre-commit guard.** The in-process pre-commit guard inside `commit-task` (ISSUE-038) and the post-hoc `commit-safe` gate both assert the same invariant — that a commit's file footprint matches the task's declared scope. They are redundant on purpose. The guard prevents a bad commit from landing; the gate proves a landed commit was clean. Together they close the execute-bundle loop.
+
 ---
 
 ## 10. Dispatch Templates
@@ -1132,21 +1155,23 @@ Verify no agent/skill file changes were needed.
 
 ## 14. Verification Plan
 
+Scenarios 1–12 are scored against the phase-gate vocabulary from §9.7. The single canonical pass-condition for Phase 5 end-to-end certification is *"all six gates hold across scenarios 1–12"* — i.e., `plan_ops.py gates --certify --mode execute --plan-file <sample> --schedule-file <sample_sched> --run-id <id>` returns `certified: true` after every scenario's orchestrator run, with `commit-safe` holding for every `commit_done` event the run recorded. Portability (scenario 13) reuses the same certification against a foreign repo.
+
 | Step | What | How | Pass Criteria |
 |------|------|-----|---------------|
 | 1 | Codex CLI contract | Run Phase 0 experiments | All behaviors documented, no surprises |
-| 2 | Wrapper dry-run | `plan_codex_dispatch.py implement --dry-run` | Correct prompt rendered, valid JSON envelope |
+| 2 | Wrapper dry-run | `plan_codex_dispatch.py implement --dry-run` | Correct prompt rendered, valid JSON envelope; `execution-safe` gate returns `pass` against the wrapper source |
 | 3 | Wrapper real exec | `plan_codex_dispatch.py implement` on trivial task | Fix applied, tests pass, JSON output valid |
-| 4 | Wrapper review | `plan_codex_dispatch.py review` on known diff | Findings match expected issues |
-| 5 | Plan-analyst | Dispatch against sample plan | Correct classification, file-disjoint schedule, gaps flagged |
+| 4 | Wrapper review | `plan_codex_dispatch.py review` on known diff | Findings match expected issues; `review-safe` gate returns `pass` against the wrapper source |
+| 5 | Plan-analyst | Dispatch against sample plan | Correct classification, file-disjoint schedule, gaps flagged; `schema-valid` + `schedule-valid` + `fixture-valid` gates all return `pass` against the sample artifacts |
 | 6 | Plan-implementer | Dispatch against sample task | Implementation correct, report well-formed |
 | 7 | Cross-review (both dirs) | Claude->Codex review + Codex->Claude review | Both produce valid reviews with real findings |
-| 8 | Orchestrator dry-run | `/implement-plan sample.md --dry-run` | Analysis report correct, no files changed |
-| 9 | Orchestrator execute | `/implement-plan sample.md` | All tasks done, reviewed, committed |
-| 10 | Fallback test | Force codex failure on one task | Auto Claude fallback, task still completed |
-| 11 | Failure isolation | Fail one task while peers remain eligible | Failed task is recorded, peer tasks continue independently, no dependent-blocking event is emitted |
+| 8 | Orchestrator dry-run | `/implement-plan sample.md --dry-run` | Analysis report correct, no files changed; `gates --certify --mode dry-run` returns `certified: true` with `commit-safe: not_applicable` |
+| 9 | Orchestrator execute | `/implement-plan sample.md` | All tasks done, reviewed, committed; `gates --certify --mode execute --run-id <id>` returns `certified: true` with `commit-safe: pass` for every `commit_done` event |
+| 10 | Fallback test | Force codex failure on one task | Auto Claude fallback, task still completed; execute-bundle certification still holds |
+| 11 | Failure isolation | Fail one task while peers remain eligible | Failed task is recorded, peer tasks continue independently, no dependent-blocking event is emitted; execute-bundle certification still holds for the peer commits |
 | 12 | Plan status tracking | Check plan.md after run | All Status fields updated, execution log appended |
-| 13 | Portability | Run on different repo with no agent changes | Works without modification |
+| 13 | Portability | Run on different repo with no agent changes | Works without modification; the same six phase gates pass against the foreign repo |
 
 ---
 
