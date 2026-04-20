@@ -265,3 +265,11 @@ Starting SHA: `f5e8951d179201a842916ce38352c0d34d0adbe2`  → Ending SHA: `f5e89
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 005 | claude | codex+d5+codex | needs-rework -> partial-agreement -> needs-rework (binding) | (paused; pending edits in working tree) | D.2a.6 narrow-remediation retry [narrow-remediation] [disagreement: 4]; second Codex review flagged 5 new findings (4 important, 1 minor); paused per D.2a.6 step 7 for user decision |
+
+## Execution log — 20260420T220109 (success)
+
+Starting SHA: `f5e8951`  → Ending SHA: `417f6c40b5bd2c15f109b6c749e8bead166417dc`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | claude | codex | ship-with-fixes | 5a023b5258e7edebb37a90c7875f3cd5debe8389 | D.5 disagreement (Codex pass-4 verdict needs-rework). 5 findings deferred to TASK-026; narrow hand-fixes applied across pass-2 and pass-3 before pass-4 surfaced a new ring. User elected option A (ship + follow-up chunk). |
