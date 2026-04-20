@@ -590,3 +590,167 @@ def test_timeout_and_success_interleaved_preserves_sibling(tmp_path, live_codex_
     assert (repo / "b.py").exists(), (
         "sibling B's file was erased by sibling A's timeout cleanup"
     )
+
+
+# ---------------------------------------------------------------------------
+# TASK-003 — --allow-gaps severity-aware demotion in plan-review prompt.
+#
+# These tests run the wrapper under --dry-run so they do not require live
+# Codex. They validate the rendered prompt contract (demotion clause text,
+# presence/absence conditions, and byte-level invariance when the flag
+# is not passed) across three branches:
+#   - soft-only gaps + --allow-gaps        → demotion clause present
+#   - any hard gap + --allow-gaps          → demotion clause absent
+#   - no --allow-gaps (control case)       → byte-identical to current output
+# ---------------------------------------------------------------------------
+
+
+_DEMOTION_CLAUSE_NEEDLE = "Operator override (--allow-gaps)"
+
+
+def _write_plan_review_inputs(
+    tmp_path: Path,
+    gaps: list[dict],
+    outcome: str = "needs-enrichment",
+) -> tuple[Path, Path]:
+    plan = tmp_path / "sample.md"
+    plan.write_text(
+        "# plan\n\n## Context\n\nprose\n",
+        encoding="utf-8",
+    )
+    schedule = tmp_path / "sample.schedule.json"
+    schedule.write_text(
+        json.dumps({
+            "outcome": outcome,
+            "tasks": [],
+            "batches": [],
+            "gaps": gaps,
+        }),
+        encoding="utf-8",
+    )
+    return plan, schedule
+
+
+def _run_plan_review_dry_run(
+    plan: Path,
+    schedule: Path,
+    tmp_path: Path,
+    extra_args: list[str] | None = None,
+) -> dict:
+    cmd = [
+        sys.executable, str(WRAPPER), "plan-review",
+        "--plan-file", str(plan),
+        "--schedule-file", str(schedule),
+        "--plans-dir", str(tmp_path),
+        "--repo-root", str(tmp_path),
+        "--dry-run",
+        "--timeout", "180",
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    cp = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+    )
+    assert cp.returncode == 0, (
+        f"wrapper dry-run failed rc={cp.returncode}\n"
+        f"STDOUT:\n{cp.stdout}\nSTDERR:\n{cp.stderr}"
+    )
+    return json.loads(cp.stdout)
+
+
+def test_plan_review_allow_gaps_demotes_soft_gap_verdict(tmp_path):
+    """When --allow-gaps is set and gaps are soft-only, the rendered
+    prompt carries the demotion clause instructing the reviewer to treat
+    schedule_ok=false as approved-with-notes rather than needs-replan."""
+    soft_gaps = [
+        {"type": "unresolvable-test", "detail": "foo", "severity": "soft"},
+        {"type": "empty-implementation-notes", "detail": "bar", "severity": "soft"},
+    ]
+    plan, schedule = _write_plan_review_inputs(tmp_path, soft_gaps)
+
+    body = _run_plan_review_dry_run(
+        plan, schedule, tmp_path, extra_args=["--allow-gaps"],
+    )
+    prompt = body["prompt_preview"]
+
+    assert _DEMOTION_CLAUSE_NEEDLE in prompt, (
+        "demotion clause missing from prompt when --allow-gaps + soft gaps"
+    )
+    assert "approved-with-notes" in prompt
+    assert "surface the demotion in your `summary`" in prompt
+
+
+def test_plan_review_allow_gaps_hard_gaps_block(tmp_path):
+    """--allow-gaps with any hard-severity gap must NOT inject the demotion
+    clause — the reviewer proceeds with standard verdict selection so
+    needs-replan still routes through plan-author auto-revise."""
+    mixed_gaps = [
+        {"type": "unresolvable-test", "detail": "foo", "severity": "soft"},
+        {"type": "stale-path", "detail": "baz", "severity": "hard"},
+    ]
+    plan, schedule = _write_plan_review_inputs(tmp_path, mixed_gaps)
+
+    body = _run_plan_review_dry_run(
+        plan, schedule, tmp_path, extra_args=["--allow-gaps"],
+    )
+    prompt = body["prompt_preview"]
+
+    assert _DEMOTION_CLAUSE_NEEDLE not in prompt, (
+        "demotion clause must be suppressed when any gap is hard-severity"
+    )
+    # Verdict vocab remains intact.
+    assert "needs-replan" in prompt
+
+
+def test_plan_review_allow_gaps_absent_prompt_unchanged(tmp_path):
+    """Without --allow-gaps, the rendered prompt must be byte-identical
+    to current output (no demotion clause, no other drift), regardless
+    of the schedule's gap shape."""
+    soft_gaps = [
+        {"type": "unresolvable-test", "detail": "foo", "severity": "soft"},
+    ]
+    plan, schedule = _write_plan_review_inputs(tmp_path, soft_gaps)
+
+    # First run: no --allow-gaps, soft gaps present → control case.
+    body_no_flag = _run_plan_review_dry_run(plan, schedule, tmp_path)
+    prompt_no_flag = body_no_flag["prompt_preview"]
+    assert _DEMOTION_CLAUSE_NEEDLE not in prompt_no_flag
+
+    # Second assertion set: pin the no-flag prompt against frozen literal
+    # invariants (NOT against the renderer imported from the module under
+    # test — that would make accidental renderer-default drift invisible).
+    # These substrings capture the acceptance-criteria invariants for the
+    # "no flag => unchanged" contract: no demotion clause, plan basename
+    # intact, full verdict vocabulary intact, and the core prompt scaffold
+    # phrases unchanged.
+    frozen_invariants = [
+        # Demotion clause MUST be absent.
+        # (Negative asserted separately below.)
+        # Plan basename round-trips.
+        f"Plan file: {plan.name}",
+        f'`plan_file` must be "{plan.name}".',
+        # Full verdict vocabulary present verbatim.
+        "Verdict vocabulary (pick exactly one):",
+        "`approved` — plan is ready to execute as-is.",
+        "`approved-with-notes` — plan is ready; notes carried into run "
+        "summary but no re-plan needed.",
+        "`needs-replan` — plan has a blocking issue; analyst must revise "
+        "before any batch runs.",
+        # Core prompt scaffold.
+        "Review the plan and its persisted schedule.",
+        "Cross-plan dependency resolution has already been verified",
+        "Persisted schedule JSON:",
+        "Plan document (verbatim):",
+        "Return schema-compliant JSON only, no markdown fences",
+    ]
+    for needle in frozen_invariants:
+        assert needle in prompt_no_flag, (
+            f"frozen no-flag invariant missing from prompt: {needle!r}"
+        )
+    # Demotion clause opener must be absent in the no-flag path.
+    assert "Operator override (--allow-gaps)" not in prompt_no_flag, (
+        "demotion clause leaked into prompt when --allow-gaps is not set"
+    )

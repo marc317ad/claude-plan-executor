@@ -164,7 +164,7 @@ Remove the `GAP_SEVERITY` constant, `classify_gap_severity` helper, and the `sev
 
 ### TASK-003: Propagate `--allow-gaps` into Codex plan-review with severity-aware demotion
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py` — add `--allow-gaps` arg to the `plan-review` subparser (around line 1527-1553); thread the flag into `render_plan_review_prompt` (around line 270-325) as an optional demotion clause
@@ -229,3 +229,13 @@ The analyst will compute file locks per batch; sequential execution via the decl
 ## Reversion guidance
 
 Each TASK carries per-task reversion steps above. If all three need rolling back together, the order is: **TASK-003 first** (remove the `--allow-gaps` prompt-side demotion — keeps Phase 1.5 routing unchanged), then **TASK-002** (remove the severity classification — keeps `gaps[]` schema-compatible with pre-plan consumers because `severity` is additive), then **TASK-001** (remove template files — authoring-side only). No state outside git is modified; no data migrations; no schema version bumps. TASK-025's `plan-author` path continues to operate exactly as before.
+
+## Execution log — 20260420T185422 (paused)
+
+Starting SHA: `650671693b8764dbe913f11c03f34c9d72065e9d`  → Ending SHA: `57ca60444eaaa178baac32af9dd0e6135ec02bcd`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | codex/D5 | ship-with-fixes [disagreement] | 7002dac | Codex needs-rework (diff-visibility artifact, untracked files); D.5 ship; commit proceeded with disagreement tag. |
+| 002 | claude | codex | clean | 57ca604 | No findings. |
+| 003 | claude | codex/D5 partial-agreement/codex re-review | needs-rework [narrow-remediation] | paused | First D.5: load_bearing=[0,1] dismissed=[2]. Narrow remediation fixed code gate + test. Re-review flagged SKILL.md + dispatch-templates.md docs still describe old outcome!=invalid. Awaiting user. |

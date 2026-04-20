@@ -176,7 +176,8 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-revi
   --schedule-file <schedule_file> \
   --plans-dir <dirname of plan-file> \
   --repo-root <absolute repo root> \
-  --timeout 180
+  --timeout 180 \
+  [--allow-gaps]
 
 printf '%s' "<envelope>" | venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
   parse-plan-review-report --stdin --json
@@ -191,6 +192,8 @@ Append `plan_review_done {verdict, findings_count, summary}` and route by verdic
 | `approved` | Proceed to Phase 2 (batch dispatch). |
 | `approved-with-notes` | Proceed to Phase 2. Carry `findings[]` into the final run summary under a *"Plan review notes"* section. Do not gate execution on notes. |
 | `needs-replan` | Dispatch `plan-author` (if auto-revise on), then re-validate via `plan-analyst`, then re-run Codex `plan-review`. Second `needs-replan` halts. |
+
+**`--allow-gaps` severity-aware demotion (TASK-003).** When the orchestrator was invoked with `--allow-gaps`, forward the flag to the wrapper by appending `--allow-gaps` to the `plan-review` command above. The wrapper inspects the persisted schedule and, **iff** `gaps[]` is non-empty AND every entry's `severity` is `"soft"` AND the schedule has no structural violations (`outcome == "needs-enrichment"` — `"valid"` by contract requires empty `gaps[]`, and missing/unknown outcomes suppress the demotion), injects a demotion clause into the Codex prompt. Codex then returns verdict `approved-with-notes` (with the demotion recorded in its `summary`) instead of `needs-replan`, which routes directly to Phase 2 and **explicitly short-circuits the `plan-author` auto-revise dispatch**. Any hard-severity gap (or a structural violation) suppresses the demotion clause — the reviewer applies the standard verdict vocabulary and `needs-replan` still dispatches `plan-author` per the routing table above. The wrapper never mutates the persisted schedule; the demotion is a pure function of the prompt inputs.
 
 **`needs-replan` branch — auto-revise path (default).** Auto-revise is on unless `--no-auto-revise` is set. When on, the orchestrator runs a three-step author → analyst → review sequence before the second verdict is accepted:
 

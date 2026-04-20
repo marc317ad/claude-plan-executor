@@ -273,6 +273,7 @@ def render_plan_review_prompt(
     plan_basename: str,
     plan_abs_path: str,
     plans_dir: str,
+    allow_gaps_demotion: bool = False,
 ) -> str:
     """Prompt template for Phase 1.5 — Codex reviews the plan + schedule.
 
@@ -280,7 +281,27 @@ def render_plan_review_prompt(
     pre-dispatch review. Input shape is the plan markdown plus the persisted
     schedule JSON — not a diff — so this prompt is intentionally distinct
     from the `review` subcommand prompt.
+
+    When ``allow_gaps_demotion`` is True, the prompt carries an extra
+    demotion clause instructing the reviewer to treat schedule_ok=false
+    caused solely by soft-severity gaps as ``approved-with-notes`` rather
+    than ``needs-replan`` (TASK-003). The caller computes the boolean
+    condition from the persisted schedule + the operator's ``--allow-gaps``
+    flag; this function is a pure prompt renderer.
     """
+    demotion_clause = (
+        "\nOperator override (--allow-gaps): the user explicitly opted "
+        "in to soft gaps. The persisted schedule's gaps[] contains only "
+        "soft-severity entries and no structural violations. If "
+        "schedule_ok would otherwise be false for THIS reason alone, "
+        "demote the verdict from `needs-replan` to `approved-with-notes` "
+        "and surface the demotion in your `summary` string (e.g. "
+        "\"Demoted to approved-with-notes under --allow-gaps: soft gaps "
+        "only.\"). Hard gaps or structural violations are not covered by "
+        "this override — select the standard verdict in those cases.\n\n"
+        if allow_gaps_demotion
+        else ""
+    )
     return (
         f"Review the plan and its persisted schedule. The plan was authored "
         f"by a peer analyst; you are an independent pre-dispatch reviewer.\n\n"
@@ -310,6 +331,7 @@ def render_plan_review_prompt(
         f"3. Flag anything that would cost execution time to discover mid-run: "
         f"missing context, contradictory file annotations, scheduler traps, "
         f"acceptance criteria that are untestable, etc.\n\n"
+        f"{demotion_clause}"
         f"Verdict vocabulary (pick exactly one):\n"
         f"- `approved` — plan is ready to execute as-is.\n"
         f"- `approved-with-notes` — plan is ready; notes carried into run "
@@ -1324,13 +1346,36 @@ def cmd_plan_review(args) -> int:
     # Validate schedule JSON up-front so we surface a clean parse error
     # before dispatching Codex on garbage.
     try:
-        json.loads(schedule_text)
+        schedule_obj = json.loads(schedule_text)
     except json.JSONDecodeError as exc:
         emit(make_envelope(
             "plan", "plan-review", "failure",
             error=f"Schedule file is not valid JSON: {exc}",
         ))
         return 1
+
+    # TASK-003: severity-aware demotion under --allow-gaps. Demote iff
+    # (a) operator passed --allow-gaps, (b) schedule.gaps[] is non-empty
+    # and every entry carries severity == "soft", (c) no structural
+    # schedule violations. The schedule contract requires that a non-empty
+    # gaps[] appear only with outcome == "needs-enrichment" — outcome
+    # "valid" mandates gaps[]==[], so the combination (valid, non-empty
+    # gaps) is itself a contract violation and must NOT be demoted. A
+    # missing/unknown outcome also suppresses demotion. We do NOT mutate
+    # the persisted schedule; the signal flows into the prompt only.
+    allow_gaps_demotion = False
+    if getattr(args, "allow_gaps", False):
+        gaps = schedule_obj.get("gaps") if isinstance(schedule_obj, dict) else None
+        outcome = schedule_obj.get("outcome") if isinstance(schedule_obj, dict) else None
+        if (
+            isinstance(gaps, list)
+            and gaps
+            and outcome == "needs-enrichment"
+        ):
+            allow_gaps_demotion = all(
+                isinstance(g, dict) and g.get("severity") == "soft"
+                for g in gaps
+            )
 
     plans_dir = str(Path(args.plans_dir).resolve())
     prompt = render_plan_review_prompt(
@@ -1339,6 +1384,7 @@ def cmd_plan_review(args) -> int:
         plan_path.name,
         str(plan_path),
         plans_dir,
+        allow_gaps_demotion=allow_gaps_demotion,
     )
 
     if args.dry_run:
@@ -1551,6 +1597,15 @@ def _build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_PLAN_REVIEW,
                     help=f"Codex execution timeout in seconds "
                          f"(default: {DEFAULT_TIMEOUT_PLAN_REVIEW})")
+    pr.add_argument("--allow-gaps", action="store_true",
+                    help="Forward the operator's --allow-gaps opt-in. When "
+                         "set AND the persisted schedule's gaps[] contains "
+                         "only soft-severity entries (and no structural "
+                         "violations), the rendered prompt instructs the "
+                         "reviewer to demote what would have been "
+                         "`needs-replan` into `approved-with-notes`. Hard "
+                         "gaps still trigger the standard needs-replan "
+                         "route (plan-author auto-revise).")
 
     return parser
 

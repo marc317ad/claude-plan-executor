@@ -24,10 +24,17 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-revi
   --schedule-file <absolute schedule path> \
   --plans-dir <plan_dir> \
   --repo-root <absolute repo root> \
-  --timeout 180
+  --timeout 180 \
+  [--allow-gaps]
 ```
 
 Timeout **180s**. Wrapper captures a pre-dispatch baseline and performs delta-bounded cleanup; the plan-review path runs Codex under `-s read-only` sandbox (advisory) because Codex has no legitimate reason to write during a plan-level review. Any sandbox escape surfaces in `extra.sandbox_escape_detected` without changing the outcome — this matches the `review` subcommand's observe-only semantics.
+
+**`--allow-gaps` (TASK-003).** Pass-through of the orchestrator's `--allow-gaps` opt-in. When supplied AND the persisted schedule's `gaps[]` is non-empty with every entry's `severity == "soft"` AND the schedule has no structural violations (`outcome == "needs-enrichment"` — `"valid"` by contract requires empty `gaps[]`, and missing/unknown outcomes suppress the demotion), the wrapper appends this literal demotion clause to the rendered Codex prompt (just before the "Verdict vocabulary" block):
+
+> Operator override (--allow-gaps): the user explicitly opted in to soft gaps. The persisted schedule's gaps[] contains only soft-severity entries and no structural violations. If schedule_ok would otherwise be false for THIS reason alone, demote the verdict from `needs-replan` to `approved-with-notes` and surface the demotion in your `summary` string (e.g. "Demoted to approved-with-notes under --allow-gaps: soft gaps only."). Hard gaps or structural violations are not covered by this override — select the standard verdict in those cases.
+
+The demotion yields `approved-with-notes`, which routes straight to Phase 2 and bypasses the `plan-author` auto-revise dispatch. **Hard gaps still trigger plan-author auto-revise** — any `severity: "hard"` entry (or any structural schedule violation) suppresses the demotion clause entirely, so the reviewer selects the standard verdict and `needs-replan` routes through the normal Phase 1.5a path. The wrapper never mutates the persisted schedule; demotion is a pure function of the prompt inputs.
 
 Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, timeout, parse_error}`. On `success`, `parsed` conforms to `scripts/codex_plan_review_schema.json`:
 
