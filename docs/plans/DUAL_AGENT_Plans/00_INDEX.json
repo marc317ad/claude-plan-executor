@@ -441,6 +441,19 @@
       ],
       "status": "Done",
       "superseded_by": []
+    },
+    {
+      "task_id": "022",
+      "v3_task": "TASK-022",
+      "file": "TASK-022_reviewer_findings_log_and_d5_depth.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [
+        "019",
+        "021"
+      ],
+      "status": "Done",
+      "superseded_by": []
     }
   ]
 }

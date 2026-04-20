@@ -321,6 +321,8 @@ Parse verdict `∈ {ship, ship-with-fixes, needs-rework}`. Verdict vocab is pres
 
 Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}`. Minor findings persist in `review_notes[task_id]` for the run summary.
 
+When findings are non-empty, also pass `--findings-json "$(<json-array>)"` to the `review_done` `log-event` call so the line carries the full Codex payload verbatim under key `findings`. The audit trail depends on this — count-only `review_done` entries lose the finding text within ~20s.
+
 #### D.2 — Route by verdict
 
 | Implementer | Reviewer | clean / minor-findings (or ship / ship-with-fixes) | needs-rework |
@@ -332,7 +334,7 @@ Minor findings in either direction → commit; record in run summary AND commit 
 
 #### D.2a — Escalation (§8.4, Codex critical on Claude work)
 
-1. Log `disagreement {task_id, codex_findings[]}`.
+1. Log `disagreement {task_id, codex_findings[]}`. Pass the Codex findings verbatim via `--findings-json "$(<json-array>)"` so the `disagreement` line carries the full payload under key `findings` — D.5 dispatch happens right after, and audit retrieval of "what did Codex flag that D.5 then adjudicated?" depends on this.
 2. Dispatch the Phase D.5 template: `Agent(subagent_type: "code-reviewer", model: "sonnet", prompt: render(templates.PhaseD5, codex_findings, task_block))`.
 3. Parse verdict and route per the table below:
 

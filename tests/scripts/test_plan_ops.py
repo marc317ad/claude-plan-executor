@@ -7474,17 +7474,31 @@ class TestTask019ReviewerFindingDisposition:
 
     def test_reviewer_minor_finding_disposition_accepted(self) -> None:
         # V6 — finding with a valid disposition + reason is accepted.
-        finding = {
-            "severity": "minor",
-            "file": "a.py",
-            "line": 1,
-            "issue": "x",
-            "suggested_fix": "y",
-            "disposition": "dismissed",
-            "disposition_reason": "D.5 override",
-        }
-        errors = plan_ops._validate_reviewer_finding_item(finding, path="$.f")
-        assert errors == []
+        # TASK-022 extended this to cover `spec-deference` alongside the
+        # original three values so the V6 vector doubles as the V4 anchor
+        # for the fourth disposition.
+        for disposition, reason in (
+            ("dismissed", "D.5 override"),
+            ("accepted", "applied on top of commit"),
+            ("deferred", "follow-up task planned"),
+            (
+                "spec-deference",
+                "plan mandates this but critique has design merit",
+            ),
+        ):
+            finding = {
+                "severity": "minor",
+                "file": "a.py",
+                "line": 1,
+                "issue": "x",
+                "suggested_fix": "y",
+                "disposition": disposition,
+                "disposition_reason": reason,
+            }
+            errors = plan_ops._validate_reviewer_finding_item(
+                finding, path="$.f"
+            )
+            assert errors == [], (disposition, errors)
 
     def test_reviewer_minor_finding_disposition_value_rejected(self) -> None:
         # V7 — disposition value outside the allowed set is rejected.
@@ -7649,4 +7663,323 @@ class TestTask019SkillMdGrepRegressions:
         assert schema_re.search(text), (
             "expected End-of-run Step 2 to list the rows-json row schema "
             "with keys task/agent/reviewer/verdict/commit/notes"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TASK-022 — Persist full reviewer findings in run log + D.5 dismissal gate
+# ---------------------------------------------------------------------------
+#
+# V1 — `log-event --findings-json` embeds the array verbatim under key
+#      `findings`.
+# V2 — `log-event --findings-json` rejects malformed findings with a
+#      structured minor-findings validation error code.
+# V3 — `commit_done` event embeds `findings` when `--reviewer-minor-findings`
+#      is non-empty, alongside the existing `minor_findings_count`.
+# V4 — `spec-deference` is an accepted disposition value (covered in
+#      `TestTask019ReviewerFindingDisposition` above as a parametrized case).
+# V5 — dispatch-templates.md Phase D.5 section carries the
+#      "Dismissal-evidence gate" paragraph + `spec-deference` wording.
+# V6 — back-compat: `log-event` without `--findings-json` is unchanged
+#      (no `findings` key); `commit-task` with empty `--reviewer-minor-findings`
+#      still writes `findings: []` explicitly (the key is always present).
+
+
+class TestTask022LogEventFindingsJson:
+    """V1–V2 — `log-event` accepts an optional `--findings-json` payload.
+
+    The parsed array is validated via `_validate_minor_findings_payload`
+    (same schema as `commit-task --reviewer-minor-findings`) and, on
+    success, embedded verbatim under key `findings` in the JSONL line
+    alongside the existing `--fields-json` keys.
+    """
+
+    def test_v1_log_event_findings_json_embedded(
+        self, isolated_plan: Path
+    ) -> None:
+        # V1 — a well-formed findings array round-trips through the JSONL
+        # line under key `findings`, alongside the `--fields-json` keys.
+        findings_array = [{
+            "severity": "minor",
+            "file": "a.py",
+            "line": 1,
+            "issue": "x",
+            "suggested_fix": "y",
+        }]
+        fields = {
+            "run_id": "X",
+            "task_id": "001",
+            "reviewer": "codex",
+            "verdict": "minor-findings",
+            "findings_count": 1,
+        }
+        cp = _run(
+            "log-event",
+            "--event", "review_done",
+            "--fields-json", json.dumps(fields),
+            "--findings-json", json.dumps(findings_array),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["ok"] is True
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "review_done"
+        assert rec["run_id"] == "X"
+        assert rec["task_id"] == "001"
+        assert rec["reviewer"] == "codex"
+        assert rec["verdict"] == "minor-findings"
+        assert rec["findings_count"] == 1
+        assert rec["findings"] == findings_array
+
+    def test_v2_log_event_findings_json_rejects_malformed(
+        self, isolated_plan: Path
+    ) -> None:
+        # V2 — a bad severity trips `_validate_minor_findings_payload`;
+        # `_die` fires with the structured minor-findings error list.
+        bad = [{
+            "severity": "bogus",
+            "file": "a.py",
+            "line": 1,
+            "issue": "x",
+            "suggested_fix": "y",
+        }]
+        cp = _run(
+            "log-event",
+            "--event", "review_done",
+            "--fields-json",
+            '{"run_id":"X","task_id":"001","reviewer":"codex",'
+            '"verdict":"minor-findings","findings_count":1}',
+            "--findings-json", json.dumps(bad),
+            "--json",
+        )
+        assert cp.returncode == 1, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body.get("errors", [])]
+        assert "invalid-reviewer-finding-severity" in codes, (body, codes)
+
+    def test_v2b_log_event_findings_json_rejects_invalid_json(
+        self, isolated_plan: Path
+    ) -> None:
+        # Extra coverage — an invalid JSON blob surfaces as a structured
+        # `invalid-json` error, not a raw stack trace.
+        cp = _run(
+            "log-event",
+            "--event", "review_done",
+            "--fields-json",
+            '{"run_id":"X","task_id":"001"}',
+            "--findings-json", "{not json",
+            "--json",
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body.get("errors", [])]
+        assert "invalid-json" in codes, (body, codes)
+
+    def test_v2c_log_event_findings_json_collision_rejected(
+        self, isolated_plan: Path
+    ) -> None:
+        # Extra coverage — `findings` already in `--fields-json` collides
+        # with `--findings-json`; the orchestrator MUST pick one source.
+        findings_array = [{
+            "severity": "minor",
+            "file": "a.py",
+            "line": 1,
+            "issue": "x",
+            "suggested_fix": "y",
+        }]
+        fields = {"run_id": "X", "task_id": "001", "findings": []}
+        cp = _run(
+            "log-event",
+            "--event", "review_done",
+            "--fields-json", json.dumps(fields),
+            "--findings-json", json.dumps(findings_array),
+            "--json",
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body.get("errors", [])]
+        assert "findings-json-collision" in codes, (body, codes)
+
+
+class TestTask022CommitDoneFindings:
+    """V3, V6 — `commit-task` always embeds `findings` on `commit_done`.
+
+    When `--reviewer-minor-findings` is non-empty, the full payload is
+    preserved verbatim. When the flag is empty or defaults to `[]`, the
+    `findings` key is still present with an empty list — the key is
+    always there, the backward-compat count field `minor_findings_count`
+    is preserved unchanged.
+    """
+
+    def test_v3_commit_done_event_embeds_findings(
+        self, tmp_git_repo: Path
+    ) -> None:
+        # V3 — one minor finding survives end-to-end on commit_done.
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8"
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        findings_payload = [{
+            "severity": "minor",
+            "file": "src/foo.py",
+            "line": 7,
+            "issue": "rename variable",
+            "suggested_fix": "call it count",
+            "disposition": "dismissed",
+            "disposition_reason": "D.5 override",
+        }]
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "minor-findings",
+            "--reviewer-minor-findings", json.dumps(findings_payload),
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        commit_events = [
+            json.loads(ln) for ln in lines if '"commit_done"' in ln
+        ]
+        assert commit_events, f"no commit_done event in log: {lines}"
+        rec = commit_events[-1]
+        assert rec["event"] == "commit_done"
+        assert rec["minor_findings_count"] == 1
+        assert "findings" in rec, rec
+        assert rec["findings"] == findings_payload
+
+    def test_v6_commit_done_empty_findings_is_empty_list(
+        self, tmp_git_repo: Path
+    ) -> None:
+        # V6 — empty `--reviewer-minor-findings '[]'` still writes
+        # `findings: []` explicitly. The key is always present on
+        # commit_done events; absence would be a regression.
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8"
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--reviewer-minor-findings", "[]",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        rec = [
+            json.loads(ln) for ln in lines if '"commit_done"' in ln
+        ][-1]
+        assert rec["minor_findings_count"] == 0
+        assert "findings" in rec, rec
+        assert rec["findings"] == []
+
+
+class TestTask022LogEventFindingsBackwardCompat:
+    """V6 — `log-event` without `--findings-json` is byte-identical to
+    the pre-TASK-022 behavior; the `findings` key is absent.
+    """
+
+    def test_v6_log_event_without_findings_json_has_no_key(
+        self, isolated_plan: Path
+    ) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "review_done",
+            "--fields-json",
+            '{"run_id":"R1","task_id":"001","reviewer":"codex",'
+            '"verdict":"clean","findings_count":0}',
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "review_done"
+        assert "findings" not in rec, rec
+
+
+class TestTask022DismissalEvidenceGateDocs:
+    """V5 — dispatch-templates.md Phase D.5 contains the dismissal
+    evidence gate paragraph + the `spec-deference` disposition wording.
+    Grep-based regression so the auditable tokens stay greppable.
+    """
+
+    def test_v5_dispatch_templates_has_dismissal_gate_and_spec_deference(
+        self,
+    ) -> None:
+        templates = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "dispatch-templates.md"
+        )
+        text = templates.read_text(encoding="utf-8")
+        assert "Dismissal-evidence gate" in text, (
+            "expected Phase D.5 section to carry a "
+            "'Dismissal-evidence gate' paragraph"
+        )
+        assert "spec-deference" in text, (
+            "expected Phase D.5 dismissal gate to name the "
+            "`spec-deference` disposition"
+        )
+        # The gate and the Verdict decision rubric MUST co-locate under
+        # the same Phase D.5 prompt block. Verify ordering so future
+        # edits don't drift the gate into Phase D-Claude by mistake.
+        d5_idx = text.find("## Phase D.5")
+        next_section_idx = text.find("## Phase D.2b", d5_idx)
+        assert d5_idx >= 0 and next_section_idx > d5_idx
+        d5_block = text[d5_idx:next_section_idx]
+        assert "Dismissal-evidence gate" in d5_block, (
+            "Dismissal-evidence gate paragraph must live inside the "
+            "Phase D.5 section, not in a sibling template block"
+        )
+        assert "spec-deference" in d5_block
+
+
+class TestTask022SpecDeferenceValidator:
+    """V4 — `spec-deference` is accepted by
+    `_validate_reviewer_finding_item` with the full disposition +
+    reason combo. Duplicates the parametrized V6 coverage from
+    `TestTask019ReviewerFindingDisposition` so the TASK-022 anchor is
+    discoverable by name.
+    """
+
+    def test_v4_reviewer_finding_disposition_accepts_spec_deference(
+        self,
+    ) -> None:
+        finding = {
+            "severity": "minor",
+            "file": "a.py",
+            "line": 1,
+            "issue": "x",
+            "suggested_fix": "y",
+            "disposition": "spec-deference",
+            "disposition_reason": (
+                "plan mandates this but critique has design merit"
+            ),
+        }
+        errors = plan_ops._validate_reviewer_finding_item(
+            finding, path="$.f"
+        )
+        assert errors == [], errors
+        # Ensure the constant set itself carries the new value.
+        assert (
+            "spec-deference"
+            in plan_ops.ALLOWED_REVIEWER_FINDING_DISPOSITIONS
         )

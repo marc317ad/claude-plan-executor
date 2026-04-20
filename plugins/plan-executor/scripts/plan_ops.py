@@ -113,7 +113,17 @@ ALLOWED_PLAN_REVIEW_FINDING_SEVERITIES = {"critical", "important", "minor"}
 # TASK-019: reviewer-minor-finding optional disposition vocabulary. Allows the
 # D.5 adjudicator to attach a structured "what happened to this finding"
 # annotation without stuffing it into the prose of `issue`/`suggested_fix`.
-ALLOWED_REVIEWER_FINDING_DISPOSITIONS = {"dismissed", "accepted", "deferred"}
+ALLOWED_REVIEWER_FINDING_DISPOSITIONS = {
+    "dismissed",
+    "accepted",
+    "deferred",
+    # TASK-022: `spec-deference` marks a Codex finding that has design merit
+    # but contradicts the plan's explicit spec (acceptance criteria or
+    # Implementation Playbook). D.5 uses it instead of `dismissed` so the
+    # critique surfaces for a future plan-review pass rather than being
+    # silently buried under "plan says so" reasoning.
+    "spec-deference",
+}
 OPTIONAL_REVIEWER_FINDING_FIELDS = {"disposition", "disposition_reason"}
 ALLOWED_ROW_FIELDS = {"task", "agent", "reviewer", "verdict", "commit", "notes"}
 # Known run-log event types. The orchestrator owns the vocabulary; this set
@@ -2807,6 +2817,12 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         "files": files,
         "reviewer_verdict": args.reviewer_verdict,
         "minor_findings_count": len(minor),
+        # TASK-022: persist the full reviewer minor-findings payload on
+        # every `commit_done` event so audits months later can retrieve
+        # exactly what was flagged (and, via any `disposition` fields,
+        # why it was dismissed/accepted/deferred). Key is always present:
+        # an empty `--reviewer-minor-findings '[]'` yields `findings: []`.
+        "findings": minor,
         "disagreement_tag": bool(args.disagreement_tag),
         "remediation_tag": bool(getattr(args, "remediation_tag", False)),
         # TASK-016C: surface the D.2a.6 flags in commit_done so the run
@@ -3255,8 +3271,41 @@ def cmd_log_event(args: argparse.Namespace) -> None:
                 ),
             }],
         })
+    # TASK-022: optional `--findings-json` attaches the full reviewer
+    # finding payload to the event. Validated via the same helper
+    # `commit-task` uses so the two seams share one schema. Collision with
+    # a `findings` key already present in `--fields-json` is a structured
+    # error — the orchestrator MUST pick one source of truth.
+    findings: list | None = None
+    if getattr(args, "findings_json", None) is not None:
+        try:
+            parsed = json.loads(args.findings_json)
+        except json.JSONDecodeError as e:
+            _die(args, {"errors": [{
+                "path": "$.findings_json",
+                "code": "invalid-json",
+                "message": f"invalid --findings-json: {e}",
+            }]})
+        errs = _validate_minor_findings_payload(parsed, path="$.findings_json")
+        if errs:
+            _die(args, {"errors": errs})
+        if "findings" in fields:
+            _die(args, {"errors": [{
+                "path": "$.findings",
+                "code": "findings-json-collision",
+                "message": (
+                    "findings key is present in both --fields-json and "
+                    "--findings-json; pick one source"
+                ),
+            }]})
+        findings = parsed
     try:
-        written = _append_run_log(args.event, fields)
+        if findings is not None:
+            merged = dict(fields)
+            merged["findings"] = findings
+            written = _append_run_log(args.event, merged)
+        else:
+            written = _append_run_log(args.event, fields)
     except RuntimeError as e:
         _die(args, {"error": str(e)})
     _emit(args, {"ok": True, "written_line": written})
@@ -3662,6 +3711,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_log = sub.add_parser("log-event", help="Append JSONL event with && tail -1 verification")
     p_log.add_argument("--event", required=True, help="Event name")
     p_log.add_argument("--fields-json", required=True, help="JSON fields dict")
+    # TASK-022: optional full-finding payload for `review_done` /
+    # `disagreement` events. Validated via `_validate_minor_findings_payload`
+    # (same schema as `commit-task --reviewer-minor-findings`). Embedded
+    # verbatim under key `findings` on the JSONL line when present.
+    p_log.add_argument(
+        "--findings-json",
+        dest="findings_json",
+        default=None,
+        help=(
+            "Optional JSON array of reviewer findings to embed verbatim "
+            "under key 'findings' in the log line. Validated via the "
+            "reviewer-minor-findings schema."
+        ),
+    )
     _add_json(p_log)
 
     p_norm = sub.add_parser("normalize-task-id", help="Canonicalize task id to 3-digit form")
