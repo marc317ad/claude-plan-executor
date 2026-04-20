@@ -256,3 +256,11 @@ Expect V1-V6 green; existing TASK-019 / TASK-021 tests unchanged. The pre-existi
 ## Reversion guidance
 
 See per-step notes in Implementation notes. The `--findings-json` seam and the D.5 evidence gate are both additive and backward-compatible. The `spec-deference` disposition is additive; downgrading it from the validator's OPTIONAL set would make post-TASK-022 log entries fail re-validation, but those are historical artifacts, not live schema checks.
+
+## Execution log — 20260420T010733 (success)
+
+Starting SHA: `8a1d1fd689cc031d5118bc5ee7a6ae1dbf1b9c96`  → Ending SHA: `5036837026a46d354c1e40686bef8df09bfd973a`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 022 | claude | codex + D.5 code-reviewer | needs-rework → ship [disagreement] | 5036837 | Codex flagged 2 important findings; D.5 ruled both spec-deference (plan mandated the language Codex objected to). |
