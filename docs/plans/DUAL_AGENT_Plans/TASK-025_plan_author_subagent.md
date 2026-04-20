@@ -2,7 +2,8 @@
 
 **Base branch:** `main`
 **Audit anchor commit:** `5036837` (TASK-022 commit — last stable state before this task)
-**Chunk dependencies:** TASK-013 (introduced the plan-review gate), TASK-022 (added `--findings-json` persistence — the payload this task forwards to the new author).
+**Design contract:** [`TASK-013_plan_review_and_remediation.md`](TASK-013_plan_review_and_remediation.md) — this task delivers item 3 of TASK-013's Goal ("Plan is either approved, revised once, or halted"). TASK-014A shipped the plan-review gate + approved/halted paths + the D.2a.5 repair loop; this task completes the "revised once" path that TASK-014A stubbed as a read-only-analyst re-dispatch.
+**Chunk dependencies:** TASK-014A (shipped the plan-review gate this task extends), TASK-022 (added `--findings-json` persistence — the payload this task forwards to the new author).
 **Motivating run:** `20260420T031537` — `TASK-020_plan_status_integrity.md` halted with `run_end reason=plan_review_failed` after two identical `needs-replan` verdicts from Codex. Root cause: the `needs-replan` retry re-dispatched `plan-analyst`, which is read-only (`plan-analyst.md:288-289`) and cannot edit the plan file. The findings were passed to an agent with no tools to act on them; the second review saw the same unchanged plan text and reached the same verdict.
 
 ---
@@ -127,7 +128,7 @@ Both greps must hit.
   - `plugins/plan-executor/scripts/plan_ops.py`
   - `plugins/plan-executor/skills/implement-plan/run-log-schema.md`
   - `tests/scripts/test_plan_ops.py`
-- **Dependencies:** TASK-013, TASK-022
+- **Dependencies:** TASK-014A, TASK-022
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
 - **Acceptance criteria:**
   - V1-V6 pass.

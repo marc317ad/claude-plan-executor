@@ -278,8 +278,11 @@
         "005",
         "012"
       ],
-      "status": "Pending",
-      "superseded_by": []
+      "status": "Superseded",
+      "superseded_by": [
+        "014A",
+        "025"
+      ]
     },
     {
       "task_id": "014A",
@@ -464,7 +467,7 @@
       "priority": "low",
       "issues_absorbed": [],
       "depends_on": [
-        "013",
+        "014A",
         "022"
       ],
       "status": "Pending",
@@ -489,7 +492,7 @@
       "priority": "medium",
       "issues_absorbed": [],
       "depends_on": [
-        "013",
+        "014A",
         "022"
       ],
       "status": "Pending",
