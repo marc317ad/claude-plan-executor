@@ -246,3 +246,11 @@ V1-V6 green on that narrowed run; existing TASK-013 through TASK-023 coverage un
 ## Reversion guidance
 
 See per-step notes in Implementation notes. `plan-author.md`, the allowlist extension, the dispatch template section, and the run-log-schema entries are additive. The SKILL.md §Phase 1.5 rewrite replaces the old read-only-analyst retry paragraph; restore verbatim from commit `5036837` on revert. Do not revert without replacement — the underlying retry dead-loop is the bug.
+
+## Execution log — 20260420T175108 (success)
+
+Starting SHA: `c423d6452281434bbbc641086f2a082af603f121`  → Ending SHA: `a3a947d6c102f81b7450ba825be3bae48e770968`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-025 | claude | codex→claude(D.5) | ship-with-fixes [disagreement] | a3a947d6 | Codex needs-rework → D.5 ship-with-fixes. Finding 0 dismissed (false-positive: plan-author.md exists, untracked). Finding 1 spec-deference (plan line 47 classifies optional). Findings 2-3 minor test-coverage gaps, non-blocking. |

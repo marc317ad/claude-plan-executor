@@ -14,14 +14,16 @@
         "plugins/plan-executor/skills/implement-plan/run-log-schema.md",
         "tests/scripts/test_plan_ops.py"
       ],
-      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
-      "classification_reason": "New subagent, multi-file wiring, prompt authoring"
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestTask025PlanAuthorSubagent",
+      "classification_reason": "Multi-file wiring, new subagent module"
     }
   ],
   "batches": [
     {
       "index": 1,
-      "task_ids": ["025"],
+      "task_ids": [
+        "025"
+      ],
       "file_locks": [
         "plugins/plan-executor/agents/plan-author.md",
         "plugins/plan-executor/scripts/plan_ops.py",
