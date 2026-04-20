@@ -159,3 +159,32 @@ In plan_ops.py, you have thousands of lines dedicated to validating JSON shapes 
 
 Summary Verdict
 Your backend logic is incredibly solid. The gap is entirely in the handoff. You are forcing the LLM to act as a sysadmin dealing with raw JSON streams and bash flags. If you wrap your robust Python logic into abstracted tools, your LLM will run faster, cost less, and never derail mid-plan.
+
+
+
+
+Conversation Summary
+This conversation evaluated a highly defensive, multi-agent orchestration system built around the Claude Code CLI. The central critique is that using a conversational CLI to act as a deterministic state machine router causes severe context bloat, token degradation, and execution freezes. Because the CLI natively wants to spawn subagents, forcing it to act as a rigid shell executor requires heavy prompt-level suppression, which breaks down over long execution loops.
+
+Optimization Workflow
+1. Low-Hanging Fruit (Prompt & CLI Containment)
+
+Front-load Containment: Move the "You do NOT have the Agent tool" command from the bottom of the prompt templates to the absolute top as a [SYSTEM OVERRIDE] to prevent CLI freezes. Apply this directly to dispatch-templates.md (specifically Phase B, Phase B-rework, and Phase B-narrow-remediation).
+
+De-duplicate Rules: Strip the redundant 12-bullet "Rules" sections currently repeated across plan-implementer.md and plan-remediator.md. Centralize these into a single global system prompt if your CLI injection allows it.
+
+Enforce Subprocess Timeouts: Update plan_codex_dispatch.py (specifically the subprocess.run calls in cmd_implement and cmd_review) to enforce strict timeouts that forcefully kill the process if the CLI hangs waiting for a silent [y/N] prompt.
+
+2. Medium Complexity (Python Logic & State Management)
+
+Standardize Schema Validation: Delete the manual dictionary key-checking logic in plan_ops.py. Replace it with jsonschema.validate() using your existing codex_plan_review_schema.json, codex_review_schema.json, and codex_implement_schema.json files.
+
+Invert the Database: Deprecate the regex parsing functions in plan_ops.py (like _split_task_blocks, _find_status_bullet, and mutate_task_status). Shift the source of truth to a .json file, and have plan_ops.py render the markdown plan files for human readability, rather than parsing markdown to determine system state.
+
+3. High Complexity (The "Split-Brain" Architecture)
+
+Deprecate SKILL.md: Remove the LLM from the routing loop entirely. Rewrite the DAG logic defined in SKILL.md into a standard Python main.py loop (or use LangGraph) that handles the file-locks and state transitions natively.
+
+Migrate Workers to Local Inference: Stop using the Claude CLI to execute Phase B (Implementation) and Phase D (Review) tasks. Leverage the high-performance local computer you built for deep learning to host stateless worker models via Ollama or vLLM. The high VRAM density of this setup will easily support models like qwen2.5-coder or llama3 for the mechanical implementation loops without API costs.
+
+Isolate Claude CLI: Reserve the Claude CLI strictly for the Phase A (plan-analyst.md) high-level architecture generation, passing the resulting JSON schedule to your local Python/Ollama engine for execution.
