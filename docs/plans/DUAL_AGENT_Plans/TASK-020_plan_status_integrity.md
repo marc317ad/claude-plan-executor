@@ -209,8 +209,10 @@ Must hit at least once in the §D.3 commit-task section.
   - Pre-commit hook integration (future TASK-021; CI-only is enough for v1 once TASK-020C lands).
   - Auto-fixing findings — the lint reports, humans triage.
   - Historical sweep / retroactive flagging of existing done markers — that's a one-time housekeeping task, not TASK-020A's job. The lint will surface the list; a follow-up can decide per-entry disposition.
-- **Description:**
-  Add a read-only `lint-plans` subcommand that flags any `**Status:** done` (or `partial`) task without a matching `commit_done` run-log event AND matching `feat(TASK-NNN)` git commit. No CI wiring in this task — CI is TASK-020C's scope.
+
+**Description:**
+Add a read-only `lint-plans` subcommand that flags any `**Status:** done` (or `partial`) task without a matching `commit_done` run-log event AND matching `feat(TASK-NNN)` git commit. No CI wiring in this task — CI is TASK-020C's scope.
+
 - **Implementation notes:**
   - Re-use `_split_task_blocks` (`plan_ops.py:1008`) for per-task iteration and `_find_status_bullet` (`plan_ops.py:1025`) for status extraction. Re-use `_normalize_task_id` for id canonicalization.
   - The `feat(TASK-NNN)` grep should use `git log --all --grep "^feat(TASK-<id>)"` (or `--pretty=%s | grep`), not just `git log --grep TASK-NNN` (TASK-019's concern prose would falsely match).
@@ -241,8 +243,10 @@ Must hit at least once in the §D.3 commit-task section.
   - Parallelizing or caching V-checks across tasks — run once per commit-task, no memoization.
   - Custom runner integration (Nix/Bazel/pytest-xdist) — the V-check is a shell command; if the plan needs more, it writes a wrapper script. Don't over-engineer.
   - Mandatory V-check for all plans — opt-in only. A future TASK-022 could flip the default to mandatory once enough plans carry the field to make it practical.
-- **Description:**
-  Let plans declare an `acceptance_v_check: <command>` field in YAML frontmatter. When present, `commit-task` runs it pre-commit and halts on non-zero exit, preventing the `done` flip from landing against code that doesn't meet the plan's acceptance criteria. Backward-compat: absence of the field = no enforcement.
+
+**Description:**
+Let plans declare an `acceptance_v_check: <command>` field in YAML frontmatter. When present, `commit-task` runs it pre-commit and halts on non-zero exit, preventing the `done` flip from landing against code that doesn't meet the plan's acceptance criteria. Backward-compat: absence of the field = no enforcement.
+
 - **Implementation notes:**
   - Use `re.match(r"^---\n(.*?)\n---\n", text, flags=re.DOTALL)` to extract the frontmatter block. Parse via stdlib `yaml` if available OR use a minimal key-value regex — but we have `yaml` available (confirmed via TASK-013); prefer it.
   - The V-check runs with `shell=True`. This is intentional — plan authors declare shell commands like `venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestBatchNextBatchFidelity`. Document the shell-injection surface: plans must not be edited by untrusted parties without review (which is already the case).
