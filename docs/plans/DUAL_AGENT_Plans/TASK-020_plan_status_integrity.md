@@ -509,3 +509,12 @@ Expected: test suite green; lint output lists whatever plan slips currently exis
 - TASK-020A is strictly additive. Reverting removes the `lint-plans` subcommand; hand-edited markers become silently tolerated again. No CI workflow file exists in this task (deferred to TASK-020C), so revert is subcommand-only. Before reverting, consider whether the lint findings have been addressed — reverting while findings exist re-hides them.
 - TASK-020B's V-check enforcement is opt-in per plan; reverting removes the enforcement branch from `cmd_commit_task` and the `ALLOWED_LOG_EVENTS` additions. Plans that carry `acceptance_v_check:` continue to be valid markdown; the field simply becomes a no-op. Safe to revert without touching plan files.
 - **Never revert the status-partial fix on TASK-002** (that's TASK-019's change, not TASK-020's). These are separate concerns; reverting TASK-020 does not undo TASK-019.
+
+## Execution log — 20260421T031650 (success)
+
+Starting SHA: `459b6a8c9403d6bea0e2a86df93fc8c0c843f8ae`  → Ending SHA: `489995d2720a1c1efd10f675e7e121f48414b724`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 020A | claude | codex | disagreement-ship | bc9ea17 | Pre-existing impl on base commit 459b6a8; D.5=ship, backfill commit with [disagreement] tag. |
+| 020B | claude | codex | disagreement-ship-with-fixes | 489995d | D.5 dismissed Finding 0 (no --git-dir arg); spec-deference on Finding 1 (matches commit_done pattern); Finding 2 surfaced as minor. |

@@ -12,7 +12,7 @@
         "plugins/plan-executor/skills/implement-plan/SKILL.md"
       ],
       "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
-      "classification_reason": "New subcommand, multi-file, git subprocess"
+      "classification_reason": "Multi-file coordination, new subsystem"
     },
     {
       "id": "020B",
@@ -25,7 +25,7 @@
         "tests/scripts/test_plan_ops.py"
       ],
       "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
-      "classification_reason": "Behavior change, subprocess/timeout/shell invariants"
+      "classification_reason": "Commit-task control flow, shell subprocess, invariant"
     }
   ],
   "batches": [
@@ -55,12 +55,19 @@
   "gaps": [],
   "risks": [
     {
-      "type": "same-file-across-batches",
+      "type": "file-overlap-across-batches",
       "affected_tasks": [
         "020A",
         "020B"
       ],
-      "detail": "Both tasks modify plan_ops.py, test_plan_ops.py, and SKILL.md; safely serialized across batches."
+      "detail": "Both tasks modify plan_ops.py, test_plan_ops.py, and SKILL.md; serial execution via batch ordering keeps this safe."
+    },
+    {
+      "type": "preexisting-implementation",
+      "affected_tasks": [
+        "020A"
+      ],
+      "detail": "cmd_lint_plans and helpers _load_commit_done_ids/_load_feat_commit_ids already exist in plan_ops.py (lines 1811, 1840, 1846). Implementer should reconcile acceptance V1-V5 against existing code rather than re-author."
     }
   ]
 }
