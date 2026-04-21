@@ -49,6 +49,21 @@ The fixture's *purpose* is to exercise the Phase 4 contract surface. The rewrite
 
 A spec-compliant plan is already embedded in the integration test — use it as the shape reference. It proves the schema *is* understood; the fixture just was not upgraded. The rewrite does not copy that plan verbatim (test-embedded plan is minimal) but follows the same structural pattern.
 
+### Downstream impact — real blocked run (2026-04-20)
+
+TASK-026 (`docs/plans/DUAL_AGENT_Plans/TASK-026_phase_gate_review_drift_followup.md`) is the concrete motivating example of why this rewrite is on the critical path. On 2026-04-20 the orchestrator attempted to run TASK-026 and halted at Phase 0 preflight:
+
+```
+fixture-valid: fail
+  schema-valid failed: schema violations: missing Goal section (## Goal);
+  missing Verification section (## Verification); TASK-001 missing bullet
+  **Priority:**; TASK-001 missing prose header **Description:**; ...
+```
+
+The failure is entirely in `sample_phase4.md` (not TASK-026's plan file), but per current SKILL.md Phase 0 semantics the halt applies because the plan under execution is not the sample itself. TASK-026 is blocked until TASK-006 lands and the fixture passes `fixture-valid`.
+
+This is a hard-ordering signal: TASK-006 must merge before TASK-026 can run — and TASK-026's own Finding 3 will close the loop by narrowing the preflight halt set so the failure mode cannot recur for future plans even if the fixture regresses.
+
 ---
 
 ## Verification

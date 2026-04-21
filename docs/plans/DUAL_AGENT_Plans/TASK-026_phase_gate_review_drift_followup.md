@@ -181,6 +181,7 @@ Both the two-seam invariant and the always-ignore set are named explicitly, not 
 - **Dependencies:** TASK-005
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py -k "gates or commit_safe or execution_safe or review_safe or preflight"`
 - **Acceptance criteria:**
+  - Bootstrap carve-out cleanup (prerequisite, Step 0): the TASK-006-specific `fixture-valid` demotion span added to `SKILL.md` Phase 0 preflight as a bootstrap exception for TASK-006's run is reverted. Verified by `grep -n 'TASK-006 bootstrap carve-out' plugins/plan-executor/skills/implement-plan/SKILL.md` returning zero matches. Must land before (or in the same commit as) Finding 3's broader preflight narrowing.
   - Finding 1 (execution-safe two-seam): `_gate_execution_safe` asserts a `_snapshot_baseline()` call inside the implement-dispatch window AND inside the timeout-cleanup window, parsed as separate regions. Negative tests cover each-seam-missing case.
   - Finding 2 (commit-safe always-ignore): `COMMIT_ALWAYS_IGNORE` constant defined in `_plan_paths.py`; `_gate_commit_safe` uses it as the sole ignore set (no protected-path fallback); if `commit-task`'s guard is updated, it uses the same constant. Tests assert the set's members are ignored while protected-but-not-declared paths fail the gate.
   - Finding 3 (Phase 0 preflight): SKILL.md Phase 0 preflight instruction lists only `schema-valid` + `schedule-valid` as halt-on-fail gates. `fixture-valid` is either moved to a warning-tier block or annotated as "tracked; not halt-on-fail until TASK-006 lands." Smoke test asserts this.
@@ -209,6 +210,26 @@ If the shared `COMMIT_ALWAYS_IGNORE` set introduces friction (e.g. a legitimate 
 ---
 
 ## Implementation Playbook
+
+### Step 0 — Revert TASK-006 bootstrap carve-out in SKILL.md
+
+TASK-006 landed under a one-shot `SKILL.md` bootstrap exception that demoted `fixture-valid` to warning specifically for `TASK-006_conformance_fixture.md`. With TASK-006 merged, `sample_phase4.md` conforms to the schema and `fixture-valid` returns `pass` globally — the carve-out is inert and must be removed before Step 4 rewrites the surrounding Phase 0 preflight text (otherwise the two edits collide).
+
+Find the sentinel-bracketed span in `plugins/plan-executor/skills/implement-plan/SKILL.md` under the Phase 0 preflight block:
+
+```
+<!-- BEGIN TASK-006 bootstrap carve-out — revert in TASK-026 Step 0 -->
+... TASK-006-specific demotion clause ...
+<!-- END TASK-006 bootstrap carve-out -->
+```
+
+Delete the span inclusive of both sentinel HTML comments. The surrounding sentence returns to its pre-carve-out shape (`...demote to warning; for any other plan, halt as usual.`). Verify:
+
+```bash
+grep -n 'TASK-006 bootstrap carve-out' plugins/plan-executor/skills/implement-plan/SKILL.md
+```
+
+Zero matches after the edit. Proceed to Step 1 only after verification.
 
 ### Step 1 — Shared `COMMIT_ALWAYS_IGNORE` constant
 
@@ -323,3 +344,20 @@ Single commit that lands all five findings together. No feature-flag needed — 
 - TASK-005 commit: `<filled in by commit-task>`
 - Pass-4 findings in full: see `docs/plans/_run_log.jsonl` line containing `"pass": "post-narrow-remediation-2"` for the five-finding array. The wrapper review response (which the run log only meta-logged) is in the session transcript.
 - User decision rationale (option A): committing TASK-005 as technically complete avoids collapsing the diminishing-returns review cycle into this run; the five findings are load-bearing enough to warrant their own chunk with proper acceptance criteria rather than a fifth narrow-remediation round.
+
+### First execution attempt blocked by Finding 3 (2026-04-20)
+
+On 2026-04-20 the orchestrator attempted to run TASK-026 and halted at Phase 0 preflight with exactly the footgun Finding 3 describes:
+
+```
+fixture-valid: fail
+  schema-valid failed: schema violations: missing Goal section (## Goal);
+  missing Verification section (## Verification); TASK-001 missing bullet
+  **Priority:**; TASK-001 missing prose header **Description:**; ...
+```
+
+The failure is in `docs/plans/sample_phase4.md` (pre-TASK-006 shape), not in TASK-026's plan file. Per current SKILL.md Phase 0 semantics — "`fixture-valid` may legitimately fail against the pre-TASK-006 sample fixture — if the plan under execution is the sample itself, demote to warning; for any other plan, halt as usual" — the run halts because TASK-026 ≠ the sample.
+
+Chicken-and-egg: the plan that would fix the halt cannot run because of the halt. User's chosen path: land TASK-006 first (rewrites `sample_phase4.md` so `fixture-valid` can pass), then retry TASK-026. TASK-006 now cites this attempt as the concrete motivating example.
+
+No lock was acquired and no `run_start` event was logged on the blocked attempt, so there is no cleanup debt carried forward.

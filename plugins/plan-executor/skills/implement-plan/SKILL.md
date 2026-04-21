@@ -139,7 +139,7 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
   --plan-file <absolute plan> --json
 ```
 
-Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`. `fixture-valid` may legitimately fail against the pre-TASK-006 sample fixture — if the plan under execution is the sample itself (it will not be in production runs), demote to warning; for any other plan, halt as usual.
+Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`. `fixture-valid` may legitimately fail against the pre-TASK-006 sample fixture — if the plan under execution is the sample itself (it will not be in production runs), demote to warning; <!-- BEGIN TASK-006 bootstrap carve-out — revert in TASK-026 Step 0 --> if the plan under execution is `TASK-006_conformance_fixture.md` (the sample's rewrite chunk — temporary bootstrap exception to break the chicken-and-egg between TASK-006 rewriting the fixture and `fixture-valid` gating on that same fixture), likewise demote to warning; <!-- END TASK-006 bootstrap carve-out --> for any other plan, halt as usual.
 
 Then acquire the run-lock:
 
