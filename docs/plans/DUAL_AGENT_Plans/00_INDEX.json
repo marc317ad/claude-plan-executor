@@ -507,7 +507,7 @@
       "depends_on": [
         "005"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Surfaced during TASK-005 run 20260420T220109 Codex review pass-4 (post-narrow-remediation-2); user elected option A (commit TASK-005 + follow-up chunk) over a fourth hand-fix round."
     }

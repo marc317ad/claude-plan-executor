@@ -12,7 +12,7 @@
 
 ## Goal
 
-Close the five Codex review findings surfaced in TASK-005 pass-4 that fall on the boundary between "genuine gap" and "reviewer drift vs plan acceptance criteria." Two are load-bearing invariant gaps (`execution-safe` seam fidelity, `commit-safe` always-ignore consistency). One is a doc/skill mismatch that can halt downstream runs (Phase 0 preflight hard-halt vs pre-TASK-006 `fixture-valid` deferred status). Two are small polish fixes (promotion-table phase cell typo, V3/V4 test strategy).
+Close the five Codex review findings surfaced in TASK-005 pass-4 that fall on the boundary between "genuine gap" and "reviewer drift vs plan acceptance criteria." Two are load-bearing invariant gaps (`execution-safe` seam fidelity, `commit-safe` always-ignore consistency). One reconciles a doc/skill drift in the Phase 0 preflight halt set (now post-TASK-006: `fixture-valid` returns to the strict halt set alongside `schema-valid` / `schedule-valid`). Two are small polish fixes (promotion-table phase cell typo, V3/V4 test strategy).
 
 Each finding below is addressed on its own merits. Where the reviewer conflicted with the plan's acceptance criteria (e.g. V3/V4 deferred-to-TASK-003), the reconciliation is to pin the test strategy to fixture-based assertions (as the plan originally specified) rather than widen live-tree assertions.
 
@@ -33,7 +33,7 @@ TASK-005 passed through four Codex review cycles under run `20260420T220109`:
 The diminishing-returns pattern — each pass surfaced five new findings touching different parts of the gate surface, never the same parts twice — indicates the plan's acceptance criteria was not tight enough to converge a single run. TASK-005 is "technically complete" against its own V1–V7 acceptance checks: six gate predicates exist, the `gates` subcommand surface is wired, and the design doc + SKILL.md document the promotion criteria. What the pass-4 review flagged is a mix of:
 
 1. **Invariant-fidelity gaps.** The gates exist but some predicates can be fooled. Specifically `execution-safe` requires two distinct snapshot call sites per the design doc (implement dispatch seam AND timeout cleanup), but the current predicate only asserts generic presence. Similarly `commit-safe` claims "always-ignore subtraction" in the doc/skill but implements a narrower allowlist.
-2. **Doc/skill/impl divergence.** SKILL.md's promotion table lists `schedule-valid` under Phase 0 preflight, but the workflow correctly writes the schedule in Phase 1. The Phase 0 hard-halt instruction also predates TASK-005's deferral of `fixture-valid` live-green to TASK-006 — normal plans can legitimately have `fixture-valid: fail` right now and should not block.
+2. **Doc/skill/impl divergence.** SKILL.md's promotion table lists `schedule-valid` under Phase 0 preflight, but the workflow correctly writes the schedule in Phase 1. The Phase 0 hard-halt text also still carries leftover wording from TASK-005's deferral of `fixture-valid` live-green to TASK-006; with TASK-006 landed, the wording needs to be reconciled to the canonical halt-on-fail semantics for all three preflight gates.
 3. **Test strategy alignment.** V3/V4 in the plan explicitly defer live-tree green until TASK-003 lands, and prescribe fixture-based assertions. A subset of tests in `test_plan_ops.py` still assert against the live wrapper, not fixtures.
 
 The cost of collapsing these into a fourth hand-fix round under the same run is: (a) every edit restarts the review loop, (b) the diminishing-returns pattern suggests the fifth pass would surface another five findings elsewhere, (c) the run is already ~2.5 hours in and has consumed its useful work budget. Filing a targeted follow-up chunk lets each finding be addressed on its own merits with proper acceptance criteria.
@@ -62,18 +62,13 @@ The design doc (§9 commit-safe) and SKILL.md both say commit-safe subtracts `{t
 
 The reviewer's alternate suggestion ("use the same allowlist as `commit-task`") is accepted in spirit; the implementation approach (shared constant) eliminates drift.
 
-#### Finding 3 — Phase 0 preflight hard-halt conflicts with pre-TASK-006 `fixture-valid` deferral (important)
+#### Finding 3 — Phase 0 preflight halt set reconciliation (important)
 
-SKILL.md §Phase-0 preflight: "Run `plan_ops.py gates --check schema-valid,schedule-valid,fixture-valid` before dispatching the analyst. Halt on fail." But TASK-005 acceptance also says: `fixture-valid` may return `fail` until TASK-006 lands against the current `sample_phase4.md`.
+SKILL.md §Phase-0 preflight currently still carries TASK-005's interim wording that treats `fixture-valid` as a potential self-reference hazard ("if the plan under execution is the sample fixture itself, demote to warning"). With TASK-006 landed, `sample_phase4.md` is now schema-conformant and `fixture-valid` returns `pass` globally; the interim demotion clause is inert and adds ambiguity about the canonical halt contract.
 
-This is a live footgun: any run against any plan, today, hits `fixture-valid: fail` at Phase 0 preflight and halts. The skill must not halt on this specific pre-TASK-006 condition.
+**Target behavior (post-TASK-006, durable):** Phase 0 preflight runs `schema-valid`, `schedule-valid`, and `fixture-valid`; all three are strict halt-on-fail. There is no `--warn-only` flag, no `warn` status, and no fixture-version detection inside the predicate. The gate status vocabulary remains the frozen `pass|fail|not_applicable`.
 
-**Fix scope:** Two options, pick one:
-
-- **(a) — Narrower preflight.** Phase 0 runs only `schema-valid` + `schedule-valid` (both gated on the user's plan, not the fixture). `fixture-valid` is demoted to a tracked warning, not a halt, until TASK-006 lands. The `--certify --mode dry-run` path still requires `fixture-valid: pass` (post-TASK-006), but preflight halts on schema-valid/schedule-valid only.
-- **(b) — Deferred-status allowance.** Phase 0 invokes `fixture-valid` but the gate itself returns `not_applicable` with reason `"deferred-pending-task-006"` when it can detect that the current fixture is the pre-rewrite version. Post-TASK-006, the detection flips and the gate becomes enforceable.
-
-Prefer **(a)** — it's the smaller, safer change and matches the plan's stated deferral. **(b)** leaks fixture-version detection into the gate predicate and is harder to reason about.
+**Fix scope:** Remove the residual interim demotion wording from SKILL.md so the Phase 0 instruction block cleanly states the strict halt-on-fail contract for all three preflight gates. No predicate changes, no CLI-surface additions, no status-vocabulary changes.
 
 #### Finding 4 — Promotion table phase cell for `schedule-valid` (minor)
 
@@ -91,16 +86,15 @@ TASK-005 acceptance criterion explicitly says: "V3 / V4 are implemented as predi
 
 - `plugins/plan-executor/scripts/plan_ops.py` — `_gate_execution_safe` window-scoped assertions (finding 1); `_gate_commit_safe` uses shared `COMMIT_ALWAYS_IGNORE` (finding 2).
 - `plugins/plan-executor/scripts/_plan_paths.py` — new `COMMIT_ALWAYS_IGNORE` constant (finding 2).
-- `plugins/plan-executor/scripts/plan_codex_dispatch.py` — none required *unless* finding 2 reveals a commit-task self-authored path currently blocked that should be in the shared set; if so, update `commit-task`'s allowlist to reuse the constant.
-- `plugins/plan-executor/skills/implement-plan/SKILL.md` — Phase 0 preflight narrowed to schema-valid + schedule-valid (finding 3); promotion-table cell fix (finding 4); promotion-criteria section notes the `COMMIT_ALWAYS_IGNORE` set.
-- `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` — §9.7 commit-safe text names `COMMIT_ALWAYS_IGNORE` (finding 2); §9.7 execution-safe names the two-seam invariant (finding 1); Phase 0 preflight scope narrowed to pre-TASK-006 reality (finding 3).
+- `plugins/plan-executor/skills/implement-plan/SKILL.md` — Phase 0 preflight interim demotion clause removed so all three preflight gates are strict halt-on-fail (finding 3); promotion-table cell fix (finding 4); promotion-criteria section notes the `COMMIT_ALWAYS_IGNORE` set.
+- `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` — §9.7 commit-safe text names `COMMIT_ALWAYS_IGNORE` (finding 2); §9.7 execution-safe names the two-seam invariant (finding 1); Phase 0 preflight scope reaffirmed as strict halt-on-fail for `schema-valid` / `schedule-valid` / `fixture-valid` (finding 3).
 - `tests/scripts/test_plan_ops.py` — add window-scoped negative tests for `execution-safe` (finding 1); add positive-fixture + negative-real-protected-path tests for `commit-safe` (finding 2); convert V3/V4 positive tests to fixture-based (finding 5).
 
 ### Files this task does NOT edit
 
-- `docs/plans/sample_phase4.md` — TASK-006's scope.
+- `docs/plans/sample_phase4.md` — TASK-006's scope; already landed and out of scope here.
 - `plugins/plan-executor/agents/plan-analyst.md` — not in the gate path.
-- `plugins/plan-executor/scripts/plan_codex_dispatch.py` — only if finding 2 forces a shared-set adoption; most likely unchanged.
+- `plugins/plan-executor/scripts/plan_codex_dispatch.py` — definitively read-only for this task. The `commit-task` subcommand (and its self-authored-path allowlist check) lives in `plugins/plan-executor/scripts/plan_ops.py`, not in `plan_codex_dispatch.py`. Finding 2's shared-constant adoption therefore only touches `_plan_paths.py` (definition) and `plan_ops.py` (`_gate_commit_safe` plus `commit-task`'s allowlist check); `plan_codex_dispatch.py` has no `commit-task` guard to update. The schedule's `file_locks` intentionally exclude it.
 
 ---
 
@@ -122,12 +116,12 @@ Construct a scratch repo commit touching `docs/plans/_run_log.jsonl` + `docs/pla
 venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestGateCommitSafeAlwaysIgnoreConsistency
 ```
 
-**V3 — Phase 0 preflight no longer hard-halts on `fixture-valid` pre-TASK-006.**
+**V3 — Phase 0 preflight halt set is strict (post-TASK-006).**
 
-With the live `sample_phase4.md` still being the pre-rewrite version, run an executor against any TASK-NNN plan. The Phase 0 preflight output shows `schema-valid: pass`, `schedule-valid: pass`, `fixture-valid: warn` (or absent from the hard-halt set) and proceeds to Phase 1 without halting. Verified by inspecting SKILL.md's Phase 0 instruction text and a smoke test that reads the skill text and fails if it lists `fixture-valid` under the halt set.
+SKILL.md's Phase 0 preflight instruction lists `schema-valid`, `schedule-valid`, and `fixture-valid` as strict halt-on-fail gates with no interim demotion clause. A smoke test reads the skill text and fails if the interim wording (for example "demote to warning", "pre-TASK-006", or "self-reference") is still present in the Phase 0 block. A second smoke test confirms the CLI surface does not expose a `--warn-only` flag and the emitted gate status vocabulary remains `pass|fail|not_applicable`.
 
 ```bash
-venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestSkillPreflightPreTask006
+venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestSkillPreflightStrictHalt
 ```
 
 **V4 — Promotion-table phase cell for `schedule-valid` matches workflow.**
@@ -168,7 +162,7 @@ Both the two-seam invariant and the always-ignore set are named explicitly, not 
 
 ### TASK-026: Close phase-gate review drift from TASK-005 pass-4
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
@@ -177,19 +171,17 @@ Both the two-seam invariant and the always-ignore set are named explicitly, not 
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
   - `tests/scripts/test_plan_ops.py`
 - **Read-only context (not edited by TASK-026):**
-  - `plugins/plan-executor/scripts/plan_codex_dispatch.py` — read to confirm `commit-task`'s self-authored-path set; only edited if finding 2's shared-constant adoption requires it. Schedule file_locks should NOT include this unless a concrete edit is planned.
+  - `plugins/plan-executor/scripts/plan_codex_dispatch.py` — definitively read-only. `commit-task` lives in `plan_ops.py`, not here, so Finding 2's shared-constant adoption does not require any change to this file. Schedule `file_locks` therefore MUST NOT include it.
 - **Dependencies:** TASK-005
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py -k "gates or commit_safe or execution_safe or review_safe or preflight"`
 - **Acceptance criteria:**
-  - Bootstrap carve-out cleanup (prerequisite, Step 0): the TASK-006-specific `fixture-valid` demotion span added to `SKILL.md` Phase 0 preflight as a bootstrap exception for TASK-006's run is reverted. Verified by `grep -n 'TASK-006 bootstrap carve-out' plugins/plan-executor/skills/implement-plan/SKILL.md` returning zero matches. Must land before (or in the same commit as) Finding 3's broader preflight narrowing.
   - Finding 1 (execution-safe two-seam): `_gate_execution_safe` asserts a `_snapshot_baseline()` call inside the implement-dispatch window AND inside the timeout-cleanup window, parsed as separate regions. Negative tests cover each-seam-missing case.
-  - Finding 2 (commit-safe always-ignore): `COMMIT_ALWAYS_IGNORE` constant defined in `_plan_paths.py`; `_gate_commit_safe` uses it as the sole ignore set (no protected-path fallback); if `commit-task`'s guard is updated, it uses the same constant. Tests assert the set's members are ignored while protected-but-not-declared paths fail the gate.
-  - Finding 3 (Phase 0 preflight): SKILL.md Phase 0 preflight instruction lists only `schema-valid` + `schedule-valid` as halt-on-fail gates. `fixture-valid` is either moved to a warning-tier block or annotated as "tracked; not halt-on-fail until TASK-006 lands." Smoke test asserts this.
+  - Finding 2 (commit-safe always-ignore): `COMMIT_ALWAYS_IGNORE` constant defined in `_plan_paths.py`; `_gate_commit_safe` uses it as the sole ignore set (no protected-path fallback); `commit-task`'s self-authored-path allowlist check (in `plan_ops.py`, same file) uses the same constant. Tests assert the set's members are ignored while protected-but-not-declared paths fail the gate.
+  - Finding 3 (Phase 0 preflight halt set): SKILL.md Phase 0 preflight instruction lists `schema-valid`, `schedule-valid`, and `fixture-valid` as strict halt-on-fail gates, with no interim demotion clause, no `--warn-only` flag introduction, and no change to the `pass|fail|not_applicable` status vocabulary. Smoke test asserts this.
   - Finding 4 (promotion-table cell): SKILL.md promotion-criteria table row for `schedule-valid` cites Phase 1 (post-write), not Phase 0.
   - Finding 5 (V3/V4 test strategy): `test_gate_execution_safe_predicate` and `test_gate_review_safe_predicate` positive paths use fixture-file wrappers, not the live `plan_codex_dispatch.py`. Negative paths already use fixtures; unchanged.
   - All verification checks V1–V7 pass.
 - **Deferred to downstream chunks (tracked, not required for TASK-026 merge):**
-  - Full `fixture-valid: pass` end-to-end certification is still TASK-006's scope.
   - Live-tree green for V3/V4 against the production `plan_codex_dispatch.py` is TASK-003's scope.
 
 **Description:**
@@ -198,12 +190,12 @@ This task closes five review findings surfaced after TASK-005 was committed. Two
 **Implementation notes:**
 Keep the changes minimal — each finding is addressed in the one file it affects plus its regression test. Avoid re-opening TASK-005's acceptance surface; the gate CLI shape, status vocabulary, and certification mode bundles are frozen.
 
-For finding 2, audit `commit-task`'s guard to confirm the current self-authored-path set matches the proposed `COMMIT_ALWAYS_IGNORE` before writing the constant. If they diverge, the constant must be the union (or `commit-task`'s set explicitly scoped) so both ends agree. Document the decision in §9.7.
+For finding 2, audit `commit-task`'s guard (inside `plan_ops.py`, same file as `_gate_commit_safe`) to confirm the current self-authored-path set matches the proposed `COMMIT_ALWAYS_IGNORE` before writing the constant. If they diverge, the constant must be the union (or `commit-task`'s set explicitly scoped) so both ends agree. Document the decision in §9.7. Note: `plan_codex_dispatch.py` has no `commit-task` guard and is not touched by this task.
 
-For finding 3, the safer path is option (a) — narrow the halt set. Option (b) requires fixture-version detection inside the gate predicate, which adds surface area.
+For finding 3, simply remove the interim demotion wording from SKILL.md's Phase 0 block; all three preflight gates are strict halt-on-fail. Do not add a `--warn-only` CLI flag and do not introduce a `warn` status — the frozen gate status vocabulary is `pass|fail|not_applicable`.
 
 **Reversion guidance:**
-If finding 3's preflight narrowing turns out to mask real `fixture-valid` regressions post-TASK-006, re-add `fixture-valid` to the halt set in the same edit where TASK-006 lands (as part of its acceptance criteria, not a separate revert commit).
+If finding 3's reconciliation (strict halt-on-fail for all three preflight gates) later surfaces a legitimate fixture-version-skew scenario, handle it by repairing the fixture or by a targeted plan-side exception note — do NOT re-introduce a `--warn-only` CLI flag or a `warn` gate status, since those would widen the frozen gate surface.
 
 If the shared `COMMIT_ALWAYS_IGNORE` set introduces friction (e.g. a legitimate bookkeeping path needs adding later), extend the set in a small follow-up rather than re-introducing the broader `is_protected_path` fallback.
 
@@ -211,25 +203,9 @@ If the shared `COMMIT_ALWAYS_IGNORE` set introduces friction (e.g. a legitimate 
 
 ## Implementation Playbook
 
-### Step 0 — Revert TASK-006 bootstrap carve-out in SKILL.md
+### Step 0 — Confirm the TASK-006 bootstrap carve-out is already gone
 
-TASK-006 landed under a one-shot `SKILL.md` bootstrap exception that demoted `fixture-valid` to warning specifically for `TASK-006_conformance_fixture.md`. With TASK-006 merged, `sample_phase4.md` conforms to the schema and `fixture-valid` returns `pass` globally — the carve-out is inert and must be removed before Step 4 rewrites the surrounding Phase 0 preflight text (otherwise the two edits collide).
-
-Find the sentinel-bracketed span in `plugins/plan-executor/skills/implement-plan/SKILL.md` under the Phase 0 preflight block:
-
-```
-<!-- BEGIN TASK-006 bootstrap carve-out — revert in TASK-026 Step 0 -->
-... TASK-006-specific demotion clause ...
-<!-- END TASK-006 bootstrap carve-out -->
-```
-
-Delete the span inclusive of both sentinel HTML comments. The surrounding sentence returns to its pre-carve-out shape (`...demote to warning; for any other plan, halt as usual.`). Verify:
-
-```bash
-grep -n 'TASK-006 bootstrap carve-out' plugins/plan-executor/skills/implement-plan/SKILL.md
-```
-
-Zero matches after the edit. Proceed to Step 1 only after verification.
+The one-shot SKILL.md bootstrap exception that TASK-006 used during its own run was removed as part of TASK-006's cleanup; `grep -n 'TASK-006 bootstrap carve-out' plugins/plan-executor/skills/implement-plan/SKILL.md` must return zero matches before proceeding. If for any reason a stray sentinel span still exists, delete the span inclusive of both `<!-- BEGIN ... -->` / `<!-- END ... -->` comments and re-run the grep to confirm zero matches. No further edit is expected in this step; it exists as a safety check before Step 4 rewrites the surrounding Phase 0 preflight text.
 
 ### Step 1 — Shared `COMMIT_ALWAYS_IGNORE` constant
 
@@ -281,18 +257,15 @@ out_of_scope = changed_files - allowed - ignored
 
 Pass iff `out_of_scope` is empty. On fail, include the offending paths in the reason.
 
-### Step 4 — SKILL.md Phase 0 preflight narrowing
+### Step 4 — SKILL.md Phase 0 preflight halt-on-fail reconciliation
 
-Find the Phase 0 instruction block in `SKILL.md`. Change:
+Find the Phase 0 instruction block in `SKILL.md` and delete the interim demotion sentence that reads "If the plan under execution is the sample fixture itself (`sample_phase4.md`, should not occur in production runs), demote `fixture-valid: fail` to a warning to avoid a self-reference halt; for any other plan, halt as usual." The canonical instruction becomes:
 
-> Run `plan_ops.py gates --check schema-valid,schedule-valid,fixture-valid` before dispatching the analyst. Halt on fail.
+> Run `plan_ops.py gates --check schema-valid,schedule-valid,fixture-valid` before dispatching the analyst. Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`.
 
-to:
+No CLI-surface change: do NOT add a `--warn-only` flag. No status-vocabulary change: the emitted gate result vocabulary remains the frozen `pass|fail|not_applicable`. No fixture-version detection inside the predicate.
 
-> Run `plan_ops.py gates --check schema-valid,schedule-valid` before dispatching the analyst. Halt on fail.
-> Run `plan_ops.py gates --check fixture-valid --warn-only`; surface the result but do not halt until TASK-006 lands. (Post-TASK-006, this moves back into the halt set.)
-
-(The `--warn-only` flag is new; add it to `cmd_gates` as a pass-through that flips fail → warn in the JSON output and exit 0. Keep the predicate unchanged.)
+If any other part of the Phase 0 block references "pre-TASK-006", "deferred-pending-task-006", "demote to warning", or "self-reference halt", delete or rephrase those references in the same edit so the block speaks only the post-TASK-006 strict-halt contract.
 
 ### Step 5 — SKILL.md promotion-table cell fix
 
@@ -303,7 +276,7 @@ In the promotion-criteria table near line 27, change `schedule-valid`'s phase ce
 `DUAL_AGENT_PLAN_EXECUTOR.md` §9.7:
 - Name `COMMIT_ALWAYS_IGNORE` explicitly in the commit-safe paragraph. Reference the `_plan_paths.py` location.
 - Name the two-seam invariant explicitly in the execution-safe paragraph: "the predicate asserts a `_snapshot_baseline()` call at the implement dispatch seam AND at the timeout cleanup path, parsed as separate windows."
-- Note the Phase 0 preflight narrowing: "Pre-TASK-006, `fixture-valid` is surfaced as a warning, not a halt."
+- Reaffirm the Phase 0 preflight halt set: "Phase 0 preflight runs `schema-valid`, `schedule-valid`, and `fixture-valid` as strict halt-on-fail; there is no warning tier and no `--warn-only` flag." If the §9.7 text carries leftover `pre-TASK-006` / `deferred` wording for the preflight, delete it in the same pass.
 
 ### Step 7 — Test suite updates
 
@@ -319,16 +292,17 @@ In the promotion-criteria table near line 27, change `schedule-valid`'s phase ce
   - `test_schedule_sidecar_for_current_plan_is_ignored`
   - `test_undeclared_protected_path_still_fails`
   - `test_undeclared_non_protected_path_fails`
-- New class `TestSkillPreflightPreTask006`:
-  - `test_skill_md_phase_0_halt_set_excludes_fixture_valid`
-  - `test_skill_md_fixture_valid_appears_as_warn_block`
+- New class `TestSkillPreflightStrictHalt`:
+  - `test_skill_md_phase_0_halt_set_includes_schema_schedule_and_fixture_valid`
+  - `test_skill_md_phase_0_has_no_interim_demotion_wording`
+  - `test_gates_cli_has_no_warn_only_flag`
 - Convert existing V3/V4 positive tests to fixture-based:
   - `test_gate_execution_safe_predicate`: replace `plan_codex_dispatch.py` path with a `tests/fixtures/execution_safe_good_wrapper.py` that carries the two-seam invariant.
   - `test_gate_review_safe_predicate`: likewise for review-safe.
 
-### Step 8 — `cmd_gates` `--warn-only` flag
+### Step 8 — (removed) `cmd_gates` `--warn-only` flag
 
-Add `--warn-only` to `gates --check`. When present, any `fail` status is emitted in the JSON as `{"status": "warn", "reason": "...", "severity_override": "warn"}` and the process exits 0. Does not apply to `--certify` (certification must remain strict).
+Originally this step proposed adding a `--warn-only` flag and a `warn` emitted status. That is explicitly NOT done: the canonical gate status vocabulary remains the frozen `pass|fail|not_applicable`, and the Phase 0 halt set is strict for all three preflight gates (see Step 4). No CLI-surface change lands from this task. This entry is retained as a placeholder so downstream step numbering matches prior review discussion.
 
 ---
 
@@ -345,9 +319,9 @@ Single commit that lands all five findings together. No feature-flag needed — 
 - Pass-4 findings in full: see `docs/plans/_run_log.jsonl` line containing `"pass": "post-narrow-remediation-2"` for the five-finding array. The wrapper review response (which the run log only meta-logged) is in the session transcript.
 - User decision rationale (option A): committing TASK-005 as technically complete avoids collapsing the diminishing-returns review cycle into this run; the five findings are load-bearing enough to warrant their own chunk with proper acceptance criteria rather than a fifth narrow-remediation round.
 
-### First execution attempt blocked by Finding 3 (2026-04-20)
+### Historical: first execution attempt blocked by Finding 3 (2026-04-20, pre-TASK-006)
 
-On 2026-04-20 the orchestrator attempted to run TASK-026 and halted at Phase 0 preflight with exactly the footgun Finding 3 describes:
+On 2026-04-20 the orchestrator attempted to run TASK-026 and halted at Phase 0 preflight because `sample_phase4.md` (then in its pre-rewrite shape) failed `fixture-valid`:
 
 ```
 fixture-valid: fail
@@ -356,8 +330,6 @@ fixture-valid: fail
   **Priority:**; TASK-001 missing prose header **Description:**; ...
 ```
 
-The failure is in `docs/plans/sample_phase4.md` (pre-TASK-006 shape), not in TASK-026's plan file. Per current SKILL.md Phase 0 semantics — "`fixture-valid` may legitimately fail against the pre-TASK-006 sample fixture — if the plan under execution is the sample itself, demote to warning; for any other plan, halt as usual" — the run halts because TASK-026 ≠ the sample.
-
-Chicken-and-egg: the plan that would fix the halt cannot run because of the halt. User's chosen path: land TASK-006 first (rewrites `sample_phase4.md` so `fixture-valid` can pass), then retry TASK-026. TASK-006 now cites this attempt as the concrete motivating example.
+This chicken-and-egg block is why TASK-006 was sequenced ahead of TASK-026. TASK-006 has since landed (commit `a65350e`), rewriting `sample_phase4.md` into a canonical conformance fixture; `fixture-valid` now returns `pass` against the live sample. The interim bootstrap carve-out that demoted `fixture-valid` specifically for TASK-006's own run was also reverted (commit `bb83ac5`). TASK-026's Step 4 therefore targets the durable post-TASK-006 semantics (strict halt-on-fail for all three preflight gates) rather than any transitional warning tier.
 
 No lock was acquired and no `run_start` event was logged on the blocked attempt, so there is no cleanup debt carried forward.

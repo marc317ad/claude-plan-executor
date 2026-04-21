@@ -42,11 +42,13 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from _plan_paths import (  # noqa: E402
+    COMMIT_ALWAYS_IGNORE,
     PROTECTED_EXACT_PATHS,
     PROTECTED_PATH_PREFIXES,
     PROTECTED_PATH_SUFFIXES,
     PROTECTED_PATH_GLOBS,
     canonicalize_file,
+    is_commit_always_ignore,
     is_protected_path,
 )
 
@@ -3020,6 +3022,41 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
 
     add_files = files + [str(plan)]
     if outcome == "updated":
+        # `commit-task` is the sole authority for staging `00_INDEX.json`
+        # on behalf of the orchestrator -- the roster update is not part
+        # of any task's declared `Files:` list. Bind the pre-commit
+        # staging seam to the post-commit `commit-safe` gate by
+        # asserting the index path resolves to a member of the shared
+        # always-ignore set via `is_commit_always_ignore` (with
+        # `plan_dir` passed so bundles outside `docs/plans/` still
+        # match). Failure here means the set and the staging logic
+        # diverged, which would re-open the drift `commit-safe` is
+        # meant to prevent; treat as an internal-error halt.
+        try:
+            rel_index = str(
+                index_path.resolve().relative_to(Path.cwd().resolve())
+            ).replace(os.sep, "/")
+            rel_plan_dir: str | None = str(
+                plan.resolve().parent.relative_to(Path.cwd().resolve())
+            ).replace(os.sep, "/")
+            if rel_plan_dir == ".":
+                rel_plan_dir = ""
+        except (ValueError, OSError):
+            rel_index = index_path.as_posix()
+            rel_plan_dir = None
+        if not is_commit_always_ignore(
+            rel_index, plan.name, rel_plan_dir,
+        ):
+            _write_text(plan, original_plan)
+            _restore_roster()
+            _die(args, {
+                "error": (
+                    "internal: 00_INDEX.json staged path "
+                    f"{rel_index!r} is not in the shared "
+                    "COMMIT_ALWAYS_IGNORE set; commit-task and "
+                    "_gate_commit_safe would diverge"
+                ),
+            })
         add_files.append(str(index_path))
     add = _git(["add", "--", *add_files])
     if add.returncode != 0:
@@ -4087,10 +4124,22 @@ def _gate_execution_safe(wrapper_path: Path | None = None) -> dict:
     Predicate-only — does NOT invoke the wrapper. Greps for:
       (1) the shared always-ignore / protected-paths seam
           (`from _plan_paths import … PROTECTED_…`),
-      (2) `_snapshot_baseline(` called from both `cmd_implement` and the
-          timeout cleanup path,
+      (2) `_snapshot_baseline(` called at TWO distinct seams parsed as
+          separate code regions -- inside `cmd_implement`'s body (the
+          pre-dispatch implement seam) AND inside the timeout cleanup
+          path. The cleanup seam is satisfied EITHER by an explicit
+          `_snapshot_baseline(` call in the body of the
+          `_handle_timeout_cleanup` helper, OR by
+          `_handle_timeout_cleanup(..., baseline)` in `cmd_implement`'s
+          timeout branch -- the kwarg propagates the snapshot without
+          re-capturing it.
       (3) absence of `git clean -fd` outside comments (the observe-only
           cleanup contract — see §4 State Isolation Contract).
+
+    A wrapper that captures a baseline at the implement seam but fails
+    to propagate or re-capture it through the cleanup helper is rejected
+    because the cleanup region cannot compare the post-dispatch delta
+    against an authoritative pre-dispatch snapshot.
     """
     path = wrapper_path or _WRAPPER_PATH
     if not path.is_file():
@@ -4117,6 +4166,22 @@ def _gate_execution_safe(wrapper_path: Path | None = None) -> dict:
     # its own inline comment tracker.
     code_text = _strip_python_comments_and_docstrings(text)
 
+    def _extract_function_body(func_name: str) -> str | None:
+        """Slice the body of `def <func_name>(` up to the next top-level
+        `def`. Returns None if no such definition exists. Used to parse
+        the implement-dispatch and timeout-cleanup windows as separate
+        regions so a snapshot call in one does not fool the check for
+        the other.
+        """
+        m = re.search(
+            rf"^def {re.escape(func_name)}\s*\(", code_text, re.MULTILINE,
+        )
+        if not m:
+            return None
+        tail = code_text[m.end():]
+        next_def = re.search(r"^def\s+\w+", tail, re.MULTILINE)
+        return tail[: next_def.start()] if next_def else tail
+
     checks: list[tuple[str, bool]] = []
     # (1) always-ignore / protected-paths seam.
     checks.append((
@@ -4124,29 +4189,33 @@ def _gate_execution_safe(wrapper_path: Path | None = None) -> dict:
         "PROTECTED_EXACT_PATHS" in code_text and "_plan_paths" in code_text,
     ))
     # (2) baseline snapshot at the implement dispatch seam AND within the
-    # cmd_implement timeout cleanup branch. Scoped to the `cmd_implement`
-    # function body so a wrapper with unrelated snapshot calls (e.g., only
-    # in review/helper code) cannot pass this gate.
-    m_impl = re.search(r"^def cmd_implement\s*\(", code_text, re.MULTILINE)
-    if not m_impl:
+    # timeout-cleanup window, parsed as SEPARATE regions so a snapshot
+    # in one window cannot satisfy the check for the other.
+    impl_body = _extract_function_body("cmd_implement")
+    cleanup_body = _extract_function_body("_handle_timeout_cleanup")
+    if impl_body is None:
         checks.append((
             "`def cmd_implement(` definition present",
             False,
         ))
     else:
-        tail_impl = code_text[m_impl.end():]
-        next_def_impl = re.search(r"^def\s+\w+", tail_impl, re.MULTILINE)
-        impl_body = tail_impl[: next_def_impl.start()] if next_def_impl else tail_impl
-        # Baseline must be captured somewhere inside cmd_implement so the
-        # timeout branch has a pre-dispatch snapshot to compare against.
+        # Implement-dispatch window: baseline must be captured inside
+        # cmd_implement so the timeout branch has a pre-dispatch snapshot
+        # to compare against. Scoped to the cmd_implement body only.
         checks.append((
-            "_snapshot_baseline called in cmd_implement",
+            "_snapshot_baseline called in cmd_implement (implement-dispatch window)",
             "_snapshot_baseline(" in impl_body,
         ))
-        # The timeout-cleanup branch inside cmd_implement must reference the
-        # captured baseline (via `_handle_timeout_cleanup(..., baseline)`).
-        # We locate the `if codex["status"] == "timeout":` region and check
-        # that _handle_timeout_cleanup is invoked there, carrying baseline.
+        # Timeout-cleanup window. Two satisfying seams, parsed as
+        # separate regions:
+        #   (a) `_handle_timeout_cleanup`'s own body calls
+        #       `_snapshot_baseline(` -- the cleanup helper captures its
+        #       own snapshot, independent of the caller.
+        #   (b) cmd_implement's timeout branch invokes
+        #       `_handle_timeout_cleanup(..., baseline)` -- the kwarg
+        #       propagates the captured snapshot through.
+        # Either form satisfies the cleanup-window invariant; both
+        # missing fails the gate.
         timeout_match = re.search(
             r"if\s+codex\[[\"']status[\"']\]\s*==\s*[\"']timeout[\"']\s*:",
             impl_body,
@@ -4157,20 +4226,22 @@ def _gate_execution_safe(wrapper_path: Path | None = None) -> dict:
                 False,
             ))
         else:
-            # Scan a bounded window after the branch header to find the
-            # cleanup call. The window stops at the next `return` at the
-            # branch's indentation level, a subsequent top-level `if`, or
-            # 2500 chars — whichever comes first.
             region = impl_body[timeout_match.end(): timeout_match.end() + 2500]
+            kwarg_propagates = bool(
+                re.search(
+                    r"_handle_timeout_cleanup\s*\([^)]*baseline",
+                    region,
+                    re.DOTALL,
+                )
+            )
+            helper_captures = bool(
+                cleanup_body is not None
+                and "_snapshot_baseline(" in cleanup_body
+            )
             checks.append((
-                "cmd_implement timeout branch calls _handle_timeout_cleanup with baseline",
-                bool(
-                    re.search(
-                        r"_handle_timeout_cleanup\s*\([^)]*baseline",
-                        region,
-                        re.DOTALL,
-                    )
-                ),
+                "_snapshot_baseline present in timeout-cleanup window "
+                "(_handle_timeout_cleanup body OR cmd_implement baseline kwarg)",
+                kwarg_propagates or helper_captures,
             ))
     # (3) `git clean -fd` must not appear in executable code. Lines starting
     # with `#` in the source are allowed — the wrapper's own comments document
@@ -4389,21 +4460,28 @@ def _gate_commit_safe(
 ) -> dict:
     """Post-hoc verification that `<commit_sha>` touched only allowed files.
 
-    Fetches the commit's file list via `git show --name-only` and subtracts
-    the explicit commit-task implicit allowlist:
+    Fetches the commit's file list via `git show --name-only` and
+    subtracts two distinct sets:
 
-      - the task's declared `Files:` list (normalized),
-      - `<plan_dir>/<plan_basename>` (the plan file itself; `commit-task`
-        stages it alongside each task commit per §D.3 step 3),
-      - `<plan_dir>/00_INDEX.json` (auto-updated by `commit-task` when the
-        roster bullet flips to `Done`).
+      - `allowed = task_files | {plan_file}` -- the task's declared
+        `Files:` list (normalized) plus the plan file itself, which
+        `commit-task` stages alongside each task commit per §D.3 step 3.
+      - `ignored = {p for p in changed if is_commit_always_ignore(p,
+        plan_basename)}` -- bookkeeping paths that `commit-task`
+        authors on behalf of the orchestrator (run-log, run-lock,
+        per-plan schedule sidecar, `00_INDEX.json` roster).
 
-    Pass iff the residual set is empty. We deliberately do NOT fall back
-    to `is_protected_path` / `PROTECTED_PATH_PREFIXES` as a broader
+    Pass iff `changed - allowed - ignored` is empty. The ignore set is
+    the shared `COMMIT_ALWAYS_IGNORE` constant from `_plan_paths.py`
+    (plus the per-plan schedule sidecar matched via
+    `is_commit_always_ignore`), used identically by `commit-task`'s
+    own staging logic so the pre-commit and post-commit sides agree by
+    construction. We deliberately do NOT fall back to
+    `is_protected_path` / `PROTECTED_PATH_PREFIXES` as a broader
     always-ignore filter: those cover paths like `plan_ops.py` itself,
     which a task MUST declare in Files: to commit against. Using the
-    protected-path predicate as an always-allow filter silently green-lit
-    commits that mutated executor code without declaration.
+    protected-path predicate as an always-allow filter silently
+    green-lit commits that mutated executor code without declaration.
     """
     if not commit_sha or not task_id or plan_file is None:
         return _gate_result(
@@ -4434,15 +4512,12 @@ def _gate_commit_safe(
             f"TASK-{task_id} not found in plan {plan_path.name}",
         )
     allowed = set(allowed_raw)
-    # Mirror the explicit `--only` list that `cmd_commit_task` passes to
-    # `git commit`: user-declared Files + plan file + `00_INDEX.json` next
-    # to the plan (auto-updated by `commit-task`). Anything outside that
-    # set is out-of-scope — we do NOT fall back to the broader
-    # `is_protected_path` predicate, because that covers executor scripts
-    # (plan_ops.py, plan_codex_dispatch.py) which a task MUST declare in
-    # Files: to commit against. Using the predicate as an always-allow
-    # filter silently green-lighted commits that mutated executor code
-    # without declaration.
+    # Plan file itself is always allowed -- `commit-task` stages it
+    # alongside every task commit (§D.3 step 3) so the `**Status:**`
+    # bullet flip lands in the same commit as the code change. Cover
+    # both layouts a plan_ops invocation might see (cwd repo root vs
+    # cwd plan dir) by adding the repo-relative form (when resolvable)
+    # and the raw forms.
     try:
         rel_plan = str(
             plan_path.resolve().relative_to(
@@ -4452,26 +4527,26 @@ def _gate_commit_safe(
         allowed.add(rel_plan)
     except ValueError:
         pass
-    # Plan-dir-relative path, covering both layouts a plan_ops invocation
-    # might see (cwd repo root vs cwd plan dir).
     allowed.add(str(plan_path))
     allowed.add(plan_path.as_posix())
-    # `commit-task` stages `00_INDEX.json` alongside the task commit when
-    # the roster auto-update succeeds (`outcome == "updated"`). That path
-    # is part of the orchestrator's authored footprint and is always
-    # allowed even when the task's Files list omits it.
-    index_path = plan_path.parent / "00_INDEX.json"
+
+    # Derive plan_dir (repo-relative, forward-slash) so
+    # `is_commit_always_ignore` can match the sibling `00_INDEX.json`
+    # for plans that live outside the default `docs/plans/` bundle.
+    # Falls back to None on non-repo layouts (e.g., plan path that
+    # cannot be expressed relative to the repo root); the shared
+    # constant's static entries still cover the default bundle layouts.
+    plan_dir_rel: str | None
     try:
-        rel_index = str(
-            index_path.resolve().relative_to(
+        plan_dir_rel = str(
+            plan_path.resolve().parent.relative_to(
                 (repo_root or Path.cwd()).resolve()
             )
-        )
-        allowed.add(rel_index)
-    except (ValueError, OSError):
-        pass
-    allowed.add(str(index_path))
-    allowed.add(index_path.as_posix())
+        ).replace(os.sep, "/")
+        if plan_dir_rel == ".":
+            plan_dir_rel = ""
+    except ValueError:
+        plan_dir_rel = None
 
     proc = _git(
         ["show", "--name-only", "--pretty=format:", commit_sha],
@@ -4490,6 +4565,16 @@ def _gate_commit_safe(
     offending: list[str] = []
     for path in changed:
         if path in allowed:
+            continue
+        # Shared always-ignore set (COMMIT_ALWAYS_IGNORE) covers the
+        # run-log, run-lock, per-plan schedule sidecar, and
+        # 00_INDEX.json roster -- the paths `commit-task` itself
+        # writes during orchestration. Matching on plan_basename +
+        # plan_dir lets the per-plan sidecar key and the alongside-plan
+        # roster resolve for bundles outside the default layout.
+        if is_commit_always_ignore(
+            path, plan_path.name, plan_dir_rel,
+        ):
             continue
         offending.append(path)
     if offending:

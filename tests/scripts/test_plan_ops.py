@@ -8959,23 +8959,66 @@ class TestGateScheduleValid:
         assert gate["status"] == "fail"
 
 
+_EXECUTION_SAFE_GOOD_WRAPPER_SRC = (
+    "from _plan_paths import PROTECTED_EXACT_PATHS, is_protected_path\n"
+    "def _snapshot_baseline(): pass\n"
+    "def _handle_timeout_cleanup(a, b, baseline): pass\n"
+    "def cmd_implement(args):\n"
+    "    baseline = _snapshot_baseline()\n"
+    "    codex = {'status': 'timeout'}\n"
+    "    if codex['status'] == 'timeout':\n"
+    "        _handle_timeout_cleanup('x', [], baseline)\n"
+    "    return 0\n"
+    "def cmd_review(args):\n"
+    "    baseline = _snapshot_baseline()\n"
+    "    return 0\n"
+)
+
+_REVIEW_SAFE_GOOD_WRAPPER_SRC = (
+    "from _plan_paths import PROTECTED_EXACT_PATHS, is_protected_path\n"
+    "def _snapshot_baseline(): pass\n"
+    "def cmd_implement(args):\n"
+    "    return 0\n"
+    "def cmd_review(args):\n"
+    "    baseline = _snapshot_baseline()\n"
+    "    if is_protected_path('x'):\n"
+    "        return 0\n"
+    "    return 0\n"
+)
+
+
 class TestGateExecutionAndReviewSafe:
-    """Wrapper-predicate gates: greps of `plan_codex_dispatch.py`."""
+    """Wrapper-predicate gates: greps of `plan_codex_dispatch.py`.
 
-    def test_execution_safe_passes_on_live_wrapper(self) -> None:
-        """The live wrapper carries the always-ignore + baseline-snapshot seams."""
-        cp = _run("gates", "--check", "execution-safe", "--json")
-        assert cp.returncode == 0, cp.stderr
-        gate = _parse_json(cp)["gates"][0]
-        assert gate["name"] == "execution-safe"
-        assert gate["status"] == "pass"
+    V3/V4 positive paths intentionally exercise the predicate against
+    fixture wrappers constructed under tmp_path rather than against the
+    live `plan_codex_dispatch.py`. Per TASK-005 acceptance criteria,
+    live-tree green is TASK-003's scope; asserting it here couples the
+    gate to wrapper evolution and would break if TASK-003 is rolled back
+    or if the wrapper legitimately grows new call sites.
+    """
 
-    def test_review_safe_passes_on_live_wrapper(self) -> None:
-        cp = _run("gates", "--check", "review-safe", "--json")
-        assert cp.returncode == 0, cp.stderr
-        gate = _parse_json(cp)["gates"][0]
-        assert gate["name"] == "review-safe"
-        assert gate["status"] == "pass"
+    def test_gate_execution_safe_predicate(self, tmp_path: Path) -> None:
+        """Positive fixture: a minimal wrapper carrying the two-seam
+        snapshot invariant + always-ignore import passes execution-safe."""
+        fixture = tmp_path / "execution_safe_good_wrapper.py"
+        fixture.write_text(
+            _EXECUTION_SAFE_GOOD_WRAPPER_SRC, encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(fixture)
+        assert result["name"] == "execution-safe"
+        assert result["status"] == "pass", result
+
+    def test_gate_review_safe_predicate(self, tmp_path: Path) -> None:
+        """Positive fixture: a minimal wrapper with a snapshot call in
+        cmd_review and an is_protected_path reference passes review-safe."""
+        fixture = tmp_path / "review_safe_good_wrapper.py"
+        fixture.write_text(
+            _REVIEW_SAFE_GOOD_WRAPPER_SRC, encoding="utf-8",
+        )
+        result = plan_ops._gate_review_safe(fixture)
+        assert result["name"] == "review-safe"
+        assert result["status"] == "pass", result
 
     def test_execution_safe_fails_on_stub_wrapper(self, tmp_path: Path) -> None:
         """A wrapper lacking the invariants fails the predicate."""
@@ -9755,6 +9798,405 @@ class TestGateScheduleValidShapeContract:
         )
         result = plan_ops._gate_schedule_valid(sched)
         assert result["status"] == "fail", result
+
+
+# ---------------------------------------------------------------------------
+# TASK-026: Phase-gate review-drift follow-up.
+#
+# The three classes below close the five Codex review findings that surfaced
+# after TASK-005 committed. V1 covers the execution-safe two-seam invariant
+# (finding 1); V2 covers the commit-safe always-ignore set + the "protected
+# but not declared" negative (finding 2); V3 covers the SKILL.md Phase 0
+# preflight halt-set reconciliation (finding 3). Finding 4 (promotion-table
+# phase cell) is covered by a single assertion inside the Phase 0 halt-set
+# test; finding 5 (V3/V4 test strategy) is covered by the positive-path
+# fixture rewrite inside `TestGateExecutionAndReviewSafe` above.
+# ---------------------------------------------------------------------------
+
+
+_WRAPPER_BASE_GOOD = (
+    "from _plan_paths import PROTECTED_EXACT_PATHS, is_protected_path\n"
+    "def _snapshot_baseline(): pass\n"
+    "def _handle_timeout_cleanup(a, b, baseline): pass\n"
+)
+
+
+class TestGateExecutionSafeWindowScoped:
+    """V1 (finding 1) -- `execution-safe` must assert a `_snapshot_baseline()`
+    call inside the implement-dispatch window AND inside the timeout-cleanup
+    window, parsed as separate regions. A snapshot in only one window must
+    fail the gate so a wrapper cannot satisfy the invariant by placing a
+    single snapshot in the wrong seam."""
+
+    def test_fails_when_implement_has_snapshot_but_cleanup_does_not(
+        self, tmp_path: Path,
+    ) -> None:
+        """cmd_implement captures a baseline but the timeout branch calls
+        _handle_timeout_cleanup without passing baseline, and the cleanup
+        helper itself never snapshots. Cleanup window is unreachable for
+        the delta check, so the gate must fail."""
+        stub = tmp_path / "impl_only_wrapper.py"
+        stub.write_text(
+            _WRAPPER_BASE_GOOD.replace(
+                "def _handle_timeout_cleanup(a, b, baseline): pass\n",
+                "def _handle_timeout_cleanup(a, b): pass\n",
+            )
+            + "def cmd_implement(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    codex = {'status': 'timeout'}\n"
+            "    if codex['status'] == 'timeout':\n"
+            "        _handle_timeout_cleanup('x', [])\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "fail", result
+        # The reason must mention the cleanup window specifically so the
+        # operator can distinguish this from a missing-implement seam.
+        assert (
+            "timeout" in result["reason"].lower()
+            or "cleanup" in result["reason"].lower()
+        ), result
+
+    def test_fails_when_cleanup_has_snapshot_but_implement_does_not(
+        self, tmp_path: Path,
+    ) -> None:
+        """The cleanup helper captures its own snapshot but cmd_implement
+        itself never snapshots. Implement-dispatch window has nothing to
+        compare against, so the gate must fail."""
+        stub = tmp_path / "cleanup_only_wrapper.py"
+        stub.write_text(
+            "from _plan_paths import PROTECTED_EXACT_PATHS, is_protected_path\n"
+            "def _snapshot_baseline(): pass\n"
+            "def _handle_timeout_cleanup(a, b):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    return baseline\n"
+            "def cmd_implement(args):\n"
+            "    codex = {'status': 'timeout'}\n"
+            "    if codex['status'] == 'timeout':\n"
+            "        _handle_timeout_cleanup('x', [])\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "fail", result
+        # The reason must name cmd_implement so the operator can see the
+        # implement-dispatch window (not the cleanup window) is the gap.
+        assert "cmd_implement" in result["reason"], result
+
+    def test_passes_when_both_seams_have_snapshot(
+        self, tmp_path: Path,
+    ) -> None:
+        """Positive path: cmd_implement captures baseline and passes it
+        through `_handle_timeout_cleanup(..., baseline)`. Both windows
+        are covered as separate regions; gate passes."""
+        stub = tmp_path / "both_seams_wrapper.py"
+        stub.write_text(
+            _WRAPPER_BASE_GOOD
+            + "def cmd_implement(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    codex = {'status': 'timeout'}\n"
+            "    if codex['status'] == 'timeout':\n"
+            "        _handle_timeout_cleanup('x', [], baseline)\n"
+            "    return 0\n"
+            "def cmd_review(args):\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "pass", result
+
+    def test_passes_when_cleanup_kwarg_propagates_baseline(
+        self, tmp_path: Path,
+    ) -> None:
+        """Positive path (kwarg-propagation variant): cmd_implement captures
+        baseline and the timeout branch calls `_handle_timeout_cleanup(...,
+        baseline)`. The cleanup helper's own body does NOT need a snapshot
+        call -- the baseline kwarg carries the pre-dispatch snapshot
+        through and satisfies the cleanup-window invariant."""
+        stub = tmp_path / "kwarg_wrapper.py"
+        stub.write_text(
+            _WRAPPER_BASE_GOOD
+            + "def cmd_implement(args):\n"
+            "    baseline = _snapshot_baseline()\n"
+            "    codex = {'status': 'timeout'}\n"
+            "    if codex['status'] == 'timeout':\n"
+            "        _handle_timeout_cleanup('x', [], baseline)\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+        result = plan_ops._gate_execution_safe(stub)
+        assert result["status"] == "pass", result
+
+
+class TestGateCommitSafeAlwaysIgnoreConsistency:
+    """V2 (finding 2) -- `commit-safe` uses the shared `COMMIT_ALWAYS_IGNORE`
+    set as its sole always-allow filter. Members of the set (run-log,
+    run-lock, per-plan schedule sidecar, 00_INDEX.json) are ignored; paths
+    that are `is_protected_path` but NOT in `COMMIT_ALWAYS_IGNORE` still
+    fail the gate when they are not declared in Files:."""
+
+    def _make_repo(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@x"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        plans_dir = repo / "docs" / "plans"
+        plans_dir.mkdir(parents=True)
+        plan = plans_dir / "plan.md"
+        plan.write_text(_GATES_SYNTHETIC_PLAN, encoding="utf-8")
+        (repo / "example").mkdir()
+        subprocess.run(
+            ["git", "add", "docs/plans/plan.md"], cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True,
+        )
+        return repo, plans_dir, plan
+
+    def test_run_log_change_is_ignored(self, tmp_path: Path) -> None:
+        """`docs/plans/_run_log.jsonl` is a COMMIT_ALWAYS_IGNORE member;
+        a commit that touches it alongside a declared Files: entry passes."""
+        repo, plans_dir, plan = self._make_repo(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        (plans_dir / "_run_log.jsonl").write_text(
+            '{"event":"x"}\n', encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "add",
+             "example/seed.py",
+             "docs/plans/_run_log.jsonl"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat(TASK-001): seed + log"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "pass", result
+
+    def test_schedule_sidecar_for_current_plan_is_ignored(
+        self, tmp_path: Path,
+    ) -> None:
+        """The per-plan schedule sidecar `<plan_stem>.schedule.json`
+        beside the plan is matched by `is_commit_always_ignore(path,
+        plan.name)` and ignored by commit-safe."""
+        repo, plans_dir, plan = self._make_repo(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        (plans_dir / "plan.schedule.json").write_text(
+            '{"outcome":"valid","tasks":[],"batches":[]}\n',
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "add",
+             "example/seed.py",
+             "docs/plans/plan.schedule.json"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m",
+             "feat(TASK-001): seed + sidecar"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "pass", result
+
+    def test_undeclared_protected_path_still_fails(
+        self, tmp_path: Path,
+    ) -> None:
+        """`plugins/plan-executor/scripts/plan_ops.py` is protected
+        against delta-cleanup but is NOT in `COMMIT_ALWAYS_IGNORE`; a
+        commit that mutates it without declaring it in Files: must
+        still fail commit-safe. Regression guard against the old
+        `is_protected_path` fallback that silently green-lit executor
+        mutations."""
+        repo, plans_dir, plan = self._make_repo(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        protected_dir = repo / "plugins" / "plan-executor" / "scripts"
+        protected_dir.mkdir(parents=True)
+        protected_path = protected_dir / "plan_ops.py"
+        protected_path.write_text("# stray\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add",
+             "example/seed.py",
+             "plugins/plan-executor/scripts/plan_ops.py"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m",
+             "feat(TASK-001): seed + stray mutation"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "fail", result
+        assert "plan_ops.py" in result["reason"], result
+
+    def test_undeclared_non_protected_path_fails(
+        self, tmp_path: Path,
+    ) -> None:
+        """An arbitrary path outside both `Files:` and
+        `COMMIT_ALWAYS_IGNORE` fails the gate; the narrow always-ignore
+        set is not a general-purpose allowlist."""
+        repo, plans_dir, plan = self._make_repo(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        (repo / "other.py").write_text("# leak\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "example/seed.py", "other.py"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat(TASK-001): leak"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "fail", result
+        assert "other.py" in result["reason"], result
+
+
+class TestSkillPreflightStrictHalt:
+    """V3 (finding 3) -- SKILL.md Phase 0 preflight lists
+    `schema-valid`, `schedule-valid`, `fixture-valid` as strict
+    halt-on-fail gates with no interim demotion clause. V4 (finding 4)
+    -- the promotion-table row for `schedule-valid` cites Phase 1
+    (post-write-schedule), not Phase 0."""
+
+    _SKILL_PATH = (
+        REPO_ROOT
+        / "plugins" / "plan-executor" / "skills"
+        / "implement-plan" / "SKILL.md"
+    )
+
+    def _read(self) -> str:
+        assert self._SKILL_PATH.is_file(), self._SKILL_PATH
+        return self._SKILL_PATH.read_text(encoding="utf-8")
+
+    def test_skill_md_phase_0_halt_set_includes_schema_schedule_and_fixture_valid(
+        self,
+    ) -> None:
+        """SKILL.md Phase 0 preflight section names all three gates as the
+        halt set -- schema-valid, schedule-valid, fixture-valid. This is
+        the canonical-contract smoke test; phrasing may shift but the
+        three gate names must co-locate inside the preflight section."""
+        text = self._read()
+        # Locate the "Pre-flight (Phase 0)" section and slice until the
+        # next top-level heading so we do not match any other discussion
+        # of the gates elsewhere in the skill.
+        phase0_re = re.compile(
+            r"^##\s+Pre-flight\s*\(Phase 0\).*?(?=^##\s+[A-Z])",
+            re.MULTILINE | re.DOTALL,
+        )
+        m = phase0_re.search(text)
+        assert m, "Phase 0 preflight section not found in SKILL.md"
+        block = m.group(0)
+        # All three preflight-halt gates must be named inside this
+        # section, and the block must describe a strict halt contract.
+        for gate in ("schema-valid", "schedule-valid", "fixture-valid"):
+            assert gate in block, (
+                f"Phase 0 block is missing preflight-halt gate {gate!r}"
+            )
+        assert "halt" in block.lower(), (
+            "Phase 0 block must state the halt-on-fail contract"
+        )
+
+    def test_skill_md_phase_0_has_no_interim_demotion_wording(self) -> None:
+        """The TASK-005 interim wording that demoted `fixture-valid` on
+        self-reference to the sample fixture is removed. None of the
+        known demotion phrasings may appear in the Phase 0 block."""
+        text = self._read()
+        phase0_re = re.compile(
+            r"^##\s+Pre-flight\s*\(Phase 0\).*?(?=^##\s+[A-Z])",
+            re.MULTILINE | re.DOTALL,
+        )
+        m = phase0_re.search(text)
+        assert m, "Phase 0 preflight section not found in SKILL.md"
+        block = m.group(0).lower()
+        forbidden_phrases = (
+            "demote to warning",
+            "demote `fixture-valid",
+            "demote fixture-valid",
+            "pre-task-006",
+            "self-reference halt",
+            "deferred-pending-task-006",
+        )
+        for phrase in forbidden_phrases:
+            assert phrase not in block, (
+                f"Phase 0 block still carries interim demotion wording: "
+                f"{phrase!r}"
+            )
+
+    def test_skill_md_promotion_table_schedule_valid_row_cites_phase_1(
+        self,
+    ) -> None:
+        """V4 (finding 4) -- the promotion table row for `schedule-valid`
+        cites Phase 1 (post-write-schedule), not Phase 0 preflight. The
+        schedule file does not exist during Phase 0; the gate runs after
+        `write-schedule` persists the analyst JSON."""
+        text = self._read()
+        # Locate the row whose first cell is `schedule-valid`.
+        row_re = re.compile(
+            r"^\|\s*`schedule-valid`\s*\|\s*(?P<phase>[^|]+?)\s*\|",
+            re.MULTILINE,
+        )
+        m = row_re.search(text)
+        assert m, "promotion table has no `schedule-valid` row"
+        phase_cell = m.group("phase").strip()
+        assert "Phase 1" in phase_cell, (
+            f"schedule-valid row still cites {phase_cell!r}; expected "
+            f"Phase 1 (post-write-schedule)"
+        )
+        assert "Phase 0" not in phase_cell, (
+            f"schedule-valid row must not cite Phase 0: {phase_cell!r}"
+        )
+
+    def test_gates_cli_has_no_warn_only_flag(self) -> None:
+        """Structural guard: the `gates` subcommand must not expose a
+        `--warn-only` flag. Finding 3's reconciliation is strictly a
+        text-only change; widening the gate CLI surface would re-open
+        TASK-005's frozen CLI contract."""
+        cp = _run("gates", "--help")
+        # --help exits 0 and prints usage on stdout.
+        combined = (cp.stdout + cp.stderr).lower()
+        assert "--warn-only" not in combined, (
+            "gates subcommand must not expose --warn-only; the frozen "
+            "status vocabulary is pass|fail|not_applicable"
+        )
+
+    def test_gate_status_vocabulary_is_frozen(self) -> None:
+        """Sanity: every gate result keeps the frozen vocabulary. We
+        exercise the --list and a benign --check to confirm no `warn`
+        status leaks out."""
+        cp = _run("gates", "--list", "--json")
+        body = _parse_json(cp)
+        assert "gates" in body
+        # The --list response enumerates canonical names, not statuses,
+        # so assert the CLI did not crash. For a status sanity check,
+        # hit fixture-valid (requires no --plan-file) and assert the
+        # status value sits in the frozen vocabulary.
+        cp2 = _run("gates", "--check", "fixture-valid", "--json")
+        body2 = _parse_json(cp2)
+        gate = body2["gates"][0]
+        assert gate["status"] in {"pass", "fail", "not_applicable"}, gate
 
 
 # ---------------------------------------------------------------------------

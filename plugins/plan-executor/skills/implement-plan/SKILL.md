@@ -25,11 +25,13 @@ The executor promotes from dry-run to execute (and from execute to "certified-cl
 | Gate | Phase | What it asserts |
 |---|---|---|
 | `schema-valid` | Phase 0 preflight | Plan markdown conforms to §5: `## Goal`, a `## Context` or `## Scoped Context`, `## Verification`, and every `### TASK-NNN` block carries Status / Priority / Files / Test command / Acceptance criteria bullets + Description prose header. |
-| `schedule-valid` | Phase 0 preflight | Analyst JSON passes `_validate_schedule` + `_validate_schedule_dag` (shape + DAG). |
+| `schedule-valid` | Phase 1 (post-write-schedule) | Analyst JSON passes `_validate_schedule` + `_validate_schedule_dag` (shape + DAG). Runs immediately after `write-schedule` persists the analyst output in Phase 1 -- the schedule file does not exist during Phase 0 preflight. |
 | `fixture-valid` | Phase 0 preflight | The sample fixture (`sample_phase4.md`) itself passes `schema-valid` + `schedule-valid`. |
 | `execution-safe` | Phase 0 preflight | `plan_codex_dispatch.py` implement path carries the always-ignore / protected-paths seam, `_snapshot_baseline(` is called at implement + timeout sites, and there is no `git clean -fd` in executable code. Predicate-only — does NOT invoke the wrapper. |
 | `review-safe` | Phase 0 preflight | `plan_codex_dispatch.py cmd_review` carries `_snapshot_baseline(` and respects `is_protected_path` / `PROTECTED_EXACT_PATHS`. |
 | `commit-safe` | Phase D.3 (per commit) + End-of-run certification | `git show --name-only <sha>` minus TASK-NNN's declared `Files:` list and the always-ignore set is empty. Dry-run mode → `not_applicable`. Execute mode → verified post-hoc from every `commit_done` run-log event for the run. |
+
+The always-ignore set named by `commit-safe` is the shared `COMMIT_ALWAYS_IGNORE` constant in `plugins/plan-executor/scripts/_plan_paths.py` -- the narrow set of bookkeeping paths that `commit-task` itself writes during orchestration (`docs/plans/_run_log.jsonl`, `docs/plans/_run_lock.json`, the per-plan `*.schedule.json` sidecar, and the `00_INDEX.json` roster next to the plan). `commit-task`'s staging logic and the post-commit `_gate_commit_safe` predicate both key on this same constant, so the pre-commit and post-commit sides cannot drift. Executor scripts such as `plan_ops.py` are protected from delta-cleanup but must still be declared in Files: to commit against; they are NOT members of `COMMIT_ALWAYS_IGNORE`.
 
 **Dry-run pass condition:** `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe` all `pass`; `commit-safe` is `not_applicable` (no commits in dry-run).
 
@@ -131,7 +133,7 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" check-plan-deps \
 
 Halts on `pass: false` with the `unresolved[]` list. Halts on non-empty `errors[]` as internal-error. There is no `--allow-gaps` override — cross-plan deps are hard blockers.
 
-Then run the five pre-dispatch phase gates (`schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`). The schedule file is written later in Phase 1, so the preflight batch runs `schema-valid`, `fixture-valid`, `execution-safe`, `review-safe` here; `schedule-valid` moves just before Phase 2 dispatch — see below.
+Then run the five pre-dispatch phase gates. The Phase 0 preflight halt set is `schema-valid`, `schedule-valid`, `fixture-valid` -- all three are strict halt-on-fail, with no warning tier and no demotion path. `schedule-valid` cannot actually run here because the schedule file is written later in Phase 1; it runs immediately after `write-schedule` persists the analyst output (see below) and carries the same strict halt-on-fail contract. Phase 0 therefore runs the four gates whose inputs exist now (`schema-valid`, `fixture-valid`, `execution-safe`, `review-safe`):
 
 ```bash
 venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
@@ -139,7 +141,7 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
   --plan-file <absolute plan> --json
 ```
 
-Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`. If the plan under execution is the sample fixture itself (`sample_phase4.md`, should not occur in production runs), demote `fixture-valid: fail` to a warning to avoid a self-reference halt; for any other plan, halt as usual.
+Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`. The halt is strict for every gate in the preflight set -- including `fixture-valid` -- with no per-plan exception and no demotion to warning. The frozen gate status vocabulary is `pass|fail|not_applicable`; there is no `warn` status and no `--warn-only` flag on the `gates` subcommand.
 
 Then acquire the run-lock:
 
