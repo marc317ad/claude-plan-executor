@@ -333,3 +333,11 @@ fixture-valid: fail
 This chicken-and-egg block is why TASK-006 was sequenced ahead of TASK-026. TASK-006 has since landed (commit `a65350e`), rewriting `sample_phase4.md` into a canonical conformance fixture; `fixture-valid` now returns `pass` against the live sample. The interim bootstrap carve-out that demoted `fixture-valid` specifically for TASK-006's own run was also reverted (commit `bb83ac5`). TASK-026's Step 4 therefore targets the durable post-TASK-006 semantics (strict halt-on-fail for all three preflight gates) rather than any transitional warning tier.
 
 No lock was acquired and no `run_start` event was logged on the blocked attempt, so there is no cleanup debt carried forward.
+
+## Execution log — 20260421T015310 (success)
+
+Starting SHA: `62e90057df13c29603e8ced3ea5af6138d139cf7`  → Ending SHA: `97a6e46455b0b46f1af950daea964cdea4492977`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-026 | claude | codex→claude (D.5) | ship-with-fixes [disagreement] | 97a6e46 | 4 Codex findings; D.5 ruled 3 spec-deference (Playbook/acceptance-criterion support) + 1 minor coverage gap |

@@ -1,0 +1,45 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "026",
+      "title": "Close phase-gate review drift from TASK-005 pass-4",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/_plan_paths.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"gates or commit_safe or execution_safe or review_safe or preflight\"",
+      "classification_reason": "Multi-file invariant predicates + docs + tests"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "026"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "plugins/plan-executor/scripts/_plan_paths.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [
+    {
+      "type": "cross-cutting-scope",
+      "affected_tasks": [
+        "026"
+      ],
+      "detail": "Single task touches 5 files with window-scoped predicate changes, a shared constant spanning two call sites in a 5,162-line plan_ops.py, three new test classes plus fixture conversions, and SKILL.md + design-doc reconciliation; Claude-tier due to coordination and invariant fidelity"
+    }
+  ]
+}
