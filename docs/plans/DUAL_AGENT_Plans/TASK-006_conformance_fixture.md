@@ -148,10 +148,11 @@ Passes on the rewritten fixture.
 
 ### TASK-006: Rebuild sample and verification plans as conformance artifacts
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `docs/plans/sample_phase4.md`
+  - `docs/plans/sample_phase4.schedule.json`
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`
   - `tests/scripts/test_plan_ops.py`
   - `tests/scripts/test_plan_codex_dispatch_integration.py` (only if the embedded fixture is promoted or cross-referenced)
@@ -345,3 +346,11 @@ Run full suite. All tests green.
 - **Scenario richness loss:** if in the rewrite a scenario is accidentally dropped, restore only the TASK block that exercises it, preserving the canonical schema. Never re-add `**Agent:**` as a workaround.
 - **Classifier routing surprise:** if the analyst routes a task to an unexpected agent, tune the task's `**Description:**` (e.g., add or remove "judgment" cues) rather than adding `**Agent:**`.
 - **Fallback artifact:** keep the pre-rewrite fixture as `docs/plans/sample_phase4_legacy.md` with a header note explaining why it is non-conforming; use it only for adversarial tests. Do not let anything in the executor rely on it.
+
+## Execution log — 20260421T002455 (paused)
+
+Starting SHA: `4ff6a2d372da22d5e7379792c49ae7537613cfbd`  → Ending SHA: `4ff6a2d372da22d5e7379792c49ae7537613cfbd`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-006 | claude/opus | codex + D.5 (sonnet) + codex-retry | needs-rework (D.5 partial-agreement then second needs-rework) [narrow-remediation] | — | Paused: D.2a.6 narrow-remediation retry succeeded (remediator addressed load-bearing [0,1,2]; dismissed [3]); second Codex re-review returned needs-rework on NEW findings (fixture-valid test not scoped by --plan-file; TASK-004 dep race with TASK-002; TASK-004 not internally contradictory; bold-markup nit). Pending edits retained in working tree. |

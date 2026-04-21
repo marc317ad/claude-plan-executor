@@ -9755,3 +9755,140 @@ class TestGateScheduleValidShapeContract:
         )
         result = plan_ops._gate_schedule_valid(sched)
         assert result["status"] == "fail", result
+
+
+# ---------------------------------------------------------------------------
+# TASK-006: sample fixture conformance.
+#
+# After TASK-006, `docs/plans/sample_phase4.md` is the canonical conformance
+# artifact for Phase 5 certification: `fixture-valid` passes against it and
+# its schedule sidecar, it carries no out-of-schema `**Agent:**` bullets,
+# and every task block declares the required §5 fields. Regressions here
+# would re-break Phase 0 preflight for every downstream plan run (see the
+# 2026-04-20 blocked-run incident captured in
+# `docs/plans/DUAL_AGENT_Plans/TASK-006_conformance_fixture.md`).
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_PHASE4_PATH = REPO_ROOT / "docs" / "plans" / "sample_phase4.md"
+
+
+class TestSamplePhase4FixtureConformance:
+    """TASK-006: `docs/plans/sample_phase4.md` is the canonical conformance
+    fixture. The three tests below are selected by `pytest -k fixture` (via
+    this class name), matching the task's `Test command`."""
+
+    def test_sample_phase4_passes_fixture_valid_gate(self) -> None:
+        """`gates --check fixture-valid` returns pass against the canonical
+        sample fixture + sidecar."""
+        cp = _run(
+            "gates",
+            "--check",
+            "fixture-valid",
+            "--plan-file",
+            str(_SAMPLE_PHASE4_PATH),
+            "--json",
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        gate = body["gates"][0]
+        assert gate["name"] == "fixture-valid"
+        assert gate["status"] == "pass", gate
+
+    def test_sample_phase4_has_no_hardcoded_agent_field(self) -> None:
+        """Routing is classifier-owned. A hardcoded `**Agent:**` bullet on
+        any task block would override the analyst's classification and
+        defeat the mixed-routing scenario the fixture is meant to
+        exercise."""
+        assert _SAMPLE_PHASE4_PATH.exists(), _SAMPLE_PHASE4_PATH
+        text = _SAMPLE_PHASE4_PATH.read_text(encoding="utf-8")
+        # Restrict to bullet-form agent declarations (`- **Agent:**`).
+        # Prose mentions of the word "agent" are fine and common in
+        # descriptions.
+        agent_bullet_re = re.compile(
+            r"^\s*-\s*\*\*Agent:\*\*", re.MULTILINE
+        )
+        matches = agent_bullet_re.findall(text)
+        assert matches == [], (
+            f"found {len(matches)} `**Agent:**` bullet(s) in the sample "
+            f"fixture; routing is classifier-owned and the field must "
+            f"not appear in the plan schema"
+        )
+
+    def test_sample_phase4_has_required_task_fields(self) -> None:
+        """Every `### TASK-NNN` block in the sample fixture declares the
+        mandatory §5 fields: Status, Priority, Files, Test command,
+        Acceptance criteria (bullets) + Description (prose header).
+        `Reversion guidance` is also required per the plan schema
+        checklist, so we assert it too.
+        """
+        assert _SAMPLE_PHASE4_PATH.exists(), _SAMPLE_PHASE4_PATH
+        text = _SAMPLE_PHASE4_PATH.read_text(encoding="utf-8")
+        _, blocks = plan_ops._split_task_blocks(text)
+        assert blocks, "sample fixture has no TASK-NNN blocks"
+        required_bullets = (
+            "Status",
+            "Priority",
+            "Files",
+            "Test command",
+            "Acceptance criteria",
+        )
+        required_prose = (
+            "Description",
+            "Reversion guidance",
+        )
+        for tid, block in blocks:
+            for field in required_bullets:
+                pat = re.compile(
+                    rf"^\s*-\s*\*\*{re.escape(field)}:\*\*",
+                    re.MULTILINE,
+                )
+                assert pat.search(block), (
+                    f"TASK-{tid} missing required bullet **{field}:**"
+                )
+            for field in required_prose:
+                pat = re.compile(
+                    rf"^\*\*{re.escape(field)}:\*\*",
+                    re.MULTILINE,
+                )
+                assert pat.search(block), (
+                    f"TASK-{tid} missing required prose header "
+                    f"**{field}:**"
+                )
+            # Status vocabulary: canonical is exactly `pending` for the
+            # rewritten fixture. Aliases such as `open`, `in-progress`,
+            # `todo`, or empty values must all be rejected.
+            status_value_re = re.compile(
+                r"^\s*-\s*\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE,
+            )
+            status_match = status_value_re.search(block)
+            assert status_match, (
+                f"TASK-{tid} missing parseable `**Status:**` value"
+            )
+            status_value = status_match.group(1).strip()
+            assert status_value == "pending", (
+                f"TASK-{tid} `**Status:** {status_value}` is not "
+                f"canonical; expected exactly `pending`"
+            )
+            # Dependencies must be the canonical form: exactly `none` or
+            # `TASK-NNN[, TASK-NNN]...` with 3-digit zero-padded ids and
+            # `, ` separators. Anything else (bracket form `[001]`,
+            # bare `001`, `TASK-1`, `TASK-001; TASK-002`, empty) must
+            # fail.
+            deps_value_re = re.compile(
+                r"^\s*-\s*\*\*Dependencies:\*\*\s*(.+?)\s*$",
+                re.MULTILINE,
+            )
+            deps_match = deps_value_re.search(block)
+            assert deps_match, (
+                f"TASK-{tid} missing parseable `**Dependencies:**` value"
+            )
+            deps_value = deps_match.group(1).strip()
+            canonical_deps_re = re.compile(
+                r"^(?:none|TASK-\d{3}(?:, TASK-\d{3})*)$"
+            )
+            assert canonical_deps_re.match(deps_value), (
+                f"TASK-{tid} `**Dependencies:** {deps_value}` is not "
+                f"canonical; expected `none` or "
+                f"`TASK-NNN[, TASK-NNN]...` with 3-digit ids"
+            )

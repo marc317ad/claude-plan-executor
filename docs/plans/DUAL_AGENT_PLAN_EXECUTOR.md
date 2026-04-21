@@ -1157,6 +1157,8 @@ Verify no agent/skill file changes were needed.
 
 Scenarios 1–12 are scored against the phase-gate vocabulary from §9.7. The single canonical pass-condition for Phase 5 end-to-end certification is *"all six gates hold across scenarios 1–12"* — i.e., `plan_ops.py gates --certify --mode execute --plan-file <sample> --schedule-file <sample_sched> --run-id <id>` returns `certified: true` after every scenario's orchestrator run, with `commit-safe` holding for every `commit_done` event the run recorded. Portability (scenario 13) reuses the same certification against a foreign repo.
 
+**Canonical conformance artifact.** The sample plan `docs/plans/sample_phase4.md` and its schedule sidecar `docs/plans/sample_phase4.schedule.json` are the canonical conformance artifacts for Phase 5 certification. They are validated automatically by the `fixture-valid` gate (`plan_ops.py gates --check fixture-valid`), which aggregates `schema-valid` + `schedule-valid` against the pair. `fixture-valid` passing is a **precondition** for any `--certify` run — Phase 0 preflight rejects a dispatch if the canonical fixture does not itself conform to the §5 schema. The fixture is rebuilt to conform by TASK-006 of the hardening plan; its tests live in `tests/scripts/test_plan_ops.py` (`test_sample_phase4_passes_fixture_valid_gate`, `test_sample_phase4_has_no_hardcoded_agent_field`, `test_sample_phase4_has_required_task_fields`).
+
 | Step | What | How | Pass Criteria |
 |------|------|-----|---------------|
 | 1 | Codex CLI contract | Run Phase 0 experiments | All behaviors documented, no surprises |
