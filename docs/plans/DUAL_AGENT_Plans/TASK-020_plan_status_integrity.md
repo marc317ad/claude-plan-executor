@@ -187,7 +187,7 @@ Must hit at least once in the §D.3 commit-task section.
 
 ### TASK-020A: `lint-plans` subcommand
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
