@@ -1,0 +1,99 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Ship canonical TASK authoring template",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/templates/TASK.md.template",
+        "plugins/plan-executor/templates/README.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py -k template",
+      "classification_reason": "New module, doc, and test wiring",
+      "dependencies": []
+    },
+    {
+      "id": "002",
+      "title": "Classify gap severity via inline gaps[i].severity",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/agents/plan-analyst.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py -k gap_severity",
+      "classification_reason": "Schema+spec+code cross-cutting",
+      "dependencies": [
+        "001"
+      ]
+    },
+    {
+      "id": "003",
+      "title": "Propagate --allow-gaps into Codex plan-review with severity-aware demotion",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_codex_dispatch_integration.py"
+      ],
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_codex_dispatch_integration.py -k plan_review_allow_gaps",
+      "classification_reason": "Multi-file routing and prompt contract",
+      "dependencies": [
+        "002"
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/templates/README.md",
+        "plugins/plan-executor/templates/TASK.md.template",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-analyst.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_codex_dispatch_integration.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [
+    {
+      "type": "shared-file-across-batches",
+      "affected_tasks": [
+        "001",
+        "002"
+      ],
+      "detail": "tests/scripts/test_plan_ops.py appears in batches 1 and 2; serialized by dep 002->001."
+    }
+  ]
+}

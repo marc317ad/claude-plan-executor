@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "SKILL.md Claude-subagent dispatch migration to plan_claude_dispatch.py",
+  "created": "2026-04-20",
+  "base_branch": "main",
+  "depends_on_plans": [
+    "docs/plans/PLAN_NESTED_DISPATCH_2026-04-18_v3.md"
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "PLAN_SKILL_bash_dispatch_migration.md",
+      "priority": "critical",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "PLAN_SKILL_bash_dispatch_migration.md",
+      "priority": "critical",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "PLAN_SKILL_bash_dispatch_migration.md",
+      "priority": "high",
+      "depends_on": ["001", "002"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "PLAN_SKILL_bash_dispatch_migration.md",
+      "priority": "high",
+      "depends_on": ["001", "002"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "PLAN_SKILL_bash_dispatch_migration.md",
+      "priority": "high",
+      "depends_on": ["001", "002"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "PLAN_SKILL_bash_dispatch_migration.md",
+      "priority": "medium",
+      "depends_on": ["003", "004", "005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "PLAN_SKILL_bash_dispatch_migration.md",
+      "priority": "high",
+      "depends_on": ["006"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

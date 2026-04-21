@@ -163,6 +163,7 @@ Codified explicitly in SKILL and enforced by absence of a Python routing path:
   - Input envelope schema-violation → exit non-zero with structured `errors[*]`.
   - Any input the router cannot classify (e.g., reviewer verdict not in the enum) → `action: unknown_state` with a human-readable `reason`.
   - Tests cover every routing cell in the §3.1 state machine plus at least one `unknown_state` branch.
+  - The routing logic is exposed as a pure function `route(payload: dict) -> dict` in `plan_ops.py` (no argparse, no stdin, no `_emit`); `cmd_review_route` is a thin shim that parses stdin, delegates to `route()`, and emits via `_emit`. Tests call `route()` directly — no subprocess, no stdin monkey-patching. This preserves the option of wrapping `review-route` as an in-process MCP tool in the follow-up migration (§4) without re-shaping the subcommand.
 
 **Description:** The core routing move. After this task lands, the orchestrator LLM stops reading the D.2 / D.2a / D.2a.5 / D.2a.6 tables and starts piping review envelopes to Python. TASK-005's SKILL edits are only safe after this ships.
 
@@ -187,6 +188,7 @@ Codified explicitly in SKILL and enforced by absence of a Python routing path:
   - `block-dependents --update-schedule-state <path>` populates `state.blocked`.
   - Old schedules lacking `state` load without error; commands that would mutate state on an old schedule no-op the state write and warn.
   - Atomicity: concurrent writers of `state` don't interleave (reuse the existing atomic-write path used by `write-schedule`).
+  - State read/mutation helpers are exposed as pure functions in `plan_ops.py` (e.g., `read_schedule_state(schedule_path: Path) -> dict`, `apply_commit_state_transition(state: dict, task_id: str, sha: str, files: list[str]) -> dict`, `apply_fail_state_transition(state: dict, task_id: str, retries: dict) -> dict`, `apply_blocked_state_transition(state: dict, blocked_ids: list[str]) -> dict`); the `--update-schedule-state` / `--from-schedule-state` subcommand flags are thin shims that read/write the file and delegate to these functions. Tests call the pure functions directly against in-memory dicts — no subprocess, no tempfile. Same rationale as TASK-001: preserves the option of in-process MCP wrapping without reshaping the subcommands.
 
 **Description:** Takes the orchestrator's memory burden and puts it on disk. Required for `review-route` to function stateless-ly (it reads `retries_used` from the schedule, not from the orchestrator's context).
 

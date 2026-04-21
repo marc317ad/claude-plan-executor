@@ -1,0 +1,153 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Add plan_ops.py review-route subcommand",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/review_route_input_schema.json",
+        "plugins/plan-executor/scripts/review_route_output_schema.json",
+        "tests/scripts/test_plan_ops_review_route.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops_review_route.py",
+      "classification_reason": "New subcommand + schemas + tests; pure-function routing core"
+    },
+    {
+      "id": "002",
+      "title": "Persist orchestrator state in .schedule.json",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_schedule_state.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_schedule_state.py",
+      "classification_reason": "Schema extension + multiple subcommand flags + atomic-write semantics"
+    },
+    {
+      "id": "003",
+      "title": "Wrapper envelope sanitizer perimeter",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/_codex_envelope_sanitizer.py",
+        "tests/scripts/test_codex_envelope_sanitizer.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_codex_envelope_sanitizer.py",
+      "classification_reason": "Security boundary; new module + wrapper integration"
+    },
+    {
+      "id": "004",
+      "title": "Content-sanitizer subagent (optional intent check)",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/agents/content-sanitizer.md",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "tests/scripts/test_content_sanitizer_integration.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_content_sanitizer_integration.py",
+      "classification_reason": "New agent manifest + wrapper dispatch flag"
+    },
+    {
+      "id": "005",
+      "title": "SKILL.md rewrite - Phase D collapse, CLI diet, LLM roles",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ],
+      "test_command": "deferred (TASK-006)",
+      "classification_reason": "Prose-heavy authoritative doc edit"
+    },
+    {
+      "id": "006",
+      "title": "Drift guard - SKILL vs argparse parity test",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "tests/scripts/test_skill_cli_reference_drift.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_skill_cli_reference_drift.py",
+      "classification_reason": "Single test file; mechanical parity check"
+    },
+    {
+      "id": "007",
+      "title": "Dispatch-templates alignment",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md"
+      ],
+      "test_command": "deferred (TASK-008)",
+      "classification_reason": "Prose template alignment with review-route output contract"
+    },
+    {
+      "id": "008",
+      "title": "End-to-end smoke - full A->E loop with fakes",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "tests/scripts/test_phase_d_e2e.py",
+        "tests/scripts/fixtures/phase_d_plan.md"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_phase_d_e2e.py",
+      "classification_reason": "Multi-step integration harness covering full routing matrix"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": ["001", "003"],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/review_route_input_schema.json",
+        "plugins/plan-executor/scripts/review_route_output_schema.json",
+        "tests/scripts/test_plan_ops_review_route.py",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/_codex_envelope_sanitizer.py",
+        "tests/scripts/test_codex_envelope_sanitizer.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": ["002", "004"],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_schedule_state.py",
+        "plugins/plan-executor/agents/content-sanitizer.md",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "tests/scripts/test_content_sanitizer_integration.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": ["005"],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": ["006", "007"],
+      "file_locks": [
+        "tests/scripts/test_skill_cli_reference_drift.py",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md"
+      ]
+    },
+    {
+      "index": 5,
+      "task_ids": ["008"],
+      "file_locks": [
+        "tests/scripts/test_phase_d_e2e.py",
+        "tests/scripts/fixtures/phase_d_plan.md"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

@@ -1,0 +1,35 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "005",
+      "title": "Add executor phase gates and promotion criteria",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k gates",
+      "classification_reason": "Multi-file architectural module, new vocabulary"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

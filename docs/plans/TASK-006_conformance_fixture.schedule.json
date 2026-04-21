@@ -1,0 +1,35 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "006",
+      "title": "Rebuild sample and verification plans as conformance artifacts",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "docs/plans/sample_phase4.md",
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "tests/scripts/test_plan_ops.py",
+        "tests/scripts/test_plan_codex_dispatch_integration.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k fixture",
+      "classification_reason": "Multi-file rewrite, scenario-preservation judgment"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "006"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "docs/plans/sample_phase4.md",
+        "tests/scripts/test_plan_codex_dispatch_integration.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

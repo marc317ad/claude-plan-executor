@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "Phase D State Machine + Injection Hardening",
+  "created": "2026-04-20",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [
+    "docs/plans/PLAN_PHASE_D_STATE_MACHINE_2026-04-18.md"
+  ],
+  "parallel_batches": [
+    ["001", "003"],
+    ["002", "004"],
+    ["005"],
+    ["006", "007"],
+    ["008"]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "PLAN_PHASE_D_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "PLAN_PHASE_D_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "PLAN_PHASE_D_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "PLAN_PHASE_D_STATE_MACHINE.md",
+      "priority": "medium",
+      "depends_on": ["003"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "PLAN_PHASE_D_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": ["001", "002", "003"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "PLAN_PHASE_D_STATE_MACHINE.md",
+      "priority": "medium",
+      "depends_on": ["005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "PLAN_PHASE_D_STATE_MACHINE.md",
+      "priority": "medium",
+      "depends_on": ["001", "005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "008",
+      "file": "PLAN_PHASE_D_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": ["001", "002", "003", "005", "007"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
