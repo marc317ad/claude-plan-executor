@@ -165,6 +165,14 @@ ALLOWED_LOG_EVENTS = {
     "plan_author_done",
     "awaiting_user",
     "schedule_written",
+    # TASK-020B: `acceptance_v_check` runtime enforcement. `v_check_passed`
+    # is emitted by `cmd_commit_task` when a plan's opt-in YAML frontmatter
+    # V-check succeeds pre-commit. `v_check_failed` is reserved for direct
+    # `log-event` calls by external tooling (e.g., future CI jobs); v1
+    # `cmd_commit_task` does NOT emit it — a failed V-check `_die`s silently
+    # to preserve the "no run-log mutation on failure" invariant.
+    "v_check_passed",
+    "v_check_failed",
 }
 # Accepted values for `finalize-execution-log --outcome`. `paused` is added
 # per TASK-014A for the D.2a.5 awaiting-user pause — the run halted mid-flight
@@ -1460,6 +1468,98 @@ def _git(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedPro
         capture_output=True,
         text=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# TASK-020B: opt-in `acceptance_v_check` runtime enforcement.
+#
+# `_parse_frontmatter` extracts a YAML block delimited by `---` lines at the
+# VERY top of the plan (`\A---\n...\n---\n`). Missing/malformed → {}; the
+# commit-task flow then behaves identically to pre-TASK-020B.
+#
+# `_run_v_check` executes the declared shell command with a bounded timeout
+# and returns a structured dict: on success `{code: "v-check-passed",
+# stdout_tail}`; on failure one of `acceptance-v-check-failed`,
+# `v-check-timeout`, `v-check-subprocess-error` with matching
+# {stdout_tail, stderr_tail, message} fields. Tails are capped at 2048 bytes
+# to keep error envelopes bounded when a V-check produces MBs of output.
+#
+# Shell-injection surface: `shell=True` is intentional — plan authors declare
+# shell commands like `venv/bin/pytest -q tests/scripts/test_foo.py`. Plans
+# must not be edited by untrusted parties without review.
+# ---------------------------------------------------------------------------
+
+
+def _parse_frontmatter(text: str) -> dict:
+    """Return the top-of-file YAML frontmatter as a dict, or {} if absent.
+
+    Uses `re.match` with `\\A` so only a frontmatter block that starts at
+    position 0 is recognized; a `---` line mid-document is NOT picked up.
+    """
+    m = re.match(r"\A---\n(.*?)\n---\n", text, flags=re.DOTALL)
+    if not m:
+        return {}
+    try:
+        import yaml  # available per TASK-013
+        data = yaml.safe_load(m.group(1)) or {}
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _run_v_check(cmd: str, cwd: Path, timeout: int) -> dict:
+    """Execute `cmd` via shell with bounded timeout; return structured result.
+
+    Success: `{code: "v-check-passed", stdout_tail: <last 2048 bytes>}`.
+    Failure codes:
+        - `acceptance-v-check-failed` — non-zero exit
+        - `v-check-timeout` — subprocess.TimeoutExpired
+        - `v-check-subprocess-error` — any other launch error
+    Each failure dict carries `stdout_tail`, `stderr_tail`, `message`.
+    """
+    try:
+        proc = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        stdout_val = e.stdout if isinstance(e.stdout, str) else (
+            e.stdout.decode("utf-8", errors="replace")
+            if isinstance(e.stdout, (bytes, bytearray)) else ""
+        )
+        stderr_val = e.stderr if isinstance(e.stderr, str) else (
+            e.stderr.decode("utf-8", errors="replace")
+            if isinstance(e.stderr, (bytes, bytearray)) else ""
+        )
+        return {
+            "code": "v-check-timeout",
+            "message": f"acceptance V-check exceeded {timeout}s",
+            "stdout_tail": (stdout_val or "")[-2048:],
+            "stderr_tail": (stderr_val or "")[-2048:],
+        }
+    except Exception as e:
+        return {
+            "code": "v-check-subprocess-error",
+            "message": f"acceptance V-check failed to launch: {e}",
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+    if proc.returncode != 0:
+        return {
+            "code": "acceptance-v-check-failed",
+            "message": f"acceptance V-check exited with code {proc.returncode}",
+            "stdout_tail": (proc.stdout or "")[-2048:],
+            "stderr_tail": (proc.stderr or "")[-2048:],
+        }
+    return {
+        "code": "v-check-passed",
+        "stdout_tail": (proc.stdout or "")[-2048:],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2922,6 +3022,40 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
             "task_id": tid,
             "files": files,
             "would_commit": True,
+        })
+
+    # TASK-020B: opt-in `acceptance_v_check` YAML frontmatter runs the plan's
+    # own declared V-check pre-commit. Runs AFTER the `--files` staging guard
+    # (the `--files` validation above) but BEFORE the plan-status flip
+    # (`_write_text` below). On failure we `_die` silently — no plan text
+    # written, no git state touched, no `commit_done` event. Plans without
+    # frontmatter or without the key: zero behavior change.
+    fm = _parse_frontmatter(original_plan)
+    v_check_cmd = fm.get("acceptance_v_check")
+    if v_check_cmd:
+        timeout = getattr(args, "v_check_timeout", None) or 300
+        # `cmd_commit_task` has no `--git-dir` flag — the caller's CWD is the
+        # repo root, matching the semantics of `_git()` above (which also
+        # runs with no explicit cwd). Using `Path(".")` keeps the V-check
+        # execution context consistent with the surrounding git operations.
+        v_result = _run_v_check(str(v_check_cmd), Path("."), timeout)
+        if v_result.get("code") != "v-check-passed":
+            _die(args, {
+                "errors": [{
+                    "code": v_result["code"],
+                    "message": v_result["message"],
+                    "stdout_tail": v_result["stdout_tail"],
+                    "stderr_tail": v_result["stderr_tail"],
+                }],
+            })
+        # Log pass event BEFORE the commit so the audit record captures the
+        # V-check outcome even if a later step (e.g., `git commit`) fails.
+        # Per the annotation: `v_check_passed` is an audit event, NOT proof
+        # of task completion — pairing proof remains `commit_done`.
+        _append_run_log("v_check_passed", {
+            "run_id": args.run_id,
+            "task_id": tid,
+            "command": str(v_check_cmd),
         })
 
     _write_text(plan, mutated)
@@ -4948,6 +5082,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_commit.add_argument("--dry-run", action="store_true")
+    # TASK-020B: cap the opt-in `acceptance_v_check` runtime. Default 300s;
+    # plans that need longer pass `--v-check-timeout SECONDS` explicitly.
+    # Only consulted when the plan carries the YAML frontmatter key.
+    p_commit.add_argument(
+        "--v-check-timeout", type=int, default=300,
+        help=(
+            "Timeout in seconds for the opt-in acceptance_v_check. "
+            "Default 300. Ignored if the plan has no frontmatter key."
+        ),
+    )
     _add_json(p_commit)
 
     p_fail = sub.add_parser("fail-task", help="Restore files + status flip + run log append")

@@ -10334,3 +10334,398 @@ class TestSamplePhase4FixtureConformance:
                 f"canonical; expected `none` or "
                 f"`TASK-NNN[, TASK-NNN]...` with 3-digit ids"
             )
+
+
+# ---------------------------------------------------------------------------
+# TASK-020B: opt-in `acceptance_v_check` runtime enforcement in commit-task.
+#
+# V7-V13 coverage. Tests use the existing `tmp_git_repo` fixture plus a
+# helper that prepends a YAML frontmatter block to SAMPLE_PLAN_BODY so the
+# plan retains its task structure (TASK-001 at status `open`) while gaining
+# the opt-in field. Absence of frontmatter → identical-to-v0 behavior is
+# covered by V10 via `TestCommitTask.test_commits_narrowly` above plus the
+# explicit V10 test here.
+# ---------------------------------------------------------------------------
+
+
+def _plan_with_frontmatter(v_check_cmd: str | None) -> str:
+    """Return SAMPLE_PLAN_BODY prefixed with `acceptance_v_check: "<cmd>"`
+    YAML frontmatter. If `v_check_cmd` is None, no frontmatter is attached
+    (raw SAMPLE_PLAN_BODY).
+
+    Note: the value is emitted as a double-quoted YAML scalar so bare tokens
+    like `true` / `false` / `123` are NOT coerced into Python bool/int —
+    they must reach the subprocess as literal shell strings. Embedded `"`
+    chars are escaped so YAML's quoted-string rules apply.
+    """
+    if v_check_cmd is None:
+        return SAMPLE_PLAN_BODY
+    escaped = v_check_cmd.replace("\\", "\\\\").replace("\"", "\\\"")
+    return (
+        "---\n"
+        f'acceptance_v_check: "{escaped}"\n'
+        "---\n"
+        + SAMPLE_PLAN_BODY
+    )
+
+
+def _commit_task_argv(
+    plan: Path,
+    files: str = "src/foo.py",
+    extra: tuple[str, ...] = (),
+) -> list[str]:
+    """Common argv builder for commit-task V-check tests."""
+    return [
+        "commit-task",
+        "--plan-file", str(plan),
+        "--task-id", "001",
+        "--run-id", "R1",
+        "--files", files,
+        "--title", "First task",
+        "--diff-summary", "bump x",
+        "--reviewer", "none",
+        "--reviewer-verdict", "",
+        "--json",
+        *extra,
+    ]
+
+
+def _v_check_run_log_events(repo: Path) -> list[dict]:
+    """Parse `docs/plans/_run_log.jsonl` events from `repo`; empty list if
+    the file does not exist. Returns a list of decoded JSONL records."""
+    run_log = repo / "docs" / "plans" / "_run_log.jsonl"
+    if not run_log.exists():
+        return []
+    events: list[dict] = []
+    for line in run_log.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
+class TestCommitTaskVCheck:
+    """V7-V13 coverage for TASK-020B's opt-in `acceptance_v_check` gate."""
+
+    # V7 ----------------------------------------------------------------
+    def test_v7_frontmatter_parsed_without_error(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """Plan with YAML frontmatter declaring `acceptance_v_check: true`
+        (always passes) is parsed and commit-task runs to completion."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan.write_text(_plan_with_frontmatter("true"), encoding="utf-8")
+
+        cp = _run(*_commit_task_argv(plan), cwd=tmp_git_repo)
+        assert cp.returncode == 0, (
+            f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
+        )
+        body = _parse_json(cp)
+        assert body["commit_sha"], body
+        assert body["status_updated"] is True
+
+    # V8 ----------------------------------------------------------------
+    def test_v8_passing_v_check_commits_and_logs_v_check_passed(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """V-check exits 0 → commit proceeds + `v_check_passed` run-log event
+        appended alongside the usual `commit_done`."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan.write_text(_plan_with_frontmatter("true"), encoding="utf-8")
+
+        cp = _run(*_commit_task_argv(plan), cwd=tmp_git_repo)
+        assert cp.returncode == 0, cp.stderr
+
+        events = _v_check_run_log_events(tmp_git_repo)
+        kinds = [e.get("event") for e in events]
+        assert "v_check_passed" in kinds, events
+        assert "commit_done" in kinds, events
+        # v_check_passed MUST precede commit_done.
+        vpass_idx = kinds.index("v_check_passed")
+        cdone_idx = kinds.index("commit_done")
+        assert vpass_idx < cdone_idx, (kinds, events)
+        vpass_ev = events[vpass_idx]
+        assert vpass_ev.get("task_id") == "001", vpass_ev
+        assert vpass_ev.get("run_id") == "R1", vpass_ev
+        assert vpass_ev.get("command") == "true", vpass_ev
+
+    # V9 ----------------------------------------------------------------
+    def test_v9_failing_v_check_halts_before_any_side_effect(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """V-check non-zero exit halts before plan mutation, git commit,
+        AND run-log append. Core invariant: no side effect on failure."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan_text_before = _plan_with_frontmatter("false")
+        plan.write_text(plan_text_before, encoding="utf-8")
+
+        pre_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_git_repo,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        run_log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        pre_run_log = (
+            run_log_path.read_text() if run_log_path.exists() else ""
+        )
+
+        cp = _run(*_commit_task_argv(plan), cwd=tmp_git_repo)
+        assert cp.returncode == 1, (
+            f"expected exit 1; stderr={cp.stderr!r} stdout={cp.stdout!r}"
+        )
+        body = _parse_json(cp)
+        errors = body.get("errors") or []
+        codes = [e.get("code") for e in errors]
+        assert "acceptance-v-check-failed" in codes, body
+
+        # Invariants: plan text unchanged, HEAD unchanged, run-log
+        # contains NO `commit_done` AND NO `v_check_passed` for this task.
+        assert plan.read_text(encoding="utf-8") == plan_text_before
+        post_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_git_repo,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert pre_head == post_head
+        post_run_log = (
+            run_log_path.read_text() if run_log_path.exists() else ""
+        )
+        assert pre_run_log == post_run_log
+        events = _v_check_run_log_events(tmp_git_repo)
+        kinds = [e.get("event") for e in events]
+        assert "commit_done" not in kinds, events
+        assert "v_check_passed" not in kinds, events
+
+    # V10 ---------------------------------------------------------------
+    def test_v10_plan_without_frontmatter_unchanged(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """No frontmatter → zero behavior change. No v_check_passed event,
+        no v-check error code, commit proceeds normally."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        # Raw SAMPLE_PLAN_BODY is written by the fixture already; overwrite
+        # for clarity so the test is explicit about the no-frontmatter case.
+        plan.write_text(_plan_with_frontmatter(None), encoding="utf-8")
+
+        cp = _run(*_commit_task_argv(plan), cwd=tmp_git_repo)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["status_updated"] is True
+        events = _v_check_run_log_events(tmp_git_repo)
+        kinds = [e.get("event") for e in events]
+        assert "v_check_passed" not in kinds, events
+        assert "commit_done" in kinds, events
+
+    def test_v10_frontmatter_without_key_unchanged(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """Frontmatter present but `acceptance_v_check` key absent → also
+        behaves like pre-TASK-020B. Guards against false-positive enforcement
+        from unrelated frontmatter keys."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan.write_text(
+            "---\ntitle: other metadata\n---\n" + SAMPLE_PLAN_BODY,
+            encoding="utf-8",
+        )
+
+        cp = _run(*_commit_task_argv(plan), cwd=tmp_git_repo)
+        assert cp.returncode == 0, cp.stderr
+        events = _v_check_run_log_events(tmp_git_repo)
+        kinds = [e.get("event") for e in events]
+        assert "v_check_passed" not in kinds, events
+        assert "commit_done" in kinds, events
+
+    # V11 ---------------------------------------------------------------
+    def test_v11_timeout_enforced(self, tmp_git_repo: Path) -> None:
+        """`sleep 600` with `--v-check-timeout 1` trips the TimeoutExpired
+        branch and halts with `v-check-timeout` before any mutation."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan.write_text(
+            _plan_with_frontmatter("sleep 600"), encoding="utf-8",
+        )
+        pre_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_git_repo,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        plan_before = plan.read_text(encoding="utf-8")
+
+        cp = _run(
+            *_commit_task_argv(
+                plan, extra=("--v-check-timeout", "1"),
+            ),
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in (body.get("errors") or [])]
+        assert "v-check-timeout" in codes, body
+
+        # No side-effects.
+        post_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_git_repo,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert pre_head == post_head
+        assert plan.read_text(encoding="utf-8") == plan_before
+
+    # V12 ---------------------------------------------------------------
+    def test_v12_captures_stdout_stderr_tails(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """Failing V-check's stdout/stderr are captured in the error envelope
+        so the orchestrator can surface them without re-running."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        # Emit a distinctive marker on stdout AND stderr, then fail.
+        cmd = (
+            "echo FAIL_MARKER_STDOUT_V3; "
+            "echo FAIL_MARKER_STDERR_V3 1>&2; "
+            "exit 1"
+        )
+        plan.write_text(_plan_with_frontmatter(cmd), encoding="utf-8")
+
+        cp = _run(*_commit_task_argv(plan), cwd=tmp_git_repo)
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        errors = body.get("errors") or []
+        assert len(errors) == 1 and errors[0]["code"] == (
+            "acceptance-v-check-failed"
+        ), body
+        err = errors[0]
+        assert "FAIL_MARKER_STDOUT_V3" in err.get("stdout_tail", ""), err
+        assert "FAIL_MARKER_STDERR_V3" in err.get("stderr_tail", ""), err
+
+    def test_v12_tail_bounded_to_2048_bytes(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """Runaway output → tail is capped at the last 2048 bytes of stdout
+        and stderr respectively so error envelopes stay bounded."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        # 5000 bytes of 'A' on stdout then exit 1 — tail must be ≤ 2048.
+        cmd = "python3 -c \"print('A' * 5000)\"; exit 1"
+        plan.write_text(_plan_with_frontmatter(cmd), encoding="utf-8")
+
+        cp = _run(*_commit_task_argv(plan), cwd=tmp_git_repo)
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        err = (body.get("errors") or [{}])[0]
+        stdout_tail = err.get("stdout_tail", "")
+        # 5000 chars of 'A' + trailing newline → stdout is ~5001 bytes.
+        # Tail is last 2048. Count of 'A' should be at most 2048.
+        assert len(stdout_tail) <= 2048, len(stdout_tail)
+        assert stdout_tail.count("A") <= 2048, stdout_tail.count("A")
+
+    # Invariant check: V9 second phase --------------------------------
+    def test_no_mutation_after_failing_v_check(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """Post-failure invariant: plan text, run log, and git HEAD are all
+        identical before and after the failing invocation. Mirrors V9 with a
+        different failure path (subprocess error via nonexistent command)."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan.write_text(
+            _plan_with_frontmatter("false"), encoding="utf-8",
+        )
+        run_log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        pre_log = (
+            run_log_path.read_text() if run_log_path.exists() else ""
+        )
+        pre_plan = plan.read_text(encoding="utf-8")
+        pre_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_git_repo,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        cp = _run(*_commit_task_argv(plan), cwd=tmp_git_repo)
+        assert cp.returncode == 1
+
+        post_log = (
+            run_log_path.read_text() if run_log_path.exists() else ""
+        )
+        post_plan = plan.read_text(encoding="utf-8")
+        post_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_git_repo,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert pre_log == post_log
+        assert pre_plan == post_plan
+        assert pre_head == post_head
+
+
+class TestCommitTaskVCheckUnit:
+    """Pure-unit coverage of `_parse_frontmatter` and `_run_v_check` so edge
+    cases (malformed YAML, mid-doc `---`, bounded tails) are pinned without
+    spinning up the full subprocess."""
+
+    def test_parse_frontmatter_extracts_top_level_yaml(self) -> None:
+        text = "---\nfoo: bar\nbaz: qux\n---\n# heading\n"
+        data = plan_ops._parse_frontmatter(text)
+        assert data == {"foo": "bar", "baz": "qux"}
+
+    def test_parse_frontmatter_missing_returns_empty_dict(self) -> None:
+        assert plan_ops._parse_frontmatter("# plain markdown\n") == {}
+
+    def test_parse_frontmatter_requires_leading_triple_dash(self) -> None:
+        # `---` line mid-document is NOT a frontmatter start.
+        text = "# heading\n\n---\nfoo: bar\n---\n"
+        assert plan_ops._parse_frontmatter(text) == {}
+
+    def test_parse_frontmatter_malformed_returns_empty(self) -> None:
+        text = "---\nfoo: [unclosed\n---\n"
+        assert plan_ops._parse_frontmatter(text) == {}
+
+    def test_parse_frontmatter_non_mapping_returns_empty(self) -> None:
+        text = "---\n- just\n- a\n- list\n---\n"
+        assert plan_ops._parse_frontmatter(text) == {}
+
+
+class TestCommitTaskVCheckAllowedEvents:
+    """`v_check_passed` and `v_check_failed` MUST be in `ALLOWED_LOG_EVENTS`
+    so (a) `cmd_commit_task`'s append on success is accepted by any future
+    stricter allowlist gate and (b) external tooling can emit `v_check_failed`
+    via `plan_ops.py log-event`."""
+
+    def test_v_check_events_in_allowlist(self) -> None:
+        assert "v_check_passed" in plan_ops.ALLOWED_LOG_EVENTS
+        assert "v_check_failed" in plan_ops.ALLOWED_LOG_EVENTS
+
+
+class TestCommitTaskVCheckSkillMd:
+    """V13: SKILL.md §D.3 documents the opt-in field."""
+
+    def test_skill_md_references_acceptance_v_check(self) -> None:
+        skill_path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "SKILL.md"
+        )
+        body = skill_path.read_text(encoding="utf-8")
+        assert "acceptance_v_check" in body, (
+            "SKILL.md must reference the opt-in acceptance_v_check field"
+        )

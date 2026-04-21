@@ -546,6 +546,17 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
 
 **Lint reference:** `plan_ops.py lint-plans --plans-dir docs/plans --run-log <run_log> --git-dir . --json` cross-references every `**Status:** done` (or `partial`) task against the run log and git history. A `done`/`partial` marker without a matching `commit_done` event AND `feat(TASK-NNN)` commit flags the task as a hand-edit. Run manually during review or before shipping a plan; the PR-gate wiring is a follow-up (TASK-020C).
 
+**Opt-in V-check gate (TASK-020B).** Plans may declare `acceptance_v_check: <shell command>` in YAML frontmatter (delimited by `---` lines at the very top of the file). When present, `commit-task` runs the command with `cwd=<repo-root>` immediately before the git commit, bounded by `--v-check-timeout SECONDS` (default 300). On success a `v_check_passed` run-log event is appended and the commit proceeds. On non-zero exit, timeout, or subprocess error `commit-task` halts with an `errors[*].code ∈ {"acceptance-v-check-failed", "v-check-timeout", "v-check-subprocess-error"}` envelope (including `stdout_tail` and `stderr_tail`, last 2048 bytes each) — no plan mutation, no git commit, no `commit_done` event. Plans without frontmatter (or without the key) behave identically to pre-TASK-020B. Example:
+
+```yaml
+---
+acceptance_v_check: venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestMyTask
+---
+# TASK-NNN — ...
+```
+
+Shell-injection surface: `shell=True` is intentional — plans must not be edited by untrusted parties without review.
+
 #### D.4 — Phase D fail
 
 ```bash

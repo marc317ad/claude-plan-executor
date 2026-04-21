@@ -222,7 +222,7 @@ Add a read-only `lint-plans` subcommand that flags any `**Status:** done` (or `p
 
 ### TASK-020B: `acceptance_v_check` runtime enforcement in `commit-task`
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
