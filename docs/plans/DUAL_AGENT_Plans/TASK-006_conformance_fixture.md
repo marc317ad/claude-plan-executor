@@ -354,3 +354,11 @@ Starting SHA: `4ff6a2d372da22d5e7379792c49ae7537613cfbd`  → Ending SHA: `4ff6a
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | TASK-006 | claude/opus | codex + D.5 (sonnet) + codex-retry | needs-rework (D.5 partial-agreement then second needs-rework) [narrow-remediation] | — | Paused: D.2a.6 narrow-remediation retry succeeded (remediator addressed load-bearing [0,1,2]; dismissed [3]); second Codex re-review returned needs-rework on NEW findings (fixture-valid test not scoped by --plan-file; TASK-004 dep race with TASK-002; TASK-004 not internally contradictory; bold-markup nit). Pending edits retained in working tree. |
+
+## Execution log — 20260420T211857 (success)
+
+Starting SHA: `4ff6a2d372da22d5e7379792c49ae7537613cfbd`  → Ending SHA: `a65350ef753f3390c858f9c2113964d979469f1c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-006 | claude/opus | codex + orchestrator D.5 | needs-rework → all 3 findings dismissed (D.5 spec-deference) [narrow-remediation] | a65350e | Resumed from paused run 20260421T002455 via user option (b): hand-fix addressed 4 findings from second Codex review (plan body Files list edit was user-authorized). Third Codex review returned needs-rework with 3 NEW findings — orchestrator D.5 dismissed all 3: finding 0 spec-deference (pending is not a plan-level status per ALLOWED_PLAN_STATUSES); finding 1 spec-deference (## Tasks section is universal repo convention and required by schema-valid); finding 2 dismissed as redundant with fixture-valid gate. Committed under narrow-remediation-tag with disagreement: 0,1,2. |
