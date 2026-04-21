@@ -26,7 +26,7 @@ The executor promotes from dry-run to execute (and from execute to "certified-cl
 |---|---|---|
 | `schema-valid` | Phase 0 preflight | Plan markdown conforms to §5: `## Goal`, a `## Context` or `## Scoped Context`, `## Verification`, and every `### TASK-NNN` block carries Status / Priority / Files / Test command / Acceptance criteria bullets + Description prose header. |
 | `schedule-valid` | Phase 0 preflight | Analyst JSON passes `_validate_schedule` + `_validate_schedule_dag` (shape + DAG). |
-| `fixture-valid` | Phase 0 preflight | The sample fixture (`sample_phase4.md`) itself passes `schema-valid` + `schedule-valid`. Pre-TASK-006 this is expected to fail — TASK-005 establishes the predicate; the rewrite is TASK-006's scope. |
+| `fixture-valid` | Phase 0 preflight | The sample fixture (`sample_phase4.md`) itself passes `schema-valid` + `schedule-valid`. |
 | `execution-safe` | Phase 0 preflight | `plan_codex_dispatch.py` implement path carries the always-ignore / protected-paths seam, `_snapshot_baseline(` is called at implement + timeout sites, and there is no `git clean -fd` in executable code. Predicate-only — does NOT invoke the wrapper. |
 | `review-safe` | Phase 0 preflight | `plan_codex_dispatch.py cmd_review` carries `_snapshot_baseline(` and respects `is_protected_path` / `PROTECTED_EXACT_PATHS`. |
 | `commit-safe` | Phase D.3 (per commit) + End-of-run certification | `git show --name-only <sha>` minus TASK-NNN's declared `Files:` list and the always-ignore set is empty. Dry-run mode → `not_applicable`. Execute mode → verified post-hoc from every `commit_done` run-log event for the run. |
@@ -139,7 +139,7 @@ venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
   --plan-file <absolute plan> --json
 ```
 
-Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`. `fixture-valid` may legitimately fail against the pre-TASK-006 sample fixture — if the plan under execution is the sample itself (it will not be in production runs), demote to warning; <!-- BEGIN TASK-006 bootstrap carve-out — revert in TASK-026 Step 0 --> if the plan under execution is `TASK-006_conformance_fixture.md` (the sample's rewrite chunk — temporary bootstrap exception to break the chicken-and-egg between TASK-006 rewriting the fixture and `fixture-valid` gating on that same fixture), likewise demote to warning; <!-- END TASK-006 bootstrap carve-out --> for any other plan, halt as usual.
+Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`. If the plan under execution is the sample fixture itself (`sample_phase4.md`, should not occur in production runs), demote `fixture-valid: fail` to a warning to avoid a self-reference halt; for any other plan, halt as usual.
 
 Then acquire the run-lock:
 
