@@ -510,6 +510,39 @@
       "status": "Done",
       "superseded_by": [],
       "origin_note": "Surfaced during TASK-005 run 20260420T220109 Codex review pass-4 (post-narrow-remediation-2); user elected option A (commit TASK-005 + follow-up chunk) over a fourth hand-fix round."
+    },
+    {
+      "task_id": "027A",
+      "v3_task": "TASK-027A",
+      "file": "TASK-027_codex_review_prompt_and_adaptation_flagging.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Surfaced during TASK-020B run 20260421T031650 Codex review — reviewer hallucinated a helper symbol (_add_git_dir) and was not given description/implementation_notes context; wrapper had no structural check. TASK-027A adds prompt-context forwarding + post-envelope symbol verification."
+    },
+    {
+      "task_id": "027B",
+      "v3_task": "TASK-027B",
+      "file": "TASK-027_codex_review_prompt_and_adaptation_flagging.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Surfaced during TASK-020B run 20260421T031650 — implementer substituted _append_run_log for the plan's scripts/plan_ops.py log-event form without flagging it under Plan adaptations; current trigger scopes adaptation-flagging narrowly to 'live code differs.'"
+    },
+    {
+      "task_id": "027C",
+      "v3_task": "TASK-027C",
+      "file": "TASK-027_codex_review_prompt_and_adaptation_flagging.md",
+      "priority": "low",
+      "issues_absorbed": [],
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Surfaced during TASK-020B run 20260421T031650 D.5 adjudication — the dismissal-evidence gate's spec-deference label drifted onto an implementer-deviation case; rubric needs a precondition clause distinguishing dismissed (implementer deviated) from spec-deference (implementer followed plan)."
     }
   ]
 }
