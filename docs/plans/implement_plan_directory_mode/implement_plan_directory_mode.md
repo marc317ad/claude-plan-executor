@@ -106,7 +106,7 @@ The only subcommand among the five write sites that needs internal-logic changes
 
 ### TASK-003: Plan-analyst directory-mode input
 
-- **Status:** open
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**

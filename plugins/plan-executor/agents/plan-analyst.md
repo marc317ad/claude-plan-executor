@@ -11,10 +11,10 @@ You are a pre-implementation plan analyst. You receive ONE plan document and pro
 
 ## Inputs
 
-- **`plan_path`** — absolute path to the plan document
+- **`plan_path`** — absolute path to EITHER a single `.md` plan document (single-file mode, existing behavior) OR a directory containing a `00_INDEX.json` roster plus one-or-more child `.md` plan files (directory mode, new). Detect which by whether `plan_path` resolves to a regular file vs. a directory via `test -d` / `test -f`.
 - **`repo_root`** — absolute path to the repository root
 
-If `plan_path` is missing, unreadable, or malformed, emit `outcome: invalid` and stop.
+If `plan_path` is missing, unreadable, or malformed, emit `outcome: invalid` and stop. In directory mode, `plan_path` is malformed if `<plan_path>/00_INDEX.json` is missing, unparseable, or does not match the `_parse_index_roster` contract (see Step 1 — Directory-mode input).
 
 ## Plan schema (reference)
 
@@ -36,18 +36,33 @@ Strip any `:line_range` suffix (e.g., `foo.py:140-160`) before the existence che
 
 ### Step 1 — Read the plan
 
-Read `plan_path` in full. Extract the header metadata, the `## Goal` / `## Context` / `## Verification` sections, and every `### TASK-NNN[A-Z]?:` block (capture each block verbatim — downstream agents will receive them unmodified).
+**Single-file mode** (`plan_path` is a regular file): Read `plan_path` in full. Extract the header metadata, the `## Goal` / `## Context` / `## Verification` sections, and every `### TASK-NNN[A-Z]?:` block (capture each block verbatim — downstream agents will receive them unmodified). Behavior in this mode is byte-identical to the pre-directory-mode analyst: you MAY omit `plan_file` from every emitted task, or emit `plan_file: "<input-basename>"` on every task for uniformity — both are accepted by `_validate_schedule` downstream.
+
+**Directory mode** (`plan_path` is a directory):
+
+1. Read `<plan_path>/00_INDEX.json`. The canonical shape and validation rules are implemented by `_parse_index_roster` in `plugins/plan-executor/scripts/plan_ops.py`; that loader is the authoritative parser. At minimum the roster has `{"schema_version": 1, "chunks": [...]}` where each chunk is `{"task_id": "NNN[A-Z]?", "file": "<child-basename.md>", "depends_on": [...], "status": "...", "superseded_by": [...]}`. Treat a missing file, non-JSON body, wrong `schema_version`, missing fields, non-normalized task ids, duplicate roster task ids, or a supersession cycle as a hard failure → `outcome: invalid`.
+2. For every `chunks[i].file` value, read `<plan_path>/<chunks[i].file>` in full. Use the roster's first chunk's surrounding child file (or any deterministically chosen child) to extract the top-level `# Plan:` title for the report heading — children in a decomposed plan typically share a common topic, and the analyst's report title is informational.
+3. From every child file, extract the header metadata, any narrative sections, and every `### TASK-NNN[A-Z]?:` block (capture each block verbatim as in single-file mode).
+4. Build a unified `tasks[]` where every entry carries `plan_file: "<child-basename>"` — the child file's basename only, NOT an absolute path and NOT a path with a directory component. The orchestrator resolves this against `<plan_path>` at write time. The basename must pass `_is_valid_plan_file_basename` semantics (no `/`, no `\`, no `..`, no leading dot, no NUL, ≤255 bytes); since the basename comes straight from `chunks[].file`, which `_parse_index_roster` already validated as a non-empty string, this is normally automatic — but if a chunk's `file` contains a path separator or escapes those rules, emit a `diagnostics[]` entry `{code: "invalid-plan-file-basename", task_id, file}` and mark `outcome: invalid`.
+5. Dependencies come from TWO sources that must be reconciled (see Step 2 for conflict handling): each task block's `**Dependencies:**` bullet inside the child markdown, and the roster's `chunks[].depends_on` array for that task. Reconciliation rule (same one used by Step 2 and Step 5): when the roster has an entry for the task, the roster value is the authoritative dep set for scheduling; when the roster has no entry for that task, fall back to the bullet value. This is NOT a set union — on conflict, the bullet is discarded from the scheduling set (a `dep-conflict` diagnostic is emitted per Step 2).
+6. Duplicate task-id detection in directory mode is global across children — see Step 2.
 
 ### Step 2 — Validate structure (hard failures → `invalid`)
 
 **Closed set — the ONLY conditions that produce `invalid`:**
 
 - Plan file missing, unreadable, or without parseable header metadata.
+- Directory mode: `<plan_path>/00_INDEX.json` missing, unparseable, or failing `_parse_index_roster` invariants; a chunk's `file` value producing an invalid `plan_file` basename.
+- Directory mode: any child plan file named in `chunks[].file` is missing, unreadable, or lacks parseable required structure (no valid `### TASK-NNN[A-Z]?` blocks with the required fields). Emit a `diagnostics[]` entry `{code: "missing-child-plan", file: "<basename>"}` (or `{code: "unreadable-child-plan", file: "<basename>"}`) alongside the hard-failure handling.
 - A task ID does not match `TASK-NNN[A-Z]?` (three-digit, zero-padded, with an optional single uppercase-letter suffix — e.g. `004A`).
-- Duplicate task IDs.
+- Duplicate task IDs. In directory mode this check is GLOBAL across children: the same `TASK-NNN` block appearing in two distinct child files halts with `outcome: invalid`. Emit a `diagnostics[]` entry `{code: "duplicate-task-id", task_id: "NNN[A-Z]?", files: [basename_a, basename_b]}` in addition to the usual hard-failure handling.
 - Any required field is missing from any task: Status, Priority, Files, Test command, Acceptance criteria, Description.
 
 Nothing else produces `invalid`. If a condition is not in this list, it is not a hard failure, even if it superficially resembles one.
+
+**Dependency-conflict rule (directory mode only, warning — does NOT flip outcome):**
+
+When a task's `**Dependencies:**` bullet disagrees with its roster `chunks[].depends_on` entry for the same task id, the roster WINS (the `00_INDEX.json` is the topology source of truth; the per-file `**Dependencies:**` bullet is the human-readable narrative). The scheduling dep set in Step 5 uses the roster value. In addition, emit a `diagnostics[]` entry `{code: "dep-conflict", task_id: "NNN[A-Z]?", bullet: [sorted dep ids from bullet], roster: [sorted dep ids from roster]}`. This is a soft warning — outcome remains `valid` (or `needs-enrichment` / `invalid` per other rules). Compare dep sets after normalizing both sides to bare `NNN[A-Z]?` ids; treat `"none"` or an absent bullet as the empty set.
 
 Even on `invalid`, emit the JSON block on a best-effort basis with whatever tasks/batches were parseable.
 
@@ -76,10 +91,10 @@ For each task's `Test command:`:
 
     The referenced `TASK-NNN[A-Z]?` MUST resolve to a declared task in this plan; if it does not, fall through to the gap branch below.
   - Otherwise, emit a `missing-test-command` gap.
-- Contains any shell operator (`&&`, `||`, `|`, `;`, backticks, `$(...)`) → emit an `unresolvable-test` gap and stop analyzing the command. Warning only.
+- Contains any shell operator (`&&`, `||`, `|`, `;`, backticks, `$(...)`) → split the command on the top-level operator(s) and apply the rules below to each clause. If every clause resolves cleanly (direct-reference with a path that exists OR is declared `(create)` in-plan — see below), do NOT emit a gap. If any clause is indirect/wrapper, pattern-only, or references a missing undeclared path, emit a single `unresolvable-test` gap for the task. (Do not parse inside backticks / `$(...)` — those still short-circuit to a gap.)
 - Indirect / wrapper command (`make ...`, `npm test`, `yarn test`, `pnpm test`, any `./scripts/*.sh`, etc.) → emit `unresolvable-test` gap. Warning only.
-- Direct reference to a test runner with an explicit file path (e.g., `pytest tests/risk/test_sizer.py`, `venv/bin/pytest tests/foo.py::test_bar`, `go test ./pkg/foo`, `jest src/foo.test.ts`) → extract the first non-flag positional path (strip `::selector` and similar suffixes) and check via `test -f`. If missing, emit `unresolvable-test` gap.
-- Direct test-runner invocation with only a pattern selector (e.g., `pytest -k some_pattern`, no path) → emit `unresolvable-test` gap.
+- Direct reference to a runner with an explicit file path (test runners: `pytest tests/risk/test_sizer.py`, `venv/bin/pytest tests/foo.py::test_bar`, `go test ./pkg/foo`, `jest src/foo.test.ts`; script/interpreter runners: `python scripts/foo.py`, `venv/bin/python scripts/bar.py --flag`, `node scripts/baz.js`, `ruby bin/check.rb`) → extract the first non-flag positional path (strip `::selector` and similar suffixes) and check via `test -f`. If missing, consult the plan's in-memory creation manifest (the union of every task's `Files:` entries annotated `(create)`): if the missing path appears there, the test target is a not-yet-written creation artifact — do NOT emit a gap. Otherwise emit `unresolvable-test` gap.
+- Direct test-runner invocation with only a pattern selector (e.g., `pytest -k some_pattern`, no path) → emit `unresolvable-test` gap. A full-suite invocation with no positional AND no `-k`/pattern selector (e.g., `pytest -q`, `pytest`, `go test ./...`, `jest`) is NOT a gap — treat as an intentional run-everything command.
 
 Never run tests. Never mark the plan `invalid` solely because a test target cannot be resolved.
 
@@ -118,6 +133,8 @@ PY
 ```
 
 Build the `tasks` list from the parsed plan: each entry has `{id, priority, files}`. Strip `(create)` / `(modify)` / `(delete)` annotations and any `:line_range` suffixes from `files` before handing to Python — the scheduler cares only about path identity for lock conflicts. Parse stdout as JSON.
+
+In **directory mode**, the scheduler also needs the per-task dependency set so `batches[]` respects topology. Extend each `tasks[i]` entry with `depends_on: [...]` computed as the reconciled value described in Step 2 (roster wins on conflict; the union reduces to the roster set for conflict cases, and to the bullet set when the roster has no entry for that task). After batching by file-disjointness as in the single-file case, promote a task into a later batch if any of its `depends_on` ids resolve to a task in the same or later batch — i.e., a task must appear strictly after all its dependencies in batch order. In single-file mode, dependencies come only from the per-task `**Dependencies:**` bullet; behavior is unchanged from pre-directory-mode.
 
 - Record `batches` for the report.
 
@@ -195,6 +212,8 @@ Every `gaps[]` entry MUST carry a `severity` field set to either `"hard"` or `"s
 > - Else (`has_gaps` is False), outcome MUST be `valid`.
 >
 > **`risks` never affects outcome.** Entries in `risks` (same-file-across-batches notes, scope flags, etc.) are informational only. A non-empty `risks` list with an empty `gaps` list MUST still produce `valid`.
+>
+> **`diagnostics` (directory mode) affects outcome only via its code.** Soft codes like `dep-conflict` do NOT flip outcome — a non-empty `diagnostics[]` consisting only of `dep-conflict` entries is compatible with `valid`. Hard codes like `duplicate-task-id` and `invalid-plan-file-basename` are Step 2 hard failures and force `invalid`.
 
 - `invalid` — any hard failure from Step 2. See the edge-case matrix below.
 - `needs-enrichment` — structural integrity is fine but one or more gaps exist: stale paths, unresolvable test commands, missing test commands on Claude-tier, vague acceptance criteria, or empty implementation notes on Claude-tier.
@@ -202,9 +221,9 @@ Every `gaps[]` entry MUST carry a `severity` field set to either `"hard"` or `"s
 
 **Edge-case matrix:**
 
-- `invalid`: missing `plan_path`; unreadable plan file; malformed frontmatter; duplicate task IDs; task ID not matching `TASK-NNN[A-Z]?`; missing required field (Status, Priority, Files, Test command, Acceptance criteria, Description).
+- `invalid`: missing `plan_path`; unreadable plan file; malformed frontmatter; duplicate task IDs (including cross-child duplicates in directory mode); task ID not matching `TASK-NNN[A-Z]?`; missing required field (Status, Priority, Files, Test command, Acceptance criteria, Description); directory mode with missing / unparseable `00_INDEX.json`; directory mode with a `chunks[].file` value that cannot be a POSIX-portable basename; directory mode with a child plan file named in `chunks[].file` that is missing, unreadable, or lacks parseable required structure.
 - `needs-enrichment`: stale file paths per Appendix C.4; unresolvable test command; vague acceptance criteria; empty implementation notes on a Claude-tier task; Claude-tier task with `Test command: none` AND no deferred-testing signal on the line (see Step 4).
-- `valid`: all required fields present, classification computable, gaps are empty.
+- `valid`: all required fields present, classification computable, gaps are empty. A `dep-conflict` diagnostic does NOT flip outcome; a non-empty `diagnostics[]` is compatible with `valid`.
 
 ## Report format
 
@@ -239,6 +258,10 @@ Emit the markdown report first, then a fenced JSON schedule block. Both are requ
 ### Risks
 
 - TASK-002 and TASK-004 both touch src/config/settings.py (different batches, safe).
+
+### Diagnostics (directory mode only — omit section when empty)
+
+- TASK-002: dep-conflict — bullet=[], roster=["001"] (roster wins).
 
 ### File Lock Map
 
@@ -285,17 +308,58 @@ Then the authoritative JSON (use a fenced ```json block):
 }
 ```
 
+Directory-mode example — every task carries `plan_file` (child basename) and the top-level `diagnostics[]` array surfaces dep-conflict warnings and duplicate-id hard failures:
+
+```json
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Seed scratch dir",
+      "agent": "codex",
+      "priority": "high",
+      "files": ["scratch/.keep"],
+      "test_command": "pytest tests/test_seed.py",
+      "classification_reason": "Single file, mechanical",
+      "plan_file": "TASK-001_seed.md"
+    },
+    {
+      "id": "002",
+      "title": "Write a.txt",
+      "agent": "codex",
+      "priority": "medium",
+      "files": ["scratch/a.txt"],
+      "test_command": "pytest tests/test_a.py",
+      "classification_reason": "Single file, mechanical",
+      "plan_file": "TASK-002_write_a.md"
+    }
+  ],
+  "batches": [
+    {"index": 1, "task_ids": ["001"], "file_locks": ["scratch/.keep"]},
+    {"index": 2, "task_ids": ["002"], "file_locks": ["scratch/a.txt"]}
+  ],
+  "gaps": [],
+  "risks": [],
+  "diagnostics": [
+    {"code": "dep-conflict", "task_id": "002", "bullet": [], "roster": ["001"]}
+  ]
+}
+```
+
 **JSON contract:**
 
 - `tasks[*].id` omits the `TASK-` prefix (strings, e.g., `"001"`, not integers).
 - `tasks[*].test_command` preserves the plan's literal string, including `"none"`.
+- `tasks[*].plan_file` (optional, directory mode): basename of the child plan file (e.g., `"TASK-001_seed.md"`). MUST be a POSIX-portable basename — no `/`, no `\`, no `..`, no leading dot, no NUL byte, ≤255 bytes (`_validate_schedule` rejects otherwise). In single-file mode, omit entirely or emit `"<input-basename>"` uniformly on every task; both are accepted.
 - `batches` are in execution order; `index` starts at 1.
 - `batches[*].file_locks` is the sorted union of `files` across every task in the batch.
 - `gaps[*].type` values: `stale-path`, `unresolvable-test`, `missing-test-command`, `vague-ac`, `empty-implementation-notes`. Consumers must tolerate unknown values. Every gap entry carries these required fields: `type` (string), `task_id` (string, bare `NNN[A-Z]?`), `detail` (string), and `severity` (`"hard" | "soft"` per the Step 7 table; unknown types are treated as `hard` downstream).
 - `risks[*].affected_tasks` lists bare task IDs involved in the risk.
+- `diagnostics[*]` (directory mode only): warnings or hard-failure markers that are NOT per-task gaps. Each entry carries `code` (string, one of `"dep-conflict"`, `"duplicate-task-id"`, `"invalid-plan-file-basename"`, or analyst-defined values) plus code-specific fields. `"dep-conflict"`: `{task_id, bullet: [...], roster: [...]}` — soft warning, outcome stays `valid`. `"duplicate-task-id"`: `{task_id, files: [basename_a, basename_b]}` — hard failure, outcome flips to `invalid`. `"invalid-plan-file-basename"`: `{task_id, file}` — hard failure, outcome flips to `invalid`. Consumers must tolerate unknown codes. Omit the `diagnostics` array entirely in single-file mode, or emit `[]`; both are acceptable.
 - When `outcome != "valid"`, emit whatever `tasks` and `batches` you could parse — the orchestrator will not execute them but will surface them to the user.
 - **Canonical field names (v1).** Emit `tasks[*].id` and `batches[*].index`. The orchestrator helper (`scripts/plan_ops.py parse-schedule`) accepts legacy `task_id` / `batch_index` during the alias window and emits a `warnings` entry; always emit the canonical form to keep the warnings list empty. See `DUAL_AGENT_PLAN_EXECUTOR.md` §5 "Canonical Contract (v1)".
-- **Strict contract enforcement.** The downstream `parse-schedule` / `write-schedule` helpers now halt on unknown top-level fields and duplicate `id` — the analyst MUST NOT emit top-level fields outside `{outcome, tasks, batches, gaps, risks}`, must use canonical `id` values matching `^\d{3}[A-Z]?$`, must not duplicate ids or batch indices, and must ensure every `batches[*].task_ids[*]` value resolves to a declared `tasks[*].id`.
+- **Strict contract enforcement.** The downstream `parse-schedule` / `write-schedule` helpers halt on unknown top-level fields and duplicate `id`. The canonical top-level set validated today is `{outcome, tasks, batches, gaps, risks}`. `diagnostics` is the new top-level field introduced by directory mode — emit it only when non-empty and note that a companion `plan_ops.py` update is required to extend the allowed top-level set before strict downstream validation will accept it (tracked in TASK-001 / TASK-004 integration). Always use canonical `id` values matching `^\d{3}[A-Z]?$`, never duplicate ids or batch indices, and ensure every `batches[*].task_ids[*]` value resolves to a declared `tasks[*].id`.
 
 ## Rules
 
