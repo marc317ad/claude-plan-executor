@@ -4,6 +4,8 @@ Self-contained prompts for every subagent and wrapper dispatch in the /implement
 
 All Agent dispatches include the **"You do NOT have the Agent tool"** constraint: subagents must not spawn further subagents.
 
+**Python interpolation.** Templates reference `{{python_path}}` as a text-level placeholder. The orchestrator substitutes the absolute interpreter path from `plan_ops.py preflight --json`'s `python_path` field at dispatch time (see SKILL.md §"Python interpreter resolution"). Do NOT hardcode a specific interpreter path here; the resolver in `plan_ops.py:_resolve_python` is the single source of truth.
+
 ## Phase A — plan-analyst dispatch
 
 > Analyze this plan and emit the structured schedule defined by your agent spec. The plan file is at `<absolute plan path>`. Repo root: `<repo_root>`.
@@ -19,7 +21,7 @@ Dispatched after schedule persist, before any batch runs. Codex is the reviewer 
 Bash command template:
 
 ```
-venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
   --plan-file <absolute plan path> \
   --schedule-file <absolute schedule path> \
   --plans-dir <plan_dir> \
@@ -64,13 +66,13 @@ Dispatched only when the first Phase 1.5 Codex `plan-review` returns `needs-repl
 Orchestrator-side log emission wraps the dispatch:
 
 ```bash
-venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
   --event plan_author_start \
   --fields-json '{"run_id":"<id>","plan_file":"<basename>","findings_count":<N>}' --json
 
 # Agent dispatch (plan-author, model: opus) using the template below.
 
-venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
   --event plan_author_done \
   --fields-json '{"run_id":"<id>","plan_file":"<basename>","files_edited":[...],"findings_actioned":[...],"findings_skipped":[...]}' --json
 ```
@@ -133,7 +135,7 @@ After the author returns, the orchestrator re-dispatches `plan-analyst` (Phase A
 > <analyst_annotations_json>
 > ```
 >
-> You may read the plan file for reference but do not modify it. Run the test command if specified — use `venv/bin/python ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec. Do not commit. Do not use `git stash`.
+> You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec. Do not commit. Do not use `git stash`.
 >
 > **Parallel-mode caveat:** other implementers may be running concurrently on disjoint files. Trust the diff when classifying test failures; do NOT use `git stash` (it would collide).
 >
@@ -144,7 +146,7 @@ After the author returns, the orchestrator re-dispatches `plan-analyst` (Phase A
 Bash command template — orchestrator issues this directly, wrapper fully owns Codex session lifecycle:
 
 ```
-venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement \
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement \
   --plan-file <absolute plan path> \
   --task-id <NNN> \
   --repo-root <absolute repo root> \
@@ -158,7 +160,7 @@ Timeout is **300s** per Appendix D.5. The wrapper captures a pre-dispatch baseli
 Bash command template:
 
 ```
-venv/bin/python "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" review \
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" review \
   --plan-file <absolute plan path> \
   --task-id <NNN> \
   --repo-root <absolute repo root> \
@@ -327,7 +329,7 @@ Unlike Phase D.2b, reviewer findings ARE forwarded here — the risk of the impl
 >
 > **Fix narrowly, do not scope-inflate.** Address each finding directly. Do NOT refactor unrelated code, do NOT add docstrings to untouched regions, do NOT tidy formatting outside the edited scope. If a finding cannot be reconciled with the plan's acceptance criteria, report `plan-incorrect` — do not invent a compromise.
 >
-> You may read the plan file for reference but do not modify it. Run the test command if specified — use `venv/bin/python ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec. Do not commit. Do not use `git stash`.
+> You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec. Do not commit. Do not use `git stash`.
 >
 > **Parallel-mode caveat:** other implementers may be running concurrently on disjoint files. Trust the diff when classifying test failures; do NOT use `git stash` (it would collide).
 >
@@ -383,7 +385,7 @@ Unlike Phase B-rework, the forwarded findings are **filtered** to the load-beari
 >
 > **Scope rule (the touch-only-these-lines contract):** the union of `(file, line)` coordinates across `load_bearing_findings[]` defines your permitted edit region. Unjustified edits outside that region flip the outcome to `scope-violation`. **Fix narrowly, do not scope-inflate.** Address each load-bearing finding directly. Do NOT refactor unrelated code, do NOT add docstrings to untouched regions, do NOT tidy formatting outside the edited scope. If a finding cannot be reconciled with the plan's acceptance criteria, report `plan-incorrect` — do not invent a compromise.
 >
-> You may read the plan file for reference but do not modify it. Run the test command if specified — use `venv/bin/python ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec (including the mandatory `**Dismissed findings noted:**` and `**Scope violations:**` sections). Do not commit. Do not use `git stash`.
+> You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec (including the mandatory `**Dismissed findings noted:**` and `**Scope violations:**` sections). Do not commit. Do not use `git stash`.
 >
 > **Parallel-tree caveat:** other implementers and reviewers may be running concurrently on disjoint files; unstaged changes to disjoint files may be in the working tree. Focus strictly on the scope files listed in the task's `Files:` field. Trust the diff when classifying test failures; do NOT use `git stash` (it would collide).
 >

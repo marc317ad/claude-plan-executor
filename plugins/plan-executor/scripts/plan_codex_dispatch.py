@@ -9,15 +9,15 @@ Appendix D): exit code is unreliable, -s read-only is advisory only,
 timeout leaves no output file, --output-schema + -o produces directly
 json.load()-able output, prompts go via stdin.
 
-Usage:
-    venv/bin/python scripts/plan_codex_dispatch.py implement \
+Usage (resolve $PYTHON via `plan_ops.py preflight --json`'s python_path):
+    $PYTHON scripts/plan_codex_dispatch.py implement \
         --plan-file PATH --task-id N --repo-root PATH [--dry-run] [--timeout SECS]
 
-    venv/bin/python scripts/plan_codex_dispatch.py review \
+    $PYTHON scripts/plan_codex_dispatch.py review \
         --plan-file PATH --task-id N --repo-root PATH \
         --files f1,f2 [--review-focus bugs] [--dry-run] [--timeout SECS]
 
-    venv/bin/python scripts/plan_codex_dispatch.py plan-review \
+    $PYTHON scripts/plan_codex_dispatch.py plan-review \
         --plan-file PATH --schedule-file PATH --plans-dir PATH \
         --repo-root PATH [--dry-run] [--timeout SECS]
 """

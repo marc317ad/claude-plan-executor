@@ -4,22 +4,23 @@
 Scaffolding: argparse surface + shared helpers + subcommand stubs.
 Stdlib-only (plan docs are pure markdown per DUAL_AGENT_PLAN_EXECUTOR.md §5).
 
-Usage:
-    venv/bin/python scripts/plan_ops.py preflight --plan-file <abs> [--strict-branch]
-    venv/bin/python scripts/plan_ops.py parse-schedule --stdin
-    venv/bin/python scripts/plan_ops.py compute-schedule --stdin
-    venv/bin/python scripts/plan_ops.py batch-next --schedule-file <path> ...
-    venv/bin/python scripts/plan_ops.py parse-implementer-report --stdin
-    venv/bin/python scripts/plan_ops.py parse-plan-review-report --stdin
-    venv/bin/python scripts/plan_ops.py commit-task --plan-file <abs> --task-id NNN ...
-    venv/bin/python scripts/plan_ops.py fail-task --plan-file <abs> --task-id NNN ...
-    venv/bin/python scripts/plan_ops.py update-plan-header --plan-file <abs> --status <s>
-    venv/bin/python scripts/plan_ops.py finalize-execution-log --plan-file <abs> ...
-    venv/bin/python scripts/plan_ops.py log-event --event E --fields-json '{...}'
-    venv/bin/python scripts/plan_ops.py normalize-task-id --id <1|001|TASK-001>
-    venv/bin/python scripts/plan_ops.py acquire-lock --plan-file <abs> --run-id RID
-    venv/bin/python scripts/plan_ops.py release-lock --plan-file <abs> --run-id RID
-    venv/bin/python scripts/plan_ops.py block-dependents --schedule-file <path> --plan-file <abs> --failed NNN --run-id RID
+Example invocations (resolve $PYTHON via `preflight --json`'s python_path):
+
+    $PYTHON scripts/plan_ops.py preflight --plan-file <abs> [--strict-branch] [--strict-scope]
+    $PYTHON scripts/plan_ops.py parse-schedule --stdin
+    $PYTHON scripts/plan_ops.py compute-schedule --stdin
+    $PYTHON scripts/plan_ops.py batch-next --schedule-file <path> ...
+    $PYTHON scripts/plan_ops.py parse-implementer-report --stdin
+    $PYTHON scripts/plan_ops.py parse-plan-review-report --stdin
+    $PYTHON scripts/plan_ops.py commit-task --plan-file <abs> --task-id NNN ...
+    $PYTHON scripts/plan_ops.py fail-task --plan-file <abs> --task-id NNN ...
+    $PYTHON scripts/plan_ops.py update-plan-header --plan-file <abs> --status <s>
+    $PYTHON scripts/plan_ops.py finalize-execution-log --plan-file <abs> ...
+    $PYTHON scripts/plan_ops.py log-event --event E --fields-json '{...}'
+    $PYTHON scripts/plan_ops.py normalize-task-id --id <1|001|TASK-001>
+    $PYTHON scripts/plan_ops.py acquire-lock --plan-file <abs> --run-id RID
+    $PYTHON scripts/plan_ops.py release-lock --plan-file <abs> --run-id RID
+    $PYTHON scripts/plan_ops.py block-dependents --schedule-file <path> --plan-file <abs> --failed NNN --run-id RID
 """
 
 import argparse
@@ -1177,6 +1178,35 @@ def _run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
 
+def _resolve_python() -> str:
+    """Resolve the interpreter path per documented precedence (TASK-008).
+
+    Precedence (first match wins):
+      1. $IMPLEMENT_PLAN_PYTHON if the path exists and is executable.
+      2. <cwd>/venv/bin/python if present and executable.
+      3. <cwd>/.venv/bin/python if present and executable.
+      4. shutil.which('python3').
+      5. sys.executable as final fallback.
+    Returns an absolute path string. The result is echoed into
+    `preflight --json` as `python_path` so the orchestrator can pin one
+    interpreter for the rest of the run via ``{{python_path}}``
+    substitution in dispatch templates. The skill surface (SKILL.md +
+    dispatch-templates.md) uses `$PYTHON` as the placeholder; this
+    helper is the single source of truth for the resolution rule.
+    """
+    env = os.environ.get("IMPLEMENT_PLAN_PYTHON")
+    if env and Path(env).is_file() and os.access(env, os.X_OK):
+        return str(Path(env).resolve())
+    for rel in ("venv/bin/python", ".venv/bin/python"):
+        p = Path.cwd() / rel
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p.resolve())
+    which = shutil.which("python3")
+    if which:
+        return which
+    return sys.executable
+
+
 def _emit(args, result: dict, *, exit_code: int = 0) -> None:
     if getattr(args, "json", False):
         json.dump(result, sys.stdout, indent=2, sort_keys=False)
@@ -2078,12 +2108,63 @@ def cmd_lint_plans(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _allowed_files_union(plan_text: str) -> dict[str, str]:
+    """Return ``{path: task_id}`` for every file under any task's Files: bullet.
+
+    TASK-008 scope-aware preflight classifier: the union of declared
+    ``allowed_files`` across every task in the plan is consulted to decide
+    whether a dirty tree path is inside *this* plan's scope (``plan_scope_dirty``)
+    or a blocking out-of-scope edit (``source_blocking``). Duplicate files
+    across tasks keep the last-wins attribution; a plan that declares the
+    same file under two tasks is already a smell the analyst should flag.
+    """
+    result: dict[str, str] = {}
+    _, blocks = _split_task_blocks(plan_text)
+    for task_id, block in blocks:
+        files = _extract_task_files_from_plan(plan_text, task_id)
+        if not files:
+            continue
+        for path in files:
+            if path:
+                result[path] = task_id
+    return result
+
+
+def _is_preflight_always_ignored(path: str, plan_dir: str, plan_basename: str) -> bool:
+    """Match `ALWAYS_IGNORE` / `ALWAYS_IGNORE_GLOBS` for preflight classifier.
+
+    Covers the orchestrator-state paths from TASK-003: ``_run_log.jsonl``,
+    ``_run_lock.json``, and per-plan schedule sidecars — both at the
+    default ``docs/plans/`` layout and at any configured ``plan_dir``.
+    Rooted in the shared `is_commit_always_ignore` predicate so the
+    preflight ignore set stays aligned with the commit-safe ignore set.
+    """
+    if is_commit_always_ignore(path, plan_basename=plan_basename, plan_dir=plan_dir):
+        return True
+    # Per-configured-plan-dir run-log / run-lock (covers non-default layouts).
+    pd = plan_dir.rstrip("/")
+    if pd:
+        if path == f"{pd}/_run_log.jsonl" or path == f"{pd}/_run_lock.json":
+            return True
+    return False
+
+
 def cmd_preflight(args: argparse.Namespace) -> None:
     plan = Path(args.plan_file)
     if not plan.is_file():
         _die(args, {"error": f"plan file not found: {plan}"})
 
-    dirty: dict[str, list[str]] = {"source_blocking": [], "infra_ignored": [], "plan_doc": []}
+    plan_text = _load_text(plan)
+    scope = _allowed_files_union(plan_text)
+
+    dirty: dict[str, list] = {
+        "plan_doc": [],
+        "orchestrator_state": [],
+        "plan_scope_dirty": [],
+        "source_blocking": [],
+    }
+    warnings: list[str] = []
+
     status = _git(["status", "--porcelain"])
     for line in status.stdout.splitlines():
         if len(line) < 4:
@@ -2091,8 +2172,12 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         path = line[3:]
         if path == str(plan) or path.endswith(plan.name):
             dirty["plan_doc"].append(path)
-        elif is_protected_path(path) or path.startswith(f"{_PLAN_DIR_POSIX}/"):
-            dirty["infra_ignored"].append(path)
+        elif _is_preflight_always_ignored(path, _PLAN_DIR_POSIX, plan.name):
+            dirty["orchestrator_state"].append(path)
+        elif path in scope:
+            tid = scope[path]
+            dirty["plan_scope_dirty"].append({"path": path, "task_id": tid})
+            warnings.append(f"{path} is dirty and TASK-{tid} will write to it")
         else:
             dirty["source_blocking"].append(path)
 
@@ -2104,12 +2189,13 @@ def cmd_preflight(args: argparse.Namespace) -> None:
     branch_cp = _git(["rev-parse", "--abbrev-ref", "HEAD"])
     current_branch = branch_cp.stdout.strip()
 
-    plan_text = _load_text(plan)
     base_m = re.search(r"^\*\*Base branch:\*\*\s*(\S+)\s*$", plan_text, re.MULTILINE)
     base_branch = base_m.group(1).strip() if base_m else None
     base_branch_match = base_branch is None or current_branch == base_branch
 
     pass_flag = len(dirty["source_blocking"]) == 0
+    if getattr(args, "strict_scope", False) and dirty["plan_scope_dirty"]:
+        pass_flag = False
     if args.strict_branch and not base_branch_match:
         pass_flag = False
 
@@ -2119,9 +2205,11 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         "run_id": _run_id(),
         "codex_available": codex_available,
         "dirty_files": dirty,
+        "scope_warnings": warnings,
         "base_branch": base_branch,
         "current_branch": current_branch,
         "base_branch_match": base_branch_match,
+        "python_path": _resolve_python(),
     }
     if not pass_flag:
         _die(args, result)
@@ -6190,6 +6278,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_pre.add_argument("--plan-file", required=True, help="Absolute path to plan file")
     p_pre.add_argument("--strict-branch", action="store_true",
                        help="Halt (not warn) if current branch != plan's Base branch")
+    p_pre.add_argument("--strict-scope", action="store_true",
+                       help="Halt if any dirty file lies within the plan's declared scope")
     _add_json(p_pre)
 
     p_sched = sub.add_parser("parse-schedule", help="Validate analyst JSON shape")

@@ -35,10 +35,11 @@ Consequence: on any machine without `./venv/bin/python` at that exact path (a co
 **Decision vocabulary.** Introduce `$PYTHON` as the canonical interpreter reference in the skill and templates. Resolution precedence (highest first):
 
 1. Explicit environment variable `IMPLEMENT_PLAN_PYTHON` if set.
-2. Project-local override in `CLAUDE.md` or `.implement-plan.env` (if established).
-3. `venv/bin/python` if it exists in the current working directory.
-4. `.venv/bin/python` if it exists.
-5. `python3` on `$PATH`.
+2. `venv/bin/python` if it exists in the current working directory.
+3. `.venv/bin/python` if it exists.
+4. `python3` on `$PATH`.
+
+Follow-up (out of scope here): a project-local override layer (e.g., a `CLAUDE.md` directive or a `.implement-plan.env` file) can be introduced in a later task once the override format, parser, and tests are specified. It is intentionally omitted from this chunk so the spec matches the `_resolve_python()` implementation below.
 
 The orchestrator resolves `$PYTHON` once at phase A preflight and passes the resolved absolute path into the skill environment via `plan_ops.py preflight --json` output (`python_path` field). Templates then interpolate `{{python_path}}` at dispatch time.
 
@@ -86,6 +87,8 @@ grep -nE 'venv/bin/python' plugins/plan-executor/skills/implement-plan/SKILL.md 
 ```
 
 Zero matches. (Literals in `plugins/plan-executor/scripts/plan_ops.py` header docstring are acceptable as example commands *if* they also show the `$PYTHON` alternative on the adjacent line; preferred is to convert the header to `$PYTHON plugins/plan-executor/scripts/plan_ops.py ...`.)
+
+**Scope decision — what V1 does NOT cover.** V1 narrows to skill surface (SKILL.md + dispatch-templates.md). Verification-text literals inside this plan body and the per-plan `**Test command:**` field are intentionally out of scope. The wrapper's `run_test_command` path passes the test-command string to subprocess verbatim; a conda / system-python plan author writes their own command (`conda run -n env pytest ...`, `python3 -m pytest ...`, etc.). Expanding V1 to include every per-plan test command would require either (a) rewriting the wrapper to re-interpolate `$PYTHON` inside test commands at run time, or (b) forbidding plans from choosing their own interpreter — neither is a goal of this chunk.
 
 **V2 — `$PYTHON` placeholder present.**
 
@@ -143,7 +146,31 @@ Key invariants:
 - `src/example/module.py` is `source_blocking` (not ignored by old `.claude/` rule).
 - `docs/analysis/X.md` is `source_blocking` (retired `docs/` prefix ignored category).
 - `docs/plans/sample_phase4_scratch/rename_helper.py` is `plan_scope_dirty` with task attribution.
-- `pass == false` because either category 3 or category 4 is non-empty.
+- `pass == false` because `source_blocking` is non-empty. (In non-strict mode, `plan_scope_dirty` alone does not flip `pass` — see V5b.)
+
+**V5b — Non-strict `plan_scope_dirty` is advisory only.**
+
+Variant of V5 with `src/example/module.py` and `docs/analysis/X.md` cleaned up (only `docs/plans/sample_phase4_scratch/rename_helper.py` remains dirty). Without `--strict-scope`:
+
+```json
+{
+  "pass": true,
+  "dirty_files": {
+    "plan_doc": [],
+    "orchestrator_state": [],
+    "plan_scope_dirty": [
+      {"path": "docs/plans/sample_phase4_scratch/rename_helper.py",
+       "task_id": "001"}
+    ],
+    "source_blocking": []
+  },
+  "scope_warnings": [
+    "docs/plans/sample_phase4_scratch/rename_helper.py is dirty and TASK-001 will write to it"
+  ]
+}
+```
+
+Invariant: `pass == true` because `source_blocking` is empty, even though `plan_scope_dirty` is non-empty. The warning is surfaced but does not block.
 
 **V6 — `--strict-scope` upgrades warnings to blocks.**
 
@@ -180,12 +207,13 @@ Returns `"status": "pass"` (after TASK-007 + TASK-008 both land).
 
 ### TASK-008: Portability parameterization + scope-aware preflight
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`
   - `plugins/plan-executor/scripts/plan_ops.py`
+  - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (module-header docstring sweep only — no runtime logic change)
   - `tests/scripts/test_plan_ops.py`
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (§11.1 environment notes)
 - **Dependencies:** TASK-001 (plan schema for allowed_files extraction).
@@ -321,9 +349,9 @@ parser_preflight.add_argument("--strict-scope", action="store_true")
 - Replace all 3 occurrences of `venv/bin/python` with `{{python_path}}`.
 - Document near the template header: templates are interpolated by the orchestrator; `{{python_path}}` is substituted from preflight's `python_path`.
 
-### Step 5 — plan_ops.py header docstring
+### Step 5 — plan_ops.py + plan_codex_dispatch.py header docstrings
 
-Header docstring at lines 8-20 enumerates example invocations with `venv/bin/python`. Convert to `$PYTHON`:
+Header docstring at lines 8-20 of `plan_ops.py` enumerates example invocations with `venv/bin/python`. Convert to `$PYTHON`:
 
 ```python
 """
@@ -336,6 +364,8 @@ Example invocations (resolve $PYTHON via `preflight --json`'s python_path):
     ...
 """
 ```
+
+Apply the same treatment to `plan_codex_dispatch.py` lines 13, 16, 20 (`Usage:` block in the module docstring) — three `venv/bin/python scripts/plan_codex_dispatch.py ...` example lines become `$PYTHON scripts/plan_codex_dispatch.py ...`. This file has no runtime `{{python_path}}` interpolation logic; `{{python_path}}` is a documentation placeholder the orchestrator substitutes at dispatch time. The sweep is docstring-only — do NOT edit the wrapper's argument parsing, subprocess calls, or the `run_test_command` path.
 
 ### Step 6 — design doc integration
 

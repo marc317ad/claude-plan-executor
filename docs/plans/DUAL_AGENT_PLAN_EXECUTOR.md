@@ -820,10 +820,11 @@ Optional:
 
 1. Parse and normalize arguments
 2. Read plan document, validate basic structure (header fields, at least one task)
-3. Smart dirty-tree check: infrastructure files OK, source files in task scope block
+3. Scope-aware dirty-tree check (TASK-008). `plan_ops.py preflight` partitions `git status` output into four buckets: `plan_doc` (the plan file, always ignored), `orchestrator_state` (run-log / run-lock / per-plan schedule sidecar, always ignored), `plan_scope_dirty` (files present in the union of every task's `Files:` list, surfaced with per-task attribution in `scope_warnings[]`), and `source_blocking` (everything else — a hard block). `plan_scope_dirty` is advisory in the default mode and does not flip `pass`; pass `--strict-scope` to promote it to a blocking condition. The retired `.claude/` / `docs/` / `tests/` prefix rule is gone — a plan that declares a scoped edit under those paths sees the dirty state; a plan that doesn't sees the uncommitted file as `source_blocking`.
 4. Check Codex availability: `codex --version`. If unavailable, set `codex_available=false` (all tasks route to Claude)
 5. Record `starting_sha` via `git rev-parse --short HEAD`
 6. Generate `run_id` via `date -u +%Y%m%dT%H%M%S`
+7. Resolve `$PYTHON` via `plan_ops.py:_resolve_python()` (see §11.1 "Portable interpreter") and emit the absolute path as `python_path` on the preflight JSON envelope. The orchestrator pins the resolved value for the rest of the run; dispatch templates substitute `{{python_path}}` from it.
 
 ### 9.3 Phase 1: Plan Analysis
 
@@ -1013,6 +1014,16 @@ You do NOT have the Agent tool. Do all work directly with Read, Grep, Glob, Bash
 | `plugins/plan-executor/skills/implement-plan/SKILL.md` | Orchestration phases, dispatch logic, commit ceremony | Yes |
 | `plugins/plan-executor/scripts/plan_codex_dispatch.py` | CLI wrapper, prompt templates, error handling | Yes |
 
+**Portable interpreter (TASK-008).** The skill surface references Python as `$PYTHON`; dispatch templates interpolate the absolute path via `{{python_path}}`. `plan_ops.py:_resolve_python()` resolves the binary once at Phase 0 preflight per the precedence below and emits the result as `python_path` on the preflight JSON envelope:
+
+1. `$IMPLEMENT_PLAN_PYTHON` if the path exists and is executable.
+2. `./venv/bin/python` if present and executable in the current working directory.
+3. `./.venv/bin/python` if present and executable.
+4. `python3` on `$PATH`.
+5. `sys.executable` as a final fallback.
+
+The orchestrator pins `$PYTHON` = `python_path` for the rest of the run. Subsequent Phase B / Phase D dispatches use the pinned path; template authors do not re-resolve. Repos with non-default Python layouts (conda, `.venv`, Windows) run without skill-file edits by exporting `IMPLEMENT_PLAN_PYTHON` before invoking the skill.
+
 ### 11.2 What Is Repo-Specific (Stays in Project Instructions)
 
 | File | Content |
@@ -1020,6 +1031,8 @@ You do NOT have the Agent tool. Do all work directly with Read, Grep, Glob, Bash
 | `CLAUDE.md` | Project architecture, signal flow, env setup, test commands, coding conventions |
 | `.codex` | Minimal project conventions for Codex (venv path, git rules, test framework) |
 | Plan document | Task-specific truth: files, descriptions, acceptance criteria |
+
+Per-plan `**Test command:**` strings remain authored by plan writers (a conda plan picks `conda run -n env pytest ...`, etc.); the wrapper passes them to subprocess verbatim. The `$PYTHON` / `{{python_path}}` contract governs skill-surface commands only.
 
 ### 11.3 Porting to a New Repo
 

@@ -3421,37 +3421,47 @@ class TestBlockDependents:
 
 
 class TestPreflightDirtyCategorization:
-    """Preflight splits `git status` entries into plan_doc / infra_ignored /
-    source_blocking. The infra_ignored set must agree with the wrapper's
-    `_is_reconcile_protected()` rule (plan_ops.py:924), so orchestrator
-    infrastructure artifacts like a stray `.codex` file do not block runs.
+    """Preflight splits `git status` entries into four buckets (TASK-008):
+    ``plan_doc`` (always-ignore), ``orchestrator_state`` (always-ignore —
+    run-log / run-lock / per-plan schedule sidecar), ``plan_scope_dirty``
+    (files declared in the active plan's `Files:` union; reported with
+    per-task attribution but non-blocking in default mode), and
+    ``source_blocking`` (everything else — the default blocker). The
+    retired `.claude/` / `docs/` / `tests/` prefix heuristic is gone —
+    paths under those prefixes are `source_blocking` unless the plan's
+    own scope claims them.
     """
 
-    def _preflight(self, repo: Path, plan: Path) -> subprocess.CompletedProcess:
+    def _preflight(self, repo: Path, plan: Path, *, strict_scope: bool = False) -> subprocess.CompletedProcess:
+        cmd = [str(PY), str(SCRIPT), "preflight", "--plan-file", str(plan), "--json"]
+        if strict_scope:
+            cmd.append("--strict-scope")
         return subprocess.run(
-            [str(PY), str(SCRIPT), "preflight", "--plan-file", str(plan), "--json"],
+            cmd,
             cwd=str(repo),
             capture_output=True,
             text=True,
         )
 
-    def test_codex_stray_file_is_infra_ignored(self, tmp_git_repo: Path) -> None:
+    def test_codex_stray_file_is_source_blocking(self, tmp_git_repo: Path) -> None:
+        """`.codex` is not in the TASK-008 always-ignore set; it blocks."""
         (tmp_git_repo / ".codex").write_text("", encoding="utf-8")
         plan = tmp_git_repo / "docs" / "plans" / "sample.md"
         cp = self._preflight(tmp_git_repo, plan)
-        assert cp.returncode == 0, cp.stdout + cp.stderr
+        assert cp.returncode != 0
         body = _parse_json(cp)
-        assert ".codex" in body["dirty_files"]["infra_ignored"]
-        assert body["dirty_files"]["source_blocking"] == []
-        assert body["pass"] is True
+        assert ".codex" in body["dirty_files"]["source_blocking"]
+        assert body["dirty_files"]["orchestrator_state"] == []
+        assert body["pass"] is False
 
-    def test_plan_dir_file_is_infra_ignored(self, tmp_git_repo: Path) -> None:
+    def test_run_lock_is_orchestrator_state(self, tmp_git_repo: Path) -> None:
+        """`docs/plans/_run_lock.json` is always-ignore `orchestrator_state`."""
         (tmp_git_repo / "docs" / "plans" / "_run_lock.json").write_text("{}", encoding="utf-8")
         plan = tmp_git_repo / "docs" / "plans" / "sample.md"
         cp = self._preflight(tmp_git_repo, plan)
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
-        assert any("_run_lock.json" in p for p in body["dirty_files"]["infra_ignored"])
+        assert any("_run_lock.json" in p for p in body["dirty_files"]["orchestrator_state"])
         assert body["pass"] is True
 
     def test_arbitrary_untracked_file_is_source_blocking(self, tmp_git_repo: Path) -> None:
@@ -3473,15 +3483,191 @@ class TestPreflightDirtyCategorization:
         body = _parse_json(cp)
         assert "tests/" in body["dirty_files"]["source_blocking"]
 
-    def test_claude_dir_is_infra_ignored(self, tmp_git_repo: Path) -> None:
+    def test_claude_dir_is_source_blocking(self, tmp_git_repo: Path) -> None:
+        """`.claude/` is retired from the always-ignore set; it blocks now.
+
+        TASK-008 drops the blunt `.claude/` / `docs/` / `tests/` prefix rule
+        in favor of consulting the plan's `allowed_files` union.
+        """
         (tmp_git_repo / ".claude").mkdir()
         (tmp_git_repo / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
         plan = tmp_git_repo / "docs" / "plans" / "sample.md"
         cp = self._preflight(tmp_git_repo, plan)
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert any(".claude/" in p for p in body["dirty_files"]["source_blocking"])
+        assert body["pass"] is False
+
+    def test_plan_scope_dirty_attributes_to_task(self, tmp_git_repo: Path) -> None:
+        """A dirty file inside the plan's `Files:` union lands in
+        `plan_scope_dirty` with `{path, task_id}` attribution, NOT in
+        `source_blocking`; `scope_warnings` carries a human-readable string."""
+        # SAMPLE_PLAN_BODY declares TASK-001 Files: src/foo.py. The fixture
+        # already committed `src/foo.py`; rewrite it so it shows up as dirty.
+        (tmp_git_repo / "src" / "foo.py").write_text("CHANGED\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan)
+        # Non-strict mode: `plan_scope_dirty` alone does not flip `pass`.
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
-        assert ".claude/" in body["dirty_files"]["infra_ignored"]
+        assert body["dirty_files"]["source_blocking"] == []
+        scoped = body["dirty_files"]["plan_scope_dirty"]
+        assert any(
+            e["path"] == "src/foo.py" and e["task_id"] == "001" for e in scoped
+        ), scoped
+        assert any(
+            "src/foo.py" in w and "TASK-001" in w for w in body["scope_warnings"]
+        )
         assert body["pass"] is True
+
+    def test_plan_scope_dirty_with_source_blocking_still_fails(self, tmp_git_repo: Path) -> None:
+        """Mixing a scoped dirty file with a non-scoped dirty file still blocks,
+        because `source_blocking` is non-empty. Mirrors the plan's V5 scenario."""
+        (tmp_git_repo / "src" / "foo.py").write_text("SCOPED\n", encoding="utf-8")
+        (tmp_git_repo / "scratch.py").write_text("NON-SCOPED\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan)
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert "scratch.py" in body["dirty_files"]["source_blocking"]
+        assert any(e["path"] == "src/foo.py" for e in body["dirty_files"]["plan_scope_dirty"])
+        assert body["pass"] is False
+
+    def test_strict_scope_flips_scope_dirty_to_block(self, tmp_git_repo: Path) -> None:
+        """V6: `--strict-scope` upgrades `plan_scope_dirty` to a hard block."""
+        (tmp_git_repo / "src" / "foo.py").write_text("SCOPED\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        # Non-strict: passes despite scope-dirty.
+        cp = self._preflight(tmp_git_repo, plan, strict_scope=False)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        # Strict: fails.
+        cp = self._preflight(tmp_git_repo, plan, strict_scope=True)
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        assert any(e["path"] == "src/foo.py" for e in body["dirty_files"]["plan_scope_dirty"])
+        assert body["pass"] is False
+
+
+class TestPreflightPythonPath:
+    """TASK-008 `$PYTHON` resolution: preflight emits `python_path` per the
+    documented precedence (IMPLEMENT_PLAN_PYTHON → venv/bin/python →
+    .venv/bin/python → python3). The helper is the single source of truth;
+    the skill / templates interpolate the resolved absolute path.
+    """
+
+    def _preflight(self, repo: Path, plan: Path, env: dict | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(PY), str(SCRIPT), "preflight", "--plan-file", str(plan), "--json"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_emits_python_path(self, tmp_git_repo: Path) -> None:
+        """V3: preflight surfaces `python_path` on the JSON envelope."""
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert "python_path" in body
+        resolved = body["python_path"]
+        assert isinstance(resolved, str) and resolved
+        # Must exist as a file and be executable.
+        assert Path(resolved).is_file(), resolved
+        assert os.access(resolved, os.X_OK), resolved
+
+    def test_env_override_wins(self, tmp_git_repo: Path, tmp_path: Path) -> None:
+        """V4 (env branch): `IMPLEMENT_PLAN_PYTHON` overrides all fallbacks
+        when it points at an existing executable."""
+        # Place the fake executable OUTSIDE the git repo so its presence
+        # doesn't show up as a dirty file that would flip preflight to fail.
+        fake = tmp_path.parent / "env_override_fake-python"
+        fake.write_text("#!/bin/sh\nexec " + str(PY) + " \"$@\"\n", encoding="utf-8")
+        fake.chmod(0o755)
+        env = dict(os.environ)
+        env["IMPLEMENT_PLAN_PYTHON"] = str(fake)
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        try:
+            cp = self._preflight(tmp_git_repo, plan, env=env)
+            assert cp.returncode == 0, cp.stdout + cp.stderr
+            body = _parse_json(cp)
+            assert body["python_path"] == str(fake.resolve())
+        finally:
+            fake.unlink(missing_ok=True)
+
+    def test_env_override_ignored_when_missing(self, tmp_git_repo: Path) -> None:
+        """Non-existent `IMPLEMENT_PLAN_PYTHON` falls through to the next rung."""
+        env = dict(os.environ)
+        env["IMPLEMENT_PLAN_PYTHON"] = "/tmp/does-not-exist-never-will"
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan, env=env)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        # Falls through to cwd/venv or cwd/.venv or python3; in any event it
+        # resolves to something runnable.
+        resolved = body["python_path"]
+        assert resolved != "/tmp/does-not-exist-never-will"
+        assert Path(resolved).is_file()
+        assert os.access(resolved, os.X_OK)
+
+    def test_venv_fallback_picks_cwd_venv(self, tmp_git_repo: Path) -> None:
+        """V4 (venv branch): without env override, `cwd/venv/bin/python` is
+        preferred when present. Build a fake venv inside the tmp repo,
+        then commit it so the dirty-tree classifier does not block."""
+        venv_bin = tmp_git_repo / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        fake = venv_bin / "python"
+        fake.write_text("#!/bin/sh\nexec " + str(PY) + " \"$@\"\n", encoding="utf-8")
+        fake.chmod(0o755)
+        subprocess.run(["git", "add", "venv"], cwd=str(tmp_git_repo), check=True)
+        subprocess.run(["git", "commit", "-qm", "add fake venv"], cwd=str(tmp_git_repo), check=True)
+        env = dict(os.environ)
+        env.pop("IMPLEMENT_PLAN_PYTHON", None)
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan, env=env)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body["python_path"] == str(fake.resolve())
+
+    def test_dot_venv_fallback(self, tmp_git_repo: Path) -> None:
+        """V4 (.venv branch): with no `venv/bin/python` and no env override,
+        `cwd/.venv/bin/python` is picked. Commit the fake `.venv` so the
+        dirty-tree classifier does not block the assertion."""
+        dot_venv_bin = tmp_git_repo / ".venv" / "bin"
+        dot_venv_bin.mkdir(parents=True)
+        fake = dot_venv_bin / "python"
+        fake.write_text("#!/bin/sh\nexec " + str(PY) + " \"$@\"\n", encoding="utf-8")
+        fake.chmod(0o755)
+        subprocess.run(["git", "add", ".venv"], cwd=str(tmp_git_repo), check=True)
+        subprocess.run(["git", "commit", "-qm", "add fake .venv"], cwd=str(tmp_git_repo), check=True)
+        env = dict(os.environ)
+        env.pop("IMPLEMENT_PLAN_PYTHON", None)
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan, env=env)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body["python_path"] == str(fake.resolve())
+
+    def test_python3_on_path_as_final_fallback(self, tmp_git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """V4 (python3 branch): neither venv present and no env override →
+        resolver falls through to `shutil.which('python3')`.
+
+        `tmp_git_repo` has no `venv/` or `.venv/` directories, so the
+        default fallback path is exercised as long as `python3` is on
+        `$PATH` (which it is in every Linux/macOS test environment).
+        """
+        env = dict(os.environ)
+        env.pop("IMPLEMENT_PLAN_PYTHON", None)
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan, env=env)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        resolved = body["python_path"]
+        # Not a venv-bin path under the tmp repo.
+        assert "venv/bin/python" not in resolved or not resolved.startswith(str(tmp_git_repo))
+        assert Path(resolved).is_file()
+        assert os.access(resolved, os.X_OK)
 
 
 # ---------------------------------------------------------------------------
