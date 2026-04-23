@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source": "manual-sidecar",
-  "plan_title": "Phase 1.5.5 — plan-review triage third-opinion for Codex needs-replan",
+  "plan_title": "Plan triage — third-opinion adjudication for plan-analyst needs-enrichment and Codex plan-review needs-replan",
   "created": "2026-04-23",
   "base_branch": "main",
   "depends_on_plans": [],
