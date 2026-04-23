@@ -1,0 +1,43 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "007",
+      "title": "Add production-oriented self-audit and protocol-drift detection",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k audit",
+      "classification_reason": "Multi-file, new subcommand, design integration"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "007"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [
+    {
+      "type": "external-dependency",
+      "affected_tasks": [
+        "007"
+      ],
+      "detail": "Depends on TASK-001 (canonical contract), TASK-002 (validation machinery), TASK-005 (gate vocabulary) being landed first."
+    }
+  ]
+}
