@@ -28,7 +28,8 @@ The `ALLOWED_TASK_FIELDS` constant (line 90) keeps `"dependencies"` so legacy sc
 
 ### TASK-001: Strip intra-plan dep gates from plan_ops.py
 
-- **Status:** pending
+- **Status:** superseded
+  > Superseded 2026-04-23 by TASK-019 (commit `df60801`, restored `_validate_schedule_dag` as a shared helper across `parse-schedule`/`batch-next`/`filter-schedule`) and TASK-004D (commit `0ee85c6`, restored `cmd_block_dependents` for plan-markdown bookkeeping). The plan's premise — "each plan file holds one task under the chunked-layout convention, so intra-plan ordering is moot" — is too narrow. The orchestrator must support monolithic multi-task plans with parallel batched dispatch, which requires DAG awareness (cycle + orphan detection, `_ready()` gating) at the orchestrator layer. Worker-layer de-gating (TASK-002, TASK-003) was the correct part of this plan and remains in effect. See `docs/analysis/TASK_DEPENDENCY_DAG_Architecture_Inconsistency.md` for the full two-layer model.
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`

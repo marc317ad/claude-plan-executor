@@ -29,7 +29,9 @@ This task deliberately edits only the active protocol doc. Historical completed 
 
 ### TASK-007: Update active protocol doc for file-lock scheduling and pre-flight-only dependency gating
 
-- **Status:** pending
+- **Status:** superseded (replaced by corrected doc update on 2026-04-23)
+  > The original spec — "rewrite DUAL_AGENT_PLAN_EXECUTOR.md to describe pre-flight-only dep gating with no orchestrator DAG" — was based on the same chunked-layout assumption that drove TASK-001/TASK-006, both now superseded by TASK-019/TASK-004D.
+  > A corrected doc update landed 2026-04-23 against `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` describing the actual two-layer model (worker layer de-gated; orchestrator layer DAG-aware via `_validate_schedule_dag`, `cmd_batch_next._ready`, `cmd_block_dependents`). Edits cover: §4 Batch Scheduling paragraph, §5 Canonical Contract dependency-gate footnote, and §6.1 plan-analyst contract notes. See `docs/analysis/TASK_DEPENDENCY_DAG_Architecture_Inconsistency.md` for the resolution note.
 - **Priority:** medium
 - **Files:**
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`

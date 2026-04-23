@@ -24,7 +24,9 @@ Rewrite `plugins/plan-executor/skills/implement-plan/SKILL.md` so cross-plan dep
 
 ### TASK-004: Insert pre-flight dep gate + rewire SKILL.md for isolated failures
 
-- **Status:** pending
+- **Status:** done (with supersession)
+  > Phase 0 `check-plan-deps` gate landed 2026-04-17 in commit `68954dd` (SKILL.md line 155) and remains in effect — the cross-plan dep gate is the orchestrator's pre-dispatch contract.
+  > The "strip `block-dependents` from CLI ref + Phase C + Phase D.4" portion of this task is **superseded** by TASK-004D (commit `0ee85c6`), which restored `cmd_block_dependents` for orchestrator-side plan-markdown bookkeeping. The SKILL.md call sites at lines 87, 403, and 597 are intentional under the two-layer model documented in `docs/analysis/TASK_DEPENDENCY_DAG_Architecture_Inconsistency.md`.
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`

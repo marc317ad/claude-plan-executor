@@ -21,7 +21,8 @@ Remove the `blocked` event entry **and drop `blocked_count` from the `run_end` r
 
 ### TASK-005: Delete the `blocked` event row and `blocked_count` field from run-log-schema.md
 
-- **Status:** pending
+- **Status:** done
+  > Landed 2026-04-17 in commit `68954dd`. `plugins/plan-executor/skills/implement-plan/run-log-schema.md` no longer references `blocked_count` or a `blocked` event row — verified by grep. Note: the `blocked` *plan-markdown status* (set by `cmd_block_dependents`) is unrelated and remains in effect as orchestrator bookkeeping per the two-layer model in `docs/analysis/TASK_DEPENDENCY_DAG_Architecture_Inconsistency.md`.
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/run-log-schema.md`

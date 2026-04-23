@@ -122,7 +122,7 @@ Phase 4: Commit & Report
 
 ### Batch Scheduling
 
-Tasks are processed in batches. Within a batch, tasks have disjoint file scopes and can execute in parallel. Between batches, ordering is derived from priority and file-lock conflicts only; intra-plan `Dependencies:` fields are not used for downstream readiness, graph ordering, or failure propagation.
+Tasks are processed in batches. Within a batch, tasks have disjoint file scopes and can execute in parallel. Between batches, ordering is the union of three signals enforced at the **orchestrator** layer: priority, file-lock conflicts, and intra-plan `tasks[*].dependencies` (when present). The orchestrator's `cmd_batch_next._ready` refuses to dispatch a task whose declared dependency is not yet `done`; `_validate_schedule_dag` rejects schedules with cycles or orphan deps at parse-time; `cmd_block_dependents` cascades `blocked` status onto a failed task's transitive dependents for end-of-run bookkeeping. **Worker-layer agents** (plan-analyst, plan-implementer, Codex review) see no `dependencies` field and perform no dep reasoning — that responsibility lives entirely in the orchestrator. See §5 Canonical Contract dependency-gate footnote for the wire contract.
 
 Cross-plan dependency completion is checked once during pre-flight against `00_INDEX.json`. If any required cross-plan dependency is unresolved, execution halts before the analyst runs.
 
@@ -292,7 +292,13 @@ Appended by the orchestrator after each run:
 
 **Consumer-shape note.** `parse-implementer-report`'s `concerns` field is a list in v1. Any downstream consumer that reads the helper's JSON output must treat `concerns` as `list[str]`, never as a scalar string.
 
-**Dependency-gate footnote.** In v1, `Dependencies:` in plan markdown and `tasks[*].dependencies` in legacy schedule JSON are not scheduler inputs. The only dependency-completion gate is `plan_ops.py check-plan-deps` against `00_INDEX.json` during pre-flight. Scheduler helpers may tolerate dependency fields for compatibility, but must not use them for readiness, graph ordering, graph validation, or failure propagation.
+**Dependency-gate footnote (two-layer model).** Dependency handling is split by layer:
+
+- **Worker layer** — the in-task agents (`plan_codex_dispatch.parse_task_block`, `plan-analyst.md`, `plan-implementer.md`, the Codex review prompt) see no `dependencies` field. The orchestrator strips it before dispatch; agents that try to reason over deps produce false-negative "missing dependency" errors and are forbidden from doing so.
+- **Orchestrator layer** — `plan_ops.py` consumes the full schedule and enforces dep semantics at three seams: (1) `_validate_schedule_dag` rejects cycles and orphan deps at `parse-schedule` / `batch-next` / `filter-schedule` and via the `schedule-valid` phase gate; (2) `cmd_batch_next._ready` refuses to dispatch a task whose declared dependency is not in the `done` set (V14 invariant: tasks with any dep in `failed` are also not ready); (3) `cmd_block_dependents` cascades `blocked` status onto transitive dependents of a failed task so end-of-run reports have a coherent terminal state.
+- **Cross-plan layer** — `plan_ops.py check-plan-deps` resolves cross-plan deps against `00_INDEX.json` once during Phase 0 preflight. This is independent of intra-plan DAG handling.
+
+This split addresses the original Codex-review false-negative bug (worker dep-checking) without sacrificing the orchestrator's ability to schedule monolithic multi-task plans correctly. See `docs/analysis/TASK_DEPENDENCY_DAG_Architecture_Inconsistency.md` for the full resolution note and history.
 
 ---
 
@@ -402,7 +408,7 @@ Schema:
 
 Contract notes:
 - `tasks[*].id` omits the `TASK-` prefix (the prefix is constant; strip it in the JSON to keep keys short).
-- `tasks[*].dependencies`, if present from a legacy schedule, is tolerated but ignored by scheduler helpers.
+- `tasks[*].dependencies` is an optional list of task ids the orchestrator uses for `_ready` gating, cycle detection, and cascade-blocking (see §5 Canonical Contract dependency-gate footnote). The analyst neither emits nor consumes this field — when populated, it carries through unchanged from the source plan markdown's `**Dependencies:**` lines, and the orchestrator (not the analyst) is the single reader.
 - `tasks[*].test_command` preserves the plan's literal string, including the literal `none`.
 - `batches` are in execution order; `batches[*].index` starts at 1.
 - `batches[*].file_locks` is the union of every `tasks[*].files` entry for the tasks in that batch (orchestrator uses this to enforce parallel-safety within the batch).

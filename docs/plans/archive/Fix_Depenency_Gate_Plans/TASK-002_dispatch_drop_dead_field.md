@@ -20,7 +20,8 @@ Remove the one-line dead write of `dependencies` inside `parse_task_block` in `p
 
 ### TASK-002: Delete `dependencies` key from `parse_task_block` and its lone test assertion
 
-- **Status:** pending
+- **Status:** done
+  > Landed 2026-04-17 in commit `68954dd`. `plan_codex_dispatch.parse_task_block` no longer returns a `dependencies` key — verified by inspection. Worker-layer correctness fix; remains in effect under the two-layer model documented in `docs/analysis/TASK_DEPENDENCY_DAG_Architecture_Inconsistency.md`.
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py`

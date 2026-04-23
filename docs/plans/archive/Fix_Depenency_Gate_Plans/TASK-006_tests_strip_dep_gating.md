@@ -24,7 +24,8 @@ Update `tests/scripts/test_plan_ops.py` to match the stripped `plan_ops.py`: del
 
 ### TASK-006: Strip dep-gating tests, rewrite filter-schedule suite, add isolation tests
 
-- **Status:** pending
+- **Status:** superseded
+  > Superseded 2026-04-23 — paired with TASK-001's supersession. The new tests this task wanted (`test_batch_next_ignores_upstream_failure`, etc.) assert worker-layer semantics that no longer match the orchestrator-layer behavior restored by TASK-019 and TASK-004D. The current `test_batch_next_blocks_dependent_on_failed` test correctly pins the orchestrator's V14 invariant (a task with any dep in `failed` is not ready). See `docs/analysis/TASK_DEPENDENCY_DAG_Architecture_Inconsistency.md` for the full two-layer model.
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_plan_ops.py`

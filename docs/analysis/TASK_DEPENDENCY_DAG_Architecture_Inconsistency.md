@@ -1,43 +1,53 @@
-# Architecture Analysis: Task Dependency DAG Inconsistency
+# Task Dependency DAG: Two-Layer Architecture (Resolution Note)
 
 **Date:** 2026-04-23
-**Status:** Audit of `Fix_Depenency_Gate_Plans` implementation
+**Status:** Resolves the open question "Is `Fix_Depenency_Gate_Plans` complete?"
+**Verdict:** No — and that is correct. The plan was partially superseded mid-flight by TASK-019 and TASK-004D after the chunked-layout assumption it was built on proved too narrow.
 
-## Executive Summary
+## TL;DR
 
-An audit of the `Fix_Depenency_Gate_Plans` (sic) execution shows the project is currently in a state of **architectural drift**. While the high-level agent instructions (`plan-analyst.md`) and documentation have been partially updated to a de-gated dependency model, the core execution logic (`plan_ops.py`) and the test suite (`test_plan_ops.py`) remain heavily dependent on intra-plan DAG reasoning, cycle detection, and cascade-blocking.
+The repo intentionally runs a **two-layer dependency model**. `Fix_Depenency_Gate_Plans` removed dep-handling at both layers; subsequent work re-introduced it at the orchestrator layer only. The current state is the intended target.
 
-## Implementation Status by Task
+| Layer | Component | Sees `dependencies`? | Source |
+|---|---|---|---|
+| **Worker** (in-task agents) | `plan_codex_dispatch.parse_task_block`, `plan-analyst.md`, Codex review prompt | No | `Fix_Depenency_Gate_Plans` TASK-002, TASK-003; commit `f13d016` |
+| **Orchestrator** (scheduling + bookkeeping) | `cmd_batch_next._ready`, `_validate_schedule_dag`, `cmd_block_dependents`, `cmd_filter_schedule` | Yes | `TASK-019` (commit `df60801`), `TASK-004D` (commit `0ee85c6`) |
 
-| Task | Component | Status | Finding |
-| :--- | :--- | :--- | :--- |
-| **TASK-001** | `plan_ops.py` | **FAILED** | `cmd_block_dependents` and `_validate_schedule_dag` (cycle/orphan detection) are still active. `cmd_filter_schedule` still performs transitive closure. |
-| **TASK-002** | `plan_codex_dispatch.py` | **PASSED** | The `dependencies` field was successfully removed from `parse_task_block` return dict. |
-| **TASK-003** | `plan-analyst.md` | **PASSED** | The analyst has been fully rewritten to use file-lock disjointness and priority instead of DAG reasoning. |
-| **TASK-004** | `SKILL.md` | **PARTIAL** | Phase 0 now contains the `check-plan-deps` gate, but Phase C and D still explicitly call `block-dependents` on failure. |
-| **TASK-005** | `run-log-schema.md` | **PASSED** | `blocked_count` and the `blocked` event have been removed from the schema documentation. |
-| **TASK-006** | `test_plan_ops.py` | **FAILED** | The suite still pins legacy behaviors. `test_batch_next_blocks_dependent_on_failed` explicitly asserts blocking, which the plan intended to remove. |
-| **TASK-007** | `DUAL_AGENT_PLAN_EXECUTOR.md` | **FAILED** | The design document still specifies `_validate_schedule_dag` as a required gate. |
-| **TASK-008** | `test_..._integration.py` | **PASSED** | Integration tests successfully implement skips for environment-specific Codex initialization failures. |
+Worker de-gating fixed the original problem (Codex review threw errors on dep checks). Orchestrator gating is required to support **monolithic plans with multiple inter-dependent tasks dispatched in parallel batches** — file-lock disjointness alone cannot express logical ordering between tasks that touch disjoint files.
 
-## Detailed Findings
+## Timeline
 
-### 1. Conflict with TASK-019
-The implementation of **TASK-019** (Consolidated Orchestrator Polish) appears to have landed *after* or in contradiction to the `Fix_Depenency_Gate_Plans` goals. TASK-019 explicitly consolidated Kahn’s algorithm into a shared `_validate_schedule_dag` helper and wired it into `parse-schedule`, `batch-next`, and `filter-schedule`. This directly conflicts with the goal of **TASK-001**, which was to "strip" these exact gates.
+1. **2026-04-17** — commit `68954dd` lands `Fix_Depenency_Gate_Plans`. Strips `_topo_sort`, `cmd_block_dependents`, `_validate_schedule_dag` (renamed to `_validate_schedule_refs` with cycle/orphan checks removed), `cmd_batch_next._ready`, and `cmd_filter_schedule` transitive closure. Drops `dependencies` from `parse_task_block`. The plan's stated assumption (TASK-001:14): *"each plan file holds one task under the chunked-layout convention, so intra-plan ordering is moot."*
+2. **2026-04-18** — commit `0ee85c6` (TASK-004D) re-introduces `cmd_block_dependents` for plan-markdown mutation and run-log bookkeeping.
+3. **2026-04-19** — commit `df60801` (TASK-019) re-introduces `_validate_schedule_dag` as a single shared helper called by `cmd_parse_schedule`, `cmd_batch_next`, and `cmd_filter_schedule`. Closes the V3/V4 acceptance-criteria gap from TASK-002 surfaced by run `20260418T015713`.
 
-### 2. Executor Inconsistency
-The system is currently internally inconsistent:
-- **Analyst:** Emits a schedule based on priority and file-locks (ignoring `Dependencies:`).
-- **Executor (`batch-next`):** Still checks the `dependencies` field in the schedule JSON and refuses to pick tasks if a dependency is not `done`.
-- **Skill (`SKILL.md`):** Operates in a hybrid mode, calling a pre-flight cross-plan check but then attempting intra-plan cascade blocking that the Analyst no longer provides data for.
+The `Fix_Depenency_Gate_Plans` tasks that touched the orchestrator layer (TASK-001, TASK-006, and the `block-dependents` removals from TASK-004's SKILL.md edits) are therefore **superseded**, not stalled.
 
-### 3. Test Suite Regression
-The test suite `tests/scripts/test_plan_ops.py` has been updated to include tests labeled for TASK-019 which enforce the very dependency gates that the de-gating plan intended to remove. For example, `test_batch_next_blocks_dependent_on_failed` asserts that a task is **not** picked if its dependency failed, whereas the de-gating plan (TASK-006) explicitly required a new test `test_batch_next_ignores_upstream_failure` asserting the opposite.
+## Why both layers are needed
 
-## Recommendation
+**Worker layer (no deps):** The worker agents — Codex during review, plan-analyst, plan-implementer — operate on a single task envelope. They have no view of sibling tasks, so any dep reasoning they attempted was redundant with the orchestrator's gate and produced spurious "missing dependency" errors when the orchestrator had already satisfied the dep upstream. Removing dep awareness from the worker envelope eliminated that whole class of false negatives.
 
-The `Fix_Depenency_Gate_Plans` implementation should be considered **stalled or regressed**. To achieve the intended architecture:
-1.  **TASK-001** must be re-executed to actually remove the logic from `plan_ops.py`.
-2.  **TASK-004** must be completed to remove the `block-dependents` calls from `SKILL.md`.
-3.  **TASK-006** must be re-executed to align the test suite with the de-gated model, specifically reversing the changes introduced by TASK-019 regarding cycle and orphan detection.
-4.  **TASK-007** must be completed to align the `DUAL_AGENT_PLAN_EXECUTOR.md` with the code.
+**Orchestrator layer (deps + DAG):** The orchestrator (`SKILL.md` flow + `plan_ops.py`) consumes the analyst's full schedule. For a multi-task plan it must:
+
+- Reject malformed schedules at handoff (`_validate_schedule_dag` catches cycles and orphan deps in `parse-schedule` before any task runs).
+- Refuse to dispatch a task whose declared dependency is not yet `done` (`cmd_batch_next._ready`), so logical ordering survives even when file scopes are disjoint.
+- Mark transitive dependents as `blocked` in the plan markdown when an upstream task fails (`cmd_block_dependents`), giving end-of-run reports a coherent terminal state instead of leaving downstream tasks as `pending` forever.
+
+Removing any of these would silently regress the orchestrator's ability to handle anything other than the chunked one-task-per-plan layout.
+
+## What changed in the docs
+
+- `Fix_Depenency_Gate_Plans/TASK-001_plan_ops_strip_dep_gates.md` — status flipped to `superseded` with a pointer to TASK-019/TASK-004D.
+- `Fix_Depenency_Gate_Plans/TASK-006_tests_strip_dep_gating.md` — status flipped to `superseded` with the same pointer.
+- `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` — Batch Scheduling, Canonical Contract dependency-gate footnote, and analyst contract notes rewritten to describe the two-layer model.
+
+## What the code already does (no change required)
+
+- `_validate_schedule_dag` is wired into `parse-schedule`, `batch-next`, `filter-schedule`, and the `schedule-valid` phase gate.
+- `cmd_batch_next._ready` enforces the V14 invariant (a task with any dep in `failed` is not ready) before file-lock claiming.
+- `cmd_block_dependents` cascades `blocked` status onto transitive dependents and emits `blocked` run-log events.
+- The worker layer parses zero `dependencies` data: `parse_task_block` does not include the field, and `plan-analyst.md` contains no dep references.
+
+## Open follow-up (optional, not done in this pass)
+
+If the `blocked` plan-status bookkeeping turns out to be unused in any end-of-run consumer, `cmd_block_dependents` can be retired without behavioral consequence — `cmd_batch_next._ready` already prevents dispatch on its own. Decide based on whether the `blocked` count appears in any report or downstream tooling. Keep otherwise.

@@ -23,7 +23,8 @@ Rewrite `plugins/plan-executor/agents/plan-analyst.md` so the analyst no longer 
 
 ### TASK-003: Rewrite plan-analyst.md to drop DAG reasoning
 
-- **Status:** pending
+- **Status:** done
+  > Landed 2026-04-17 in commit `68954dd`. `plugins/plan-executor/agents/plan-analyst.md` contains zero `dependen*` references — the analyst schedules by file-lock disjointness and priority only. Worker-layer correctness fix; remains in effect under the two-layer model documented in `docs/analysis/TASK_DEPENDENCY_DAG_Architecture_Inconsistency.md`.
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/agents/plan-analyst.md`
