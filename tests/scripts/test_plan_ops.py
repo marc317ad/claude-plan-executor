@@ -3570,6 +3570,437 @@ class TestBlockDependents:
         assert [e["task_id"] for e in events] == ["002"]
 
 
+# ---------------------------------------------------------------------------
+# TASK-002: block-dependents multi-file cascade (directory-mode routing)
+# ---------------------------------------------------------------------------
+
+
+def _bd_child_plan_body(task_id: str, deps: list[str]) -> str:
+    """Minimal single-task child plan body suitable for block-dependents."""
+    dep_str = "[" + ", ".join(deps) + "]" if deps else "none"
+    return (
+        f"# Plan: child {task_id}\n\n"
+        "**Created:** 2026-04-23\n"
+        "**Status:** in-progress\n"
+        "**Base branch:** main\n\n"
+        "## Context\n\nProse.\n\n"
+        "## Tasks\n\n"
+        f"### TASK-{task_id}: Task {task_id}\n\n"
+        "- **Status:** pending\n"
+        "- **Agent:** claude\n"
+        "- **Files:**\n"
+        f"  - src/{task_id}.py\n"
+        f"- **Dependencies:** {dep_str}\n"
+    )
+
+
+def _bd_multi_child_plan_body(task_entries: list[tuple[str, list[str]]]) -> str:
+    """Single child plan body containing multiple tasks.
+
+    `task_entries` is an ordered list of `(task_id, deps)` tuples. Used to
+    simulate a child file that holds both the failed task and one of its
+    dependents — the 3-file-cascade test needs this shape so one child has
+    two distinct tasks (001 = failed, 002 = blocked) while 003 and 004 live
+    in their own single-task files.
+    """
+    lines = [
+        "# Plan: multi-task child\n",
+        "\n",
+        "**Created:** 2026-04-23\n",
+        "**Status:** in-progress\n",
+        "**Base branch:** main\n",
+        "\n",
+        "## Context\n",
+        "\nProse.\n",
+        "\n",
+        "## Tasks\n",
+        "\n",
+    ]
+    for tid, deps in task_entries:
+        dep_str = "[" + ", ".join(deps) + "]" if deps else "none"
+        lines.extend([
+            f"### TASK-{tid}: Task {tid}\n",
+            "\n",
+            "- **Status:** pending\n",
+            "- **Agent:** claude\n",
+            "- **Files:**\n",
+            f"  - src/{tid}.py\n",
+            f"- **Dependencies:** {dep_str}\n",
+            "\n",
+        ])
+    return "".join(lines)
+
+
+@pytest.fixture()
+def isolated_bd_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Sandboxed plan-directory root for multi-file block-dependents tests."""
+    plans_dir = tmp_path / "docs" / "plans" / "dirmode"
+    plans_dir.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(plan_ops, "PLAN_DIR", plans_dir)
+    monkeypatch.setattr(plan_ops, "RUN_LOG_PATH", plans_dir / "_run_log.jsonl")
+    monkeypatch.setattr(plan_ops, "RUN_LOCK_PATH", plans_dir / "_run_lock.json")
+    return plans_dir
+
+
+def _bd_read_run_log_events_in(plans_dir: Path, event: str = "blocked") -> list[dict]:
+    run_log = plans_dir / "_run_log.jsonl"
+    if not run_log.is_file():
+        return []
+    out: list[dict] = []
+    for line in run_log.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rec = json.loads(line)
+        if rec.get("event") == event:
+            out.append(rec)
+    return out
+
+
+class TestBlockDependentsMultiFile:
+    """TASK-002 directory-mode routing for block-dependents.
+
+    Locks in the new per-dependent `plan_file` behavior: cascade grouped
+    by resolved file, one atomic write per group, run-log events carry
+    `plan_file` basename for audit attribution, and pre-write containment
+    + block-presence halts when the schedule references a child file
+    that cannot be safely resolved.
+    """
+
+    # (a) single-file unchanged (back-compat) --------------------------------
+    def test_block_dependents_multi_file_single_file_back_compat(
+        self, tmp_path: Path, isolated_bd_plan: Path,
+    ) -> None:
+        """Schedule without `plan_file` routes everything to --plan-file.
+
+        Output shape identical to pre-TASK-002 single-file flow. Run-log
+        events carry `plan_file` (basename of --plan-file) — new field,
+        previously absent.
+        """
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": []},
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": ["002"]},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=isolated_bd_plan)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        assert body["blocked_task_ids"] == ["002", "003"]
+        assert body["plan_mutations_applied"] == ["002", "003"]
+        assert body["run_log_appended"] == ["002", "003"]
+        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
+        assert _bd_status_of(plan_text, "002") == "blocked"
+        assert _bd_status_of(plan_text, "003") == "blocked"
+        events = _bd_read_run_log_events(isolated_bd_plan)
+        assert [e["task_id"] for e in events] == ["002", "003"]
+        for ev in events:
+            assert ev["plan_file"] == isolated_bd_plan.name
+            assert ev["plan_file"] == "sample.md"
+
+    # (b) two-file cascade ---------------------------------------------------
+    def test_block_dependents_multi_file_two_file_cascade(
+        self, tmp_path: Path, isolated_bd_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Failed in child-a, one transitive dependent in child-b.
+
+        Exactly one write to child-b; child-a is read only via the
+        --plan-file existence probe and is NEVER written (block-dependents
+        does not mutate the failed task's own file).
+        """
+        child_a = isolated_bd_dir / "child-a.md"
+        child_b = isolated_bd_dir / "child-b.md"
+        child_a.write_text(_bd_child_plan_body("001", deps=[]), encoding="utf-8")
+        child_b.write_text(_bd_child_plan_body("002", deps=["001"]), encoding="utf-8")
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": [], "plan_file": "child-a.md"},
+            {"id": "002", "dependencies": ["001"], "plan_file": "child-b.md"},
+        ])
+
+        writes: list[Path] = []
+        orig_write = plan_ops._write_text
+
+        def counting_write(path, text):
+            writes.append(Path(path))
+            return orig_write(path, text)
+
+        monkeypatch.setattr(plan_ops, "_write_text", counting_write)
+
+        ns = _bd_make_args(schedule_file=sched, plan_file=child_a)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        assert body["blocked_task_ids"] == ["002"]
+        assert body["plan_mutations_applied"] == ["002"]
+        assert body["run_log_appended"] == ["002"]
+        # child-a never written (failed task's own file is fail-task's job).
+        assert child_a not in writes
+        # child-b written exactly once.
+        assert writes.count(child_b) == 1
+        # child-b task flipped; child-a untouched.
+        assert _bd_status_of(child_b.read_text(encoding="utf-8"), "002") == "blocked"
+        assert _bd_status_of(child_a.read_text(encoding="utf-8"), "001") == "pending"
+        events = _bd_read_run_log_events_in(isolated_bd_dir)
+        assert len(events) == 1
+        assert events[0]["task_id"] == "002"
+        assert events[0]["plan_file"] == "child-b.md"
+
+    # (c) three-file cascade with one dependent in each ----------------------
+    def test_block_dependents_multi_file_three_file_cascade(
+        self, tmp_path: Path, isolated_bd_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """TASK-001 fails (in child-a). Three direct dependents across A, B, C.
+
+        TASK-002 lives in child-a (same file as the failed task). TASK-003
+        in child-b. TASK-004 in child-c. Exactly three writes (one per
+        file), each a single atomic mutate+replace.
+        """
+        child_a = isolated_bd_dir / "child-a.md"
+        child_b = isolated_bd_dir / "child-b.md"
+        child_c = isolated_bd_dir / "child-c.md"
+        # child-a holds both 001 (failed) and 002 (dependent).
+        child_a.write_text(
+            _bd_multi_child_plan_body([("001", []), ("002", ["001"])]),
+            encoding="utf-8",
+        )
+        child_b.write_text(_bd_child_plan_body("003", deps=["001"]), encoding="utf-8")
+        child_c.write_text(_bd_child_plan_body("004", deps=["001"]), encoding="utf-8")
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": [], "plan_file": "child-a.md"},
+            {"id": "002", "dependencies": ["001"], "plan_file": "child-a.md"},
+            {"id": "003", "dependencies": ["001"], "plan_file": "child-b.md"},
+            {"id": "004", "dependencies": ["001"], "plan_file": "child-c.md"},
+        ])
+
+        writes: list[Path] = []
+        reads: list[Path] = []
+        orig_write = plan_ops._write_text
+        orig_load = plan_ops._load_text
+
+        def counting_write(path, text):
+            writes.append(Path(path))
+            return orig_write(path, text)
+
+        def counting_load(path):
+            reads.append(Path(path))
+            return orig_load(path)
+
+        monkeypatch.setattr(plan_ops, "_write_text", counting_write)
+        monkeypatch.setattr(plan_ops, "_load_text", counting_load)
+
+        ns = _bd_make_args(schedule_file=sched, plan_file=child_a)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        assert body["blocked_task_ids"] == ["002", "003", "004"]
+        assert body["plan_mutations_applied"] == ["002", "003", "004"]
+        assert body["run_log_appended"] == ["002", "003", "004"]
+        # Exactly one write per unique file (three files total).
+        assert writes.count(child_a) == 1
+        assert writes.count(child_b) == 1
+        assert writes.count(child_c) == 1
+        assert len(writes) == 3
+        # Each file read exactly once (pre-check read, reused for mutate).
+        assert reads.count(child_a) == 1
+        assert reads.count(child_b) == 1
+        assert reads.count(child_c) == 1
+        # Every dependent flipped in its own file.
+        assert _bd_status_of(child_a.read_text(encoding="utf-8"), "002") == "blocked"
+        assert _bd_status_of(child_b.read_text(encoding="utf-8"), "003") == "blocked"
+        assert _bd_status_of(child_c.read_text(encoding="utf-8"), "004") == "blocked"
+        # Failed task's own status untouched by block-dependents.
+        assert _bd_status_of(child_a.read_text(encoding="utf-8"), "001") == "pending"
+        # Run-log: one event per dependent, each with the correct plan_file.
+        events = _bd_read_run_log_events_in(isolated_bd_dir)
+        assert len(events) == 3
+        by_tid = {e["task_id"]: e for e in events}
+        assert by_tid["002"]["plan_file"] == "child-a.md"
+        assert by_tid["003"]["plan_file"] == "child-b.md"
+        assert by_tid["004"]["plan_file"] == "child-c.md"
+
+    # (d) mixed schedule: some dependents carry plan_file, some do not ------
+    def test_block_dependents_multi_file_mixed_schedule_fallback(
+        self, tmp_path: Path, isolated_bd_dir: Path,
+    ) -> None:
+        """Dependent without `plan_file` falls back to --plan-file.
+
+        TASK-002 omits `plan_file` (routed to --plan-file = child-a.md).
+        TASK-003 sets `plan_file: "child-b.md"` (routed explicitly).
+        Both cohorts flip; neither is dropped.
+        """
+        child_a = isolated_bd_dir / "child-a.md"
+        child_b = isolated_bd_dir / "child-b.md"
+        child_a.write_text(
+            _bd_multi_child_plan_body([("001", []), ("002", ["001"])]),
+            encoding="utf-8",
+        )
+        child_b.write_text(_bd_child_plan_body("003", deps=["001"]), encoding="utf-8")
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": [], "plan_file": "child-a.md"},
+            # 002 intentionally omits plan_file → fallback to --plan-file.
+            {"id": "002", "dependencies": ["001"]},
+            {"id": "003", "dependencies": ["001"], "plan_file": "child-b.md"},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=child_a)
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        assert body["blocked_task_ids"] == ["002", "003"]
+        assert body["plan_mutations_applied"] == ["002", "003"]
+        assert body["run_log_appended"] == ["002", "003"]
+        assert _bd_status_of(child_a.read_text(encoding="utf-8"), "002") == "blocked"
+        assert _bd_status_of(child_b.read_text(encoding="utf-8"), "003") == "blocked"
+        events = _bd_read_run_log_events_in(isolated_bd_dir)
+        by_tid = {e["task_id"]: e for e in events}
+        # Fallback cohort: plan_file is basename of --plan-file.
+        assert by_tid["002"]["plan_file"] == "child-a.md"
+        # Routed cohort: plan_file is the explicit schedule value.
+        assert by_tid["003"]["plan_file"] == "child-b.md"
+
+    # (e) unresolvable plan_file (escape attempt) ---------------------------
+    def test_block_dependents_multi_file_escape_attempt_halts(
+        self, tmp_path: Path, isolated_bd_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A `plan_file` containing `/` (path separator) halts pre-write.
+
+        `_is_valid_plan_file_basename` already rejects any form that
+        contains a path separator, `..`, a leading dot, or a NUL byte.
+        The new pre-write containment check surfaces the violation as
+        `dependent-file-not-in-plan-dir` and halts BEFORE any file is
+        written — no partial cascade.
+        """
+        child_a = isolated_bd_dir / "child-a.md"
+        child_b = isolated_bd_dir / "child-b.md"
+        child_a.write_text(_bd_child_plan_body("001", deps=[]), encoding="utf-8")
+        child_b.write_text(_bd_child_plan_body("002", deps=["001"]), encoding="utf-8")
+        child_a_before = child_a.read_text(encoding="utf-8")
+        child_b_before = child_b.read_text(encoding="utf-8")
+
+        writes: list[Path] = []
+        orig_write = plan_ops._write_text
+
+        def counting_write(path, text):
+            writes.append(Path(path))
+            return orig_write(path, text)
+
+        monkeypatch.setattr(plan_ops, "_write_text", counting_write)
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": [], "plan_file": "child-a.md"},
+            # Path separator → fails basename predicate → halts.
+            {"id": "002", "dependencies": ["001"], "plan_file": "subdir/escape.md"},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=child_a)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["code"] == "dependent-file-not-in-plan-dir"
+        # Path is rooted at the dependent's tasks[] index (here 1).
+        assert err["path"] == "$.tasks[1].plan_file"
+        assert err["failed_id"] == "002"
+        assert err["plan_file"] == "subdir/escape.md"
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+        # No write occurred — no partial cascade.
+        assert writes == []
+        assert child_a.read_text(encoding="utf-8") == child_a_before
+        assert child_b.read_text(encoding="utf-8") == child_b_before
+        # No run-log events.
+        assert _bd_read_run_log_events_in(isolated_bd_dir) == []
+
+    def test_block_dependents_multi_file_dotdot_escape_halts(
+        self, tmp_path: Path, isolated_bd_dir: Path,
+    ) -> None:
+        """`..` segment in a plan_file fails the basename predicate."""
+        child_a = isolated_bd_dir / "child-a.md"
+        child_a.write_text(_bd_child_plan_body("001", deps=[]), encoding="utf-8")
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": [], "plan_file": "child-a.md"},
+            {"id": "002", "dependencies": ["001"], "plan_file": "..escape.md"},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=child_a)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["code"] == "dependent-file-not-in-plan-dir"
+        assert err["path"] == "$.tasks[1].plan_file"
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+
+    # (f) resolvable plan_file but missing task block -----------------------
+    def test_block_dependents_multi_file_resolvable_but_block_missing(
+        self, tmp_path: Path, isolated_bd_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`plan_file` resolves to a real file, but the task block is absent.
+
+        child-b exists but holds only TASK-999 (not TASK-002). The
+        pre-write presence check halts with `dependent-block-missing`
+        before any mutation is applied. No partial cascade.
+        """
+        child_a = isolated_bd_dir / "child-a.md"
+        child_b = isolated_bd_dir / "child-b.md"
+        child_a.write_text(_bd_child_plan_body("001", deps=[]), encoding="utf-8")
+        # child-b exists as a valid plan file but has no TASK-002 block.
+        child_b.write_text(_bd_child_plan_body("999", deps=[]), encoding="utf-8")
+        child_a_before = child_a.read_text(encoding="utf-8")
+        child_b_before = child_b.read_text(encoding="utf-8")
+
+        writes: list[Path] = []
+        orig_write = plan_ops._write_text
+
+        def counting_write(path, text):
+            writes.append(Path(path))
+            return orig_write(path, text)
+
+        monkeypatch.setattr(plan_ops, "_write_text", counting_write)
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": [], "plan_file": "child-a.md"},
+            {"id": "002", "dependencies": ["001"], "plan_file": "child-b.md"},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=child_a)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["code"] == "dependent-block-missing"
+        assert err["path"] == "$.tasks[1]"
+        assert err["failed_id"] == "002"
+        assert err["plan_file"] == "child-b.md"
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+        # No writes.
+        assert writes == []
+        assert child_a.read_text(encoding="utf-8") == child_a_before
+        assert child_b.read_text(encoding="utf-8") == child_b_before
+        assert _bd_read_run_log_events_in(isolated_bd_dir) == []
+
+    # Bonus: referenced file missing entirely is also a containment failure.
+    def test_block_dependents_multi_file_referenced_file_absent(
+        self, tmp_path: Path, isolated_bd_dir: Path,
+    ) -> None:
+        """`plan_file` has valid basename but no such file under plan-dir."""
+        child_a = isolated_bd_dir / "child-a.md"
+        child_a.write_text(_bd_child_plan_body("001", deps=[]), encoding="utf-8")
+
+        sched = _bd_write_schedule(tmp_path, [
+            {"id": "001", "dependencies": [], "plan_file": "child-a.md"},
+            {"id": "002", "dependencies": ["001"], "plan_file": "nonexistent.md"},
+        ])
+        ns = _bd_make_args(schedule_file=sched, plan_file=child_a)
+        code, body = _bd_call(ns)
+        assert code != 0
+        err = body["errors"][0]
+        assert err["code"] == "dependent-file-not-in-plan-dir"
+        assert err["path"] == "$.tasks[1].plan_file"
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+
+
 class TestPreflightDirtyCategorization:
     """Preflight splits `git status` entries into four buckets (TASK-008):
     ``plan_doc`` (always-ignore), ``orchestrator_state`` (always-ignore —

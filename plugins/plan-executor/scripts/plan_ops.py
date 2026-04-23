@@ -3455,10 +3455,19 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
     """Cascade `blocked` status onto dependents of a failed task.
 
     TASK-004D / ISSUE-012: mutate the plan markdown (source of truth) as well
-    as append run-log events (observability). Single plan read, single plan
-    write; ordering is mutate-all-in-memory → single plan write → log each
-    applied id. See TASK-004D_block_dependents_mutation.md for the full
-    failure-stage semantics and double-failure precedence contract.
+    as append run-log events (observability). Per file, ordering is
+    mutate-all-in-memory → single plan write → log each applied id. See
+    TASK-004D_block_dependents_mutation.md for the full failure-stage
+    semantics and double-failure precedence contract.
+
+    TASK-002 (directory mode): each dependent can be routed to a different
+    child plan file via the schedule's `tasks[].plan_file` (basename). When
+    absent, falls back to `--plan-file`. Per-file atomic write: one read +
+    one in-memory mutate pass + one `_write_text` call per unique file, with
+    run-log events carrying `plan_file` (basename) for audit attribution.
+    Pre-write containment check rejects `plan_file` values that escape the
+    `--plan-file` parent directory, and pre-write block-presence check
+    rejects `plan_file` values whose referenced task block is missing.
     """
     sched_path = Path(args.schedule_file)
     plan_path = Path(args.plan_file)
@@ -3475,14 +3484,21 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
     if not failed_id:
         _die(args, {"error": f"cannot normalize --failed: {args.failed!r}"})
 
+    plan_dir = plan_path.parent
+    default_plan_basename = plan_path.name
+
     # ---- PHASE 1: compute cascade (BFS; sibling order = tasks[] order) ----
+    # Also capture per-dependent plan_file (basename, or None for fallback)
+    # and record the tasks[] index for path-rooted error reporting.
     blocked: list[str] = []
+    # id -> (plan_file_basename_or_None, tasks_index)
+    routing: dict[str, tuple[str | None, int]] = {}
     queue = [failed_id]
     seen = set(queue)
     tasks = data.get("tasks") or []
     while queue:
         cur = queue.pop(0)
-        for t in tasks:
+        for i, t in enumerate(tasks):
             raw_tid = t.get("id") if "id" in t else t.get("task_id")
             if raw_tid is None:
                 continue
@@ -3497,6 +3513,8 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
                 blocked.append(tid)
                 seen.add(tid)
                 queue.append(tid)
+                pf = t.get("plan_file")
+                routing[tid] = (pf if isinstance(pf, str) and pf else None, i)
 
     # ---- Empty cascade: no plan I/O at all. ----
     if not blocked:
@@ -3507,72 +3525,236 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
         })
         return
 
-    plan_mutations_applied: list[str] = []
-    run_log_appended: list[str] = []
     remaining: list[str] = list(blocked)
 
-    # ---- PHASE 2a: single plan read. ----
-    try:
-        original = _load_text(plan_path)
-    except OSError as e:
-        _die(args, {"errors": [{
-            "failed_stage": "plan_read",
-            "failed_id": None,
-            "error": str(e),
-            "plan_mutations_applied": [],
-            "run_log_appended": [],
-            "remaining": list(remaining),
-        }]})
-
-    # ---- PHASE 2b: in-memory mutate loop. Track ValueError; do NOT die yet. ----
-    mutated_text = original
-    mutated_in_memory: list[str] = []
-    mutate_failure: dict | None = None
-    for idx, bid in enumerate(remaining):
-        try:
-            mutated_text, _ = mutate_task_status(mutated_text, bid, "blocked")
-        except ValueError as e:
-            mutate_failure = {
-                "failed_stage": "plan_mutate",
+    # ---- PHASE 1b: resolve each dependent's target plan file.
+    # Pre-write containment check: reject any plan_file that does not
+    # resolve under plan_dir (escape attempt). Halts BEFORE any file I/O.
+    # id -> resolved absolute Path
+    resolved_paths: dict[str, Path] = {}
+    # id -> basename string used for run-log attribution
+    resolved_basenames: dict[str, str] = {}
+    for bid in blocked:
+        pf_basename, task_idx = routing[bid]
+        if pf_basename is None:
+            # No plan_file: fall back to --plan-file (single-file back-compat).
+            resolved_paths[bid] = plan_path
+            resolved_basenames[bid] = default_plan_basename
+            continue
+        # Defense-in-depth: even though TASK-001's validator catches bad
+        # basenames at schedule-validation time, re-check here since
+        # block-dependents is called directly and the schedule may not
+        # have been validated by this process.
+        if not _is_valid_plan_file_basename(pf_basename):
+            _die(args, {"errors": [{
+                "code": "dependent-file-not-in-plan-dir",
+                "path": f"$.tasks[{task_idx}].plan_file",
                 "failed_id": bid,
+                "plan_file": pf_basename,
+                "plan_mutations_applied": [],
+                "run_log_appended": [],
+                "remaining": list(remaining),
+            }]})
+        candidate = (plan_dir / pf_basename)
+        # Containment check via resolve(): the resolved absolute path must
+        # be inside plan_dir.resolve(). The basename predicate already
+        # rejects '/' and '..', so this is belt-and-suspenders.
+        try:
+            candidate_abs = candidate.resolve()
+            plan_dir_abs = plan_dir.resolve()
+        except OSError as e:
+            _die(args, {"errors": [{
+                "code": "dependent-file-not-in-plan-dir",
+                "path": f"$.tasks[{task_idx}].plan_file",
+                "failed_id": bid,
+                "plan_file": pf_basename,
                 "error": str(e),
-                "remaining": list(remaining[idx + 1:]),
-            }
-            break
-        mutated_in_memory.append(bid)
+                "plan_mutations_applied": [],
+                "run_log_appended": [],
+                "remaining": list(remaining),
+            }]})
+        try:
+            candidate_abs.relative_to(plan_dir_abs)
+        except ValueError:
+            _die(args, {"errors": [{
+                "code": "dependent-file-not-in-plan-dir",
+                "path": f"$.tasks[{task_idx}].plan_file",
+                "failed_id": bid,
+                "plan_file": pf_basename,
+                "plan_mutations_applied": [],
+                "run_log_appended": [],
+                "remaining": list(remaining),
+            }]})
+        if not candidate.is_file():
+            _die(args, {"errors": [{
+                "code": "dependent-file-not-in-plan-dir",
+                "path": f"$.tasks[{task_idx}].plan_file",
+                "failed_id": bid,
+                "plan_file": pf_basename,
+                "plan_mutations_applied": [],
+                "run_log_appended": [],
+                "remaining": list(remaining),
+            }]})
+        resolved_paths[bid] = candidate
+        resolved_basenames[bid] = pf_basename
 
-    # ---- PHASE 2c: if NO id flipped, die now (nothing to persist or log). ----
-    if not mutated_in_memory:
+    # ---- PHASE 1c: group dependents by resolved plan path.
+    # Preserves BFS order within each group (matters for mutate sequence
+    # and double-failure precedence across files).
+    # key: resolved absolute Path (after resolve()) for dedup; value: the
+    # concrete Path object we'll read/write + ordered list of ids.
+    groups: list[tuple[Path, list[str]]] = []
+    path_to_index: dict[str, int] = {}
+    for bid in blocked:
+        p = resolved_paths[bid]
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key not in path_to_index:
+            path_to_index[key] = len(groups)
+            groups.append((p, [bid]))
+        else:
+            groups[path_to_index[key]][1].append(bid)
+
+    # ---- PHASE 1d: pre-write block-presence check for multi-file cascade.
+    # Only apply this pre-check when directory-mode routing is in play
+    # (at least one dependent carries an explicit plan_file). For the
+    # pure single-file back-compat path, preserve the existing error
+    # semantics: plan_mutate failures are handled inline with partial
+    # persistence (see V5/V6/V15/V16).
+    any_routed = any(routing[bid][0] is not None for bid in blocked)
+    if any_routed:
+        # Read each target file once for the presence probe. Cache the
+        # content so we do not re-read during the mutate phase.
+        file_texts: dict[Path, str] = {}
+        for path, ids in groups:
+            try:
+                file_texts[path] = _load_text(path)
+            except OSError as e:
+                _die(args, {"errors": [{
+                    "failed_stage": "plan_read",
+                    "failed_id": None,
+                    "error": str(e),
+                    "plan_file": path.name,
+                    "plan_mutations_applied": [],
+                    "run_log_appended": [],
+                    "remaining": list(remaining),
+                }]})
+        for bid in blocked:
+            _, task_idx = routing[bid]
+            target = resolved_paths[bid]
+            text = file_texts[target]
+            _, task_blocks = _split_task_blocks(text)
+            found = any(tid == bid for tid, _ in task_blocks)
+            if not found:
+                _die(args, {"errors": [{
+                    "code": "dependent-block-missing",
+                    "path": f"$.tasks[{task_idx}]",
+                    "failed_id": bid,
+                    "plan_file": resolved_basenames[bid],
+                    "plan_mutations_applied": [],
+                    "run_log_appended": [],
+                    "remaining": list(remaining),
+                }]})
+
+    # ---- PHASE 2: per-file mutate-then-write.
+    # Back-compat for the pure single-file case (no plan_file routing):
+    # preserve exactly one _load_text / _write_text pair and the original
+    # inline failure semantics for plan_mutate errors (V5, V6, V15, V16).
+    plan_mutations_applied: list[str] = []
+    run_log_appended: list[str] = []
+    # Per-id basename for run-log; computed for every applied id.
+    applied_basenames: dict[str, str] = {}
+
+    # Track a deferred plan_mutate failure across groups; per
+    # double-failure semantics the FIRST such failure (in BFS order) is
+    # primary and any subsequent write failure is secondary.
+    mutate_failure: dict | None = None
+
+    for path, ids in groups:
+        # ---- PHASE 2a: plan read (skip if pre-check already cached). ----
+        if any_routed:
+            original = file_texts[path]  # type: ignore[name-defined]
+        else:
+            try:
+                original = _load_text(path)
+            except OSError as e:
+                _die(args, {"errors": [{
+                    "failed_stage": "plan_read",
+                    "failed_id": None,
+                    "error": str(e),
+                    "plan_mutations_applied": list(plan_mutations_applied),
+                    "run_log_appended": list(run_log_appended),
+                    "remaining": list(remaining),
+                }]})
+
+        # ---- PHASE 2b: in-memory mutate loop for this group. ----
+        mutated_text = original
+        mutated_in_memory: list[str] = []
+        group_mutate_failure: dict | None = None
+        for idx, bid in enumerate(ids):
+            try:
+                mutated_text, _ = mutate_task_status(
+                    mutated_text, bid, "blocked",
+                )
+            except ValueError as e:
+                group_mutate_failure = {
+                    "failed_stage": "plan_mutate",
+                    "failed_id": bid,
+                    "error": str(e),
+                    "remaining": list(ids[idx + 1:]),
+                }
+                break
+            mutated_in_memory.append(bid)
+            applied_basenames[bid] = resolved_basenames[bid]
+
+        # First deferred mutate failure wins; subsequent group failures
+        # are swallowed because they add no operator-actionable detail.
+        if group_mutate_failure is not None and mutate_failure is None:
+            mutate_failure = group_mutate_failure
+
+        # ---- PHASE 2c: if NO id flipped for this group AND this is the
+        # only group with any work, die now with the existing payload
+        # shape (V5 semantics for single-file runs). ----
+        if not mutated_in_memory:
+            # No write needed for this group. Continue to the next.
+            # If this is the ONLY group and nothing flipped anywhere,
+            # we fall out of the loop with mutate_failure set and handle
+            # it below.
+            continue
+
+        # ---- PHASE 2d: single write for this group. ----
+        try:
+            _write_text(path, mutated_text)
+        except OSError as e:
+            # Write failed: nothing from THIS group persisted. Earlier
+            # groups may already have succeeded; preserve their state.
+            if mutate_failure is not None:
+                payload: dict = dict(mutate_failure)
+                payload["plan_mutations_applied"] = list(plan_mutations_applied)
+                payload["run_log_appended"] = list(run_log_appended)
+                payload["secondary_failed_stage"] = "plan_write"
+                payload["secondary_failed_id"] = None
+                payload["secondary_error"] = str(e)
+            else:
+                payload = {
+                    "failed_stage": "plan_write",
+                    "failed_id": None,
+                    "error": str(e),
+                    "plan_mutations_applied": list(plan_mutations_applied),
+                    "run_log_appended": list(run_log_appended),
+                    "remaining": [],
+                }
+            _die(args, {"errors": [payload]})
+        plan_mutations_applied.extend(mutated_in_memory)
+
+    # ---- PHASE 2e: no group persisted anything. ----
+    if not plan_mutations_applied:
         assert mutate_failure is not None
         mutate_failure["plan_mutations_applied"] = []
         mutate_failure["run_log_appended"] = []
         _die(args, {"errors": [mutate_failure]})
-
-    # ---- PHASE 2d: single plan write (at least one in-memory success). ----
-    try:
-        _write_text(plan_path, mutated_text)
-    except OSError as e:
-        # Write failed → nothing persisted. Per acceptance #5, a pending
-        # mutate_failure is ALWAYS primary and the plan_write failure is
-        # secondary. Otherwise plan_write is primary.
-        if mutate_failure is not None:
-            payload: dict = dict(mutate_failure)
-            payload["plan_mutations_applied"] = []
-            payload["run_log_appended"] = []
-            payload["secondary_failed_stage"] = "plan_write"
-            payload["secondary_failed_id"] = None
-            payload["secondary_error"] = str(e)
-        else:
-            payload = {
-                "failed_stage": "plan_write",
-                "failed_id": None,
-                "error": str(e),
-                "plan_mutations_applied": [],
-                "run_log_appended": [],
-                "remaining": [],
-            }
-        _die(args, {"errors": [payload]})
-    plan_mutations_applied = list(mutated_in_memory)
 
     # ---- PHASE 3: run-log append for every id persisted to plan. ----
     log_failure: dict | None = None
@@ -3583,6 +3765,7 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
                 "task_id": bid,
                 "blocker_task_id": failed_id,
                 "reason": f"dependency TASK-{failed_id} failed",
+                "plan_file": applied_basenames.get(bid, default_plan_basename),
             })
         except Exception as e:  # _append_run_log raises on tail-verify failure
             log_failure = {
