@@ -132,7 +132,7 @@ Pure parser + schema addition; no orchestrator wiring yet. Mirror `parse-plan-re
 
 ### TASK-002: `plan-review-triage` subagent spec (dual-source)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
@@ -244,7 +244,7 @@ The two insertion points share the triage machinery. Keep the SKILL.md prose DRY
 
 ### TASK-005: Regression harness for the triage contract (both sources)
 
-- **Status:** pending
+- **Status:** failed
 - **Priority:** medium
 - **Agent:** codex
 - **Files:**
