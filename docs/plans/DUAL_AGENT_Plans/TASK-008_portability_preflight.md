@@ -418,3 +418,11 @@ All tests green.
 - **`$PYTHON` rollout:** if external users report confusion, keep the precedence and the preflight `python_path` echo, but restore literal `venv/bin/python` in example comments only. Do not revert the resolver helper — it is the single source of truth.
 - **Scope-aware classifier:** if a particular plan has so many pre-dirty scoped files that `--strict-scope` becomes unusable, triage the plan's scope rather than widening the classifier. The old `.claude/`/`docs/`/`tests/` rule is a footgun; do not restore it.
 - **`--strict-scope` flag:** safe to default-off; tighter policy can ride on a follow-up. Never default-on without operator buy-in — it will block reruns whose scope overlaps mid-edit files.
+
+## Execution log — 20260423T114351 (success)
+
+Starting SHA: `2d6a2155392ccbec22e06bbf6b98c723bc723ef1`  → Ending SHA: `8877167fd6e1379726e147cbd66e06a4917deeca`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 008 | claude | codex | needs-rework → D.5 ship-with-fixes (disagreement) | 8877167 | Portability parameterization + scope-aware preflight. 4 Codex findings: 3 spec-deference (F0 endswith-basename, F2 last-wins attribution, F3 scope_warnings[str]), 1 out-of-scope follow-up (F1 rename-line parsing). Dispositions captured in commit_done findings payload. |

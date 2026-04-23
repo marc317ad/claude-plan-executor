@@ -1,0 +1,39 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "008",
+      "title": "Portability parameterization + scope-aware preflight",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "tests/scripts/test_plan_ops.py",
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"preflight or python_path\"",
+      "classification_reason": "Multi-file design, new CLI flag"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "008"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}
