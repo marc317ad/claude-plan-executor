@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "Directory-mode execution for /implement-plan via per-task plan_file routing",
+  "created": "2026-04-23",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "parallel_batches": [
+    ["001"],
+    ["002", "003"],
+    ["004"]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "implement_plan_directory_mode.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "implement_plan_directory_mode.md",
+      "priority": "high",
+      "depends_on": ["001"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "implement_plan_directory_mode.md",
+      "priority": "high",
+      "depends_on": ["001"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "implement_plan_directory_mode.md",
+      "priority": "high",
+      "depends_on": ["001", "002", "003"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
