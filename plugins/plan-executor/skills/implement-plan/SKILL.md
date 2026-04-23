@@ -18,6 +18,24 @@ user_invocable: true
 6. **Subagent errors.** If a dispatch returns `[Tool result missing due to internal error]` or no parseable report, treat as failure. Log it, restore partial changes, do NOT retry silently. Claude-implementer `malformed` outcome goes to `fail-task stage=implement reason=malformed_report`.
 7. **Cross-review asymmetry.** Claude implements → Codex reviews; Codex implements → Claude reviews. Escalation path differs by direction — see Phase D.2.
 
+## Readiness check (TASK-007)
+
+Before running `/implement-plan` on a new plan — and after any substantive change to `plan_ops.py`, the Codex wrapper, the schema sidecars, the dispatch templates, or the design doc — run the executor self-audit so protocol drift surfaces before it bites a real run:
+
+```bash
+python3 plugins/plan-executor/scripts/plan_ops.py audit --json
+```
+
+The audit cross-references the shipped artifacts against the canonical decisions declared in `plan_ops.py:CANONICAL_CONTRACT`. Any finding with `status: fail` MUST be resolved before proceeding with a real run. `status: pass_with_alias` is treated as pass (alias windows are deliberate); the report still names which alias is active so silent tolerance is impossible.
+
+`audit` is advisory at the Phase 0 preflight seam — it is NOT a hard gate (gates are TASK-005's job and are runtime-scoped to a specific execution; audit is standing / cross-cutting). The intent is to catch executor drift between the editor's terminal and the next orchestrator run. The `portable_tier` check is registered but advisory / `--strict`-only until TASK-008 lands; pass `--strict` to include it in the verdict.
+
+Markdown report (for sharing in PRs / postmortems):
+
+```bash
+python3 plugins/plan-executor/scripts/plan_ops.py audit --report-file /tmp/audit.md
+```
+
 ## Promotion criteria
 
 The executor promotes from dry-run to execute (and from execute to "certified-clean") via six canonical phase gates. Each gate returns `{name, status ∈ pass|fail|not_applicable, reason}`. Invoke them through `plan_ops.py gates` — never reimplement the predicates inline.
@@ -70,6 +88,7 @@ All subcommands accept `--json` for machine-readable output.
 | `plan_ops.py acquire-lock / release-lock --plan-file ... --run-id ...` | Per-plan-file run-lock against `<run_lock>` |
 | `plan_ops.py path-info` | Emit configured `plan_dir` + derived `run_log` / `run_lock` / `schedule_glob` paths. Run once at Phase 0 to bind the `<plan_dir>` / `<run_log>` / `<run_lock>` / `<schedule_file>` placeholders used throughout this skill. |
 | `plan_ops.py gates --list\|--check <csv>\|--certify --mode dry-run\|execute` | Phase-gate predicates. The six canonical gates — `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`, `commit-safe` — return `{name, status ∈ pass\|fail\|not_applicable, reason}`. Used at Phase 0 preflight (schema + schedule + fixture + execution-safe + review-safe), after each Phase D.3 commit (`commit-safe` for that SHA), and at End-of-run (`--certify --mode execute --run-id <id>` for the full bundle). See §9.7 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
+| `plan_ops.py audit --list\|--json\|--report-file <path>\|--check <csv>\|--strict` | Standing self-audit (TASK-007). Cross-references shipped artifacts (`plan_ops.py`, `plan_codex_dispatch.py`, schema sidecars, SKILL.md, dispatch templates, design doc) against `CANONICAL_CONTRACT`. Findings carry `{check, tier ∈ default\|advisory, status ∈ pass\|pass_with_alias\|fail, canonical, actual, reason}`. Default verdict excludes advisory tier; `--strict` includes it. Run before any rerun and after substantive protocol changes. See §14 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
 
 ## Parse arguments
 

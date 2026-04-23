@@ -179,6 +179,48 @@ ALLOWED_LOG_EVENTS = {
 # and the user's next turn decides disposition.
 ALLOWED_RUN_OUTCOMES = {"success", "partial", "failed", "paused"}
 
+# TASK-007: Canonical Contract decision table. Self-audit (`cmd_audit`)
+# compares the shipped artifacts against this table and surfaces drift as
+# structured findings. Keep this dict the single source of truth — the
+# checks below import from it; the design doc §9.7 / §14 references it by
+# name. ALIAS_WINDOWS names symbols / fields that callers may still see
+# during a deprecation window; a check returns `pass_with_alias` (not
+# `fail`) when the actual set is `canonical | aliases`.
+CANONICAL_CONTRACT: dict[str, object] = {
+    "status_vocabulary": [
+        "pending", "in-progress", "done", "failed", "blocked", "skipped",
+    ],
+    "schedule_task_field": "id",
+    "schedule_batch_field": "index",
+    "implementer_concerns_label": "**Concerns for reviewer:**",
+    "implementer_plan_adaptations_label": "**Plan adaptations:**",
+    "execution_log_columns": [
+        "Task", "Agent", "Reviewer", "Verdict", "Commit", "Notes",
+    ],
+    "wrapper_always_ignore_paths": [
+        "docs/plans/_run_log.jsonl",
+        "docs/plans/_run_lock.json",
+    ],
+    "wrapper_always_ignore_globs": [
+        "docs/plans/*.schedule.json",
+    ],
+}
+
+ALIAS_WINDOWS: dict[str, list[str]] = {
+    # `open` is the legacy task-status name for `pending` (`STATUS_ALIASES`
+    # in this module). Listed so the audit reports `pass_with_alias` rather
+    # than masking the alias as silent tolerance.
+    "status_vocabulary": ["open"],
+    # `task_id` / `batch_index` are accepted alongside `id` / `index` in
+    # `_validate_schedule` (`SCHEDULE_FIELD_ALIASES`); the parser warns
+    # but does not error.
+    "schedule_task_field": ["task_id"],
+    "schedule_batch_field": ["batch_index"],
+    # The pre-canonical implementer-report label was the bare `**Concerns:**`;
+    # `cmd_parse_implementer_report` still falls back to it with a warning.
+    "implementer_concerns_label": ["**Concerns:**"],
+}
+
 CANONICAL_ID_RE = re.compile(r"^\d{3}[A-Z]?$")
 ALLOWED_SCHEDULE_TOP_LEVEL = {"outcome", "tasks", "batches", "gaps", "risks"}
 ALLOWED_TASK_FIELDS = {
@@ -4833,6 +4875,1167 @@ def _certify_execute(
     return gates
 
 
+# ---------------------------------------------------------------------------
+# TASK-007 self-audit: protocol-drift detection
+# ---------------------------------------------------------------------------
+#
+# `cmd_audit` cross-references the shipped artifacts (`plan_ops.py`,
+# `plan_codex_dispatch.py`, the schema sidecars, SKILL.md, dispatch
+# templates, and the design doc) against the canonical decisions declared
+# in `CANONICAL_CONTRACT` near the top of this module. Each check returns
+# the documented finding shape (`{check, status, canonical, actual,
+# reason, tier}`) and `cmd_audit` aggregates them into a JSON report or a
+# Markdown table. Scope is intentionally narrow: cross-cutting integrity,
+# not behavior. Runtime conditions for a specific run are TASK-005 gates'
+# job; self-audit is the standing readiness check.
+#
+# Conventions:
+#   * Every check has a `tier ∈ {"default", "advisory"}`. Default checks
+#     contribute to the verdict; advisory checks (`portable_tier` until
+#     TASK-008 lands) appear in the report but do not flip `overall` to
+#     `fail` unless `--strict` is set.
+#   * `pass_with_alias` is still a pass (alias windows from TASK-001 are
+#     legitimate); `fail` is the only verdict-flipping status.
+#   * Checks that grep source files report concrete path + line numbers
+#     in their `reason` strings so an operator can repair the drift
+#     without grep-spelunking.
+#   * Lines wrapped in `<!-- portable_tier: legacy-example -->` /
+#     `<!-- /portable_tier: legacy-example -->` markers are skipped by
+#     the `portable_tier` check; the markers are how a deliberate
+#     instructional reference to `venv/bin/python` is allowlisted.
+
+_PORTABLE_LEGACY_OPEN = "<!-- portable_tier: legacy-example -->"
+_PORTABLE_LEGACY_CLOSE = "<!-- /portable_tier: legacy-example -->"
+
+
+def _audit_relpath(path: Path) -> str:
+    """Stable relative path for finding `locations[].path`. Falls back to
+    `str(path)` when the file lives outside the repo root (e.g. tmp_path
+    fixtures). Repo-relative form is what tooling consumes."""
+    try:
+        repo_root = Path(__file__).resolve().parents[3]
+        return str(path.resolve().relative_to(repo_root))
+    except (OSError, ValueError):
+        return str(path)
+
+
+def _audit_locate_constant(name: str) -> int | None:
+    """Best-effort line number of a top-level assignment to `name` in
+    `plan_ops.py`. Used to populate `locations[].line` for constant-only
+    checks (status vocabulary, schedule field aliases, schemas) so the
+    structured report points operators at the owning declaration."""
+    try:
+        text = (_SCRIPT_DIR / "plan_ops.py").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    pattern = re.compile(rf"^{re.escape(name)}\s*[:=]", re.MULTILINE)
+    m = pattern.search(text)
+    if not m:
+        return None
+    return text.count("\n", 0, m.start()) + 1
+
+
+def _audit_locate_def(name: str, source_text: str | None = None) -> int | None:
+    """Best-effort line number of `def <name>(` in `plan_ops.py` (or in
+    the supplied `source_text`). Used by checks that grep a function
+    body so the report points at the function header."""
+    try:
+        text = source_text if source_text is not None else (
+            (_SCRIPT_DIR / "plan_ops.py").read_text(encoding="utf-8")
+        )
+    except OSError:
+        return None
+    m = re.search(rf"^def {re.escape(name)}\s*\(", text, re.MULTILINE)
+    if not m:
+        return None
+    return text.count("\n", 0, m.start()) + 1
+
+
+def _audit_finding(
+    *,
+    check: str,
+    status: str,
+    canonical: dict,
+    actual: dict,
+    reason: str | None,
+    tier: str = "default",
+    locations: list[dict] | None = None,
+) -> dict:
+    """Shape helper for audit findings. `status ∈ {pass, pass_with_alias,
+    fail}`; `tier ∈ {default, advisory}`. `reason` is None when the check
+    is clean (canonical and actual agree exactly).
+
+    `locations` is a list of `{"path": str, "line": int|None,
+    "reason": str}` triples — the structured path-and-reason pairs the
+    audit report exposes to tooling. Every finding carries it (empty
+    list is allowed when nothing concrete needs flagging, e.g. a clean
+    pass), so downstream consumers can iterate uniformly without
+    branching on shape.
+    """
+    if status not in {"pass", "pass_with_alias", "fail"}:
+        raise ValueError(
+            f"audit status must be pass|pass_with_alias|fail, got {status!r}"
+        )
+    if tier not in {"default", "advisory"}:
+        raise ValueError(f"audit tier must be default|advisory, got {tier!r}")
+    return {
+        "check": check,
+        "status": status,
+        "tier": tier,
+        "canonical": canonical,
+        "actual": actual,
+        "reason": reason,
+        "locations": list(locations) if locations else [],
+    }
+
+
+def _check_status_vocabulary() -> dict:
+    """`ALLOWED_TASK_STATUSES` matches the canonical set, modulo aliases."""
+    canonical = set(CANONICAL_CONTRACT["status_vocabulary"])
+    actual = set(ALLOWED_TASK_STATUSES)
+    aliases = set(ALIAS_WINDOWS.get("status_vocabulary", []))
+    canonical_payload = {
+        "source": "CANONICAL_CONTRACT[status_vocabulary]",
+        "value": sorted(canonical),
+    }
+    actual_payload = {
+        "source": "ALLOWED_TASK_STATUSES",
+        "value": sorted(actual),
+    }
+    owning_path = _audit_relpath(_SCRIPT_DIR / "plan_ops.py")
+    if actual == canonical:
+        return _audit_finding(
+            check="status_vocabulary",
+            status="pass",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=None,
+        )
+    if aliases and actual == canonical | aliases:
+        return _audit_finding(
+            check="status_vocabulary",
+            status="pass_with_alias",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=f"alias window active: {sorted(aliases)}",
+            locations=[
+                {
+                    "path": owning_path,
+                    "line": _audit_locate_constant("ALLOWED_TASK_STATUSES"),
+                    "reason": (
+                        f"alias window active: {sorted(aliases)} accepted "
+                        "alongside canonical status set"
+                    ),
+                },
+            ],
+        )
+    extra = sorted(actual - canonical - aliases)
+    missing = sorted(canonical - actual)
+    return _audit_finding(
+        check="status_vocabulary",
+        status="fail",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=(
+            f"ALLOWED_TASK_STATUSES drift: extra={extra}, missing={missing}"
+        ),
+        locations=[
+            {
+                "path": owning_path,
+                "line": _audit_locate_constant("ALLOWED_TASK_STATUSES"),
+                "reason": (
+                    f"ALLOWED_TASK_STATUSES drift: extra={extra}, "
+                    f"missing={missing}"
+                ),
+            },
+        ],
+    )
+
+
+def _check_schedule_wire_format() -> dict:
+    """`_validate_schedule` reads `id`/`index` (or the alias window).
+
+    The check inspects the source of `_validate_schedule` for the
+    `t.get("id")` / `b.get("index")` patterns and the
+    `SCHEDULE_FIELD_ALIASES` mapping. Drift here would mean schedules
+    written by callers using the canonical wire format silently fail to
+    parse — exactly the Phase 5 failure mode this audit defends against.
+    """
+    canonical_payload = {
+        "source": "CANONICAL_CONTRACT[schedule_task_field, schedule_batch_field]",
+        "value": {
+            "task_field": CANONICAL_CONTRACT["schedule_task_field"],
+            "batch_field": CANONICAL_CONTRACT["schedule_batch_field"],
+        },
+    }
+    owning_path = _audit_relpath(_SCRIPT_DIR / "plan_ops.py")
+    try:
+        validator_src = inspect_validate_schedule_source()
+    except OSError as e:
+        return _audit_finding(
+            check="schedule_wire_format",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": str(_SCRIPT_DIR / "plan_ops.py"), "value": None},
+            reason=f"plan_ops.py unreadable: {e}",
+            locations=[
+                {
+                    "path": owning_path,
+                    "line": None,
+                    "reason": f"plan_ops.py unreadable: {e}",
+                },
+            ],
+        )
+
+    # Match both shapes the validator uses:
+    #   `t.get("id")` / `b.get("index")` (lookup form)
+    #   `if "id" not in t` / `if "index" not in b` (presence form).
+    # The point is that `_validate_schedule` *names* the canonical field
+    # somewhere in its body — drift would mean it stopped looking for it.
+    task_pattern_present = bool(
+        re.search(r"""\.get\(\s*["']id["']\s*\)""", validator_src)
+    ) or bool(
+        re.search(r"""["']id["']\s+not\s+in\s+\w""", validator_src)
+    )
+    batch_pattern_present = bool(
+        re.search(r"""\.get\(\s*["']index["']\s*\)""", validator_src)
+    ) or bool(
+        re.search(r"""["']index["']\s+not\s+in\s+\w""", validator_src)
+    )
+    aliases_present = (
+        "task_id" in SCHEDULE_FIELD_ALIASES
+        and SCHEDULE_FIELD_ALIASES["task_id"] == "id"
+        and "batch_index" in SCHEDULE_FIELD_ALIASES
+        and SCHEDULE_FIELD_ALIASES["batch_index"] == "index"
+    )
+    actual_payload = {
+        "source": "_validate_schedule body + SCHEDULE_FIELD_ALIASES",
+        "value": {
+            "reads_id": task_pattern_present,
+            "reads_index": batch_pattern_present,
+            "aliases": dict(SCHEDULE_FIELD_ALIASES),
+        },
+    }
+    validator_line = _audit_locate_def("_validate_schedule")
+    aliases_line = _audit_locate_constant("SCHEDULE_FIELD_ALIASES")
+    if not task_pattern_present or not batch_pattern_present:
+        missing: list[str] = []
+        if not task_pattern_present:
+            missing.append("`.get(\"id\")` in _validate_schedule")
+        if not batch_pattern_present:
+            missing.append("`.get(\"index\")` in _validate_schedule")
+        return _audit_finding(
+            check="schedule_wire_format",
+            status="fail",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=f"missing canonical reads: {missing}",
+            locations=[
+                {
+                    "path": owning_path,
+                    "line": validator_line,
+                    "reason": f"missing canonical reads: {missing}",
+                },
+            ],
+        )
+    if aliases_present:
+        return _audit_finding(
+            check="schedule_wire_format",
+            status="pass_with_alias",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=(
+                "alias window active: SCHEDULE_FIELD_ALIASES maps "
+                "task_id->id, batch_index->index"
+            ),
+            locations=[
+                {
+                    "path": owning_path,
+                    "line": aliases_line,
+                    "reason": (
+                        "alias window active: SCHEDULE_FIELD_ALIASES maps "
+                        "task_id->id, batch_index->index"
+                    ),
+                },
+            ],
+        )
+    return _audit_finding(
+        check="schedule_wire_format",
+        status="pass",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+    )
+
+
+def inspect_validate_schedule_source() -> str:
+    """Return the source body of `_validate_schedule` from this module.
+
+    Helper extracted so tests and the check share one extraction path.
+    Raises OSError if the script file is unreadable.
+    """
+    text = (_SCRIPT_DIR / "plan_ops.py").read_text(encoding="utf-8")
+    code_text = _strip_python_comments_and_docstrings(text)
+    m = re.search(r"^def _validate_schedule\s*\(", code_text, re.MULTILINE)
+    if not m:
+        return ""
+    tail = code_text[m.end():]
+    next_def = re.search(r"^def\s+\w+", tail, re.MULTILINE)
+    return tail[: next_def.start()] if next_def else tail
+
+
+def _check_implementer_report_labels() -> dict:
+    """`cmd_parse_implementer_report` searches the canonical labels.
+
+    Greps the function body for the literal `**Concerns for reviewer:**`
+    and `**Plan adaptations:**` substrings (or the documented alias
+    `**Concerns:**`). Drift here previously caused the orchestrator to
+    silently lose the implementer's revert guidance.
+    """
+    canonical_payload = {
+        "source": "CANONICAL_CONTRACT[implementer_*_label]",
+        "value": {
+            "concerns": CANONICAL_CONTRACT["implementer_concerns_label"],
+            "plan_adaptations": CANONICAL_CONTRACT[
+                "implementer_plan_adaptations_label"
+            ],
+        },
+    }
+    owning_path = _audit_relpath(_SCRIPT_DIR / "plan_ops.py")
+    try:
+        text = (_SCRIPT_DIR / "plan_ops.py").read_text(encoding="utf-8")
+    except OSError as e:
+        return _audit_finding(
+            check="implementer_report_labels",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": "plan_ops.py", "value": None},
+            reason=f"plan_ops.py unreadable: {e}",
+            locations=[{
+                "path": owning_path, "line": None,
+                "reason": f"plan_ops.py unreadable: {e}",
+            }],
+        )
+    m = re.search(
+        r"^def cmd_parse_implementer_report\s*\(", text, re.MULTILINE,
+    )
+    if not m:
+        return _audit_finding(
+            check="implementer_report_labels",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": "plan_ops.py", "value": None},
+            reason="cmd_parse_implementer_report definition not found",
+            locations=[{
+                "path": owning_path, "line": None,
+                "reason": "cmd_parse_implementer_report definition not found",
+            }],
+        )
+    tail = text[m.end():]
+    next_def = re.search(r"^def\s+\w+", tail, re.MULTILINE)
+    body = tail[: next_def.start()] if next_def else tail
+
+    canonical_concerns = "Concerns for reviewer"
+    canonical_plan_adapt = "Plan adaptations"
+    legacy_concerns = "Concerns"
+    aliases = set(ALIAS_WINDOWS.get("implementer_concerns_label", []))
+    has_canonical_concerns = canonical_concerns in body
+    has_plan_adapt = canonical_plan_adapt in body
+    # The legacy `Concerns` literal is detected via a word-boundary match
+    # so the canonical `Concerns for reviewer` substring does not double-count.
+    has_legacy_concerns = bool(
+        re.search(r'"\s*Concerns\s*"', body)
+        or re.search(r"'\s*Concerns\s*'", body)
+    )
+    actual_payload = {
+        "source": "cmd_parse_implementer_report body",
+        "value": {
+            "has_concerns_for_reviewer": has_canonical_concerns,
+            "has_plan_adaptations": has_plan_adapt,
+            "has_legacy_concerns": has_legacy_concerns,
+        },
+    }
+    parser_def_line = _audit_locate_def(
+        "cmd_parse_implementer_report", source_text=text,
+    )
+    if not has_canonical_concerns or not has_plan_adapt:
+        missing = []
+        if not has_canonical_concerns:
+            missing.append(canonical_concerns)
+        if not has_plan_adapt:
+            missing.append(canonical_plan_adapt)
+        return _audit_finding(
+            check="implementer_report_labels",
+            status="fail",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=f"missing canonical labels in parser: {missing}",
+            locations=[{
+                "path": owning_path, "line": parser_def_line,
+                "reason": f"missing canonical labels in parser: {missing}",
+            }],
+        )
+    if has_legacy_concerns and "**Concerns:**" in aliases:
+        return _audit_finding(
+            check="implementer_report_labels",
+            status="pass_with_alias",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=(
+                "alias window active: parser still falls back to legacy "
+                "'**Concerns:**' label"
+            ),
+            locations=[{
+                "path": owning_path, "line": parser_def_line,
+                "reason": (
+                    "alias window active: parser still falls back to legacy "
+                    "'**Concerns:**' label"
+                ),
+            }],
+        )
+    return _audit_finding(
+        check="implementer_report_labels",
+        status="pass",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+    )
+
+
+def _check_execution_log_columns() -> dict:
+    """`cmd_finalize_execution_log` writes the canonical column header.
+
+    Greps for the literal `| Task | Agent | Reviewer | Verdict | Commit |
+    Notes |` row inside the function body. Drift here previously broke
+    downstream tooling that parses the table by column position.
+    """
+    canonical_columns = list(CANONICAL_CONTRACT["execution_log_columns"])
+    canonical_header = "| " + " | ".join(canonical_columns) + " |"
+    canonical_payload = {
+        "source": "CANONICAL_CONTRACT[execution_log_columns]",
+        "value": canonical_columns,
+    }
+    owning_path = _audit_relpath(_SCRIPT_DIR / "plan_ops.py")
+    try:
+        text = (_SCRIPT_DIR / "plan_ops.py").read_text(encoding="utf-8")
+    except OSError as e:
+        return _audit_finding(
+            check="execution_log_columns",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": "plan_ops.py", "value": None},
+            reason=f"plan_ops.py unreadable: {e}",
+            locations=[{
+                "path": owning_path, "line": None,
+                "reason": f"plan_ops.py unreadable: {e}",
+            }],
+        )
+    m = re.search(
+        r"^def cmd_finalize_execution_log\s*\(", text, re.MULTILINE,
+    )
+    if not m:
+        return _audit_finding(
+            check="execution_log_columns",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": "plan_ops.py", "value": None},
+            reason="cmd_finalize_execution_log definition not found",
+            locations=[{
+                "path": owning_path, "line": None,
+                "reason": "cmd_finalize_execution_log definition not found",
+            }],
+        )
+    finalize_def_line = _audit_locate_def(
+        "cmd_finalize_execution_log", source_text=text,
+    )
+    tail = text[m.end():]
+    next_def = re.search(r"^def\s+\w+", tail, re.MULTILINE)
+    body = tail[: next_def.start()] if next_def else tail
+    actual_payload = {
+        "source": "cmd_finalize_execution_log header literal",
+        "value": canonical_header if canonical_header in body else None,
+    }
+    if canonical_header not in body:
+        return _audit_finding(
+            check="execution_log_columns",
+            status="fail",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=(
+                "canonical column header literal "
+                f"{canonical_header!r} not present in "
+                "cmd_finalize_execution_log body"
+            ),
+            locations=[{
+                "path": owning_path, "line": finalize_def_line,
+                "reason": (
+                    "canonical column header literal "
+                    f"{canonical_header!r} not present in "
+                    "cmd_finalize_execution_log body"
+                ),
+            }],
+        )
+    return _audit_finding(
+        check="execution_log_columns",
+        status="pass",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+    )
+
+
+def _check_schemas() -> dict:
+    """Codex implement / review schemas match the design doc shape.
+
+    `codex_implement_schema.json[blockers]` must be `array of strings`
+    (not the legacy `array of objects` form that produced Phase 5
+    parse failures). `codex_review_schema.json` must require the §7.3
+    fields `task_id`, `verdict`, `findings`, `scope_ok`,
+    `acceptance_met`, `summary` with the canonical verdict enum.
+    """
+    canonical_payload = {
+        "source": "design doc §7.2 / §7.3",
+        "value": {
+            "implement_blockers_items_type": "string",
+            "review_required": [
+                "task_id", "verdict", "findings",
+                "scope_ok", "acceptance_met", "summary",
+            ],
+            "review_verdict_enum": [
+                "clean", "minor-findings", "needs-rework",
+            ],
+        },
+    }
+    impl_path = _SCRIPT_DIR / "codex_implement_schema.json"
+    review_path = _SCRIPT_DIR / "codex_review_schema.json"
+    impl_relpath = _audit_relpath(impl_path)
+    review_relpath = _audit_relpath(review_path)
+    problems: list[str] = []
+    locations: list[dict] = []
+    impl_actual: object = None
+    review_actual: object = None
+    try:
+        impl_schema = json.loads(impl_path.read_text(encoding="utf-8"))
+    except OSError as e:
+        msg = f"codex_implement_schema.json unreadable: {e}"
+        problems.append(msg)
+        locations.append({"path": impl_relpath, "line": None, "reason": msg})
+        impl_schema = {}
+    except json.JSONDecodeError as e:
+        msg = f"codex_implement_schema.json malformed JSON: {e}"
+        problems.append(msg)
+        locations.append({"path": impl_relpath, "line": None, "reason": msg})
+        impl_schema = {}
+    try:
+        review_schema = json.loads(review_path.read_text(encoding="utf-8"))
+    except OSError as e:
+        msg = f"codex_review_schema.json unreadable: {e}"
+        problems.append(msg)
+        locations.append({"path": review_relpath, "line": None, "reason": msg})
+        review_schema = {}
+    except json.JSONDecodeError as e:
+        msg = f"codex_review_schema.json malformed JSON: {e}"
+        problems.append(msg)
+        locations.append({"path": review_relpath, "line": None, "reason": msg})
+        review_schema = {}
+
+    blockers_items = (
+        impl_schema.get("properties", {})
+        .get("blockers", {})
+        .get("items", {})
+    )
+    impl_actual = {
+        "blockers_items_type": blockers_items.get("type"),
+    }
+    if blockers_items.get("type") != "string":
+        msg = (
+            "codex_implement_schema.json[properties.blockers.items.type] "
+            f"is {blockers_items.get('type')!r}; canonical is 'string'"
+        )
+        problems.append(msg)
+        locations.append({"path": impl_relpath, "line": None, "reason": msg})
+
+    review_required = review_schema.get("required") or []
+    verdict_enum = (
+        review_schema.get("properties", {})
+        .get("verdict", {})
+        .get("enum")
+    )
+    review_actual = {
+        "required": list(review_required),
+        "verdict_enum": list(verdict_enum) if verdict_enum else None,
+    }
+    canonical_required = {
+        "task_id", "verdict", "findings",
+        "scope_ok", "acceptance_met", "summary",
+    }
+    missing_required = sorted(canonical_required - set(review_required))
+    if missing_required:
+        msg = (
+            "codex_review_schema.json[required] missing canonical fields: "
+            f"{missing_required}"
+        )
+        problems.append(msg)
+        locations.append({"path": review_relpath, "line": None, "reason": msg})
+    canonical_verdicts = ["clean", "minor-findings", "needs-rework"]
+    if verdict_enum != canonical_verdicts:
+        msg = (
+            "codex_review_schema.json[properties.verdict.enum] is "
+            f"{verdict_enum!r}; canonical is {canonical_verdicts!r}"
+        )
+        problems.append(msg)
+        locations.append({"path": review_relpath, "line": None, "reason": msg})
+
+    actual_payload = {
+        "source": "codex_implement_schema.json + codex_review_schema.json",
+        "value": {"implement": impl_actual, "review": review_actual},
+    }
+    if problems:
+        return _audit_finding(
+            check="schemas",
+            status="fail",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason="; ".join(problems),
+            locations=locations,
+        )
+    return _audit_finding(
+        check="schemas",
+        status="pass",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+    )
+
+
+def _scan_portable_tier_violations(path: Path) -> list[str]:
+    """Return `path:lineno` strings for `venv/bin/python` literals outside
+    legacy-example marker blocks. Used by `_check_portable_tier`.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return [f"{path}: unreadable"]
+    hits: list[str] = []
+    in_legacy = False
+    for idx, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if _PORTABLE_LEGACY_OPEN in line:
+            in_legacy = True
+            continue
+        if _PORTABLE_LEGACY_CLOSE in line:
+            in_legacy = False
+            continue
+        if in_legacy:
+            continue
+        if "venv/bin/python" in stripped:
+            hits.append(f"{path}:{idx}")
+    return hits
+
+
+def _check_portable_tier() -> dict:
+    """`SKILL.md` / `dispatch-templates.md` carry no `venv/bin/python`
+    literals outside legacy-example marker blocks (TASK-008 fixes).
+
+    Advisory tier: registered but excluded from the default verdict
+    until TASK-008 lands; surfaces the exact path:line of every
+    violation so the cleanup task has a precise punch list.
+    """
+    skill = (
+        Path(__file__).resolve().parent.parent
+        / "skills" / "implement-plan" / "SKILL.md"
+    )
+    templates = (
+        Path(__file__).resolve().parent.parent
+        / "skills" / "implement-plan" / "dispatch-templates.md"
+    )
+    canonical_payload = {
+        "source": "TASK-008 portable-Python policy",
+        "value": (
+            "no `venv/bin/python` literals in SKILL.md / dispatch-templates.md "
+            "outside <!-- portable_tier: legacy-example --> blocks"
+        ),
+    }
+    hits: list[str] = []
+    hits.extend(_scan_portable_tier_violations(skill))
+    hits.extend(_scan_portable_tier_violations(templates))
+    actual_payload = {
+        "source": "SKILL.md + dispatch-templates.md",
+        "value": {"violations": hits},
+    }
+    if hits:
+        # `hits` are `path:lineno` strings (or `path: unreadable`); split
+        # into structured locations so consumers don't have to re-parse.
+        locations: list[dict] = []
+        for hit in hits:
+            head, sep, tail = hit.rpartition(":")
+            if sep and tail.isdigit():
+                hit_path = _audit_relpath(Path(head))
+                hit_line: int | None = int(tail)
+            else:
+                hit_path = _audit_relpath(Path(hit.split(":", 1)[0]))
+                hit_line = None
+            locations.append({
+                "path": hit_path,
+                "line": hit_line,
+                "reason": "`venv/bin/python` literal outside legacy-example marker block",
+            })
+        return _audit_finding(
+            check="portable_tier",
+            status="fail",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=(
+                f"{len(hits)} `venv/bin/python` literal(s) outside "
+                f"legacy-example markers; first few: {hits[:5]}"
+            ),
+            tier="advisory",
+            locations=locations,
+        )
+    return _audit_finding(
+        check="portable_tier",
+        status="pass",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+        tier="advisory",
+    )
+
+
+def _check_wrapper_isolation() -> dict:
+    """`plan_codex_dispatch.py` carries the State-Isolation invariants.
+
+    Asserts (1) the always-ignore / protected-paths import seam from
+    `_plan_paths`, (2) `_snapshot_baseline(` at the three required
+    seams (implement, timeout-cleanup, review), and (3) no
+    `git clean -fd` in executable code at repo scope. Distinct from
+    `execution-safe`/`review-safe` gates because audit reports
+    path:line evidence, not just pass/fail.
+    """
+    wrapper = _SCRIPT_DIR / "plan_codex_dispatch.py"
+    canonical_payload = {
+        "source": "TASK-003 State-Isolation Contract",
+        "value": {
+            "always_ignore_seam": (
+                "from _plan_paths import PROTECTED_EXACT_PATHS, ..."
+            ),
+            "snapshot_baseline_seams": [
+                "cmd_implement", "_handle_timeout_cleanup or kwarg",
+                "cmd_review",
+            ],
+            "forbidden": "git clean -fd outside comments / docstrings",
+        },
+    }
+    wrapper_relpath = _audit_relpath(wrapper)
+    if not wrapper.is_file():
+        return _audit_finding(
+            check="wrapper_isolation",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": str(wrapper), "value": None},
+            reason=f"wrapper not found: {wrapper}",
+            locations=[{
+                "path": wrapper_relpath, "line": None,
+                "reason": f"wrapper not found: {wrapper}",
+            }],
+        )
+    try:
+        text = wrapper.read_text(encoding="utf-8")
+    except OSError as e:
+        return _audit_finding(
+            check="wrapper_isolation",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": str(wrapper), "value": None},
+            reason=f"wrapper unreadable: {e}",
+            locations=[{
+                "path": wrapper_relpath, "line": None,
+                "reason": f"wrapper unreadable: {e}",
+            }],
+        )
+    code_text = _strip_python_comments_and_docstrings(text)
+    problems: list[str] = []
+    wrapper_locations: list[dict] = []
+
+    def _wrapper_def_line(name: str) -> int | None:
+        return _audit_locate_def(name, source_text=text)
+
+    # (1) always-ignore seam
+    has_always_ignore = (
+        "PROTECTED_EXACT_PATHS" in code_text and "_plan_paths" in code_text
+    )
+    if not has_always_ignore:
+        msg = "missing _plan_paths protected-paths import seam"
+        problems.append(msg)
+        wrapper_locations.append({
+            "path": wrapper_relpath, "line": None, "reason": msg,
+        })
+
+    # (2) snapshot-baseline seams (implement + cleanup + review)
+    def _function_body(name: str) -> str | None:
+        m = re.search(rf"^def {re.escape(name)}\s*\(", code_text, re.MULTILINE)
+        if not m:
+            return None
+        tail = code_text[m.end():]
+        next_def = re.search(r"^def\s+\w+", tail, re.MULTILINE)
+        return tail[: next_def.start()] if next_def else tail
+
+    impl_body = _function_body("cmd_implement")
+    cleanup_body = _function_body("_handle_timeout_cleanup")
+    review_body = _function_body("cmd_review")
+    snapshot_seams: list[str] = []
+    if impl_body and "_snapshot_baseline(" in impl_body:
+        snapshot_seams.append("cmd_implement")
+    else:
+        msg = "_snapshot_baseline(... missing in cmd_implement"
+        problems.append(msg)
+        wrapper_locations.append({
+            "path": wrapper_relpath,
+            "line": _wrapper_def_line("cmd_implement"),
+            "reason": msg,
+        })
+    cleanup_seam_ok = False
+    if cleanup_body and "_snapshot_baseline(" in cleanup_body:
+        cleanup_seam_ok = True
+        snapshot_seams.append("_handle_timeout_cleanup")
+    elif impl_body and re.search(
+        r"_handle_timeout_cleanup\s*\([^)]*baseline", impl_body, re.DOTALL,
+    ):
+        cleanup_seam_ok = True
+        snapshot_seams.append("cmd_implement->_handle_timeout_cleanup(baseline)")
+    if not cleanup_seam_ok:
+        msg = (
+            "_snapshot_baseline missing in timeout-cleanup window "
+            "(neither _handle_timeout_cleanup body nor cmd_implement "
+            "baseline kwarg)"
+        )
+        problems.append(msg)
+        wrapper_locations.append({
+            "path": wrapper_relpath,
+            "line": _wrapper_def_line("_handle_timeout_cleanup"),
+            "reason": msg,
+        })
+    if review_body and "_snapshot_baseline(" in review_body:
+        snapshot_seams.append("cmd_review")
+    else:
+        msg = "_snapshot_baseline(... missing in cmd_review"
+        problems.append(msg)
+        wrapper_locations.append({
+            "path": wrapper_relpath,
+            "line": _wrapper_def_line("cmd_review"),
+            "reason": msg,
+        })
+
+    # (3) `git clean -fd` outside comments/docstrings.
+    forbidden_hits: list[str] = []
+    forbidden_lines: list[int] = []
+    in_triple_double = False
+    in_triple_single = False
+    for idx, line in enumerate(text.splitlines(), 1):
+        stripped = line.lstrip()
+        double_marks = line.count('"""')
+        single_marks = line.count("'''")
+        line_was_in_string = in_triple_double or in_triple_single
+        if double_marks % 2 == 1:
+            in_triple_double = not in_triple_double
+        if single_marks % 2 == 1:
+            in_triple_single = not in_triple_single
+        if line_was_in_string or in_triple_double or in_triple_single:
+            continue
+        if stripped.startswith("#"):
+            continue
+        if re.search(r"git\s+clean\s+-fd", line):
+            forbidden_hits.append(f"plan_codex_dispatch.py:{idx}")
+            forbidden_lines.append(idx)
+    if forbidden_hits:
+        problems.append(
+            f"`git clean -fd` outside comments at: {forbidden_hits}"
+        )
+        for ln in forbidden_lines:
+            wrapper_locations.append({
+                "path": wrapper_relpath, "line": ln,
+                "reason": "`git clean -fd` outside comments / docstrings",
+            })
+
+    actual_payload = {
+        "source": "plan_codex_dispatch.py",
+        "value": {
+            "always_ignore_seam_present": has_always_ignore,
+            "snapshot_baseline_seams": snapshot_seams,
+            "git_clean_fd_hits": forbidden_hits,
+        },
+    }
+    if problems:
+        return _audit_finding(
+            check="wrapper_isolation",
+            status="fail",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason="; ".join(problems),
+            locations=wrapper_locations,
+        )
+    return _audit_finding(
+        check="wrapper_isolation",
+        status="pass",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+    )
+
+
+def _check_design_doc_orphans() -> dict:
+    """`DUAL_AGENT_PLAN_EXECUTOR.md` references no deprecated stubs.
+
+    Specifically: no `--skip-analysis` flag (renamed to `--skip-cross-review`
+    long ago), and any reference to `task_id` / `batch_index` is paired
+    with the canonical `id` / `index` literal so a reader is not left
+    with a contradictory mental model. Reports the offending line ranges.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    doc = repo_root / "docs" / "plans" / "DUAL_AGENT_PLAN_EXECUTOR.md"
+    canonical_payload = {
+        "source": "TASK-001 canonical contract + design doc §5/§7.2",
+        "value": {
+            "deprecated_flags": ["--skip-analysis"],
+            "alias_field_handling": (
+                "schedule field aliases task_id/batch_index must be "
+                "named alongside canonical id/index"
+            ),
+        },
+    }
+    doc_relpath = _audit_relpath(doc)
+    if not doc.is_file():
+        return _audit_finding(
+            check="design_doc_orphans",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": str(doc), "value": None},
+            reason=f"design doc not found: {doc}",
+            locations=[{
+                "path": doc_relpath, "line": None,
+                "reason": f"design doc not found: {doc}",
+            }],
+        )
+    try:
+        text = doc.read_text(encoding="utf-8")
+    except OSError as e:
+        return _audit_finding(
+            check="design_doc_orphans",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": str(doc), "value": None},
+            reason=f"design doc unreadable: {e}",
+            locations=[{
+                "path": doc_relpath, "line": None,
+                "reason": f"design doc unreadable: {e}",
+            }],
+        )
+    problems: list[str] = []
+    doc_locations: list[dict] = []
+    skip_analysis_hits: list[int] = []
+    # Lines that explicitly mark the reference as historical /
+    # deferred / discussed-but-not-implemented are allowed; we are
+    # hunting for stubs that contradict the canonical decision, not
+    # for an honest design-doc note about a deferred flag. Heuristic
+    # markers: "deferred", "deprecated", "removed", "legacy",
+    # "do not add", "not implemented" — the design doc uses these
+    # words consistently when discussing flags it explicitly chose
+    # not to ship.
+    _HISTORICAL_MARKERS = (
+        "deferred", "deprecated", "removed", "legacy",
+        "do not add", "not implemented", "do NOT add",
+    )
+    for idx, line in enumerate(text.splitlines(), 1):
+        if "--skip-analysis" not in line:
+            continue
+        lower = line.lower()
+        if any(marker in lower for marker in _HISTORICAL_MARKERS):
+            continue
+        skip_analysis_hits.append(idx)
+    if skip_analysis_hits:
+        problems.append(
+            f"`--skip-analysis` references at lines: {skip_analysis_hits}"
+        )
+        for ln in skip_analysis_hits:
+            doc_locations.append({
+                "path": doc_relpath, "line": ln,
+                "reason": "deprecated `--skip-analysis` flag reference",
+            })
+    # Alias field handling: `task_id` and `batch_index` are legitimate to
+    # mention as aliases, but only if the canonical `id` / `index`
+    # literals appear in the same document. (They do.)
+    has_id_canonical = bool(re.search(r"\bid\b", text))
+    has_index_canonical = bool(re.search(r"\bindex\b", text))
+    if not (has_id_canonical and has_index_canonical):
+        msg = (
+            "design doc mentions schedule fields but canonical "
+            "`id` / `index` literals are absent"
+        )
+        problems.append(msg)
+        doc_locations.append({
+            "path": doc_relpath, "line": None, "reason": msg,
+        })
+    actual_payload = {
+        "source": "DUAL_AGENT_PLAN_EXECUTOR.md",
+        "value": {
+            "skip_analysis_hits": skip_analysis_hits,
+            "has_id_literal": has_id_canonical,
+            "has_index_literal": has_index_canonical,
+        },
+    }
+    if problems:
+        return _audit_finding(
+            check="design_doc_orphans",
+            status="fail",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason="; ".join(problems),
+            locations=doc_locations,
+        )
+    return _audit_finding(
+        check="design_doc_orphans",
+        status="pass",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+    )
+
+
+# Ordered registry. The order is the canonical `--list` output and the
+# row order in the Markdown report. Append new checks to the end so
+# downstream tooling that snapshots `--list` does not drift.
+AUDIT_CHECKS: tuple[tuple[str, object, str], ...] = (
+    ("status_vocabulary", _check_status_vocabulary, "default"),
+    ("schedule_wire_format", _check_schedule_wire_format, "default"),
+    ("implementer_report_labels", _check_implementer_report_labels, "default"),
+    ("execution_log_columns", _check_execution_log_columns, "default"),
+    ("schemas", _check_schemas, "default"),
+    ("portable_tier", _check_portable_tier, "advisory"),
+    ("wrapper_isolation", _check_wrapper_isolation, "default"),
+    ("design_doc_orphans", _check_design_doc_orphans, "default"),
+)
+AUDIT_CHECK_NAMES: tuple[str, ...] = tuple(name for name, _, _ in AUDIT_CHECKS)
+AUDIT_CHECK_TIERS: dict[str, str] = {name: tier for name, _, tier in AUDIT_CHECKS}
+
+
+def _render_audit_markdown(report: dict) -> str:
+    """Render the audit report as a Markdown table for `--report-file`.
+
+    Columns: Check | Tier | Status | Canonical | Actual | Reason. The
+    Canonical and Actual columns are JSON-serialized so the row order is
+    stable across reruns; long values are truncated to keep the table
+    readable in a terminal (the JSON output remains the source of truth).
+    """
+    lines: list[str] = [
+        f"# Executor self-audit — {report.get('generated_at', '')}",
+        "",
+        f"**Overall:** `{report.get('overall', 'fail')}`",
+        "",
+        "| Check | Tier | Status | Canonical | Actual | Reason |",
+        "|---|---|---|---|---|---|",
+    ]
+    for finding in report.get("findings", []):
+        canonical_str = json.dumps(finding.get("canonical", {}), sort_keys=True)
+        actual_str = json.dumps(finding.get("actual", {}), sort_keys=True)
+        if len(canonical_str) > 200:
+            canonical_str = canonical_str[:197] + "..."
+        if len(actual_str) > 200:
+            actual_str = actual_str[:197] + "..."
+        reason = finding.get("reason") or ""
+        lines.append(
+            "| `{check}` | {tier} | `{status}` | {canonical} | {actual} | {reason} |".format(
+                check=finding.get("check", ""),
+                tier=finding.get("tier", ""),
+                status=finding.get("status", ""),
+                canonical=canonical_str.replace("|", "\\|"),
+                actual=actual_str.replace("|", "\\|"),
+                reason=reason.replace("|", "\\|"),
+            )
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Self-audit CLI: --list | --json | --report-file | --check <csv>.
+
+    See the `## TASK-007` section in `DUAL_AGENT_PLAN_EXECUTOR.md §14` for
+    the operator-facing documentation of what this surfaces and when to
+    run it.
+    """
+    if args.list:
+        annotated = [
+            {"name": name, "tier": AUDIT_CHECK_TIERS[name]}
+            for name in AUDIT_CHECK_NAMES
+        ]
+        _emit(args, {"checks": annotated})
+        return
+
+    requested: list[str] | None = None
+    if args.check:
+        requested = [s.strip() for s in args.check.split(",") if s.strip()]
+        unknown = [name for name in requested if name not in AUDIT_CHECK_NAMES]
+        if unknown:
+            _die(args, {
+                "error": (
+                    f"unknown audit check name(s): {unknown}; "
+                    f"known: {list(AUDIT_CHECK_NAMES)}"
+                ),
+            })
+
+    findings: list[dict] = []
+    for name, fn, tier in AUDIT_CHECKS:
+        if requested is not None and name not in requested:
+            continue
+        # Default run includes ALL checks (default + advisory) so operators
+        # see advisory drift in the report. Advisory findings are still
+        # excluded from the verdict unless --strict or explicit --check
+        # opted in by name (see `_is_verdict_finding`). This matches the
+        # spec at TASK-007_self_audit.md §step-4 line 241: "Advisory-tier
+        # findings still appear in the report regardless of whether they
+        # were included in the verdict, with their tier annotated."
+        finding = fn()
+        findings.append(finding)
+
+    # Verdict computation.
+    #   * Explicit --check subset: every requested check counts toward the
+    #     verdict regardless of tier (the operator opted in by name).
+    #   * Default + --strict: advisory findings count too.
+    #   * Default (no --strict, no --check): advisory findings reported
+    #     but excluded from the verdict.
+    def _is_verdict_finding(f: dict) -> bool:
+        if requested is not None:
+            return True
+        if args.strict:
+            return True
+        return f.get("tier") != "advisory"
+
+    overall = "pass"
+    for f in findings:
+        if _is_verdict_finding(f) and f.get("status") == "fail":
+            overall = "fail"
+            break
+
+    report = {
+        "overall": overall,
+        "findings": findings,
+        "generated_at": _now(),
+    }
+
+    if args.report_file:
+        out = Path(args.report_file)
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(_render_audit_markdown(report), encoding="utf-8")
+        except OSError as e:
+            _die(args, {
+                "error": f"failed to write --report-file {out}: {e}",
+            })
+
+    exit_code = 0 if overall == "pass" else 1
+    _emit(args, report, exit_code=exit_code)
+
+
 def cmd_gates(args: argparse.Namespace) -> None:
     """Phase-gate CLI: --list | --check <csv> | --certify --mode <m>.
 
@@ -5242,6 +6445,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_lint)
 
+    # TASK-007: protocol-drift self-audit. Inspects the shipped artifacts
+    # (plan_ops.py, plan_codex_dispatch.py, schema sidecars, SKILL.md,
+    # dispatch templates, design doc) against `CANONICAL_CONTRACT` and
+    # surfaces drift as structured findings. Distinct from `gates` (which
+    # is runtime-scoped to a specific execution); audit is standing /
+    # cross-cutting and intended to run before any rerun.
+    p_audit = sub.add_parser(
+        "audit",
+        help=(
+            "Self-audit the executor for protocol drift "
+            "(status vocabulary, schedule wire format, implementer-report "
+            "labels, execution-log columns, schemas, portable tier, "
+            "wrapper isolation, design-doc orphans)."
+        ),
+    )
+    p_audit.add_argument(
+        "--list", action="store_true",
+        help="Emit the canonical list of audit check names + tiers",
+    )
+    p_audit.add_argument(
+        "--check", default=None,
+        help=(
+            "Comma-separated subset of checks to run; overrides tier "
+            "filtering so advisory checks may be requested by name"
+        ),
+    )
+    p_audit.add_argument(
+        "--strict", action="store_true",
+        help=(
+            "Include advisory checks (e.g. portable_tier pre-TASK-008) "
+            "in the overall verdict"
+        ),
+    )
+    p_audit.add_argument(
+        "--report-file", default=None,
+        help=(
+            "Optional path; writes a Markdown table report alongside "
+            "the stdout JSON/summary"
+        ),
+    )
+    _add_json(p_audit)
+
     # TASK-005: phase-gate and promotion-criteria subcommand. Six canonical
     # gates — schema-valid, schedule-valid, fixture-valid, execution-safe,
     # review-safe, commit-safe — each returning {name, status, reason}.
@@ -5383,6 +6628,7 @@ def main(argv: list[str] | None = None) -> None:
         "path-info": cmd_path_info,
         "lint-plans": cmd_lint_plans,
         "gates": cmd_gates,
+        "audit": cmd_audit,
     }
     handlers[args.command](args)
 

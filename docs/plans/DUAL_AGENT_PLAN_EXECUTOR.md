@@ -1177,6 +1177,34 @@ Scenarios 1–12 are scored against the phase-gate vocabulary from §9.7. The si
 | 12 | Plan status tracking | Check plan.md after run | All Status fields updated, execution log appended |
 | 13 | Portability | Run on different repo with no agent changes | Works without modification; the same six phase gates pass against the foreign repo |
 
+### 14.1 Drift detection and readiness (TASK-007)
+
+The executor carries a standing self-audit capability — distinct from the per-run phase gates of §9.7 — that cross-references the shipped artifacts (`plan_ops.py`, `plan_codex_dispatch.py`, the Codex schema sidecars, `SKILL.md`, `dispatch-templates.md`, this design doc) against the canonical decisions declared in `plan_ops.py:CANONICAL_CONTRACT`. It is invoked through `plan_ops.py audit` and is the readiness check operators run **before any rerun** and **after any substantive protocol change**.
+
+```bash
+python3 plugins/plan-executor/scripts/plan_ops.py audit --json
+python3 plugins/plan-executor/scripts/plan_ops.py audit --report-file /tmp/audit.md
+```
+
+**Distinction from gates.** A gate failure means *"this run cannot proceed"* (runtime-scoped to a specific execution). A self-audit finding means *"the executor itself has drifted — fix before the next rerun"* (cross-cutting). Audit is intentionally NOT a hard preflight gate; it is advisory at Phase 0 and binding at the operator's discretion before reruns.
+
+**Checks (default-enabled unless marked advisory):**
+
+| Check | What it asserts |
+|---|---|
+| `status_vocabulary` | `ALLOWED_TASK_STATUSES` matches `CANONICAL_CONTRACT[status_vocabulary]` modulo named alias windows (`open` → `pending`). |
+| `schedule_wire_format` | `_validate_schedule` reads the canonical `id` / `index` fields (or the alias window `task_id` / `batch_index` documented in `SCHEDULE_FIELD_ALIASES`). |
+| `implementer_report_labels` | `cmd_parse_implementer_report` searches `**Concerns for reviewer:**` and `**Plan adaptations:**` literal labels. |
+| `execution_log_columns` | `cmd_finalize_execution_log` writes the canonical six-column header (Task, Agent, Reviewer, Verdict, Commit, Notes). |
+| `schemas` | `codex_implement_schema.json[blockers]` is `array of strings`; `codex_review_schema.json` requires `task_id, verdict, findings, scope_ok, acceptance_met, summary` with the canonical verdict enum (§7.2 / §7.3). |
+| `portable_tier` *(advisory; `--strict`-only until TASK-008)* | `SKILL.md` / `dispatch-templates.md` carry no `venv/bin/python` literals outside `<!-- portable_tier: legacy-example -->` marker blocks. Graduates to default-enabled after TASK-008 lands. |
+| `wrapper_isolation` | `plan_codex_dispatch.py` imports the protected-paths seam from `_plan_paths`, calls `_snapshot_baseline(` at three seams (implement, timeout-cleanup, review), and contains no `git clean -fd` outside comments / docstrings (TASK-003 State-Isolation Contract). |
+| `design_doc_orphans` | This design doc references no deprecated stubs (e.g., `--skip-analysis` outside historical / deferred markers); canonical schedule field literals (`id`, `index`) are present alongside any alias mention. |
+
+**Status vocabulary.** Each finding carries `status ∈ {pass, pass_with_alias, fail}`. `pass_with_alias` is a pass — alias windows from TASK-001 are legitimate, and the audit names the active alias explicitly so silent tolerance is impossible. `fail` is the only verdict-flipping status. Default verdict excludes advisory-tier findings; `--strict` includes them.
+
+**Verification rerun integration.** Any rerun of the §14 verification plan above MUST be preceded by a green `audit --json`. The exit code of `audit` is the operator's go/no-go signal; a non-zero exit means an executor invariant has drifted and the verification scenarios would be measuring the wrong thing.
+
 ---
 
 ## 15. Codex-Proposed Interface Contract
