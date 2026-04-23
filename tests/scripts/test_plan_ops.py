@@ -1196,6 +1196,43 @@ LEGACY_ALIAS_SCHEDULE = {
 }
 
 
+def _schedule_plan_file_fixture() -> dict:
+    return {
+        "outcome": "valid",
+        "tasks": [
+            {
+                "id": "001",
+                "agent": "claude",
+                "files": ["src/foo.py"],
+                "dependencies": [],
+                "acceptance_criteria": ["passes"],
+                "plan_file": "TASK-001_alpha.md",
+            },
+            {
+                "id": "002",
+                "agent": "codex",
+                "files": ["src/bar.py"],
+                "dependencies": ["001"],
+                "acceptance_criteria": ["passes"],
+            },
+            {
+                "id": "003",
+                "agent": "codex",
+                "files": ["src/baz.py"],
+                "dependencies": [],
+                "acceptance_criteria": ["passes"],
+                "plan_file": "TASK-003-beta.md",
+            },
+        ],
+        "batches": [
+            {"index": 1, "task_ids": ["001", "003"], "file_locks": ["src/baz.py", "src/foo.py"]},
+            {"index": 2, "task_ids": ["002"], "file_locks": ["src/bar.py"]},
+        ],
+        "gaps": [],
+        "risks": [],
+    }
+
+
 class TestParseSchedule:
     def test_valid(self) -> None:
         cp = subprocess.run(
@@ -1460,6 +1497,119 @@ class TestParseSchedule:
         assert gaps[2]["severity"] == "hard"  # unknown → hard fail-safe
         warnings = body.get("warnings") or []
         assert any("severity" in w for w in warnings), warnings
+
+
+class TestSchedulePlanFile:
+    def test_schedule_plan_file_accept_matrix(self) -> None:
+        payload = _schedule_plan_file_fixture()
+        payload["tasks"][0]["plan_file"] = "TASK-001.md"
+        payload["tasks"][1]["plan_file"] = "child_plan-02.txt"
+        payload["tasks"][2]["plan_file"] = "Z" * 255
+        cp = _parse_schedule_payload(payload)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["errors"] == []
+        assert [t.get("plan_file") for t in body["tasks"]] == [
+            "TASK-001.md",
+            "child_plan-02.txt",
+            "Z" * 255,
+        ]
+
+    def test_schedule_plan_file_missing_field_is_allowed(self) -> None:
+        payload = _schedule_plan_file_fixture()
+        del payload["tasks"][0]["plan_file"]
+        cp = _parse_schedule_payload(payload)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["errors"] == []
+        assert "plan_file" not in body["tasks"][0]
+
+    @pytest.mark.parametrize(
+        ("value", "code"),
+        [
+            (None, "invalid-plan-file"),
+            ("", "invalid-plan-file"),
+            ("child/plan.md", "invalid-plan-file"),
+            ("child\\plan.md", "invalid-plan-file"),
+            ("..", "invalid-plan-file"),
+            ("child..plan.md", "invalid-plan-file"),
+            (".hidden.md", "invalid-plan-file"),
+            ("a" * 256, "invalid-plan-file"),
+            (123, "invalid-plan-file"),
+        ],
+    )
+    def test_schedule_plan_file_reject_matrix(self, value: object, code: str) -> None:
+        payload = _schedule_plan_file_fixture()
+        payload["tasks"][1]["plan_file"] = value
+        cp = _parse_schedule_payload(payload)
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        err = next(e for e in body["errors"] if e["code"] == code)
+        assert err["path"] == "$.tasks[1].plan_file"
+
+    def test_schedule_plan_file_rejects_nul_byte(self) -> None:
+        payload = _schedule_plan_file_fixture()
+        payload["tasks"][1]["plan_file"] = "bad\x00name.md"
+        cp = _parse_schedule_payload(payload)
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        err = next(e for e in body["errors"] if e["code"] == "invalid-plan-file")
+        assert err["path"] == "$.tasks[1].plan_file"
+
+    def test_schedule_plan_file_compute_schedule_passthrough(self) -> None:
+        payload = {"tasks": _schedule_plan_file_fixture()["tasks"]}
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "compute-schedule", "--stdin", "--json"],
+            input=json.dumps(payload),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert [t.get("plan_file") for t in body["tasks"]] == [
+            "TASK-001_alpha.md",
+            None,
+            "TASK-003-beta.md",
+        ]
+
+    def test_schedule_plan_file_filter_schedule_preserves_direct_and_transitive(
+        self, tmp_path: Path,
+    ) -> None:
+        sched = tmp_path / "schedule.json"
+        sched.write_text(json.dumps(_schedule_plan_file_fixture()), encoding="utf-8")
+        cp = _run_filter_schedule(sched, "2")
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert [t["id"] for t in body["tasks"]] == ["001", "002"]
+        assert [t.get("plan_file") for t in body["tasks"]] == [
+            "TASK-001_alpha.md",
+            None,
+        ]
+
+    def test_schedule_plan_file_batch_next_accepts_schedule_entries(
+        self, tmp_path: Path,
+    ) -> None:
+        sched = _write_schedule(tmp_path, _schedule_plan_file_fixture())
+        cp = _run_batch_next(sched, parallel=2)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert set(body.keys()) == {
+            "batch_index", "task_ids", "file_locks", "scheduler_stuck"
+        }
+        assert sorted(body["task_ids"]) == ["001", "003"]
+
+    def test_schedule_plan_file_write_schedule_round_trip(self, tmp_path: Path) -> None:
+        dest = tmp_path / "schedule.json"
+        payload = _schedule_plan_file_fixture()
+        cp = _run_write_schedule(payload, dest)
+        assert cp.returncode == 0, cp.stderr
+        written = json.loads(dest.read_text(encoding="utf-8"))
+        assert [t.get("plan_file") for t in written["tasks"]] == [
+            "TASK-001_alpha.md",
+            None,
+            "TASK-003-beta.md",
+        ]
 
 
 # ---------------------------------------------------------------------------

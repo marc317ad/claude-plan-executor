@@ -228,6 +228,7 @@ ALLOWED_TASK_FIELDS = {
     "id", "task_id",
     "title", "agent", "priority", "files", "dependencies",
     "test_command", "classification_reason", "acceptance_criteria",
+    "plan_file",
 }
 ALLOWED_BATCH_FIELDS = {"index", "batch_index", "task_ids", "file_locks"}
 # TASK-002: formalize hard-vs-soft gap severity. Hard gaps block execution
@@ -247,6 +248,20 @@ GAP_SEVERITY = {
 def classify_gap_severity(gap_type: str) -> str:
     """Return "hard" or "soft" for a gap type. Unknown types → "hard"."""
     return GAP_SEVERITY.get(gap_type, "hard")
+
+
+def _is_valid_plan_file_basename(value: str) -> bool:
+    if not value:
+        return False
+    if value.startswith("."):
+        return False
+    if "/" in value or "\\" in value:
+        return False
+    if ".." in value:
+        return False
+    if "\x00" in value:
+        return False
+    return len(value.encode("utf-8")) <= 255
 
 
 PRIORITY_RANKS = {
@@ -626,6 +641,18 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                         "form /^\\d{3}[A-Z]?$/"
                     ),
                 })
+            if "plan_file" in t:
+                plan_file = t.get("plan_file")
+                if not isinstance(plan_file, str) or not _is_valid_plan_file_basename(plan_file):
+                    errors.append({
+                        "path": f"$.tasks[{i}].plan_file",
+                        "code": "invalid-plan-file",
+                        "message": (
+                            "plan_file must be a non-empty POSIX-portable basename "
+                            "with no path separators, '..', leading dot, NUL byte, "
+                            "or length > 255 bytes"
+                        ),
+                    })
             for key in t.keys():
                 if key not in ALLOWED_TASK_FIELDS:
                     msg = f"tasks[{i}] unknown field {key!r}"
@@ -2307,6 +2334,7 @@ def cmd_compute_schedule(args: argparse.Namespace) -> None:
 
     topo, batches, errors = _compute_schedule_batches(tasks)
     result = {
+        "tasks": tasks,
         "topo": topo,
         "batches": batches,
         "errors": errors,

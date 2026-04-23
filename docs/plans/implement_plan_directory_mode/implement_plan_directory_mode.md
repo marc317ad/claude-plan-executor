@@ -55,7 +55,7 @@ Threading a per-task `plan_file: "<child-basename>"` through the schedule (valid
 
 ### TASK-001: Schedule carries per-task `plan_file`
 
-- **Status:** open
+- **Status:** done
 - **Priority:** high
 - **Agent:** codex
 - **Files:**
@@ -112,7 +112,7 @@ The only subcommand among the five write sites that needs internal-logic changes
 - **Files:**
   - plugins/plan-executor/agents/plan-analyst.md
 - **Dependencies:** TASK-001
-- **Test command:** none
+- **Test command:** none (documentation-only; exercised end-to-end by TASK-004)
 - **Acceptance criteria:**
   - Prompt documents a new input contract: the analyst accepts either a single `.md` file path (existing behavior) or a directory path containing `00_INDEX.json` + one-or-more child `.md` files (new).
   - Directory-input flow: (1) read `<dir>/00_INDEX.json`, (2) read every child plan file named in `chunks[].file`, (3) extract `### TASK-NNN` blocks from every child, (4) emit a unified `tasks[]` in which every entry carries `plan_file: "<child-basename>"` (basename only — NOT an absolute path; the orchestrator resolves against `<dir>` at write time), (5) emit `batches[]` derived from the union of per-child `**Dependencies:**` bullets AND roster `chunks[].depends_on`.
@@ -135,10 +135,10 @@ The analyst subagent reads files directly (it has the Read tool). `00_INDEX.json
 - **Agent:** claude
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md
-  - tests/fixtures/directory_mode_plan/00_INDEX.json
-  - tests/fixtures/directory_mode_plan/TASK-001_seed.md
-  - tests/fixtures/directory_mode_plan/TASK-002_write_a.md
-  - tests/fixtures/directory_mode_plan/TASK-003_write_b.md
+  - tests/fixtures/directory_mode_plan/00_INDEX.json (create)
+  - tests/fixtures/directory_mode_plan/TASK-001_seed.md (create)
+  - tests/fixtures/directory_mode_plan/TASK-002_write_a.md (create)
+  - tests/fixtures/directory_mode_plan/TASK-003_write_b.md (create)
   - tests/scripts/test_plan_ops.py
 - **Dependencies:** TASK-001, TASK-002, TASK-003
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k "directory_mode" -x`
