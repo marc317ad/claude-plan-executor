@@ -1,0 +1,129 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Schedule carries per-task plan_file",
+      "agent": "codex",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"schedule_plan_file\" -x",
+      "classification_reason": "Schema addition, mechanical"
+    },
+    {
+      "id": "002",
+      "title": "block-dependents multi-file cascade",
+      "agent": "codex",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"block_dependents_multi_file\" -x",
+      "classification_reason": "Loop refactor, bounded"
+    },
+    {
+      "id": "003",
+      "title": "Plan-analyst directory-mode input",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/agents/plan-analyst.md"
+      ],
+      "test_command": "none (documentation-only; exercised end-to-end by TASK-004)",
+      "classification_reason": "Subagent prompt, testing deferred"
+    },
+    {
+      "id": "004",
+      "title": "Orchestrator directory-mode driver",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/fixtures/directory_mode_plan/00_INDEX.json",
+        "tests/fixtures/directory_mode_plan/TASK-001_seed.md",
+        "tests/fixtures/directory_mode_plan/TASK-002_write_a.md",
+        "tests/fixtures/directory_mode_plan/TASK-003_write_b.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"directory_mode\" -x",
+      "classification_reason": "Multi-file wiring, new fixture"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002",
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-analyst.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "004"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/fixtures/directory_mode_plan/00_INDEX.json",
+        "tests/fixtures/directory_mode_plan/TASK-001_seed.md",
+        "tests/fixtures/directory_mode_plan/TASK-002_write_a.md",
+        "tests/fixtures/directory_mode_plan/TASK-003_write_b.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [
+    {
+      "type": "test-deferred",
+      "affected_tasks": [
+        "003",
+        "004"
+      ],
+      "detail": "TASK-003 Test command: none (documentation-only; exercised end-to-end by TASK-004)"
+    },
+    {
+      "type": "codex-scope-boundary",
+      "affected_tasks": [
+        "002"
+      ],
+      "detail": "~40 estimated lines approaches 30-line Codex threshold; acceptance criteria describe loop refactor + 6 test cases"
+    },
+    {
+      "type": "same-file-across-batches",
+      "affected_tasks": [
+        "001",
+        "002",
+        "004"
+      ],
+      "detail": "tests/scripts/test_plan_ops.py appears in Batches 1, 2, and 3; serial across batches, safe"
+    },
+    {
+      "type": "same-file-across-batches",
+      "affected_tasks": [
+        "001",
+        "002"
+      ],
+      "detail": "plugins/plan-executor/scripts/plan_ops.py appears in Batches 1 and 2; serial across batches, safe"
+    }
+  ]
+}

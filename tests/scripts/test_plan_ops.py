@@ -4054,6 +4054,46 @@ class TestPreflightDirtyCategorization:
         assert "scratch.py" in body["dirty_files"]["source_blocking"]
         assert body["pass"] is False
 
+    def test_foreign_schedule_sidecar_is_orchestrator_state(self, tmp_git_repo: Path) -> None:
+        """A leftover schedule sidecar belonging to a DIFFERENT plan (e.g.
+        from a paused prior run) is orchestrator_state, not source_blocking.
+        Regression for a preflight classifier bug where `is_commit_always_ignore`
+        is scoped to the current plan's basename, so foreign `*.schedule.json`
+        files at `docs/plans/` fell through to `source_blocking`. The fix
+        recognizes any `*.schedule.json` under the plan_dir as bookkeeping."""
+        # Flat-layout foreign sidecar — the exact shape of the real incident.
+        (tmp_git_repo / "docs" / "plans" / "other_plan.schedule.json").write_text(
+            '{"tasks": []}\n', encoding="utf-8"
+        )
+        # Directory-mode foreign sidecar. Commit a sibling .md first so the
+        # plan subfolder is tracked; without that, default `git status` would
+        # collapse the whole folder to one untracked-directory line.
+        nested_dir = tmp_git_repo / "docs" / "plans" / "nested_plan"
+        nested_dir.mkdir()
+        (nested_dir / "nested_plan.md").write_text("# nested\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(tmp_git_repo), "add", "docs/plans/nested_plan/nested_plan.md"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_git_repo), "commit", "-m", "add nested plan"],
+            check=True,
+            env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+        )
+        (nested_dir / "nested_plan.schedule.json").write_text(
+            '{"tasks": []}\n', encoding="utf-8"
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = self._preflight(tmp_git_repo, plan)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body["pass"] is True
+        assert body["dirty_files"]["source_blocking"] == []
+        orch = body["dirty_files"]["orchestrator_state"]
+        assert any("other_plan.schedule.json" in p for p in orch)
+        assert any("nested_plan/nested_plan.schedule.json" in p for p in orch)
+
     def test_untracked_tests_dir_is_source_blocking(self, tmp_git_repo: Path) -> None:
         tests_dir = tmp_git_repo / "tests"
         tests_dir.mkdir()

@@ -2173,6 +2173,13 @@ def _is_preflight_always_ignored(path: str, plan_dir: str, plan_basename: str) -
     if pd:
         if path == f"{pd}/_run_log.jsonl" or path == f"{pd}/_run_lock.json":
             return True
+    # Any schedule sidecar under the plan_dir is orchestrator_state, even
+    # if it belongs to a different plan (e.g. a paused run's leftover).
+    # Mirrors PROTECTED_PATH_GLOBS in _plan_paths.py; commit-task stays
+    # tight via is_commit_always_ignore (scoped to the current plan).
+    if path.endswith(".schedule.json"):
+        if path.startswith("docs/plans/") or (pd and path.startswith(f"{pd}/")):
+            return True
     return False
 
 
