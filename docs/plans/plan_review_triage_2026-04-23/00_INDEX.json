@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "Phase 1.5.5 — plan-review triage third-opinion for Codex needs-replan",
+  "created": "2026-04-23",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "parallel_batches": [
+    [
+      "001"
+    ],
+    [
+      "002",
+      "005"
+    ],
+    [
+      "003"
+    ],
+    [
+      "004"
+    ]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "plan_review_triage_2026-04-23.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "plan_review_triage_2026-04-23.md",
+      "priority": "high",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "plan_review_triage_2026-04-23.md",
+      "priority": "high",
+      "depends_on": [
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "plan_review_triage_2026-04-23.md",
+      "priority": "high",
+      "depends_on": [
+        "003"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "plan_review_triage_2026-04-23.md",
+      "priority": "medium",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
