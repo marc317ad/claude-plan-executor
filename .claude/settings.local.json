@@ -31,7 +31,8 @@
       "Bash(git -C /mnt/d/claude-plan-executor log --oneline --all --grep \"TASK-002\")",
       "Bash(bash *)",
       "Bash(/mnt/d/claude-plan-executor/venv/bin/python *)",
-      "Bash(export CLAUDE_PLUGIN_ROOT=/mnt/d/claude-plan-executor/plugins/plan-executor)"
+      "Bash(export CLAUDE_PLUGIN_ROOT=/mnt/d/claude-plan-executor/plugins/plan-executor)",
+      "Bash(python3 /mnt/d/claude-plan-executor/plugins/plan-executor/scripts/plan_ops.py audit --json)"
     ]
   }
 }
