@@ -1,0 +1,31 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "007A",
+      "title": "Self-audit follow-ups (text rendering, strict-mode isolation, schema enum order)",
+      "agent": "claude",
+      "priority": "low",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"audit or canonical_contract or schemas\"",
+      "classification_reason": "Multi-file, three distinct fixes"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "007A"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

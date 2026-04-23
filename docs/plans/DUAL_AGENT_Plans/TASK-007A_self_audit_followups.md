@@ -166,3 +166,11 @@ Starting SHA: `469e941734658ea301d3457844142e78fa72d684`  → Ending SHA: `469e9
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 007A | claude | codex | needs-rework (pass-2, paused) [narrow-remediation] | (none — paused) | D.2a.6 pass-2 re-litigates pass-1 spec-deference (finding 0 status-vs-severity). Awaiting user disposition: revert / keep-as-is / hand-fix. |
+
+## Execution log — 20260423T094734 (success)
+
+Starting SHA: `469e941734658ea301d3457844142e78fa72d684`  → Ending SHA: `207f80a025c1a2b02bb61c547408885a7a235047`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 007A | claude | claude | ship-with-fixes [narrow-remediation] [disagreement: 0,2] [pass-2-user-override] | 207f80a | D.2a.6: pass-1 codex needs-rework (3 findings); D.5 adjudication split 1 load-bearing / 0 spec-deference / 2 dismissed. Narrow remediation applied and tested green. Pass-2 codex returned needs-rework with 3 findings (1 re-litigated spec-deference; 2 new nits: em-dash, test-tightening). User overrode the D.2a.6 pause and directed hand-edits addressing all three pass-2 findings (bullet bracket now reads severity->tier, em-dash replaced with ASCII, test bullet contract tightened). Re-review intentionally bypassed per user direction. |
