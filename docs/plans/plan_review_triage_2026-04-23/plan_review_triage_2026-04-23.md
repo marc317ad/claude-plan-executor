@@ -102,11 +102,11 @@ The triage subagent is a fresh, no-conversation-context dispatch. Source-code re
 
 ### TASK-001: Triage schema + source-parameterized parser subcommand
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** codex
 - **Files:**
-  - plugins/plan-executor/scripts/codex_plan_review_triage_schema.json
+  - plugins/plan-executor/scripts/codex_plan_review_triage_schema.json (create)
   - plugins/plan-executor/scripts/plan_ops.py
   - tests/scripts/test_plan_ops.py
 - **Dependencies:** none
@@ -136,7 +136,7 @@ Pure parser + schema addition; no orchestrator wiring yet. Mirror `parse-plan-re
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
-  - plugins/plan-executor/agents/plan-review-triage.md
+  - plugins/plan-executor/agents/plan-review-triage.md (create)
 - **Dependencies:** TASK-001
 - **Test command:** none (agent spec; exercised by TASK-004's integration)
 - **Acceptance criteria:**
@@ -206,7 +206,7 @@ Place the new section AFTER Phase 1.5a (plan-author) and BEFORE Phase B (plan-im
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md
 - **Dependencies:** TASK-003
-- **Test command:** none (orchestrator prose; validated by `plan_ops.py audit --json` reading canonical-contract cross-references)
+- **Test command:** none (orchestrator prose; exercised by TASK-006's integration harness)
 - **Acceptance criteria:**
   - **Two new CLI flags** added to the `## Parse arguments` CLI surface (currently at `SKILL.md:102-120`):
     - `--codex-plan-review-binding` — docstring: "Codex `needs-replan` on plan review goes straight to halt; no plan-review-triage third-opinion escalation."
@@ -267,6 +267,30 @@ Defense-in-depth beyond TASK-001's unit tests. TASK-001 tests the parser in isol
 
 **Implementation notes:**
 The `_plan_review_envelope` helper at `test_plan_ops.py:6827` is the shape to mirror. Use the existing CLI-subprocess pattern (`self._run_parser(envelope)`) — live subprocess-invocations of `plan_ops.py` are how the existing plan-review parser tests are structured, and they catch CLI wiring regressions that pure-Python unit tests would miss. No triage subagent dispatch in the test — construct the markdown-report-with-embedded-JSON payload directly via a helper. Use `@pytest.mark.parametrize("source", ["plan-analyst", "codex-plan-review"])` to parameterize each test method over the two sources; the envelope body is shared (source-agnostic schema output), only the CLI flag differs.
+
+### TASK-006: Integration harness for Phase 1-triage / Phase 1.5.5 orchestrator wiring
+
+- **Status:** pending
+- **Priority:** medium
+- **Agent:** codex
+- **Files:**
+  - tests/scripts/test_plan_ops.py
+- **Dependencies:** TASK-004
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k "plan_review_triage_integration" -x`
+- **Acceptance criteria:**
+  - A new test class `TestPlanReviewTriageIntegration` in `tests/scripts/test_plan_ops.py` exercises the end-to-end orchestrator wiring landed in TASK-004 for BOTH insertion points (Phase 1-triage on the analyst path, Phase 1.5.5 on the Codex-plan-review path) without requiring a live subagent dispatch.
+  - For each source `∈ {plan-analyst, codex-plan-review}` and each verdict `∈ {ship, ship-with-fixes, partial-agreement, needs-rework}`, the harness drives a synthetic triage-report envelope through the parser and asserts the routing decision the orchestrator would take matches the SKILL.md prose from TASK-004 (proceed vs plan-author dispatch vs halt).
+  - Exercise the CLI flag matrix: `--analyst-binding` short-circuits the analyst path with `run_end reason=plan_analyst_failed`; `--codex-plan-review-binding` short-circuits the Codex path with `run_end reason=plan_review_failed`; `--allow-gaps` pre-triage short-circuit on the analyst path preserved; `--no-auto-revise` preserved on the Codex path. Each flag assertion is a dedicated test method.
+  - Run-log event ordering assertions: for each source, assert the documented `plan_review_triage_start` → `plan_review_triage_done` event pair is emitted with the correct `source` field and that the downstream event (`schedule_written` | `plan_author_start` for analyst; `batch_start` | `plan_author_start` for Codex) follows per-verdict.
+  - Summary carryover assertions: `ship` → bare `[plan-review-disagreement]` (Codex) / `[analyst-triage-disagreement]` (analyst) banner; `ship-with-fixes` → items verbatim in "Plan review notes" (Codex) / "Analyst triage notes" (analyst); `partial-agreement` → dismissed indices listed.
+  - No live subagent dispatch and no live orchestrator subprocess — stub the Agent dispatch at the same seam the existing integration tests use, and validate the parser → routing contract via the synthesized run-log + summary payloads.
+- **Reversion guidance:** `git restore tests/scripts/test_plan_ops.py`
+
+**Description:**
+The deferred-testing target for TASK-002's agent spec, TASK-003's dispatch template, and TASK-004's SKILL.md orchestrator wiring. TASK-005 covers the parser contract in isolation (per source); TASK-006 covers the orchestrator's consumption of that contract at both insertion points end-to-end. Until this harness lands, the orchestrator wiring in TASK-004 is prose-only; TASK-006 is where the SKILL.md routing documentation is validated against actual orchestrator behavior for both sources.
+
+**Implementation notes:**
+Mirror the fixture-factory pattern from TASK-005's `_plan_review_triage_envelope` helper. The routing-decision assertion seam is wherever the existing plan-review integration tests (if any) stub the Agent dispatch today — follow that convention rather than inventing a new harness shape. Parameterize aggressively: source × verdict × flag combinations are a small Cartesian product and each cell is a one-liner assertion once the fixtures are in place.
 
 ## Expected outcome
 

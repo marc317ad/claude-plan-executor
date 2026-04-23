@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["ship", "ship-with-fixes", "partial-agreement", "needs-rework"]
+    },
+    "load_bearing": {
+      "type": "array",
+      "items": { "type": "integer" }
+    },
+    "dismissed": {
+      "type": "array",
+      "items": { "type": "integer" }
+    },
+    "summary": { "type": "string" }
+  },
+  "required": ["verdict", "load_bearing", "dismissed", "summary"],
+  "additionalProperties": false
+}

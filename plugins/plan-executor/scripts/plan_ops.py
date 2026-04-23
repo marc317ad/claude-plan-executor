@@ -107,6 +107,10 @@ ALLOWED_CLAUDE_REVIEW_VERDICTS = {
     "partial-agreement",
     "needs-rework",
 }
+ALLOWED_PLAN_REVIEW_TRIAGE_SOURCES = {
+    "plan-analyst",
+    "codex-plan-review",
+}
 # Phase 1.5 Codex plan-review verdicts (TASK-014C). Distinct from the
 # code-level review verdicts above because a plan review operates on plan
 # markdown + schedule JSON, not a diff, and drives a different routing table
@@ -1143,6 +1147,155 @@ def _validate_d5_adjudication_payload(
                                 f"length {codex_findings_count}"
                             ),
                         })
+
+    return errors
+
+
+def _extract_last_fenced_json_block(text: str) -> str | None:
+    matches = list(
+        re.finditer(r"```json[ \t]*\r?\n(.*?)\r?\n```", text, re.DOTALL)
+    )
+    if not matches:
+        return None
+    return matches[-1].group(1)
+
+
+def _validate_plan_review_triage_payload(
+    payload: object,
+    *,
+    findings_count: int,
+    source: str,
+) -> list[dict]:
+    errors: list[dict] = []
+    if not isinstance(payload, dict):
+        return [{
+            "path": "$",
+            "code": "invalid-type",
+            "message": "triage payload must be a JSON object",
+        }]
+
+    required = {
+        "verdict": str,
+        "load_bearing": list,
+        "dismissed": list,
+        "summary": str,
+    }
+    for key, typ in required.items():
+        if key not in payload:
+            errors.append({
+                "path": f"$.{key}",
+                "code": "missing-field",
+                "message": f"triage payload missing required field {key!r}",
+            })
+            continue
+        value = payload[key]
+        ok = isinstance(value, typ)
+        if not ok:
+            errors.append({
+                "path": f"$.{key}",
+                "code": "invalid-type",
+                "message": (
+                    f"triage field {key!r} must be a {typ.__name__}"
+                ),
+            })
+
+    verdict = payload.get("verdict")
+    if (
+        isinstance(verdict, str)
+        and verdict not in ALLOWED_CLAUDE_REVIEW_VERDICTS
+    ):
+        errors.append({
+            "path": "$.verdict",
+            "code": "invalid-reviewer-verdict",
+            "message": (
+                f"triage verdict must be one of "
+                f"{sorted(ALLOWED_CLAUDE_REVIEW_VERDICTS)}, got {verdict!r}"
+            ),
+        })
+
+    noun = "gap" if source == "plan-analyst" else "finding"
+
+    def _check_bucket(name: str) -> list[int] | None:
+        value = payload.get(name)
+        if not isinstance(value, list):
+            return None
+        cleaned: list[int] = []
+        had_type_error = False
+        for i, item in enumerate(value):
+            if not isinstance(item, int) or isinstance(item, bool):
+                errors.append({
+                    "path": f"$.{name}[{i}]",
+                    "code": "invalid-type",
+                    "message": (
+                        f"triage field {name!r}[{i}] must be an integer "
+                        f"index, got {type(item).__name__}"
+                    ),
+                })
+                had_type_error = True
+                continue
+            cleaned.append(item)
+        if had_type_error:
+            return None
+        return cleaned
+
+    load_bearing = _check_bucket("load_bearing")
+    dismissed = _check_bucket("dismissed")
+
+    if load_bearing is not None and dismissed is not None:
+        if verdict == "partial-agreement":
+            if len(load_bearing) == 0:
+                errors.append({
+                    "path": "$.load_bearing",
+                    "code": "partial-agreement-invalid-split",
+                    "message": (
+                        "partial-agreement requires a non-empty "
+                        "'load_bearing' bucket"
+                    ),
+                })
+            if len(dismissed) == 0:
+                errors.append({
+                    "path": "$.dismissed",
+                    "code": "partial-agreement-invalid-split",
+                    "message": (
+                        "partial-agreement requires a non-empty "
+                        "'dismissed' bucket"
+                    ),
+                })
+
+        overlap = sorted(set(load_bearing) & set(dismissed))
+        if overlap:
+            errors.append({
+                "path": "$.load_bearing",
+                "code": "triage-buckets-not-disjoint",
+                "message": (
+                    f"triage buckets must be disjoint; indices {overlap} "
+                    f"appear in both 'load_bearing' and 'dismissed'"
+                ),
+            })
+
+        for name, bucket in (
+            ("load_bearing", load_bearing),
+            ("dismissed", dismissed),
+        ):
+            for i, idx in enumerate(bucket):
+                if idx < 0 or idx >= findings_count:
+                    errors.append({
+                        "path": f"$.{name}[{i}]",
+                        "code": "triage-index-out-of-range",
+                        "message": (
+                            f"{noun} index {idx} out of range for "
+                            f"{findings_count} {noun}s"
+                        ),
+                    })
+
+    allowed_keys = set(required.keys())
+    for key in payload.keys():
+        if key not in allowed_keys:
+            errors.append({
+                "path": f"$.{key}",
+                "code": "unknown-parsed-field",
+                "message": f"triage payload has unknown field {key!r}",
+            })
 
     return errors
 
@@ -3145,6 +3298,87 @@ def cmd_parse_d5_adjudication(args: argparse.Namespace) -> None:
         "summary": payload.get("summary", ""),
         "load_bearing": load_bearing,
         "dismissed": dismissed,
+        "errors": [],
+    }
+    _emit(args, result)
+
+
+def cmd_parse_plan_review_triage_report(args: argparse.Namespace) -> None:
+    raw = sys.stdin.read()
+    if not raw.strip():
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "empty-stdin",
+            "message": (
+                "parse-plan-review-triage-report expects a markdown report "
+                "on stdin"
+            ),
+        }]})
+
+    source = args.source
+    if source is None:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "triage-source-missing",
+            "message": "--source is required",
+        }]})
+    if source not in ALLOWED_PLAN_REVIEW_TRIAGE_SOURCES:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "triage-source-unknown",
+            "message": (
+                f"--source must be one of "
+                f"{sorted(ALLOWED_PLAN_REVIEW_TRIAGE_SOURCES)}, got {source!r}"
+            ),
+        }]})
+
+    count = args.findings_count
+    if count is None:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "invalid-findings-count",
+            "message": "--findings-count is required",
+        }]})
+    if count < 0:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "invalid-findings-count",
+            "message": (
+                f"--findings-count must be non-negative, got {count}"
+            ),
+        }]})
+
+    payload_text = _extract_last_fenced_json_block(raw)
+    if payload_text is None:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "triage-report-missing-json",
+            "message": "triage report is missing a fenced ```json block",
+        }]})
+
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "json-decode",
+            "message": f"triage JSON block is not valid JSON: {exc}",
+        }]})
+
+    errors = _validate_plan_review_triage_payload(
+        payload, findings_count=count, source=source,
+    )
+    if errors:
+        _die(args, {"errors": errors})
+
+    assert isinstance(payload, dict)
+    result = {
+        "verdict": payload.get("verdict"),
+        "load_bearing": payload.get("load_bearing"),
+        "dismissed": payload.get("dismissed"),
+        "summary": payload.get("summary"),
+        "findings_count": count,
+        "source": source,
         "errors": [],
     }
     _emit(args, result)
@@ -6559,6 +6793,29 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Read plan-review envelope JSON from stdin")
     _add_json(p_prr)
 
+    p_prt = sub.add_parser(
+        "parse-plan-review-triage-report",
+        help=(
+            "Parse the plan-review triage markdown report, extract the "
+            "last fenced JSON payload, and validate the shared verdict "
+            "contract against the supplied source/count context"
+        ),
+    )
+    p_prt.add_argument("--stdin", action="store_true", required=True,
+                       help="Read triage report markdown from stdin")
+    p_prt.add_argument(
+        "--source",
+        help="Evidence source: plan-analyst gaps or codex-plan-review findings",
+    )
+    p_prt.add_argument(
+        "--findings-count", type=int,
+        help=(
+            "Length of the evidence array the triage report is indexing "
+            "(plan-analyst gaps[] or codex-plan-review findings[])"
+        ),
+    )
+    _add_json(p_prt)
+
     p_d5 = sub.add_parser(
         "parse-d5-adjudication",
         help=(
@@ -6965,6 +7222,7 @@ def main(argv: list[str] | None = None) -> None:
         "filter-schedule": cmd_filter_schedule,
         "parse-implementer-report": cmd_parse_implementer_report,
         "parse-plan-review-report": cmd_parse_plan_review_report,
+        "parse-plan-review-triage-report": cmd_parse_plan_review_triage_report,
         "parse-d5-adjudication": cmd_parse_d5_adjudication,
         "commit-task": cmd_commit_task,
         "fail-task": cmd_fail_task,
