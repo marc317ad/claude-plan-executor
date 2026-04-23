@@ -1,7 +1,7 @@
 # Plan: Phase D State Machine + Injection Hardening
 
 **Created:** 2026-04-20
-**Status:** draft — pending Codex review
+**Status:** draft — Codex review 2026-04-20 (`needs-replan`, important finding on TASK-003 sanitizer contract addressed below)
 **Base branch:** main
 **Related:**
 - `plugins/plan-executor/skills/implement-plan/SKILL.md`
@@ -20,7 +20,7 @@ Move Phase D routing and orchestrator-tracked state out of the `implement-plan` 
 
 The SKILL (~500 lines) asks the orchestrator to (a) maintain state (`ready`, `done`, `failed`, `locked_files`, `committed`, `review_notes`, retry budgets) across long turns, and (b) navigate nested routing: D.2 → D.2a → D.5 → {D.2a.5, D.2a.6} → pause. LLMs drift under this load. The routing is deterministic given structured inputs — it belongs in Python.
 
-The injection issue is narrower but load-bearing: the SKILL implicitly relies on the orchestrator to notice injections in subagent outputs. That puts untrusted payload in the highest-privilege context. Correct layering: (1) Codex wrapper enforces strict JSON envelope perimeter; (2) free-text fields are length-capped and format-stripped; (3) known injection shapes are flagged into `extra.sanitizer_flags[]`; (4) an optional unprivileged sanitizer subagent emits verdict-only without exposing the payload.
+The injection issue is narrower but load-bearing: the SKILL implicitly relies on the orchestrator to notice injections in subagent outputs. That puts untrusted payload in the highest-privilege context. Correct layering: (1) Codex wrapper enforces strict JSON envelope perimeter; (2) free-text fields are length-capped and format-stripped; (3) known injection shapes are **redacted** from free-text and flagged into `extra.sanitizer_flags[]` (pre-redaction payload logged to run-log for audit, never re-emitted to the orchestrator); (4) an optional unprivileged sanitizer subagent emits verdict-only without exposing the payload.
 
 Post-work orchestrator responsibilities collapse to three: cross-task pattern-noticing, narrative synthesis, and pause-escalation on `unknown_state`.
 
@@ -85,7 +85,7 @@ Three layers inside `plan_codex_dispatch.py`:
 
 1. **Strict outer boundary.** Bytes outside the JSON envelope on Codex stdout are dropped; counter lands in `extra.dropped_bytes`.
 2. **Content sanitization.** For `findings[].message`, `summary`, `diff_summary`, any freeform string: length-cap (default 8000 chars, marker + `extra.truncated_fields[]` on truncation), strip code fences, ATX headers, leading `>` blockquotes. Do NOT regex out general imperatives — real findings legitimately say "fix X".
-3. **Known-shape flagging.** Scan for `<system>|<user>|<assistant>` tags, `<tool_calls>` / `<function_calls>` blocks, JSON-looking `"tool":"…"` payloads, literal `Ignore (previous|prior|above) instructions`. Hits → `extra.sanitizer_flags[]` (surfaced in run summary, not routed on).
+3. **Known-shape redaction and flagging.** Scan `findings[].message`, `summary`, `diff_summary` for `<system>|<user>|<assistant>` tags, `<tool_calls>` / `<function_calls>` blocks, JSON-looking `"tool":"…"` payloads, literal `Ignore (previous|prior|above) instructions`. Each match is replaced in-place with a fixed marker `[redacted:<shape>]` and recorded in `extra.sanitizer_flags[]` as `{shape, field, count}`. The pre-redaction payload is emitted once to the run-log as a `sanitizer_redaction{shape, field, sha256}` event (payload never re-enters the envelope the orchestrator reads). Flags are surfaced in run summary but not routed on.
 
 ### 3.4 Content-sanitizer subagent (optional)
 
@@ -121,7 +121,7 @@ Codified in SKILL and enforced by the absence of a Python path for them:
 - Per-task unit tests cover new subcommands and module boundaries.
 - TASK-006 drift guard fails CI if `plan_ops.py` argparse and SKILL.md's CLI table diverge.
 - TASK-008 end-to-end smoke covers: clean commit, minor-findings commit, D.5 ship, bounded-remediation success, bounded second-failure pause, narrow success, narrow scope-violation pause, `unknown_state` pause, sanitizer-flag surfacing.
-- Manual acceptance: one real plan through `--dry-run` and for-real; run-log deltas match the pre-change baseline plus new `review_route_called{action}` and `sanitizer_flag{shape}` events only.
+- Manual acceptance: one real plan through `--dry-run` and for-real; run-log deltas match the pre-change baseline plus new `review_route_called{action}`, `sanitizer_flag{shape}`, and `sanitizer_redaction{shape, field, sha256}` events only.
 
 ## 6. Execution — parallel batches
 
@@ -206,10 +206,11 @@ Single-session parallel execution within each batch is the target.
   - `_codex_envelope_sanitizer.sanitize(envelope: dict) -> (sanitized: dict, flags: list[str])` implements §3.3 layers 2 and 3.
   - Length cap (default 8000 chars per free-text field); truncation appends `" …[truncated]"` and increments `extra.truncated_fields[]`.
   - Code fences (triple backticks), ATX headers (`^#{1,6}\s`), leading `>` blockquotes stripped from `findings[].message`, `summary`, `diff_summary`.
-  - `sanitizer_flags[]` populates on any of: `<system>|<user>|<assistant>` tags, `<tool_calls>` / `<function_calls>` blocks, JSON-looking `"tool":"…"` payloads, literal `Ignore (previous|prior|above) instructions`.
+  - Known-shape matches (`<system>|<user>|<assistant>` tags, `<tool_calls>` / `<function_calls>` blocks, JSON-looking `"tool":"…"` payloads, literal `Ignore (previous|prior|above) instructions`) are **replaced in-place** with the marker `[redacted:<shape>]` in the returned `sanitized` dict, and each match appends `{shape, field, count}` to `sanitizer_flags[]`.
+  - For each redacted match, `sanitize()` emits one run-log event `sanitizer_redaction{shape, field, sha256}` capturing the sha256 of the pre-redaction payload. The raw payload is never returned in `sanitized` and never re-emitted downstream.
   - Bytes outside the envelope on Codex stdout are dropped with a counter in `extra.dropped_bytes`; never reach stdout.
   - `plan_codex_dispatch.py implement|review|plan-review` all route through `sanitize()` before emit.
-  - Tests include a malicious fixture envelope (injected `<tool_calls>` + fake `<system>` instructions); sanitized output contains no such shapes and flags them.
+  - Tests include a malicious fixture envelope (injected `<tool_calls>` + fake `<system>` instructions); sanitized output contains `[redacted:<shape>]` markers in place of the original shapes, `sanitizer_flags[]` lists each shape/field/count, and the pre-redaction sha256 appears in the captured run-log stream.
 
 **Description:** Closes the injection gap the architectural review identified. Moves defense to the wrapper instead of trusting the orchestrator to self-police.
 
