@@ -166,7 +166,7 @@ Use `plan-author.md` and `plan-remediator.md` as the shape templates — they're
 
 ### TASK-003: Plan-triage dispatch template (source-parameterized)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**

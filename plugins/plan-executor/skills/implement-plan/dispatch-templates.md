@@ -111,6 +111,130 @@ Dispatch prompt template:
 
 After the author returns, the orchestrator re-dispatches `plan-analyst` (Phase A template) for structural re-validation of the revised plan file. If re-validation returns `invalid`, the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (valid or needs-enrichment — same allow-gaps routing as the first pass), Codex `plan-review` runs once more; that second verdict is binding.
 
+## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)
+
+Dispatched at TWO orchestrator seams sharing one template, one agent, one parser, one schema:
+
+- **Phase 1-triage (analyst-source).** After Phase A (plan-analyst) returns `outcome=needs-enrichment`, before any halt or `--allow-gaps` demotion path. Skipped when `--analyst-binding` is set (halt with `run_end reason=plan_analyst_failed`) or `--allow-gaps` is set (today's pre-triage short-circuit preserved).
+- **Phase 1.5.5 (Codex-plan-review-source).** After Phase 1.5 (Codex plan-review) returns `verdict=needs-replan`, before the Phase 1.5a `plan-author` auto-revise dispatch. Skipped when `--codex-plan-review-binding` is set (halt with `run_end reason=plan_review_failed`) or `--no-auto-revise` is set (today's halt behavior preserved).
+
+One template, one `render(templates.PlanTriage, source=<src>, ...)` call from the orchestrator; the `{source}` placeholder discriminates the embedded evidence block, the verification-move examples, and the analyst-only same-family caveat. Agent dispatch, `subagent_type: "plan-review-triage"`, `model: "sonnet"` (parity with Phase D.5 — NOT opus).
+
+Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` lines 218-280): the verdict rubric, the dismissal-evidence gate, and the output shape port across verbatim, re-scoped from "diff + task block" to "plan + schedule + source-specific evidence".
+
+> Scope: `plan_path=<absolute plan path>`, `schedule_path=<absolute schedule path>`, `source={source}`, `findings_count=<N>`.
+>
+> {source} (a plan-stage reviewer) flagged the plan and you are the third-opinion adjudicator. Independently review the plan against the reviewer's evidence array and decide whether each item is load-bearing (a ship-blocker) or can be safely dismissed. You are read-only on both the plan and the schedule — do NOT edit either file.
+>
+> Plan (verbatim):
+>
+> ```markdown
+> <full plan text>
+> ```
+>
+> **Reviewer evidence (source-discriminated):**
+>
+> *If `source == codex-plan-review`:*
+>
+> > Codex findings (verbatim from `parsed.findings` of the Phase 1.5 envelope):
+> >
+> > ```json
+> > <codex_findings_json>
+> > ```
+> >
+> > Codex summary (verbatim from `parsed.summary`):
+> >
+> > ```
+> > <codex_summary>
+> > ```
+>
+> *If `source == plan-analyst`:*
+>
+> > Analyst gaps (verbatim from the analyst's outcome payload `gaps[]`; each entry carries at minimum `location`, `severity`, `missing_field` or `detail`):
+> >
+> > ```json
+> > <analyst_gaps_json>
+> > ```
+> >
+> > Analyst outcome narrative (verbatim — `outcome`, `summary`, and any other non-array fields the analyst emitted):
+> >
+> > ```json
+> > <analyst_outcome_json>
+> > ```
+> >
+> > Analyst summary (verbatim from the analyst outcome `summary` field):
+> >
+> > ```
+> > <analyst_summary>
+> > ```
+>
+> Return your verdict (`ship | ship-with-fixes | partial-agreement | needs-rework`) and a brief justification.
+>
+> **Verdict decision rubric — pick the verdict that matches the split, not a stronger one (shared across sources):**
+>
+> 1. `ship` — you disagree with the reviewer entirely; none of the items are load-bearing. Orchestrator proceeds to the next phase with a bare `[plan-review-disagreement]` (Codex source) or `[analyst-triage-disagreement]` (analyst source) tag in the run summary.
+> 2. `ship-with-fixes` — you disagree about blockers; any residual concerns are minor notes. Orchestrator proceeds to the next phase with items carried to the summary's "Plan review notes" (Codex source) or "Analyst triage notes" (analyst source) section.
+> 3. `partial-agreement` — the items split cleanly: at least one is load-bearing AND at least one can be safely dismissed. Use this verdict ONLY when both buckets are non-empty. Dispatches `plan-author` on the load-bearing subset only; dismissed indices are recorded verbatim in the run summary.
+> 4. `needs-rework` — all items are load-bearing. Dispatches `plan-author` with the full evidence array (today's auto-revise behavior on the Codex path; a new auto-enrichment path on the analyst path).
+>
+> **Dismissal-evidence gate (required before labeling any item `dismissed`).** The decision rubric above answers *what verdict fits the split*; the dismissal-evidence gate answers *do you know the item is wrong*. Before labeling a reviewer item `dismissed`, you MUST cite one of:
+>
+> 1. **A concrete verification move** against the plan text or schedule (v1: NO source-code reading).
+> 2. **An explicit spec contradiction:** the plan's stated Acceptance criteria or Implementation Playbook mandates the behavior the reviewer objects to.
+>
+> Unverified dismissals MUST downgrade to a `minor-findings`-style note and the item still surfaces in the summary rather than being buried.
+>
+> *Source-specific verification moves — if `source == codex-plan-review`:*
+>
+> - Re-read the cited plan section and confirm Codex's finding misreads it.
+> - Check the schedule's `tasks[]` for the claimed missing entry.
+> - Verify the Acceptance criteria bullet Codex says is absent is actually present.
+>
+> *Source-specific verification moves — if `source == plan-analyst`:*
+>
+> - Re-read the task block cited by `gaps[i].location` and confirm the `missing_field` is in fact present.
+> - Check the plan's narrative Dependencies prose for an implicit reference the analyst missed.
+> - Verify the `severity:'hard'` classification against what the orchestrator would actually halt on — soft gaps with `severity:'hard'` mis-tagging are dismissible.
+>
+> *Same-family caveat (included ONLY when `source == plan-analyst`; omitted for `source == codex-plan-review`):*
+>
+> > **Same-family caveat.** The analyst is Claude/Opus and you (the triage) are Claude/Sonnet — same-family grading itself. This is epistemically weaker than cross-family review. The dismissal-evidence gate above is the primary mitigation: you MUST cite plan text or schedule evidence, not vibe-dismiss. An unverified dismissal on the analyst path is epistemically weaker than on the Codex path and MUST downgrade per the rule above. If in doubt, prefer surfacing the item as a minor note over silently dismissing it.
+>
+> **Hard rules for `partial-agreement`:**
+>
+> - Emit this verdict only when BOTH `load_bearing` and `dismissed` are non-empty. If every item is load-bearing → use `needs-rework`. If no item is → use `ship-with-fixes`. A unanimous split (empty bucket on either side) is a contract violation — the parser rejects it with `partial-agreement-invalid-split`.
+> - Indices in `load_bearing` and `dismissed` MUST be 0-based positions into the reviewer evidence array above (Codex `findings[]` or analyst `gaps[]` per source), disjoint, and in range `[0, findings_count)`. There is no `id` field on items; array index is the reference.
+>
+> **Output shape (shared across sources — the source discriminator lives in the dispatch input and the orchestrator's run-log event, NOT in your output):**
+>
+> - For `ship` / `ship-with-fixes` / `needs-rework`:
+>
+>   ```json
+>   {"verdict": "ship", "summary": "<one-line justification>"}
+>   ```
+>
+> - For `partial-agreement` (evidence array of length 4, indices 0..3):
+>
+>   ```json
+>   {
+>     "verdict": "partial-agreement",
+>     "load_bearing": [0, 2],
+>     "dismissed": [1, 3],
+>     "summary": "<one-line justification naming which items fall in which bucket>"
+>   }
+>   ```
+>
+> **Hard rules (v1):**
+>
+> - No source-code reading. The triage adjudicates against the plan prose + schedule only.
+> - No Edit / Write / Agent tools. You are read-only on the plan and the schedule.
+> - No plan-file mutation. No schedule-file mutation.
+> - `load_bearing` / `dismissed` indices MUST be into the reviewer evidence array you were given; do NOT fabricate indices or reference items not in that array.
+>
+> **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash.
+
+The orchestrator pipes the triage subagent's markdown report through `parse-plan-review-triage-report --stdin --source <src> --findings-count <N> --json` to extract the verdict and index buckets; routing is by the parser's output `{verdict, load_bearing, dismissed, summary, source, findings_count}`. See SKILL.md §Phase 1-triage and §Phase 1.5.5 for the two insertion-point wirings.
+
 ## Phase B — plan-implementer dispatch (Claude tier)
 
 > Implement this task from the plan at `<absolute plan path>`.
