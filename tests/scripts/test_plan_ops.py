@@ -10902,7 +10902,19 @@ class TestAuditCheckSubset:
 
 
 class TestAuditStrictMode:
-    """`--strict` includes advisory-tier findings in the verdict."""
+    """`--strict` includes advisory-tier findings in the verdict.
+
+    Three isolated cases exercise the three distinct mechanisms:
+
+      1. strict-only (`check=None`, `strict=True`) — strict promotes
+         advisory findings into the verdict on its own.
+      2. explicit-check-only (`check=portable_tier`, `strict=False`) —
+         naming an advisory check via `--check` forces it into the
+         verdict without `--strict`.
+      3. composed (`check=portable_tier`, `strict=True`) — both paths
+         engaged simultaneously; overall still reflects the advisory
+         finding.
+    """
 
     def test_audit_strict_includes_portable_tier(self) -> None:
         cp = _run("audit", "--strict", "--json")
@@ -10910,26 +10922,147 @@ class TestAuditStrictMode:
         names = [f["check"] for f in body["findings"]]
         assert "portable_tier" in names
 
-    def test_audit_strict_overall_includes_advisory_findings(
-        self, tmp_path: Path,
+    # The three tests below are hermetic: they monkeypatch `AUDIT_CHECKS`
+    # with a known advisory-failing check plus a known default-passing
+    # check, so the advisory finding can enter the verdict ONLY through
+    # the mechanism under test. Each test pairs a baseline run (no
+    # mechanism engaged -> `overall == "pass"`) with a run that engages
+    # exactly one mechanism -> `overall == "fail"`. A regression that
+    # broke the mechanism would flip the second assertion.
+
+    @staticmethod
+    def _fake_advisory_fail() -> dict:
+        return plan_ops._audit_finding(
+            check="fake_adv",
+            status="fail",
+            canonical={"source": "hermetic", "value": "expected"},
+            actual={"source": "hermetic", "value": "drifted"},
+            reason="hermetic advisory failure",
+            tier="advisory",
+        )
+
+    @staticmethod
+    def _fake_default_pass() -> dict:
+        return plan_ops._audit_finding(
+            check="fake_def",
+            status="pass",
+            canonical={"source": "hermetic", "value": "expected"},
+            actual={"source": "hermetic", "value": "expected"},
+            reason=None,
+            tier="default",
+        )
+
+    def _install_fake_checks(
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Verify the verdict-flip semantics directly: a synthetic strict
-        # run with a forced advisory-fail finding must report overall fail.
-        # We construct the namespace in-process so the test is hermetic
-        # to the live SKILL.md state.
+        fake_checks = (
+            ("fake_def", self._fake_default_pass, "default"),
+            ("fake_adv", self._fake_advisory_fail, "advisory"),
+        )
+        monkeypatch.setattr(plan_ops, "AUDIT_CHECKS", fake_checks)
+        monkeypatch.setattr(
+            plan_ops,
+            "AUDIT_CHECK_NAMES",
+            tuple(name for name, _, _ in fake_checks),
+        )
+        monkeypatch.setattr(
+            plan_ops,
+            "AUDIT_CHECK_TIERS",
+            {name: tier for name, _, tier in fake_checks},
+        )
+
+    def _invoke(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        *,
+        check: str | None,
+        strict: bool,
+    ) -> tuple[int, dict]:
         import argparse as _argparse
 
         ns = _argparse.Namespace(
-            json=True, list=False, check="portable_tier",
-            strict=True, report_file=None,
+            json=True, list=False, check=check,
+            strict=strict, report_file=None,
         )
-        # `cmd_audit` calls `sys.exit`; capture by catching SystemExit.
         with pytest.raises(SystemExit) as exc_info:
             plan_ops.cmd_audit(ns)
-        # Exit code 1 iff portable_tier failed (it will on pre-TASK-008).
-        # The test cares about the wiring (verdict reflects the check),
-        # not about portable_tier's specific result.
-        assert exc_info.value.code in (0, 1)
+        captured = capsys.readouterr()
+        body = json.loads(captured.out)
+        code = exc_info.value.code
+        assert isinstance(code, int)
+        return code, body
+
+    def test_strict_promotes_advisory_without_explicit_check(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Strict-only mechanism: with `check=None`, the explicit-check
+        # path cannot admit the advisory finding. Baseline (no strict)
+        # must exclude it; engaging strict must promote it.
+        self._install_fake_checks(monkeypatch)
+
+        baseline_code, baseline = self._invoke(
+            capsys, check=None, strict=False,
+        )
+        assert baseline["overall"] == "pass"
+        assert baseline_code == 0
+        # The advisory finding is still reported, just excluded from the verdict.
+        assert [f["check"] for f in baseline["findings"]] == ["fake_def", "fake_adv"]
+
+        strict_code, strict_body = self._invoke(
+            capsys, check=None, strict=True,
+        )
+        # Strict alone must promote the advisory failure into the verdict.
+        assert strict_body["overall"] == "fail"
+        assert strict_code == 1
+
+    def test_explicit_check_forces_advisory_without_strict(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Explicit-check-only mechanism: with `strict=False`, only the
+        # explicit-check path can admit the advisory finding. Baseline
+        # must exclude it; naming it via `--check` must force it in.
+        self._install_fake_checks(monkeypatch)
+
+        baseline_code, baseline = self._invoke(
+            capsys, check=None, strict=False,
+        )
+        assert baseline["overall"] == "pass"
+        assert baseline_code == 0
+
+        forced_code, forced_body = self._invoke(
+            capsys, check="fake_adv", strict=False,
+        )
+        # Explicit --check alone must force the advisory failure into the verdict.
+        assert forced_body["overall"] == "fail"
+        assert forced_code == 1
+        # Only the explicitly-requested check ran.
+        assert [f["check"] for f in forced_body["findings"]] == ["fake_adv"]
+
+    def test_strict_and_explicit_check_compose(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Composed: both paths active. Overall must still reflect the
+        # advisory failure. Baseline (no mechanism) must remain pass, so
+        # this test still rules out the "always fails" failure mode.
+        self._install_fake_checks(monkeypatch)
+
+        baseline_code, baseline = self._invoke(
+            capsys, check=None, strict=False,
+        )
+        assert baseline["overall"] == "pass"
+        assert baseline_code == 0
+
+        composed_code, composed_body = self._invoke(
+            capsys, check="fake_adv", strict=True,
+        )
+        assert composed_body["overall"] == "fail"
+        assert composed_code == 1
 
 
 class TestAuditReportFile:
@@ -10992,6 +11125,77 @@ class TestAuditFindingShape:
                 assert "reason" in loc and isinstance(loc["reason"], str)
 
 
+class TestAuditTextRender:
+    """Finding A regression: `audit` (no `--json`) prints a readable
+    plaintext summary instead of the Python dict-repr fallback.
+
+    Shape invariants:
+      * Header line `audit: <overall>`
+      * Per-finding bullet `  - [<tier>] <check>: <reason>` where
+        `<tier>` is a registered audit-check tier (`default` /
+        `advisory`).
+      * No Python-repr tokens (single-quoted dict keys, `{'...'}` braces)
+      * `--json` output unchanged (still valid JSON)
+    """
+
+    def test_default_stdout_has_audit_header(self) -> None:
+        cp = _run("audit")
+        assert cp.stdout.startswith("audit: "), (
+            f"expected leading `audit: <overall>` header; got {cp.stdout!r}"
+        )
+        # Overall is on the first line.
+        first_line = cp.stdout.splitlines()[0]
+        assert first_line in {"audit: pass", "audit: fail"}, (
+            f"header must name overall; got {first_line!r}"
+        )
+
+    def test_default_stdout_has_per_finding_bullets(self) -> None:
+        cp = _run("audit")
+        # Must contain bullets of shape `  - [<tier>] <check>: <reason>`
+        # where `<tier>` is a registered audit-check tier. The loose
+        # "any bracket-and-colon" check here would accept `[pass]` style
+        # leftovers; assert the bracket carries a tier value so a
+        # regression that re-introduces status-in-bracket would trip.
+        valid_tiers = {"default", "advisory"}
+        bullets = [
+            line for line in cp.stdout.splitlines()
+            if line.startswith("  - [")
+        ]
+        assert bullets, (
+            f"expected per-finding bullets; got {cp.stdout!r}"
+        )
+        for line in bullets:
+            end = line.find("]")
+            assert end != -1, (
+                f"bullet missing closing `]`: {line!r}"
+            )
+            bracket = line[len("  - ["):end]
+            assert bracket in valid_tiers, (
+                f"bullet bracket must be a tier value (one of {valid_tiers}); "
+                f"got {bracket!r} in line {line!r}"
+            )
+            assert ": " in line[end:], (
+                f"bullet must separate check from reason with `: `: {line!r}"
+            )
+
+    def test_default_stdout_has_no_python_repr_tokens(self) -> None:
+        cp = _run("audit")
+        # Python dict repr emits single-quoted keys like "{'overall':".
+        # The text renderer must not leak those tokens.
+        assert "{'overall'" not in cp.stdout, (
+            f"stdout carries Python dict-repr tokens: {cp.stdout!r}"
+        )
+        assert "{'findings'" not in cp.stdout
+        assert "{'check'" not in cp.stdout
+
+    def test_json_output_still_parses_as_json(self) -> None:
+        # The plaintext render must not disturb the `--json` path.
+        cp = _run("audit", "--json")
+        body = _parse_json(cp)
+        assert "overall" in body
+        assert "findings" in body
+
+
 class TestAuditPortableTierLegacyMarker:
     """The `portable_tier` check skips lines wrapped in
     `<!-- portable_tier: legacy-example -->` /
@@ -11051,6 +11255,88 @@ class TestAuditCanonicalContractShape:
     def test_alias_windows_status_vocabulary_names_open(self) -> None:
         aliases = set(plan_ops.ALIAS_WINDOWS.get("status_vocabulary", []))
         assert "open" in aliases
+
+
+class TestAuditSchemasEnumSetCompare:
+    """Finding C regression: `_check_schemas` compares the verdict enum
+    as a set, not an ordered list. Reordering the enum in the schema
+    (a non-semantic change) must not flip the check; set-mismatch
+    (missing/extra members) must still fail.
+
+    Fixtures are written to `tmp_path` and `_SCRIPT_DIR` is monkeypatched
+    so the real schema files on disk are never mutated.
+    """
+
+    _IMPL_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "blockers": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["task_id"],
+    }
+    _REQUIRED = [
+        "task_id", "verdict", "findings",
+        "scope_ok", "acceptance_met", "summary",
+    ]
+
+    def _write_schemas(
+        self,
+        tmp_path: Path,
+        verdict_enum: list[str],
+    ) -> None:
+        (tmp_path / "codex_implement_schema.json").write_text(
+            json.dumps(self._IMPL_SCHEMA), encoding="utf-8",
+        )
+        review = {
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": verdict_enum},
+            },
+            "required": list(self._REQUIRED),
+        }
+        (tmp_path / "codex_review_schema.json").write_text(
+            json.dumps(review), encoding="utf-8",
+        )
+
+    def test_reordered_enum_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Canonical order is [clean, minor-findings, needs-rework]; a
+        # reordering is a non-semantic change that must not fail.
+        self._write_schemas(
+            tmp_path, ["needs-rework", "clean", "minor-findings"],
+        )
+        monkeypatch.setattr(plan_ops, "_SCRIPT_DIR", tmp_path)
+        finding = plan_ops._check_schemas()
+        assert finding["check"] == "schemas"
+        assert finding["status"] == "pass", (
+            f"reordered enum must pass; got {finding!r}"
+        )
+
+    def test_missing_enum_member_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Dropping `needs-rework` is a real set mismatch and must fail.
+        self._write_schemas(tmp_path, ["clean", "minor-findings"])
+        monkeypatch.setattr(plan_ops, "_SCRIPT_DIR", tmp_path)
+        finding = plan_ops._check_schemas()
+        assert finding["status"] == "fail", (
+            f"missing enum member must fail; got {finding!r}"
+        )
+
+    def test_extra_enum_member_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Adding an unknown verdict is also a set mismatch -> fail.
+        self._write_schemas(
+            tmp_path,
+            ["clean", "minor-findings", "needs-rework", "bogus"],
+        )
+        monkeypatch.setattr(plan_ops, "_SCRIPT_DIR", tmp_path)
+        finding = plan_ops._check_schemas()
+        assert finding["status"] == "fail", (
+            f"extra enum member must fail; got {finding!r}"
+        )
 
 
 class TestAuditDocReferences:

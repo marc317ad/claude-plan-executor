@@ -553,7 +553,7 @@
       "depends_on": [
         "007"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Surfaced during TASK-007 run 20260423T015255 binding Codex pass-2 review; user override at awaiting_user pause dismissed 5 findings (1 critical was factually wrong; 1 important was beyond contract; 1 important was a spec-deference upgrade), and 3 legitimate quality gaps (default text render, strict-mode test isolation, schema enum order-sensitivity) were deferred to this chunk."
     }

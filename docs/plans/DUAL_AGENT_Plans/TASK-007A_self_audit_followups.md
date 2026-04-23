@@ -125,7 +125,7 @@ All pre-existing tests pass; new tests added under V1/V3/V4 also pass.
 
 ### TASK-007A: Self-audit follow-ups (text rendering, strict-mode isolation, schema enum order)
 
-- **Status:** todo
+- **Status:** done
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
@@ -158,3 +158,11 @@ For the enum-set compare, the change is one line. Be careful that the test fixtu
 
 **Reversion guidance:**
 If the text-render change causes downstream tooling to break (unlikely — `--json` was the documented machine path), revert just the `cmd_audit`/`_emit` branch and keep the test/enum changes. The three fixes are independent.
+
+## Execution log — 20260423T094734 (paused)
+
+Starting SHA: `469e941734658ea301d3457844142e78fa72d684`  → Ending SHA: `469e941734658ea301d3457844142e78fa72d684`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 007A | claude | codex | needs-rework (pass-2, paused) [narrow-remediation] | (none — paused) | D.2a.6 pass-2 re-litigates pass-1 spec-deference (finding 0 status-vs-severity). Awaiting user disposition: revert / keep-as-is / hand-fix. |

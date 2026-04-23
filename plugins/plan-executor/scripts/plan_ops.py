@@ -5478,7 +5478,10 @@ def _check_schemas() -> dict:
         problems.append(msg)
         locations.append({"path": review_relpath, "line": None, "reason": msg})
     canonical_verdicts = ["clean", "minor-findings", "needs-rework"]
-    if verdict_enum != canonical_verdicts:
+    # Enum ordering is not part of the contract — reorder in the schema
+    # should not flip the check. Compare as sets so only set-mismatch
+    # (missing/extra members) counts as drift.
+    if set(verdict_enum or []) != set(canonical_verdicts):
         msg = (
             "codex_review_schema.json[properties.verdict.enum] is "
             f"{verdict_enum!r}; canonical is {canonical_verdicts!r}"
@@ -5918,6 +5921,41 @@ AUDIT_CHECK_NAMES: tuple[str, ...] = tuple(name for name, _, _ in AUDIT_CHECKS)
 AUDIT_CHECK_TIERS: dict[str, str] = {name: tier for name, _, tier in AUDIT_CHECKS}
 
 
+def _render_audit_text(report: dict) -> str:
+    """Render the audit report as a human-readable plaintext summary.
+
+    Used by `cmd_audit` when `--json` is absent so stdout carries a
+    readable digest instead of Python's default dict repr. Format:
+      * Header `audit: <overall>`
+      * One blank line
+      * Per-finding bullet `  - [<tier>] <check>: <reason>` (reason is
+        `ok` when clean)
+      * Indented `locations:` block when the finding carries entries
+
+    `<tier>` is `finding["severity"]` when present (forward-compatible
+    with a future shape that adds one) else `finding["tier"]`
+    (default/advisory) — the closest thing the existing
+    `_audit_finding` shape has to a severity.
+    """
+    overall = report.get("overall", "fail")
+    lines: list[str] = [f"audit: {overall}", ""]
+    for finding in report.get("findings", []):
+        check = finding.get("check", "")
+        tier = finding.get("severity") or finding.get("tier", "")
+        reason = finding.get("reason") or "ok"
+        lines.append(f"  - [{tier}] {check}: {reason}")
+        locations = finding.get("locations") or []
+        if locations:
+            lines.append("    locations:")
+            for loc in locations:
+                path = loc.get("path", "")
+                line_no = loc.get("line")
+                line_suffix = f":{line_no}" if line_no is not None else ""
+                loc_reason = loc.get("reason", "")
+                lines.append(f"      - {path}{line_suffix}: {loc_reason}")
+    return "\n".join(lines) + "\n"
+
+
 def _render_audit_markdown(report: dict) -> str:
     """Render the audit report as a Markdown table for `--report-file`.
 
@@ -6033,6 +6071,12 @@ def cmd_audit(args: argparse.Namespace) -> None:
             })
 
     exit_code = 0 if overall == "pass" else 1
+    # Non-JSON path uses a structured plaintext renderer instead of the
+    # default dict-repr fallback in `_emit`; `--json` still emits the
+    # canonical JSON document as before.
+    if not getattr(args, "json", False):
+        sys.stdout.write(_render_audit_text(report))
+        sys.exit(exit_code)
     _emit(args, report, exit_code=exit_code)
 
 
