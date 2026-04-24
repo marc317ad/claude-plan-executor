@@ -1159,6 +1159,7 @@ VALID_SCHEDULE = {
             "files": ["src/foo.py"],
             "dependencies": [],
             "acceptance_criteria": ["passes"],
+            "plan_file": "sample.md",
         },
         {
             "id": "002",
@@ -1166,6 +1167,7 @@ VALID_SCHEDULE = {
             "files": ["src/bar.py"],
             "dependencies": ["001"],
             "acceptance_criteria": ["passes"],
+            "plan_file": "sample.md",
         },
     ],
     "batches": [
@@ -1186,6 +1188,7 @@ LEGACY_ALIAS_SCHEDULE = {
             "files": ["src/foo.py"],
             "dependencies": [],
             "acceptance_criteria": ["passes"],
+            "plan_file": "sample.md",
         },
     ],
     "batches": [
@@ -1197,6 +1200,10 @@ LEGACY_ALIAS_SCHEDULE = {
 
 
 def _schedule_plan_file_fixture() -> dict:
+    # TASK-008 directory-only contract: every task must declare `plan_file`.
+    # Task 002 carries a distinct `plan_file` value so passthrough/round-trip
+    # tests still verify per-task carriage (it differs from the other two so
+    # filter/order checks below can spot drift).
     return {
         "outcome": "valid",
         "tasks": [
@@ -1214,6 +1221,7 @@ def _schedule_plan_file_fixture() -> dict:
                 "files": ["src/bar.py"],
                 "dependencies": ["001"],
                 "acceptance_criteria": ["passes"],
+                "plan_file": "TASK-002_gamma.md",
             },
             {
                 "id": "003",
@@ -1292,7 +1300,8 @@ class TestParseSchedule:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a.txt"], "dependencies": []}
+                {"id": "001", "agent": "codex", "files": ["a.txt"], "dependencies": [],
+                 "plan_file": "sample.md"}
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": ["a.txt"]}
@@ -1310,7 +1319,10 @@ class TestParseSchedule:
         assert body["errors"] == []
         assert body.get("warnings") == []
 
-    def test_task_id_alias_emits_warning(self) -> None:
+    def test_task_id_alias_rejected_post_task_008(self) -> None:
+        # TASK-008 (per_task_dispatch_refactor_v2): the legacy `task_id`
+        # field alias was REMOVED. A schedule carrying it now fails
+        # `_validate_schedule` with `missing-field` on `$.tasks[i].id`.
         cp = subprocess.run(
             [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
             input=json.dumps(LEGACY_ALIAS_SCHEDULE),
@@ -1318,13 +1330,16 @@ class TestParseSchedule:
             capture_output=True,
             text=True,
         )
-        assert cp.returncode == 0, cp.stderr
+        assert cp.returncode != 0
         body = _parse_json(cp)
-        assert body["errors"] == []
-        warnings = body.get("warnings") or []
-        assert any("task_id" in w for w in warnings), warnings
+        errors = body.get("errors") or []
+        # Both legacy fields surface as missing-field errors. Match by code
+        # + path so we do not over-couple to message wording.
+        codes_paths = [(e.get("code"), e.get("path")) for e in errors]
+        assert ("missing-field", "$.tasks[0].id") in codes_paths, codes_paths
 
-    def test_batch_index_alias_emits_warning(self) -> None:
+    def test_batch_index_alias_rejected_post_task_008(self) -> None:
+        # TASK-008: the legacy `batch_index` field alias was REMOVED.
         cp = subprocess.run(
             [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
             input=json.dumps(LEGACY_ALIAS_SCHEDULE),
@@ -1332,10 +1347,11 @@ class TestParseSchedule:
             capture_output=True,
             text=True,
         )
-        assert cp.returncode == 0, cp.stderr
+        assert cp.returncode != 0
         body = _parse_json(cp)
-        warnings = body.get("warnings") or []
-        assert any("batch_index" in w for w in warnings), warnings
+        errors = body.get("errors") or []
+        codes_paths = [(e.get("code"), e.get("path")) for e in errors]
+        assert ("missing-field", "$.batches[0].index") in codes_paths, codes_paths
 
     def test_parse_schedule_rejects_needs_enrichment_with_empty_gaps(self) -> None:
         data = json.loads(json.dumps(VALID_SCHEDULE))
@@ -1515,14 +1531,18 @@ class TestSchedulePlanFile:
             "Z" * 255,
         ]
 
-    def test_schedule_plan_file_missing_field_is_allowed(self) -> None:
+    def test_schedule_plan_file_missing_field_is_rejected(self) -> None:
+        # TASK-008 directory-only contract: every task MUST declare
+        # `plan_file`. A schedule that omits it on any task is rejected by
+        # `_validate_schedule` with a structured `missing-field` error
+        # pointing at the offending index.
         payload = _schedule_plan_file_fixture()
         del payload["tasks"][0]["plan_file"]
         cp = _parse_schedule_payload(payload)
-        assert cp.returncode == 0, cp.stderr
+        assert cp.returncode == 1
         body = _parse_json(cp)
-        assert body["errors"] == []
-        assert "plan_file" not in body["tasks"][0]
+        codes_paths = [(e["code"], e["path"]) for e in body["errors"]]
+        assert ("missing-field", "$.tasks[0].plan_file") in codes_paths, codes_paths
 
     @pytest.mark.parametrize(
         ("value", "code"),
@@ -1569,7 +1589,7 @@ class TestSchedulePlanFile:
         body = _parse_json(cp)
         assert [t.get("plan_file") for t in body["tasks"]] == [
             "TASK-001_alpha.md",
-            None,
+            "TASK-002_gamma.md",
             "TASK-003-beta.md",
         ]
 
@@ -1584,7 +1604,7 @@ class TestSchedulePlanFile:
         assert [t["id"] for t in body["tasks"]] == ["001", "002"]
         assert [t.get("plan_file") for t in body["tasks"]] == [
             "TASK-001_alpha.md",
-            None,
+            "TASK-002_gamma.md",
         ]
 
     def test_schedule_plan_file_batch_next_accepts_schedule_entries(
@@ -1607,7 +1627,7 @@ class TestSchedulePlanFile:
         written = json.loads(dest.read_text(encoding="utf-8"))
         assert [t.get("plan_file") for t in written["tasks"]] == [
             "TASK-001_alpha.md",
-            None,
+            "TASK-002_gamma.md",
             "TASK-003-beta.md",
         ]
 
@@ -1737,17 +1757,19 @@ class TestCanonicalContractConstants:
     def test_pending_in_allowed_statuses(self) -> None:
         assert "pending" in plan_ops.ALLOWED_TASK_STATUSES
 
-    def test_open_alias_present_until_task_006(self) -> None:
-        # Retained as an explicit alias while sample_phase4 still emits `open`.
-        # Removal is TASK-006's responsibility; see DUAL_AGENT_PLAN_EXECUTOR.md §5.
-        assert plan_ops.STATUS_ALIASES.get("open") == "pending"
-        assert "open" in plan_ops.ALLOWED_TASK_STATUSES
+    def test_open_alias_removed_in_task_008(self) -> None:
+        # TASK-008 (per_task_dispatch_refactor_v2): the file-mode `open`
+        # alias was REMOVED. The directory-only canonical contract is
+        # the single accepted runtime form. `STATUS_ALIASES` retains its
+        # symbol as an empty dict for forward compatibility.
+        assert "open" not in plan_ops.ALLOWED_TASK_STATUSES
+        assert plan_ops.STATUS_ALIASES == {}
 
-    def test_schedule_field_aliases_declared(self) -> None:
-        assert plan_ops.SCHEDULE_FIELD_ALIASES == {
-            "task_id": "id",
-            "batch_index": "index",
-        }
+    def test_schedule_field_aliases_removed_in_task_008(self) -> None:
+        # TASK-008: the file-mode `task_id` / `batch_index` field aliases
+        # were REMOVED. `SCHEDULE_FIELD_ALIASES` retains its symbol as
+        # an empty dict for forward compatibility.
+        assert plan_ops.SCHEDULE_FIELD_ALIASES == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1889,9 +1911,9 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
-                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "003"], "file_locks": ["a", "c"]},
@@ -1914,9 +1936,9 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
-                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "003"], "file_locks": ["a", "c"]},
@@ -1942,8 +1964,8 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": ["002"]},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": ["002"], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
@@ -1965,8 +1987,8 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": ["002"]},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": ["002"], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
@@ -1990,9 +2012,9 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
-                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
@@ -2013,9 +2035,9 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
-                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
@@ -2035,9 +2057,9 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
-                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "003", "agent": "codex", "files": ["c"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002", "003"],
@@ -2064,8 +2086,8 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
@@ -2085,7 +2107,7 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
@@ -2102,8 +2124,8 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
@@ -2123,9 +2145,9 @@ class TestBatchNextBatchFidelity:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": ["002"]},
+                 "dependencies": ["002"], "plan_file": "sample.md"},
                 {"id": "002", "agent": "claude", "files": ["b"],
-                 "dependencies": ["001"]},
+                 "dependencies": ["001"], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002"],
@@ -2145,8 +2167,8 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
@@ -2170,7 +2192,7 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
@@ -2192,7 +2214,7 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [],
         })
@@ -2210,7 +2232,7 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": [], "file_locks": []},
@@ -2231,8 +2253,8 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
@@ -2254,8 +2276,8 @@ class TestBatchNextBatchFidelity:
         sched = _write_schedule(tmp_path, {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"]},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
@@ -2372,13 +2394,19 @@ class TestParseImplementerReport:
         body = _parse_json(cp)
         assert body["plan_adaptations"] == ["deviation1", "deviation2"]
 
-    def test_concerns_legacy_alias_emits_warning(self) -> None:
+    def test_concerns_legacy_label_rejected_post_task_008(self) -> None:
+        # TASK-008 (per_task_dispatch_refactor_v2): the legacy
+        # `**Concerns:**` bullet section was REMOVED as a fallback; only
+        # the canonical `**Concerns for reviewer:**` label is recognized.
+        # A report that uses the legacy label loses its concerns and
+        # surfaces a `missing-concerns-for-reviewer` diagnostic.
         report = (
             "**Outcome:** success\n"
             "**Files changed:**\n- a.txt\n"
             "**Diff summary:** noop\n"
             "**Test outcome:** not_run\n"
             "**Concerns:**\n- legacy_c1\n"
+            "**Plan adaptations:**\n- none\n"
             "**Reversion guidance:** revert\n"
         )
         cp = subprocess.run(
@@ -2390,9 +2418,13 @@ class TestParseImplementerReport:
         )
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
-        assert body["concerns"] == ["legacy_c1"]
-        warnings = body.get("warnings") or []
-        assert any("Concerns" in w and "legacy" in w.lower() for w in warnings), warnings
+        # Concerns from the legacy label are NOT picked up.
+        assert body["concerns"] == []
+        # No legacy warning emitted (the fallback path is gone).
+        assert body.get("warnings") == []
+        # The parser surfaces the missing canonical header diagnostic.
+        codes = [d["code"] for d in body.get("diagnostics") or []]
+        assert "missing-concerns-for-reviewer" in codes, body
 
 
 # ---------------------------------------------------------------------------
@@ -3035,7 +3067,29 @@ def _bd_call(ns) -> tuple[int, dict]:
     return code, body
 
 
-def _bd_write_schedule(tmp_path: Path, tasks: list[dict]) -> Path:
+def _bd_write_schedule(
+    tmp_path: Path,
+    tasks: list[dict],
+    *,
+    default_plan_file: str | None = "sample.md",
+) -> Path:
+    """Write a block-dependents schedule fixture.
+
+    TASK-008 (per_task_dispatch_refactor_v2): the directory-only contract
+    requires every dependent to declare `plan_file`. The single-file
+    fallback was REMOVED, so this helper auto-injects
+    ``plan_file: default_plan_file`` for any task entry that omits it.
+    Callers exercising the multi-file routing pass an explicit
+    ``plan_file`` per task and can leave the default in place (their
+    explicit value wins). Callers asserting the new
+    `missing-plan-file` rejection pass ``default_plan_file=None`` and
+    omit the field deliberately.
+    """
+    if default_plan_file is not None:
+        tasks = [
+            {**t, "plan_file": t.get("plan_file") or default_plan_file}
+            for t in tasks
+        ]
     p = tmp_path / "schedule.json"
     p.write_text(
         json.dumps({"outcome": "valid", "tasks": tasks, "batches": [], "gaps": [], "risks": []}),
@@ -3190,11 +3244,17 @@ class TestBlockDependents:
             assert all(isinstance(v, str) for v in body[k])
 
     # V5 -----------------------------------------------------------------
-    def test_v5_mutate_failure_halts_with_full_payload(
+    def test_v5_missing_dependent_block_halts_pre_write(
         self, tmp_path: Path, isolated_bd_plan: Path,
     ) -> None:
-        # Write a plan body with TASK-002 block MISSING → mutate_task_status
-        # raises ValueError for 002.
+        """TASK-008: with the single-file fallback removed, every
+        dependent declares `plan_file` and the directory-mode pre-write
+        block-presence probe runs unconditionally. A plan body that
+        omits the dependent's block surfaces as `dependent-block-missing`
+        BEFORE any mutation is attempted — strictly stronger than the
+        prior inline `plan_mutate` failure (no partial writes possible).
+        """
+        # Write a plan body with TASK-002 block MISSING.
         short_plan = (
             "# Plan: short\n\n"
             "**Status:** in-progress\n"
@@ -3215,20 +3275,28 @@ class TestBlockDependents:
         code, body = _bd_call(ns)
         assert code != 0
         err = body["errors"][0]
-        assert err["failed_stage"] == "plan_mutate"
+        assert err["code"] == "dependent-block-missing"
+        assert err["path"] == "$.tasks[1]"
         assert err["failed_id"] == "002"
+        assert err["plan_file"] == "sample.md"
         assert err["plan_mutations_applied"] == []
         assert err["run_log_appended"] == []
-        assert err["remaining"] == []
+        assert err["remaining"] == ["002"]
         # Plan on disk: unchanged.
         assert isolated_bd_plan.read_text(encoding="utf-8") == original_on_disk
         # No blocked events.
         assert _bd_read_run_log_events(isolated_bd_plan) == []
 
     # V6 -----------------------------------------------------------------
-    def test_v6_partial_mutate_failure_persists_partial(
+    def test_v6_missing_block_in_cascade_halts_atomically(
         self, tmp_path: Path, isolated_bd_plan: Path,
     ) -> None:
+        """TASK-008: when ANY dependent's block is missing, the directory
+        pre-check halts the whole cascade BEFORE any flip lands on disk.
+        This replaces the prior partial-persistence semantics: 002 is no
+        longer flipped speculatively when 003 turns out to be missing.
+        Atomicity wins.
+        """
         # Plan has TASK-002 block but NOT TASK-003. Both 002 and 003 are
         # direct dependents of 001 in tasks[] order [002, 003].
         partial_plan = (
@@ -3244,6 +3312,7 @@ class TestBlockDependents:
             "- **Dependencies:** [001]\n"
         )
         isolated_bd_plan.write_text(partial_plan, encoding="utf-8")
+        original_on_disk = isolated_bd_plan.read_text(encoding="utf-8")
 
         sched = _bd_write_schedule(tmp_path, [
             {"id": "001", "dependencies": []},
@@ -3254,17 +3323,16 @@ class TestBlockDependents:
         code, body = _bd_call(ns)
         assert code != 0
         err = body["errors"][0]
-        assert err["failed_stage"] == "plan_mutate"
+        assert err["code"] == "dependent-block-missing"
+        assert err["path"] == "$.tasks[2]"
         assert err["failed_id"] == "003"
-        assert err["plan_mutations_applied"] == ["002"]
-        assert err["run_log_appended"] == ["002"]
-        assert err["remaining"] == []
-        # Plan on disk: 002 flipped; 003 still missing.
-        plan_text = isolated_bd_plan.read_text(encoding="utf-8")
-        assert _bd_status_of(plan_text, "002") == "blocked"
-        assert "TASK-003" not in plan_text
-        events = _bd_read_run_log_events(isolated_bd_plan)
-        assert [e["task_id"] for e in events] == ["002"]
+        assert err["plan_file"] == "sample.md"
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+        # Plan on disk: untouched.
+        assert isolated_bd_plan.read_text(encoding="utf-8") == original_on_disk
+        # No blocked events: pre-check halted before any append.
+        assert _bd_read_run_log_events(isolated_bd_plan) == []
 
     # V7 -----------------------------------------------------------------
     def test_v7_idempotent_on_already_blocked(
@@ -3668,15 +3736,18 @@ class TestBlockDependentsMultiFile:
     that cannot be safely resolved.
     """
 
-    # (a) single-file unchanged (back-compat) --------------------------------
-    def test_block_dependents_multi_file_single_file_back_compat(
+    # (a) degenerate one-child directory ------------------------------------
+    def test_block_dependents_multi_file_single_child_directory(
         self, tmp_path: Path, isolated_bd_plan: Path,
     ) -> None:
-        """Schedule without `plan_file` routes everything to --plan-file.
+        """Single-child plan_dir: every dependent routes to the same file.
 
-        Output shape identical to pre-TASK-002 single-file flow. Run-log
-        events carry `plan_file` (basename of --plan-file) — new field,
-        previously absent.
+        TASK-008 (per_task_dispatch_refactor_v2) REMOVED the single-file
+        `--plan-file` fallback. The `_bd_write_schedule` helper now
+        auto-injects `plan_file: "sample.md"` so this test exercises a
+        legitimate one-child-directory cascade — every dependent
+        explicitly declares its target file. Output shape and run-log
+        attribution are identical to the multi-child case.
         """
         sched = _bd_write_schedule(tmp_path, [
             {"id": "001", "dependencies": []},
@@ -3820,15 +3891,17 @@ class TestBlockDependentsMultiFile:
         assert by_tid["003"]["plan_file"] == "child-b.md"
         assert by_tid["004"]["plan_file"] == "child-c.md"
 
-    # (d) mixed schedule: some dependents carry plan_file, some do not ------
-    def test_block_dependents_multi_file_mixed_schedule_fallback(
+    # (d) dependent missing plan_file is REJECTED ---------------------------
+    def test_block_dependents_missing_plan_file_halts(
         self, tmp_path: Path, isolated_bd_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Dependent without `plan_file` falls back to --plan-file.
-
-        TASK-002 omits `plan_file` (routed to --plan-file = child-a.md).
-        TASK-003 sets `plan_file: "child-b.md"` (routed explicitly).
-        Both cohorts flip; neither is dropped.
+        """TASK-008 (per_task_dispatch_refactor_v2) REMOVED the
+        single-file `--plan-file` fallback for dependents that omit
+        `plan_file`. The schedule below previously routed TASK-002 to
+        `--plan-file = child-a.md`; the directory-only contract now
+        rejects the missing field with a structured `missing-plan-file`
+        error pre-write — no partial cascade.
         """
         child_a = isolated_bd_dir / "child-a.md"
         child_b = isolated_bd_dir / "child-b.md"
@@ -3837,27 +3910,46 @@ class TestBlockDependentsMultiFile:
             encoding="utf-8",
         )
         child_b.write_text(_bd_child_plan_body("003", deps=["001"]), encoding="utf-8")
+        child_a_before = child_a.read_text(encoding="utf-8")
+        child_b_before = child_b.read_text(encoding="utf-8")
 
-        sched = _bd_write_schedule(tmp_path, [
-            {"id": "001", "dependencies": [], "plan_file": "child-a.md"},
-            # 002 intentionally omits plan_file → fallback to --plan-file.
-            {"id": "002", "dependencies": ["001"]},
-            {"id": "003", "dependencies": ["001"], "plan_file": "child-b.md"},
-        ])
+        writes: list[Path] = []
+        orig_write = plan_ops._write_text
+
+        def counting_write(path, text):
+            writes.append(Path(path))
+            return orig_write(path, text)
+
+        monkeypatch.setattr(plan_ops, "_write_text", counting_write)
+
+        sched = _bd_write_schedule(
+            tmp_path,
+            [
+                {"id": "001", "dependencies": [], "plan_file": "child-a.md"},
+                # 002 intentionally omits plan_file — used to fall back to
+                # --plan-file; now produces `missing-plan-file`.
+                {"id": "002", "dependencies": ["001"]},
+                {"id": "003", "dependencies": ["001"], "plan_file": "child-b.md"},
+            ],
+            default_plan_file=None,  # no auto-injection — the missing field is the point.
+        )
         ns = _bd_make_args(schedule_file=sched, plan_file=child_a)
         code, body = _bd_call(ns)
-        assert code == 0, body
-        assert body["blocked_task_ids"] == ["002", "003"]
-        assert body["plan_mutations_applied"] == ["002", "003"]
-        assert body["run_log_appended"] == ["002", "003"]
-        assert _bd_status_of(child_a.read_text(encoding="utf-8"), "002") == "blocked"
-        assert _bd_status_of(child_b.read_text(encoding="utf-8"), "003") == "blocked"
-        events = _bd_read_run_log_events_in(isolated_bd_dir)
-        by_tid = {e["task_id"]: e for e in events}
-        # Fallback cohort: plan_file is basename of --plan-file.
-        assert by_tid["002"]["plan_file"] == "child-a.md"
-        # Routed cohort: plan_file is the explicit schedule value.
-        assert by_tid["003"]["plan_file"] == "child-b.md"
+        assert code != 0
+        err = body["errors"][0]
+        assert err["code"] == "missing-plan-file"
+        # Path is rooted at the offending dependent's tasks[] index (1).
+        assert err["path"] == "$.tasks[1].plan_file"
+        assert err["failed_id"] == "002"
+        assert err["plan_file"] is None
+        assert err["plan_mutations_applied"] == []
+        assert err["run_log_appended"] == []
+        # No write occurred — no partial cascade.
+        assert writes == []
+        assert child_a.read_text(encoding="utf-8") == child_a_before
+        assert child_b.read_text(encoding="utf-8") == child_b_before
+        # No run-log events.
+        assert _bd_read_run_log_events_in(isolated_bd_dir) == []
 
     # (e) unresolvable plan_file (escape attempt) ---------------------------
     def test_block_dependents_multi_file_escape_attempt_halts(
@@ -4001,6 +4093,109 @@ class TestBlockDependentsMultiFile:
         assert err["run_log_appended"] == []
 
 
+def _sample_plan_as_directory(tmp_git_repo: Path, name: str = "sample") -> Path:
+    """Materialize the tmp_git_repo's ``docs/plans/sample.md`` fixture as a
+    decomposed directory at ``docs/plans/<name>/``, commit it, and return
+    the directory path. TASK-008 made ``cmd_preflight`` directory-only,
+    so preflight tests need a decomposed plan to exercise.
+
+    The produced directory mirrors the SAMPLE_PLAN_BODY task set (TASK-001
+    src/foo.py, TASK-002 src/bar.py, TASK-003 src/baz.py) via H3
+    ``### TASK-NNN:`` child files + a schema-compliant ``00_INDEX.json``
+    roster (per ``_parse_index_roster``).
+    """
+    plans_dir = tmp_git_repo / "docs" / "plans"
+    plan_dir = plans_dir / name
+    plan_dir.mkdir(parents=True, exist_ok=True)
+
+    roster = {
+        "schema_version": 1,
+        "chunks": [
+            {
+                "task_id": "001",
+                "file": "TASK-001.md",
+                "depends_on": [],
+                "status": "Pending",
+                "superseded_by": [],
+            },
+            {
+                "task_id": "002",
+                "file": "TASK-002.md",
+                "depends_on": ["001"],
+                "status": "Pending",
+                "superseded_by": [],
+            },
+            {
+                "task_id": "003",
+                "file": "TASK-003.md",
+                "depends_on": [],
+                "status": "Pending",
+                "superseded_by": [],
+            },
+        ],
+    }
+    (plan_dir / "00_INDEX.json").write_text(
+        json.dumps(roster, indent=2) + "\n", encoding="utf-8",
+    )
+
+    # H3-grammar child files matching SAMPLE_PLAN_BODY's Files: declarations.
+    (plan_dir / "TASK-001.md").write_text(
+        "### TASK-001: First task\n\n"
+        "- **Status:** open\n"
+        "- **Priority:** high\n"
+        "- **Agent:** claude\n"
+        "- **Files:**\n"
+        "  - src/foo.py\n"
+        "- **Dependencies:** none\n"
+        "- **Base branch:** main\n"
+        "- **Test command:** `true`\n"
+        "- **Acceptance criteria:**\n"
+        "  - it compiles\n\n"
+        "**Description:**\nFirst task body.\n",
+        encoding="utf-8",
+    )
+    (plan_dir / "TASK-002.md").write_text(
+        "### TASK-002: Second task\n\n"
+        "- **Status:** in-progress\n"
+        "- **Priority:** medium\n"
+        "- **Agent:** codex\n"
+        "- **Files:**\n"
+        "  - src/bar.py\n"
+        "- **Dependencies:** [001]\n"
+        "- **Test command:** `true`\n"
+        "- **Acceptance criteria:**\n"
+        "  - it compiles\n\n"
+        "**Description:**\nSecond task body.\n",
+        encoding="utf-8",
+    )
+    (plan_dir / "TASK-003.md").write_text(
+        "### TASK-003: Third task\n\n"
+        "- **Status:** done\n"
+        "- **Priority:** low\n"
+        "- **Agent:** claude\n"
+        "- **Files:**\n"
+        "  - src/baz.py\n"
+        "- **Dependencies:** none\n"
+        "- **Test command:** `true`\n"
+        "- **Acceptance criteria:**\n"
+        "  - it compiles\n\n"
+        "**Description:**\nThird task body.\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "-C", str(tmp_git_repo), "add", str(plan_dir.relative_to(tmp_git_repo))],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_git_repo), "commit", "-qm", f"seed {name} plan dir"],
+        check=True,
+        env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+    )
+    return plan_dir
+
+
 class TestPreflightDirtyCategorization:
     """Preflight splits `git status` entries into four buckets (TASK-008):
     ``plan_doc`` (always-ignore), ``orchestrator_state`` (always-ignore —
@@ -4011,6 +4206,10 @@ class TestPreflightDirtyCategorization:
     retired `.claude/` / `docs/` / `tests/` prefix heuristic is gone —
     paths under those prefixes are `source_blocking` unless the plan's
     own scope claims them.
+
+    TASK-008 removed ``cmd_preflight``'s file-branch; these tests now
+    target a decomposed-plan directory materialized via
+    ``_sample_plan_as_directory`` from the shared fixture.
     """
 
     def _preflight(self, repo: Path, plan: Path, *, strict_scope: bool = False) -> subprocess.CompletedProcess:
@@ -4026,9 +4225,9 @@ class TestPreflightDirtyCategorization:
 
     def test_codex_stray_file_is_source_blocking(self, tmp_git_repo: Path) -> None:
         """`.codex` is not in the TASK-008 always-ignore set; it blocks."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         (tmp_git_repo / ".codex").write_text("", encoding="utf-8")
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan)
+        cp = self._preflight(tmp_git_repo, plan_dir)
         assert cp.returncode != 0
         body = _parse_json(cp)
         assert ".codex" in body["dirty_files"]["source_blocking"]
@@ -4037,18 +4236,18 @@ class TestPreflightDirtyCategorization:
 
     def test_run_lock_is_orchestrator_state(self, tmp_git_repo: Path) -> None:
         """`docs/plans/_run_lock.json` is always-ignore `orchestrator_state`."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         (tmp_git_repo / "docs" / "plans" / "_run_lock.json").write_text("{}", encoding="utf-8")
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan)
+        cp = self._preflight(tmp_git_repo, plan_dir)
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
         assert any("_run_lock.json" in p for p in body["dirty_files"]["orchestrator_state"])
         assert body["pass"] is True
 
     def test_arbitrary_untracked_file_is_source_blocking(self, tmp_git_repo: Path) -> None:
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         (tmp_git_repo / "scratch.py").write_text("print('hi')\n", encoding="utf-8")
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan)
+        cp = self._preflight(tmp_git_repo, plan_dir)
         assert cp.returncode != 0
         body = _parse_json(cp)
         assert "scratch.py" in body["dirty_files"]["source_blocking"]
@@ -4061,6 +4260,7 @@ class TestPreflightDirtyCategorization:
         is scoped to the current plan's basename, so foreign `*.schedule.json`
         files at `docs/plans/` fell through to `source_blocking`. The fix
         recognizes any `*.schedule.json` under the plan_dir as bookkeeping."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         # Flat-layout foreign sidecar — the exact shape of the real incident.
         (tmp_git_repo / "docs" / "plans" / "other_plan.schedule.json").write_text(
             '{"tasks": []}\n', encoding="utf-8"
@@ -4084,8 +4284,7 @@ class TestPreflightDirtyCategorization:
         (nested_dir / "nested_plan.schedule.json").write_text(
             '{"tasks": []}\n', encoding="utf-8"
         )
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan)
+        cp = self._preflight(tmp_git_repo, plan_dir)
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
         assert body["pass"] is True
@@ -4095,11 +4294,11 @@ class TestPreflightDirtyCategorization:
         assert any("nested_plan/nested_plan.schedule.json" in p for p in orch)
 
     def test_untracked_tests_dir_is_source_blocking(self, tmp_git_repo: Path) -> None:
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         tests_dir = tmp_git_repo / "tests"
         tests_dir.mkdir()
         (tests_dir / "wip_test.py").write_text("def test_wip(): pass\n", encoding="utf-8")
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan)
+        cp = self._preflight(tmp_git_repo, plan_dir)
         assert cp.returncode != 0
         body = _parse_json(cp)
         assert "tests/" in body["dirty_files"]["source_blocking"]
@@ -4110,10 +4309,10 @@ class TestPreflightDirtyCategorization:
         TASK-008 drops the blunt `.claude/` / `docs/` / `tests/` prefix rule
         in favor of consulting the plan's `allowed_files` union.
         """
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         (tmp_git_repo / ".claude").mkdir()
         (tmp_git_repo / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan)
+        cp = self._preflight(tmp_git_repo, plan_dir)
         assert cp.returncode != 0
         body = _parse_json(cp)
         assert any(".claude/" in p for p in body["dirty_files"]["source_blocking"])
@@ -4123,11 +4322,12 @@ class TestPreflightDirtyCategorization:
         """A dirty file inside the plan's `Files:` union lands in
         `plan_scope_dirty` with `{path, task_id}` attribution, NOT in
         `source_blocking`; `scope_warnings` carries a human-readable string."""
-        # SAMPLE_PLAN_BODY declares TASK-001 Files: src/foo.py. The fixture
-        # already committed `src/foo.py`; rewrite it so it shows up as dirty.
+        # _sample_plan_as_directory declares TASK-001 Files: src/foo.py.
+        # The fixture already committed `src/foo.py`; rewrite it so it
+        # shows up as dirty.
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         (tmp_git_repo / "src" / "foo.py").write_text("CHANGED\n", encoding="utf-8")
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan)
+        cp = self._preflight(tmp_git_repo, plan_dir)
         # Non-strict mode: `plan_scope_dirty` alone does not flip `pass`.
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
@@ -4144,10 +4344,10 @@ class TestPreflightDirtyCategorization:
     def test_plan_scope_dirty_with_source_blocking_still_fails(self, tmp_git_repo: Path) -> None:
         """Mixing a scoped dirty file with a non-scoped dirty file still blocks,
         because `source_blocking` is non-empty. Mirrors the plan's V5 scenario."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         (tmp_git_repo / "src" / "foo.py").write_text("SCOPED\n", encoding="utf-8")
         (tmp_git_repo / "scratch.py").write_text("NON-SCOPED\n", encoding="utf-8")
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan)
+        cp = self._preflight(tmp_git_repo, plan_dir)
         assert cp.returncode != 0
         body = _parse_json(cp)
         assert "scratch.py" in body["dirty_files"]["source_blocking"]
@@ -4156,13 +4356,13 @@ class TestPreflightDirtyCategorization:
 
     def test_strict_scope_flips_scope_dirty_to_block(self, tmp_git_repo: Path) -> None:
         """V6: `--strict-scope` upgrades `plan_scope_dirty` to a hard block."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         (tmp_git_repo / "src" / "foo.py").write_text("SCOPED\n", encoding="utf-8")
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
         # Non-strict: passes despite scope-dirty.
-        cp = self._preflight(tmp_git_repo, plan, strict_scope=False)
+        cp = self._preflight(tmp_git_repo, plan_dir, strict_scope=False)
         assert cp.returncode == 0, cp.stdout + cp.stderr
         # Strict: fails.
-        cp = self._preflight(tmp_git_repo, plan, strict_scope=True)
+        cp = self._preflight(tmp_git_repo, plan_dir, strict_scope=True)
         assert cp.returncode != 0
         body = _parse_json(cp)
         assert any(e["path"] == "src/foo.py" for e in body["dirty_files"]["plan_scope_dirty"])
@@ -4174,6 +4374,11 @@ class TestPreflightPythonPath:
     documented precedence (IMPLEMENT_PLAN_PYTHON → venv/bin/python →
     .venv/bin/python → python3). The helper is the single source of truth;
     the skill / templates interpolate the resolved absolute path.
+
+    TASK-008 (per_task_dispatch_refactor_v2) made `cmd_preflight`
+    directory-only; this class materializes the `sample.md` fixture as a
+    decomposed directory via ``_sample_plan_as_directory`` before
+    preflighting.
     """
 
     def _preflight(self, repo: Path, plan: Path, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -4187,8 +4392,8 @@ class TestPreflightPythonPath:
 
     def test_emits_python_path(self, tmp_git_repo: Path) -> None:
         """V3: preflight surfaces `python_path` on the JSON envelope."""
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan)
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
+        cp = self._preflight(tmp_git_repo, plan_dir)
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
         assert "python_path" in body
@@ -4201,6 +4406,7 @@ class TestPreflightPythonPath:
     def test_env_override_wins(self, tmp_git_repo: Path, tmp_path: Path) -> None:
         """V4 (env branch): `IMPLEMENT_PLAN_PYTHON` overrides all fallbacks
         when it points at an existing executable."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         # Place the fake executable OUTSIDE the git repo so its presence
         # doesn't show up as a dirty file that would flip preflight to fail.
         fake = tmp_path.parent / "env_override_fake-python"
@@ -4208,9 +4414,8 @@ class TestPreflightPythonPath:
         fake.chmod(0o755)
         env = dict(os.environ)
         env["IMPLEMENT_PLAN_PYTHON"] = str(fake)
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
         try:
-            cp = self._preflight(tmp_git_repo, plan, env=env)
+            cp = self._preflight(tmp_git_repo, plan_dir, env=env)
             assert cp.returncode == 0, cp.stdout + cp.stderr
             body = _parse_json(cp)
             assert body["python_path"] == str(fake.resolve())
@@ -4219,10 +4424,10 @@ class TestPreflightPythonPath:
 
     def test_env_override_ignored_when_missing(self, tmp_git_repo: Path) -> None:
         """Non-existent `IMPLEMENT_PLAN_PYTHON` falls through to the next rung."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         env = dict(os.environ)
         env["IMPLEMENT_PLAN_PYTHON"] = "/tmp/does-not-exist-never-will"
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan, env=env)
+        cp = self._preflight(tmp_git_repo, plan_dir, env=env)
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
         # Falls through to cwd/venv or cwd/.venv or python3; in any event it
@@ -4236,6 +4441,7 @@ class TestPreflightPythonPath:
         """V4 (venv branch): without env override, `cwd/venv/bin/python` is
         preferred when present. Build a fake venv inside the tmp repo,
         then commit it so the dirty-tree classifier does not block."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         venv_bin = tmp_git_repo / "venv" / "bin"
         venv_bin.mkdir(parents=True)
         fake = venv_bin / "python"
@@ -4245,8 +4451,7 @@ class TestPreflightPythonPath:
         subprocess.run(["git", "commit", "-qm", "add fake venv"], cwd=str(tmp_git_repo), check=True)
         env = dict(os.environ)
         env.pop("IMPLEMENT_PLAN_PYTHON", None)
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan, env=env)
+        cp = self._preflight(tmp_git_repo, plan_dir, env=env)
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
         assert body["python_path"] == str(fake.resolve())
@@ -4255,6 +4460,7 @@ class TestPreflightPythonPath:
         """V4 (.venv branch): with no `venv/bin/python` and no env override,
         `cwd/.venv/bin/python` is picked. Commit the fake `.venv` so the
         dirty-tree classifier does not block the assertion."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         dot_venv_bin = tmp_git_repo / ".venv" / "bin"
         dot_venv_bin.mkdir(parents=True)
         fake = dot_venv_bin / "python"
@@ -4264,8 +4470,7 @@ class TestPreflightPythonPath:
         subprocess.run(["git", "commit", "-qm", "add fake .venv"], cwd=str(tmp_git_repo), check=True)
         env = dict(os.environ)
         env.pop("IMPLEMENT_PLAN_PYTHON", None)
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan, env=env)
+        cp = self._preflight(tmp_git_repo, plan_dir, env=env)
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
         assert body["python_path"] == str(fake.resolve())
@@ -4278,10 +4483,10 @@ class TestPreflightPythonPath:
         default fallback path is exercised as long as `python3` is on
         `$PATH` (which it is in every Linux/macOS test environment).
         """
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
         env = dict(os.environ)
         env.pop("IMPLEMENT_PLAN_PYTHON", None)
-        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
-        cp = self._preflight(tmp_git_repo, plan, env=env)
+        cp = self._preflight(tmp_git_repo, plan_dir, env=env)
         assert cp.returncode == 0, cp.stdout + cp.stderr
         body = _parse_json(cp)
         resolved = body["python_path"]
@@ -4315,8 +4520,8 @@ class TestParseScheduleContractValidation:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": []},
-                {"id": "001", "agent": "claude", "files": [], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": [], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "001", "agent": "claude", "files": [], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": []}],
         }
@@ -4332,8 +4537,8 @@ class TestParseScheduleContractValidation:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": []},
-                {"id": "002", "agent": "codex", "files": [], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": [], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "codex", "files": [], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": []},
@@ -4350,7 +4555,7 @@ class TestParseScheduleContractValidation:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": [], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001", "999"], "file_locks": []}],
         }
@@ -4423,12 +4628,14 @@ class TestParseScheduleContractValidation:
                     "agent": "codex",
                     "files": ["src/shared.py"],
                     "dependencies": [],
+                    "plan_file": "sample.md",
                 },
                 {
                     "id": "002",
                     "agent": "codex",
                     "files": ["src/shared.py", "src/b.py"],
                     "dependencies": [],
+                    "plan_file": "sample.md",
                 },
             ],
             "batches": [
@@ -4459,12 +4666,14 @@ class TestParseScheduleContractValidation:
                     "agent": "codex",
                     "files": ["src/a.py"],
                     "dependencies": [],
+                    "plan_file": "sample.md",
                 },
                 {
                     "id": "002",
                     "agent": "codex",
                     "files": ["src/b.py"],
                     "dependencies": [],
+                    "plan_file": "sample.md",
                 },
             ],
             "batches": [
@@ -4491,6 +4700,7 @@ class TestParseScheduleContractValidation:
                     "files": [],
                     "dependencies": [],
                     "confidence": 0.9,
+                    "plan_file": "sample.md",
                 },
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": []}],
@@ -4512,6 +4722,7 @@ class TestParseScheduleContractValidation:
                     "files": [],
                     "dependencies": [],
                     "confidence": 0.9,
+                    "plan_file": "sample.md",
                 },
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": []}],
@@ -4570,7 +4781,7 @@ class TestWriteSchedule:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a.txt"], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": ["a.txt"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": ["a.txt"]}],
         }
@@ -4588,7 +4799,7 @@ class TestWriteSchedule:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": [], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001", "999"], "file_locks": []}],
         }
@@ -4613,7 +4824,7 @@ class TestWriteSchedule:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": ["999"]},
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": ["999"], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": ["a"]}],
         }
@@ -4637,7 +4848,7 @@ class TestWriteSchedule:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": [], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": []}],
         }
@@ -4750,8 +4961,8 @@ class TestBatchNextDagDefense:
         sched.write_text(json.dumps({
             "outcome": "valid",
             "tasks": [
-                {"id": "001", "agent": "codex", "files": [], "dependencies": []},
-                {"id": "001", "agent": "claude", "files": [], "dependencies": []},
+                {"id": "001", "agent": "codex", "files": [], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "001", "agent": "claude", "files": [], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": []}],
         }), encoding="utf-8")
@@ -5333,7 +5544,7 @@ class TestValidateScheduleSuffixed:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "004A", "agent": "claude", "files": ["x"], "dependencies": []},
+                {"id": "004A", "agent": "claude", "files": ["x"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["004A"], "file_locks": ["x"]}],
         }
@@ -5344,12 +5555,13 @@ class TestValidateScheduleSuffixed:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "004", "agent": "claude", "files": ["a.py"], "dependencies": []},
+                {"id": "004", "agent": "claude", "files": ["a.py"], "dependencies": [], "plan_file": "sample.md"},
                 {
                     "id": "004A",
                     "agent": "claude",
                     "files": ["b.py"],
                     "dependencies": [],
+                    "plan_file": "sample.md",
                 },
             ],
             "batches": [
@@ -5365,7 +5577,7 @@ class TestValidateScheduleSuffixed:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "004a", "agent": "claude", "files": ["a.py"], "dependencies": []},
+                {"id": "004a", "agent": "claude", "files": ["a.py"], "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["004a"], "file_locks": ["a.py"]}],
         }
@@ -5379,12 +5591,13 @@ class TestValidateScheduleSuffixed:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "004", "agent": "claude", "files": ["a.py"], "dependencies": []},
+                {"id": "004", "agent": "claude", "files": ["a.py"], "dependencies": [], "plan_file": "sample.md"},
                 {
                     "id": "004A",
                     "agent": "claude",
                     "files": ["b.py"],
                     "dependencies": [],
+                    "plan_file": "sample.md",
                 },
             ],
             "batches": [
@@ -5476,12 +5689,13 @@ class TestNoAliasBetweenStemAndSuffixed:
         payload = {
             "outcome": "valid",
             "tasks": [
-                {"id": "004", "agent": "claude", "files": ["a.py"], "dependencies": []},
+                {"id": "004", "agent": "claude", "files": ["a.py"], "dependencies": [], "plan_file": "sample.md"},
                 {
                     "id": "004A",
                     "agent": "claude",
                     "files": ["b.py"],
                     "dependencies": [],
+                    "plan_file": "sample.md",
                 },
             ],
             "batches": [
@@ -5876,9 +6090,12 @@ def _full_schedule_fixture() -> dict:
     return {
         "outcome": "valid",
         "tasks": [
-            {"id": "001", "agent": "codex", "files": ["a"], "dependencies": []},
-            {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"]},
-            {"id": "003", "agent": "codex", "files": ["c"], "dependencies": []},
+            {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [],
+             "plan_file": "sample.md"},
+            {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"],
+             "plan_file": "sample.md"},
+            {"id": "003", "agent": "codex", "files": ["c"], "dependencies": [],
+             "plan_file": "sample.md"},
         ],
         "batches": [
             {"index": 1, "task_ids": ["001", "003"], "file_locks": ["a", "c"]},
@@ -5947,7 +6164,7 @@ class TestFilterSchedule:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": ["999"]},
+                 "dependencies": ["999"], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": ["a"]}],
         }), encoding="utf-8")
@@ -5972,9 +6189,9 @@ class TestFilterSchedule:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": ["002"]},
+                 "dependencies": ["002"], "plan_file": "sample.md"},
                 {"id": "002", "agent": "claude", "files": ["b"],
-                 "dependencies": ["001"]},
+                 "dependencies": ["001"], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002"],
@@ -5993,7 +6210,7 @@ class TestFilterSchedule:
             "outcome": "needs-enrichment",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": ["a"]}],
             "gaps": [{"id": "G1", "description": "x"}],
@@ -6011,9 +6228,9 @@ class TestFilterSchedule:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
                 {"id": "001", "agent": "claude", "files": ["b"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [{"index": 1, "task_ids": ["001"], "file_locks": ["a"]}],
         }), encoding="utf-8")
@@ -6046,10 +6263,13 @@ class TestFilterSchedule:
         body = _parse_json(cp)
         assert body["errors"][0]["code"] == "top-level-not-object"
 
-    def test_filter_schedule_alias_task_id_field_supported(self, tmp_path: Path) -> None:
-        # Legacy alias `task_id` must be processed without KeyError — the
-        # validator warns but does not normalize. Transitive closure over
-        # 002 must still pull in 001 even through the alias.
+    def test_filter_schedule_alias_task_id_field_rejected_post_task_008(
+        self, tmp_path: Path,
+    ) -> None:
+        # TASK-008 (per_task_dispatch_refactor_v2): the legacy `task_id`
+        # field alias was REMOVED. `filter-schedule` rejects schedules
+        # carrying it via `_validate_schedule`'s `missing-field` error.
+        # The filter still produces a structured payload (no KeyError).
         sched = tmp_path / "alias.schedule.json"
         sched.write_text(json.dumps({
             "outcome": "valid",
@@ -6065,15 +6285,11 @@ class TestFilterSchedule:
             ],
         }), encoding="utf-8")
         cp = _run_filter_schedule(sched, "2")
-        assert cp.returncode == 0, cp.stderr
+        assert cp.returncode != 0
         assert "KeyError" not in cp.stderr
         body = _parse_json(cp)
-        # Task objects are copied verbatim — `task_id` is preserved.
-        ids = [
-            (t.get("id") if "id" in t else t.get("task_id")) for t in body["tasks"]
-        ]
-        # Transitive closure: requesting 002 pulls in 001 via the alias.
-        assert ids == ["001", "002"]
+        codes = [e.get("code") for e in body.get("errors") or []]
+        assert "missing-field" in codes, body
 
     def test_filter_schedule_id_form_normalization(self, tmp_path: Path) -> None:
         # Accepts 001, 1, and TASK-001 forms; empty fragments skipped.
@@ -6099,11 +6315,11 @@ class TestFilterSchedule:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
                 {"id": "002", "agent": "claude", "files": ["b"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
                 {"id": "003", "agent": "codex", "files": ["c"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["003"], "file_locks": ["c"]},
@@ -6210,9 +6426,9 @@ class TestFilterSchedule:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
                 {"id": "002", "agent": "claude", "files": ["b"],
-                 "dependencies": ["001"]},
+                 "dependencies": ["001"], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
@@ -6301,11 +6517,11 @@ class TestFilterSchedule:
             "outcome": "needs-enrichment",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
                 {"id": "002", "agent": "claude", "files": ["b"],
-                 "dependencies": ["001"]},
+                 "dependencies": ["001"], "plan_file": "sample.md"},
                 {"id": "003", "agent": "codex", "files": ["c"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "003"],
@@ -6353,11 +6569,11 @@ class TestFilterSchedule:
             "outcome": "needs-enrichment",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
                 {"id": "002", "agent": "claude", "files": ["b"],
-                 "dependencies": ["001"]},
+                 "dependencies": ["001"], "plan_file": "sample.md"},
                 {"id": "003", "agent": "codex", "files": ["c"],
-                 "dependencies": []},
+                 "dependencies": [], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "003"],
@@ -8706,13 +8922,17 @@ class TestTask007AuthorPerChildTargeting:
 
 class TestPlanCodexDispatchPlanReviewSubcommand:
     """V9 — the wrapper exposes a plan-review subcommand with the expected
-    CLI shape. Use --dry-run so we don't need Codex on the test runner."""
+    CLI shape. Use --dry-run so we don't need Codex on the test runner.
+
+    TASK-008 removed ``--plan-file`` / ``--plans-dir`` from the argparse
+    surface; the schedule sidecar's parent-directory basename (or file
+    stem) is now the sole source of envelope.plan_file. These tests pin
+    the schedule-only argv shape.
+    """
 
     WRAPPER = SCRIPTS_DIR / "plan_codex_dispatch.py"
 
     def test_dry_run_emits_envelope(self, tmp_path: Path) -> None:
-        plan = tmp_path / "sample.md"
-        plan.write_text("# plan\n\n## Context\n\nprose\n", encoding="utf-8")
         schedule = tmp_path / "sample.schedule.json"
         schedule.write_text(json.dumps({
             "outcome": "valid",
@@ -8723,9 +8943,7 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
         cp = subprocess.run(
             [
                 str(PY), str(self.WRAPPER), "plan-review",
-                "--plan-file", str(plan),
                 "--schedule-file", str(schedule),
-                "--plans-dir", str(tmp_path),
                 "--repo-root", str(tmp_path),
                 "--dry-run",
                 "--timeout", "180",
@@ -8738,7 +8956,9 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
         body = json.loads(cp.stdout)
         assert body["subcommand"] == "plan-review"
         assert body["outcome"] == "dry_run"
-        assert body["plan_file"] == "sample.md"
+        # plan_file derived from the schedule sidecar stem (TASK-006 / TASK-008):
+        # "sample.schedule.json" → "sample".
+        assert body["plan_file"] == "sample"
         assert "prompt_preview" in body
         # The prompt must carry the verdict vocab so Codex knows what to
         # return; if this drifts, the wrapper silently corrupts the
@@ -8750,15 +8970,16 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
         # `needs-replan` on dep-check grounds when it declines to run tools.
         assert "Phase 0 preflight" in body["prompt_preview"]
 
-    def test_missing_plan_file_fails(self, tmp_path: Path) -> None:
+    def test_retired_plan_file_flag_rejected(self, tmp_path: Path) -> None:
+        """TASK-008: ``--plan-file`` is no longer recognized by argparse.
+        Passing it must cause a hard exit, not silent acceptance."""
         schedule = tmp_path / "sample.schedule.json"
         schedule.write_text("{}", encoding="utf-8")
         cp = subprocess.run(
             [
                 str(PY), str(self.WRAPPER), "plan-review",
-                "--plan-file", str(tmp_path / "nope.md"),
+                "--plan-file", str(tmp_path / "nope.md"),  # retired flag
                 "--schedule-file", str(schedule),
-                "--plans-dir", str(tmp_path),
                 "--repo-root", str(tmp_path),
                 "--dry-run",
             ],
@@ -8766,20 +8987,15 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
             text=True,
             cwd=str(tmp_path),
         )
-        assert cp.returncode == 1
-        body = json.loads(cp.stdout)
-        assert body["outcome"] == "failure"
-        assert "Plan file not found" in (body.get("error") or "")
+        # argparse emits rc=2 with "unrecognized arguments" on stderr.
+        assert cp.returncode != 0
+        assert "--plan-file" in cp.stderr or "unrecognized" in cp.stderr.lower(), cp.stderr
 
     def test_missing_schedule_file_fails(self, tmp_path: Path) -> None:
-        plan = tmp_path / "sample.md"
-        plan.write_text("# plan\n", encoding="utf-8")
         cp = subprocess.run(
             [
                 str(PY), str(self.WRAPPER), "plan-review",
-                "--plan-file", str(plan),
                 "--schedule-file", str(tmp_path / "nope.json"),
-                "--plans-dir", str(tmp_path),
                 "--repo-root", str(tmp_path),
                 "--dry-run",
             ],
@@ -8793,16 +9009,12 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
         assert "Schedule file not found" in (body.get("error") or "")
 
     def test_malformed_schedule_json_fails(self, tmp_path: Path) -> None:
-        plan = tmp_path / "sample.md"
-        plan.write_text("# plan\n", encoding="utf-8")
         schedule = tmp_path / "sample.schedule.json"
         schedule.write_text("{ not valid json", encoding="utf-8")
         cp = subprocess.run(
             [
                 str(PY), str(self.WRAPPER), "plan-review",
-                "--plan-file", str(plan),
                 "--schedule-file", str(schedule),
-                "--plans-dir", str(tmp_path),
                 "--repo-root", str(tmp_path),
                 "--dry-run",
             ],
@@ -9784,9 +9996,9 @@ class TestTask019ScheduleDagHelper:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": [],
-                 "dependencies": ["002"]},
+                 "dependencies": ["002"], "plan_file": "sample.md"},
                 {"id": "002", "agent": "codex", "files": [],
-                 "dependencies": ["001"]},
+                 "dependencies": ["001"], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002"], "file_locks": []},
@@ -9814,7 +10026,7 @@ class TestTask019ScheduleDagHelper:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": [],
-                 "dependencies": ["999"]},
+                 "dependencies": ["999"], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001"], "file_locks": []},
@@ -9861,9 +10073,9 @@ class TestTask019ScheduleDagHelper:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": ["002"]},
+                 "dependencies": ["002"], "plan_file": "sample.md"},
                 {"id": "002", "agent": "claude", "files": ["b"],
-                 "dependencies": ["001"]},
+                 "dependencies": ["001"], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002"],
@@ -9885,9 +10097,9 @@ class TestTask019ScheduleDagHelper:
             "outcome": "valid",
             "tasks": [
                 {"id": "001", "agent": "codex", "files": ["a"],
-                 "dependencies": ["002"]},
+                 "dependencies": ["002"], "plan_file": "sample.md"},
                 {"id": "002", "agent": "claude", "files": ["b"],
-                 "dependencies": ["001"]},
+                 "dependencies": ["001"], "plan_file": "sample.md"},
             ],
             "batches": [
                 {"index": 1, "task_ids": ["001", "002"],
@@ -11062,6 +11274,7 @@ def _write_gates_schedule(tmp_path: Path, payload: dict | None = None) -> Path:
                     "priority": "P1",
                     "files": ["example/seed.py"],
                     "dependencies": [],
+                    "plan_file": "plan.md",
                 }
             ],
             "batches": [
@@ -13153,9 +13366,10 @@ class TestAuditStatusVocabularyDrift:
     def test_audit_detects_status_vocabulary_drift(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Drop a canonical member to simulate drift. The alias `open` is
-        # still present so the alias check cannot mask the missing
-        # canonical member.
+        # Drop a canonical member to simulate drift. TASK-008 removed
+        # the `open` alias so the live ALLOWED_TASK_STATUSES already
+        # equals the canonical set; dropping `pending` produces a clean
+        # `missing=['pending']` reason.
         bad = set(plan_ops.ALLOWED_TASK_STATUSES) - {"pending"}
         monkeypatch.setattr(plan_ops, "ALLOWED_TASK_STATUSES", bad)
         finding = plan_ops._check_status_vocabulary()
@@ -13175,29 +13389,29 @@ class TestAuditStatusVocabularyDrift:
 
 
 class TestAuditAliasReporting:
-    """V7: alias windows surface as `pass_with_alias` (not bare `pass`),
-    so the report names every alias explicitly and silent tolerance is
-    impossible."""
+    """TASK-008: every file-mode alias window was REMOVED. The
+    directory-only canonical contract is the single accepted runtime
+    form, so these checks now report plain `pass` — no
+    `pass_with_alias`. The class name is preserved for test-discovery
+    stability; the assertions pin the new behavior."""
 
-    def test_status_vocabulary_alias_window_reports_pass_with_alias(self) -> None:
-        # The live module ships `open` as a status alias for `pending`
-        # (`STATUS_ALIASES`). The check must report that explicitly.
+    def test_status_vocabulary_reports_plain_pass(self) -> None:
+        # `open` was REMOVED from both the canonical set and
+        # ALLOWED_TASK_STATUSES in TASK-008, so the check returns `pass`
+        # (the runtime constant exactly matches the canonical set).
         finding = plan_ops._check_status_vocabulary()
-        assert finding["status"] == "pass_with_alias"
-        assert "open" in finding["reason"]
+        assert finding["status"] == "pass"
+        assert finding["reason"] is None
 
-    def test_schedule_wire_format_alias_window_reports_pass_with_alias(self) -> None:
+    def test_schedule_wire_format_reports_plain_pass(self) -> None:
         finding = plan_ops._check_schedule_wire_format()
-        assert finding["status"] == "pass_with_alias"
-        assert "task_id" in finding["reason"]
-        assert "batch_index" in finding["reason"]
+        assert finding["status"] == "pass"
+        assert finding["reason"] is None
 
-    def test_implementer_report_labels_alias_window_reports_pass_with_alias(self) -> None:
+    def test_implementer_report_labels_reports_plain_pass(self) -> None:
         finding = plan_ops._check_implementer_report_labels()
-        # The live parser still falls back to legacy `**Concerns:**`,
-        # which is named in `ALIAS_WINDOWS[implementer_concerns_label]`.
-        assert finding["status"] == "pass_with_alias"
-        assert "Concerns" in finding["reason"]
+        assert finding["status"] == "pass"
+        assert finding["reason"] is None
 
 
 class TestAuditCheckSubset:
@@ -13564,31 +13778,67 @@ class TestAuditPortableTierLegacyMarker:
 class TestAuditCanonicalContractShape:
     """The CANONICAL_CONTRACT module constant carries every key the
     checks consume; future contributors who add a check must also add
-    the corresponding canonical entry."""
+    the corresponding canonical entry.
+
+    TASK-008: the schedule-field and implementer-label keys retain
+    plural shapes (lists), but their file-mode aliases were REMOVED
+    rather than absorbed. `decompose-plan` is registered as a
+    first-class subcommand."""
 
     def test_canonical_contract_has_required_keys(self) -> None:
         for key in (
             "status_vocabulary",
-            "schedule_task_field",
-            "schedule_batch_field",
-            "implementer_concerns_label",
+            "schedule_task_fields",
+            "schedule_batch_fields",
+            "implementer_concerns_labels",
             "implementer_plan_adaptations_label",
             "execution_log_columns",
+            "subcommands",
         ):
             assert key in plan_ops.CANONICAL_CONTRACT, (
                 f"CANONICAL_CONTRACT missing canonical key {key!r}"
             )
 
-    def test_canonical_status_vocabulary_excludes_aliases(self) -> None:
-        # The canonical set must NOT include the alias `open`; alias
-        # membership is the job of ALIAS_WINDOWS, not the canonical.
+    def test_canonical_status_vocabulary_excludes_open(self) -> None:
+        # TASK-008 (per_task_dispatch_refactor_v2) REMOVED the file-mode
+        # `open` alias. The directory-only canonical contract is the
+        # single accepted runtime form.
         canonical = set(plan_ops.CANONICAL_CONTRACT["status_vocabulary"])
         assert "open" not in canonical
         assert "pending" in canonical
 
-    def test_alias_windows_status_vocabulary_names_open(self) -> None:
-        aliases = set(plan_ops.ALIAS_WINDOWS.get("status_vocabulary", []))
-        assert "open" in aliases
+    def test_canonical_schedule_fields_directory_only(self) -> None:
+        # TASK-008: `task_id` / `batch_index` field aliases were REMOVED
+        # from the canonical contract. Only the canonical `id` / `index`
+        # forms are recognized. `plan_file` is also a required canonical
+        # task field (added in the directory-only contract remediation):
+        # every task carries the basename of its owning plan file so
+        # per-task dispatch can attribute work back to the plan directory.
+        assert plan_ops.CANONICAL_CONTRACT["schedule_task_fields"] == ["id", "plan_file"]
+        assert plan_ops.CANONICAL_CONTRACT["schedule_batch_fields"] == ["index"]
+
+    def test_canonical_implementer_concerns_label_directory_only(self) -> None:
+        # TASK-008: the legacy `**Concerns:**` label was REMOVED. Only
+        # the canonical `**Concerns for reviewer:**` label is recognized.
+        assert plan_ops.CANONICAL_CONTRACT["implementer_concerns_labels"] == [
+            "**Concerns for reviewer:**",
+        ]
+
+    def test_alias_windows_is_empty(self) -> None:
+        # TASK-008 REMOVED every file-mode alias. ALIAS_WINDOWS is
+        # intentionally empty going forward — future genuine alias
+        # windows may reintroduce entries.
+        assert plan_ops.ALIAS_WINDOWS == {}
+
+    def test_canonical_subcommands_includes_decompose_plan(self) -> None:
+        # TASK-008: `decompose-plan` (the single-file → directory bridge
+        # from TASK-001) is a first-class subcommand entry in the
+        # canonical contract, not a file-mode remnant.
+        subs = list(plan_ops.CANONICAL_CONTRACT["subcommands"])
+        assert "decompose-plan" in subs
+        # Sanity checks: the other core v2 subcommands are also registered.
+        for required in ("preflight", "build-tasks", "commit-task"):
+            assert required in subs, required
 
 
 class TestAuditSchemasEnumSetCompare:
@@ -14938,18 +15188,20 @@ class TestDirectoryModeFileModeRegression:
         assert dir_path.is_dir()
         assert not dir_path.is_file()
 
-    def test_directory_mode_schedule_entry_without_plan_file_is_file_mode(
+    def test_directory_mode_schedule_entry_without_plan_file_is_rejected(
         self, tmp_path: Path,
     ) -> None:
-        """A schedule entry without plan_file is file-mode — i.e. the
-        orchestrator falls back to the single run-level plan path. Verifies
-        TASK-001's back-compat contract still holds at the API boundary
-        batch-next reads.
+        """TASK-008 directory-only contract: every task MUST declare
+        `plan_file`. A schedule that omits it on any task is rejected at
+        the `batch-next` boundary by `_validate_schedule` with a
+        structured `missing-field` error. The previous file-mode fallback
+        (where a missing `plan_file` resolved to the run-level plan path)
+        was removed when the directory-only contract was finalized.
         """
         payload = {
             "outcome": "valid",
             "tasks": [
-                # No plan_file field anywhere — pure file-mode schedule.
+                # No plan_file field anywhere — formerly file-mode, now invalid.
                 {"id": "001", "agent": "claude", "files": ["a"],
                  "dependencies": []},
                 {"id": "002", "agent": "claude", "files": ["b"],
@@ -14962,13 +15214,11 @@ class TestDirectoryModeFileModeRegression:
         }
         sched = _write_schedule(tmp_path, payload)
         cp = _run_batch_next(sched, parallel=2)
-        assert cp.returncode == 0
-        # Schedule survives batch-next without plan_file sneaking in.
-        reread = json.loads(sched.read_text(encoding="utf-8"))
-        for t in reread["tasks"]:
-            assert "plan_file" not in t, (
-                "batch-next must not inject plan_file into file-mode schedules"
-            )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes_paths = [(e.get("code"), e.get("path")) for e in body.get("errors") or []]
+        assert ("missing-field", "$.tasks[0].plan_file") in codes_paths, codes_paths
+        assert ("missing-field", "$.tasks[1].plan_file") in codes_paths, codes_paths
 
 
 class TestPreflightDirectoryMode:

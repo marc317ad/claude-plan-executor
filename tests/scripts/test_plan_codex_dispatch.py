@@ -1,6 +1,7 @@
-"""TASK-006 tests: schedule-only plan-review contract.
+"""TASK-006 / TASK-008 tests: schedule-only plan-review contract.
 
-Covers the three acceptance criteria added by TASK-006:
+Covers the acceptance criteria added by TASK-006 and finalized by
+TASK-008 (deprecation shim removal):
 
   1. ``plan-review`` dispatched against the fixture's fat manifest schedule
      (produced by TASK-004 `build-tasks`) returns a reviewer verdict of
@@ -13,6 +14,9 @@ Covers the three acceptance criteria added by TASK-006:
      ``render_plan_review_prompt`` helper accepts the new signature with
      no ``plan_text`` / ``plan_basename`` / ``plan_path`` actuals and
      does not raise ``TypeError``.
+  4. TASK-008: argparse no longer recognizes ``--plan-file`` or
+     ``--plans-dir`` on ``plan-review``; render helper no longer accepts
+     the legacy ``plan_text`` / ``plan_abs_path`` / ``plans_dir`` kwargs.
 
 These tests monkeypatch ``invoke_codex`` to avoid the real Codex CLI
 (mirrors the pattern in ``test_plan_codex_dispatch_state_isolation.py``).
@@ -122,18 +126,13 @@ def _plan_review_args(
     schedule_file: Path,
     repo_root: Path,
     *,
-    plan_file: Path | None = None,
-    plans_dir: Path | None = None,
     allow_gaps: bool = False,
 ) -> argparse.Namespace:
-    """Build a Namespace matching the new `plan-review` argparse contract
-    (schedule-only). ``plan_file`` and ``plans_dir`` remain accepted for
-    the TASK-006→TASK-008 deprecation window but are unused by the wrapper
-    body; tests pass ``None`` by default."""
+    """Build a Namespace matching the `plan-review` argparse contract
+    (schedule-only; TASK-006, finalized in TASK-008). The retired
+    ``plan_file`` / ``plans_dir`` kwargs are no longer accepted."""
     return argparse.Namespace(
-        plan_file=str(plan_file) if plan_file is not None else None,
         schedule_file=str(schedule_file),
-        plans_dir=str(plans_dir) if plans_dir is not None else None,
         repo_root=str(repo_root),
         json=True,
         dry_run=False,
@@ -403,117 +402,45 @@ def test_plan_review_argv_no_plan_file_and_render_prompt_no_plan_text(
 
 
 # ---------------------------------------------------------------------------
-# 4. Deprecation shim — --plan-file accepted but ignored, with stderr warning.
+# 4. TASK-008 — --plan-file / --plans-dir removed from argparse; the legacy
+#    positional / kwarg signature of render_plan_review_prompt is gone too.
+#    The transition tests (pre-TASK-008) are retired.
 # ---------------------------------------------------------------------------
 
 
-def test_plan_review_deprecated_plan_file_flag_is_ignored(
-    tmp_path, monkeypatch, capsys,
-):
-    """Passing --plan-file still parses (one-version deprecation shim) and
-    prints a deprecation notice to stderr; the value is ignored and the
-    schedule-only prompt is rendered regardless."""
-    schedule = tmp_path / "foo.schedule.json"
-    schedule.write_text(
-        json.dumps({
-            "outcome": "valid",
-            "tasks": [],
-            "batches": [],
-            "gaps": [],
-        }),
-        encoding="utf-8",
-    )
-    stale_plan = tmp_path / "foo.md"
-    stale_plan.write_text("# should-be-ignored\n", encoding="utf-8")
+def test_plan_review_argv_rejects_plan_file_flag():
+    """TASK-008: `--plan-file` is no longer a recognized argparse flag on
+    the `plan-review` subcommand. argparse must reject any argv that tries
+    to pass it, making accidental usage by stale callers a loud failure
+    rather than a silent no-op.
+    """
+    import pytest as _pytest  # local import: keep top of module lean
 
-    canned = {
-        "plan_file": "foo",
-        "verdict": "approved",
-        "findings": [],
-        "notes": [],
-        "schedule_ok": True,
-        "summary": "",
-    }
-    fake = _fake_codex_returning(canned)
-    monkeypatch.setattr(wrapper, "invoke_codex", fake)
-
-    args = _plan_review_args(
-        schedule, tmp_path,
-        plan_file=stale_plan, plans_dir=tmp_path,
-    )
-    rc = wrapper.cmd_plan_review(args)
-    captured = capsys.readouterr()
-    envelope = json.loads(captured.out)
-
-    assert rc == 0, envelope
-    assert envelope["outcome"] == "success", envelope
-    # Deprecation notice must surface on stderr.
-    assert "--plan-file is deprecated" in captured.err, captured.err
-    # Schedule-only prompt: no plan-markdown block even when stale
-    # --plan-file is supplied.
-    assert fake.captured["prompt"] is not None
-    assert "Plan document (verbatim):" not in fake.captured["prompt"]
+    parser = wrapper._build_parser()
+    argv = [
+        "plan-review",
+        "--plan-file", "/tmp/stale.md",  # retired flag
+        "--schedule-file", "/tmp/x.json",
+        "--repo-root", "/tmp",
+    ]
+    with _pytest.raises(SystemExit):
+        parser.parse_args(argv)
 
 
-# ---------------------------------------------------------------------------
-# 5. render_plan_review_prompt still works with kwargs legacy callers pass.
-# ---------------------------------------------------------------------------
+def test_render_plan_review_prompt_rejects_legacy_kwargs():
+    """TASK-008: the render helper no longer accepts the legacy `plan_text`
+    / `plan_abs_path` / `plans_dir` keyword arguments. Stale callers get a
+    `TypeError` rather than a silent no-op, making migration obvious."""
+    import pytest as _pytest
 
-
-def test_render_plan_review_prompt_accepts_legacy_kwargs_without_typeerror():
-    """A stale caller that still passes `plan_text=...`, `plan_basename=...`,
-    `plan_abs_path=...`, or `plans_dir=...` (from pre-TASK-006 call sites)
-    must not crash. The helper accepts these as kwargs and ignores the
-    values. Protects the transition window against `TypeError` on every
-    plan-review dispatch."""
     schedule_json = json.dumps({
         "outcome": "valid",
         "tasks": [],
         "batches": [],
         "gaps": [],
     })
-    prompt = wrapper.render_plan_review_prompt(
-        schedule_json,
-        plan_basename="foo",
-        plan_text="# stale plan markdown",  # legacy kw — ignored
-        plan_abs_path="/some/stale/path.md",  # legacy kw — ignored
-        plans_dir="/some/plans/dir",  # legacy kw — ignored
-    )
-    assert isinstance(prompt, str)
-    assert "Persisted schedule JSON:" in prompt
-    assert "Plan file: foo" in prompt
-    # Legacy markdown block must not bleed in.
-    assert "Plan document (verbatim):" not in prompt
-    assert "stale plan markdown" not in prompt
-
-
-def test_render_plan_review_prompt_accepts_legacy_positional_args():
-    """A stale caller that still uses the old positional signature
-    `render_plan_review_prompt(schedule_json, plan_basename, plan_text,
-    plan_abs_path, plans_dir)` must not raise ``TypeError``. The legacy
-    `plan_text` / `plan_abs_path` / `plans_dir` arguments remain
-    positional-or-keyword during the TASK-006→TASK-008 transition; once
-    TASK-008 removes them this test can go too. Guards against the
-    regression Codex flagged: adding a `*` keyword-only separator would
-    break every pre-TASK-006 positional callsite on import."""
-    schedule_json = json.dumps({
-        "outcome": "valid",
-        "tasks": [],
-        "batches": [],
-        "gaps": [],
-    })
-    # Legacy 5-positional call shape — no kwargs.
-    prompt = wrapper.render_plan_review_prompt(
-        schedule_json,
-        "foo",                       # plan_basename
-        "# stale plan markdown",     # legacy plan_text — ignored
-        "/some/stale/path.md",       # legacy plan_abs_path — ignored
-        "/some/plans/dir",           # legacy plans_dir — ignored
-    )
-    assert isinstance(prompt, str)
-    # Prompt must carry the schedule JSON content we just handed in.
-    assert schedule_json in prompt
-    # Legacy markdown block must not bleed in just because plan_text
-    # was supplied positionally.
-    assert "# stale plan markdown" not in prompt
-    assert "Plan document (verbatim):" not in prompt
+    for legacy_kwarg in ("plan_text", "plan_abs_path", "plans_dir"):
+        with _pytest.raises(TypeError):
+            wrapper.render_plan_review_prompt(
+                schedule_json, **{legacy_kwarg: "stale"},
+            )

@@ -637,11 +637,13 @@ def _run_plan_review_dry_run(
     tmp_path: Path,
     extra_args: list[str] | None = None,
 ) -> dict:
+    # TASK-008: --plan-file / --plans-dir removed. schedule-only argv.
+    # ``plan`` remains a parameter for backward compatibility with existing
+    # callers but is no longer forwarded to the wrapper.
+    del plan  # unused after TASK-008 shim removal
     cmd = [
         sys.executable, str(WRAPPER), "plan-review",
-        "--plan-file", str(plan),
         "--schedule-file", str(schedule),
-        "--plans-dir", str(tmp_path),
         "--repo-root", str(tmp_path),
         "--dry-run",
         "--timeout", "180",
@@ -872,21 +874,19 @@ def test_plan_review_directory_sidecar_plan_file_derived_from_directory(tmp_path
         )
 
 
-def test_plan_review_schedule_only_ignores_deprecated_plan_file(tmp_path):
-    """Passing the deprecated `--plan-file` (even at a non-existent path)
-    no longer fails the dispatch — the wrapper ignores it and emits a
-    stderr deprecation notice. Replaces the retired
-    `test_plan_review_directory_without_index_fails_missing_roster`:
-    the wrapper no longer inspects the plan directory, so a missing
-    roster is not an error condition at the plan-review layer.
-    """
+def test_plan_review_argparse_rejects_retired_plan_file_flag(tmp_path):
+    """TASK-008: `--plan-file` is removed from the plan-review argparse
+    surface entirely. Passing it is now a hard failure (argparse rejects
+    the unknown argument), making accidental usage by stale callers a
+    loud error rather than a silent no-op. Replaces the former
+    one-version deprecation-shim test."""
     schedule = _write_dummy_schedule(tmp_path, stem="sample_plan")
     bogus_plan_file = tmp_path / "missing_directory"  # never created
 
     cp = subprocess.run(
         [
             sys.executable, str(WRAPPER), "plan-review",
-            "--plan-file", str(bogus_plan_file),  # deprecated shim
+            "--plan-file", str(bogus_plan_file),  # retired flag
             "--schedule-file", str(schedule),
             "--repo-root", str(tmp_path),
             "--dry-run",
@@ -896,12 +896,11 @@ def test_plan_review_schedule_only_ignores_deprecated_plan_file(tmp_path):
         text=True,
         cwd=str(tmp_path),
     )
-    # Dispatch should succeed; --plan-file is ignored.
-    assert cp.returncode == 0, (
-        f"expected exit 0 for deprecated --plan-file, got rc={cp.returncode}\n"
+    # argparse exits 2 on unrecognized arguments.
+    assert cp.returncode != 0, (
+        f"expected non-zero exit for retired --plan-file, got rc={cp.returncode}\n"
         f"STDOUT:\n{cp.stdout}\nSTDERR:\n{cp.stderr}"
     )
-    body = json.loads(cp.stdout)
-    assert body["outcome"] == "dry_run", body
-    # Deprecation notice must land on stderr.
-    assert "--plan-file is deprecated" in cp.stderr, cp.stderr
+    assert "--plan-file" in cp.stderr or "unrecognized" in cp.stderr.lower(), (
+        cp.stderr
+    )

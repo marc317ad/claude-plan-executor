@@ -11,7 +11,8 @@
       ],
       "dependencies": [],
       "test_command": "none",
-      "classification_reason": "Mechanical create with fixed body"
+      "classification_reason": "Mechanical create with fixed body",
+      "plan_file": "sample_phase4.md"
     },
     {
       "id": "002",
@@ -23,7 +24,8 @@
       ],
       "dependencies": ["001"],
       "test_command": "venv/bin/python -c \"import ast; ast.parse(open('docs/plans/sample_phase4_scratch/settings.py').read())\"",
-      "classification_reason": "Naming + structural judgment over a new helper"
+      "classification_reason": "Naming + structural judgment over a new helper",
+      "plan_file": "sample_phase4.md"
     },
     {
       "id": "003",
@@ -35,7 +37,8 @@
       ],
       "dependencies": [],
       "test_command": "none",
-      "classification_reason": "Mechanical create with fixed body"
+      "classification_reason": "Mechanical create with fixed body",
+      "plan_file": "sample_phase4.md"
     },
     {
       "id": "004",
@@ -47,7 +50,8 @@
       ],
       "dependencies": ["002", "003"],
       "test_command": "none",
-      "classification_reason": "Seeded failure; internally contradictory acceptance criteria"
+      "classification_reason": "Seeded failure; internally contradictory acceptance criteria",
+      "plan_file": "sample_phase4.md"
     }
   ],
   "batches": [
