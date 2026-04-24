@@ -11,7 +11,8 @@
         "tests/scripts/test_plan_ops.py"
       ],
       "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"schedule_plan_file\" -x",
-      "classification_reason": "Schema addition, mechanical"
+      "classification_reason": "Schema-add, 2 files, concrete AC",
+      "plan_file": "implement_plan_directory_mode.md"
     },
     {
       "id": "002",
@@ -23,7 +24,8 @@
         "tests/scripts/test_plan_ops.py"
       ],
       "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"block_dependents_multi_file\" -x",
-      "classification_reason": "Loop refactor, bounded"
+      "classification_reason": "Bounded routing fix, concrete AC",
+      "plan_file": "implement_plan_directory_mode.md"
     },
     {
       "id": "003",
@@ -33,8 +35,9 @@
       "files": [
         "plugins/plan-executor/agents/plan-analyst.md"
       ],
-      "test_command": "none (documentation-only; exercised end-to-end by TASK-004)",
-      "classification_reason": "Subagent prompt, testing deferred"
+      "test_command": "none",
+      "classification_reason": "Subagent prompt design, test deferred",
+      "plan_file": "implement_plan_directory_mode.md"
     },
     {
       "id": "004",
@@ -50,7 +53,8 @@
         "tests/scripts/test_plan_ops.py"
       ],
       "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"directory_mode\" -x",
-      "classification_reason": "Multi-file wiring, new fixture"
+      "classification_reason": "Multi-file, Phase 0 wiring, fixture scaffold",
+      "plan_file": "implement_plan_directory_mode.md"
     }
   ],
   "batches": [
@@ -99,31 +103,16 @@
         "003",
         "004"
       ],
-      "detail": "TASK-003 Test command: none (documentation-only; exercised end-to-end by TASK-004)"
+      "detail": "TASK-003 Test command: none (documentation-only; exercised end-to-end by TASK-004). Deferred-testing signal resolves to declared sibling TASK-004."
     },
     {
-      "type": "codex-scope-boundary",
-      "affected_tasks": [
-        "002"
-      ],
-      "detail": "~40 estimated lines approaches 30-line Codex threshold; acceptance criteria describe loop refactor + 6 test cases"
-    },
-    {
-      "type": "same-file-across-batches",
+      "type": "cross-batch-file-reuse",
       "affected_tasks": [
         "001",
         "002",
         "004"
       ],
-      "detail": "tests/scripts/test_plan_ops.py appears in Batches 1, 2, and 3; serial across batches, safe"
-    },
-    {
-      "type": "same-file-across-batches",
-      "affected_tasks": [
-        "001",
-        "002"
-      ],
-      "detail": "plugins/plan-executor/scripts/plan_ops.py appears in Batches 1 and 2; serial across batches, safe"
+      "detail": "plugins/plan-executor/scripts/plan_ops.py touched in Batch 1 and 2; tests/scripts/test_plan_ops.py touched in Batch 1, 2, and 3. Safe because batches serialize."
     }
   ]
 }

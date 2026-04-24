@@ -1,7 +1,7 @@
 # Directory-mode execution for `/implement-plan` via per-task `plan_file` routing
 
 **Created:** 2026-04-23
-**Status:** pending
+**Status:** complete
 **Base branch:** main
 
 ## Goal
@@ -197,3 +197,11 @@ Starting SHA: `86943e3077967a42071124dce912667321f8926a`  → Ending SHA: `5ddb3
 | TASK-002 | claude (fallback after codex timeout) | codex | needs-rework | - | 8/8 multi-file cascade tests pass; Codex flagged 3 important issues (non-atomic _write_text, partial-cascade regression, empty/null plan_file bypass); D.5 NOT dispatched; Codex reviewer sandbox-escaped and wrote anti-pedantry gate to SKILL.md (restored); awaiting user disposition |
 | TASK-003 | claude | codex | needs-rework | - | prompt documentation update; D.2a.6 narrow-remediation applied for D.5 partial-agreement (dismissed #0 diagnostics spec-deference, fixed #1 dep-rule inconsistency and #2 missing child-file contract); binding re-review returned needs-rework with new findings (depends_on vs canonical dependencies field, Step 4 test-command scope expansion); PAUSED awaiting user per D.2a.6 protocol |
 | TASK-004 | claude | n/a | not-started | - | blocked by pause; depends on TASK-002 and TASK-003 |
+
+## Execution log — 20260424T002411 (success)
+
+Starting SHA: `075e5798b543400503f6998e0834ce32e7cd6efc`  → Ending SHA: `0c78a3edd96cd875f8ea6ea40d385308240861db`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-004 | claude | codex | minor-findings (3 important findings carried to trailer) | 0c78a3e | Orchestrator directory-mode driver; 12/12 directory_mode tests pass; findings: run_end plan_file omission in SKILL contract, commit-task test bypass via mutate_task_status, coverage gaps for lock/check-plan-deps/plan-review --plans-dir/finalize/events |
