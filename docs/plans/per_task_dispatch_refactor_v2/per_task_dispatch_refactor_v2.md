@@ -249,7 +249,7 @@ Tighten the plan-review → triage → author chain to per-child scope. Each fin
 
 ### TASK-008: SKILL + dispatch-templates cleanup + file-mode removal
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** claude
 - **Files:**

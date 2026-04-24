@@ -19,8 +19,9 @@ Usage (resolve $PYTHON via `plan_ops.py preflight --json`'s python_path):
 
     $PYTHON scripts/plan_codex_dispatch.py plan-review \
         --schedule-file PATH --repo-root PATH [--dry-run] [--timeout SECS]
-        # TASK-006: schedule-only. --plan-file / --plans-dir accepted for
-        # one version (deprecation shim, removed in TASK-008).
+        # Schedule-only (TASK-006, finalized in TASK-008). The former
+        # --plan-file / --plans-dir deprecation shims were removed;
+        # callers pass the persisted schedule JSON path and nothing else.
 """
 
 from __future__ import annotations
@@ -271,36 +272,19 @@ def render_implement_prompt(task: dict, context: str) -> str:
 def render_plan_review_prompt(
     schedule_json: str,
     plan_basename: str | None = None,
-    plan_text: str | None = None,
-    plan_abs_path: str | None = None,
-    plans_dir: str | None = None,
+    *,
     allow_gaps_demotion: bool = False,
 ) -> str:
     """Prompt template for Phase 1.5 — Codex reviews the persisted schedule.
 
-    Schedule-only (TASK-006): the plan markdown is no longer rendered into
-    the prompt. With the fat manifest from TASK-004, every per-task
-    `description` + `acceptance_criteria` the reviewer needs to validate
-    intent lives inside the schedule JSON directly. Callers should pass the
-    plan directory basename as ``plan_basename`` so the reviewer's
-    envelope.plan_file round-trips correctly. The legacy ``plan_text`` /
-    ``plan_abs_path`` / ``plans_dir`` arguments are accepted but unused —
-    they remain here for one-version backward compatibility while upstream
-    call sites drop the actuals (TASK-008 removes the parameters entirely).
-
-    Positional-order warning: the pre-TASK-006 positional signature was
-    ``(plan_text, schedule_json, plan_basename, plan_abs_path, plans_dir,
-    allow_gaps_demotion)``. The current order puts ``schedule_json`` first
-    because ``plan_text`` is now unused. An external legacy caller that
-    still uses the pre-TASK-006 6-positional shape would silently misroute
-    arguments (plan-text string bound to ``schedule_json`` and vice versa)
-    rather than raising ``TypeError``. No such callsite exists in-tree
-    today; the only live caller in ``cmd_plan_review`` already uses
-    kwargs. TASK-008 will drop the legacy params entirely, closing this
-    window. ``allow_gaps_demotion`` is intentionally kept as
-    positional-or-keyword (no ``*`` keyword-only separator) to avoid
-    breaking any TASK-003-era positional caller that supplies the flag
-    as the 6th positional.
+    Schedule-only (TASK-006, finalized in TASK-008): the plan markdown is
+    never rendered into the prompt. With the fat manifest from TASK-004,
+    every per-task `description` + `acceptance_criteria` the reviewer
+    needs to validate intent lives inside the schedule JSON directly.
+    Callers pass the plan directory basename as ``plan_basename`` so the
+    reviewer's envelope.plan_file round-trips correctly. The TASK-006-era
+    legacy ``plan_text`` / ``plan_abs_path`` / ``plans_dir`` parameters
+    were removed in TASK-008.
 
     When ``allow_gaps_demotion`` is True, the prompt carries an extra
     demotion clause instructing the reviewer to treat schedule_ok=false
@@ -309,9 +293,6 @@ def render_plan_review_prompt(
     condition from the persisted schedule + the operator's ``--allow-gaps``
     flag; this function is a pure prompt renderer.
     """
-    # Legacy args intentionally accepted but unused; they exist solely so
-    # stale callers do not crash during the TASK-006→TASK-008 transition.
-    del plan_text, plan_abs_path, plans_dir
     plan_label = plan_basename if plan_basename else "(schedule-only; no plan file)"
     demotion_clause = (
         "\nOperator override (--allow-gaps): the user explicitly opted "
@@ -1422,26 +1403,16 @@ def cmd_review(args) -> int:
 def cmd_plan_review(args) -> int:
     """Phase 1.5 — Codex independently reviews the persisted schedule.
 
-    Schedule-only (TASK-006). The plan markdown is no longer read or
-    rendered into the prompt; with the fat manifest from TASK-004, every
-    per-task `description` + `acceptance_criteria` the reviewer needs
-    lives inside the schedule JSON directly. ``--schedule-file`` is the
-    sole required input. ``--plan-file`` is accepted for one-version
-    backward compatibility — the value is ignored and a deprecation
-    notice is printed to stderr (TASK-008 removes the flag).
+    Schedule-only (TASK-006, finalized in TASK-008). The plan markdown is
+    no longer read or rendered into the prompt; with the fat manifest
+    from TASK-004, every per-task `description` + `acceptance_criteria`
+    the reviewer needs lives inside the schedule JSON directly.
+    ``--schedule-file`` is the sole required input. TASK-008 removed the
+    deprecated ``--plan-file`` / ``--plans-dir`` flags entirely.
 
     Verdict vocabulary: approved | approved-with-notes | needs-replan.
     Wrapper owns the sandbox baseline + cleanup, matching implement/review.
     """
-    # TASK-006 one-version deprecation shim: accept but ignore --plan-file.
-    supplied_plan_file = getattr(args, "plan_file", None)
-    if supplied_plan_file:
-        sys.stderr.write(
-            "plan_codex_dispatch: --plan-file is deprecated for plan-review "
-            "(schedule-only as of TASK-006; flag removed in TASK-008). "
-            f"Ignoring value: {supplied_plan_file}\n"
-        )
-
     schedule_path = Path(args.schedule_file).resolve()
     repo_root = str(Path(args.repo_root).resolve())
 
@@ -1703,34 +1674,20 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Review focus area (default: bugs)")
 
     # plan-review subcommand: Phase 1.5 pre-dispatch plan-level review.
-    # Schedule-only as of TASK-006 — the reviewer reads the persisted
-    # schedule JSON (including the fat manifest's per-task description +
-    # acceptance_criteria) and NEVER the plan markdown. Verdict vocab is
-    # (approved | approved-with-notes | needs-replan), so it is a sibling
-    # subcommand rather than a mode of `review`.
+    # Schedule-only as of TASK-006, finalized in TASK-008 — the reviewer
+    # reads the persisted schedule JSON (including the fat manifest's
+    # per-task description + acceptance_criteria) and NEVER the plan
+    # markdown. Verdict vocab is (approved | approved-with-notes |
+    # needs-replan), so it is a sibling subcommand rather than a mode of
+    # `review`.
     pr = subparsers.add_parser(
         "plan-review",
         help="Dispatch a plan-level review to Codex (Phase 1.5, schedule-only)",
     )
-    # --plan-file is deprecated as of TASK-006. The wrapper accepts it for
-    # one version so stale callers don't crash; the value is ignored and a
-    # stderr deprecation notice is printed. TASK-008 removes the argument
-    # declaration entirely.
-    pr.add_argument("--plan-file", required=False, default=None,
-                    help="DEPRECATED (TASK-006). Ignored; kept for one-version "
-                         "backward compatibility and removed in TASK-008. "
-                         "plan-review reads the persisted schedule JSON only.")
     pr.add_argument("--schedule-file", required=True,
                     help="Absolute path to persisted schedule JSON. Sole "
                          "required input — schedule carries the fat manifest "
                          "(per-task description + acceptance_criteria).")
-    # --plans-dir is retained as optional (legacy callers may still pass it
-    # for wrapper-side diagnostics). Schedule-only review does not use it;
-    # TASK-008 is expected to drop it alongside --plan-file.
-    pr.add_argument("--plans-dir", required=False, default=None,
-                    help="DEPRECATED (TASK-006). Ignored by schedule-only "
-                         "plan-review; kept optional for one-version "
-                         "backward compatibility and removed in TASK-008.")
     pr.add_argument("--repo-root", required=True,
                     help="Absolute path to the repo root passed as `codex -C`. "
                          "Required — plans typically live in a subdirectory "

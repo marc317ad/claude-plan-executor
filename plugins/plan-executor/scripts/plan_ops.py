@@ -93,11 +93,16 @@ STATUS_BULLET_RE = re.compile(r"^(\s*-\s*\*\*Status:\*\*)\s*(.+?)\s*$", re.MULTI
 DEPENDENCIES_BULLET_RE = re.compile(
     r"^\s*-\s*\*\*Dependencies:\*\*\s*(.+?)\s*$", re.MULTILINE,
 )
-ALLOWED_TASK_STATUSES = {"pending", "open", "in-progress", "done", "failed", "blocked", "skipped"}
+ALLOWED_TASK_STATUSES = {"pending", "in-progress", "done", "failed", "blocked", "skipped"}
 ALLOWED_INDEX_STATUSES = {"Done", "Pending", "Superseded"}
 _INDEX_SUPERSEDED_BY: dict[str, list[str]] = {}
-STATUS_ALIASES = {"open": "pending"}
-SCHEDULE_FIELD_ALIASES = {"task_id": "id", "batch_index": "index"}
+# TASK-008 (per_task_dispatch_refactor_v2): file-mode deprecation aliases were
+# REMOVED rather than absorbed into the canonical set. The dict symbols are
+# retained as empty mappings for forward compatibility — future genuine alias
+# windows may reintroduce entries — but the directory-only contract is the
+# only canonical form recognized at runtime.
+STATUS_ALIASES: dict[str, str] = {}
+SCHEDULE_FIELD_ALIASES: dict[str, str] = {}
 ALLOWED_PLAN_STATUSES = {"in-progress", "complete", "partial"}
 ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 ALLOWED_CODEX_REVIEW_VERDICTS = {"clean", "minor-findings", "needs-rework"}
@@ -197,20 +202,28 @@ ALLOWED_LOG_EVENTS = {
 # and the user's next turn decides disposition.
 ALLOWED_RUN_OUTCOMES = {"success", "partial", "failed", "paused"}
 
-# TASK-007: Canonical Contract decision table. Self-audit (`cmd_audit`)
-# compares the shipped artifacts against this table and surfaces drift as
-# structured findings. Keep this dict the single source of truth — the
-# checks below import from it; the design doc §9.7 / §14 references it by
-# name. ALIAS_WINDOWS names symbols / fields that callers may still see
-# during a deprecation window; a check returns `pass_with_alias` (not
-# `fail`) when the actual set is `canonical | aliases`.
+# TASK-007 / TASK-008: Canonical Contract decision table. Self-audit
+# (`cmd_audit`) compares the shipped artifacts against this table and
+# surfaces drift as structured findings. Keep this dict the single source
+# of truth — the checks below import from it; the design doc §9.7 / §14
+# references it by name. TASK-008 (per_task_dispatch_refactor_v2) is the
+# directory-mode contract: the prior file-mode deprecation aliases
+# (`open` status, `task_id` / `batch_index` schedule fields, legacy
+# `**Concerns:**` implementer label) were REMOVED — neither the canonical
+# set nor the runtime parsers accept them. `decompose-plan` is the
+# single-file → directory bridge and is registered as a first-class
+# subcommand entry. `ALIAS_WINDOWS` is retained as an empty dict for
+# forward compatibility — future genuine alias windows may reintroduce
+# entries, but no file-mode entries remain.
 CANONICAL_CONTRACT: dict[str, object] = {
     "status_vocabulary": [
-        "pending", "in-progress", "done", "failed", "blocked", "skipped",
+        "blocked", "done", "failed", "in-progress", "pending", "skipped",
     ],
-    "schedule_task_field": "id",
-    "schedule_batch_field": "index",
-    "implementer_concerns_label": "**Concerns for reviewer:**",
+    "schedule_task_fields": ["id", "plan_file"],
+    "schedule_batch_fields": ["index"],
+    "implementer_concerns_labels": [
+        "**Concerns for reviewer:**",
+    ],
     "implementer_plan_adaptations_label": "**Plan adaptations:**",
     "execution_log_columns": [
         "Task", "Agent", "Reviewer", "Verdict", "Commit", "Notes",
@@ -222,32 +235,62 @@ CANONICAL_CONTRACT: dict[str, object] = {
     "wrapper_always_ignore_globs": [
         "docs/plans/*.schedule.json",
     ],
+    # TASK-008: first-class subcommand entries. `decompose-plan` is the
+    # single-file → directory bridge that makes auto-promotion work at
+    # SKILL.md Phase 0; it is part of the directory-only architecture,
+    # not a file-mode remnant.
+    "subcommands": [
+        "preflight",
+        "decompose-plan",
+        "build-tasks",
+        "parse-schedule",
+        "compute-schedule",
+        "write-schedule",
+        "batch-next",
+        "filter-schedule",
+        "parse-implementer-report",
+        "parse-plan-review-report",
+        "order-triage-findings",
+        "parse-plan-review-triage-report",
+        "commit-task",
+        "fail-task",
+        "block-dependents",
+        "update-plan-header",
+        "finalize-execution-log",
+        "log-event",
+        "normalize-task-id",
+        "acquire-lock",
+        "release-lock",
+        "path-info",
+        "gates",
+        "audit",
+        "check-plan-deps",
+        "lint-plans",
+        "reconcile-batch",
+    ],
 }
 
 ALIAS_WINDOWS: dict[str, list[str]] = {
-    # `open` is the legacy task-status name for `pending` (`STATUS_ALIASES`
-    # in this module). Listed so the audit reports `pass_with_alias` rather
-    # than masking the alias as silent tolerance.
-    "status_vocabulary": ["open"],
-    # `task_id` / `batch_index` are accepted alongside `id` / `index` in
-    # `_validate_schedule` (`SCHEDULE_FIELD_ALIASES`); the parser warns
-    # but does not error.
-    "schedule_task_field": ["task_id"],
-    "schedule_batch_field": ["batch_index"],
-    # The pre-canonical implementer-report label was the bare `**Concerns:**`;
-    # `cmd_parse_implementer_report` still falls back to it with a warning.
-    "implementer_concerns_label": ["**Concerns:**"],
+    # TASK-008 removed all file-mode deprecation aliases. The directory-only
+    # canonical contract above is the single accepted runtime form. No active
+    # alias windows remain. Entries added here in the future should be
+    # deliberate, time-boxed, and paired with a removal-task reference.
 }
 
 CANONICAL_ID_RE = re.compile(r"^\d{3}[A-Z]?$")
 ALLOWED_SCHEDULE_TOP_LEVEL = {"outcome", "tasks", "batches", "gaps", "risks"}
+# TASK-008: directory-mode canonical contract. The legacy `task_id` /
+# `batch_index` field aliases are NO longer accepted — schedules carrying
+# them produce structured `unknown-nested-field` (in `--strict`) or warning
+# entries (in lenient mode), and `_validate_schedule` rejects them as
+# missing canonical `id` / `index` fields.
 ALLOWED_TASK_FIELDS = {
-    "id", "task_id",
+    "id",
     "title", "agent", "priority", "files", "dependencies",
     "test_command", "classification_reason", "acceptance_criteria",
     "plan_file", "description",
 }
-ALLOWED_BATCH_FIELDS = {"index", "batch_index", "task_ids", "file_locks"}
+ALLOWED_BATCH_FIELDS = {"index", "task_ids", "file_locks"}
 # TASK-002: formalize hard-vs-soft gap severity. Hard gaps block execution
 # without explicit operator override; soft gaps are advisory and can be
 # demoted to warnings by --allow-gaps (TASK-003). Unknown gap types default
@@ -316,7 +359,7 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
             })
             continue
 
-        raw_id = task.get("id") if "id" in task else task.get("task_id")
+        raw_id = task.get("id")
         task_id = _normalize_task_id(raw_id)
         if task_id is None:
             errors.append({
@@ -397,7 +440,7 @@ def _validate_schedule_refs(tasks: list, batches: list) -> list[dict]:
     for i, t in enumerate(tasks):
         if not isinstance(t, dict):
             continue
-        raw = t.get("id") if "id" in t else t.get("task_id")
+        raw = t.get("id")
         if raw is None:
             continue
         tid = str(raw)
@@ -414,7 +457,7 @@ def _validate_schedule_refs(tasks: list, batches: list) -> list[dict]:
     for i, b in enumerate(batches):
         if not isinstance(b, dict):
             continue
-        raw = b.get("index") if "index" in b else b.get("batch_index")
+        raw = b.get("index")
         if raw is None:
             continue
         if raw in seen_idx:
@@ -451,7 +494,7 @@ def _validate_schedule_refs(tasks: list, batches: list) -> list[dict]:
     for t in tasks:
         if not isinstance(t, dict):
             continue
-        raw = t.get("id") if "id" in t else t.get("task_id")
+        raw = t.get("id")
         if raw is None:
             continue
         tid = str(raw)
@@ -508,7 +551,7 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
     for t in tasks:
         if not isinstance(t, dict):
             continue
-        raw = t.get("id") if "id" in t else t.get("task_id")
+        raw = t.get("id")
         if raw is None:
             continue
         tid = _normalize_task_id(str(raw))
@@ -522,7 +565,7 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
     for i, t in enumerate(tasks):
         if not isinstance(t, dict):
             continue
-        raw = t.get("id") if "id" in t else t.get("task_id")
+        raw = t.get("id")
         if raw is None:
             continue
         tid = _normalize_task_id(str(raw))
@@ -619,7 +662,6 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
         })
         tasks = []
     else:
-        alias_task_id_warned = False
         for i, t in enumerate(tasks):
             if not isinstance(t, dict):
                 errors.append({
@@ -629,18 +671,15 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                 })
                 continue
             if "id" not in t:
-                if "task_id" in t:
-                    if not alias_task_id_warned:
-                        warnings.append(
-                            "schedule uses legacy 'task_id' field; canonical is 'id'"
-                        )
-                        alias_task_id_warned = True
-                else:
-                    errors.append({
-                        "path": f"$.tasks[{i}].id",
-                        "code": "missing-field",
-                        "message": f"tasks[{i}] missing field 'id'",
-                    })
+                # TASK-008: directory-only contract. Legacy `task_id`
+                # field is rejected as a missing canonical `id` (it
+                # surfaces as an `unknown-nested-field` error in strict
+                # mode via the per-key check below).
+                errors.append({
+                    "path": f"$.tasks[{i}].id",
+                    "code": "missing-field",
+                    "message": f"tasks[{i}] missing field 'id'",
+                })
             # `files` is structural — every task must declare its file
             # locks for batch-scheduling. `agent` is a transitional field:
             # the classifier fan-out (TASK-005) fills it in after
@@ -657,7 +696,7 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                     f"tasks[{i}] missing field 'agent' "
                     "(unclassified; classifier fan-out populates this)"
                 )
-            raw_id = t.get("id") if "id" in t else t.get("task_id")
+            raw_id = t.get("id")
             if raw_id is not None and not CANONICAL_ID_RE.match(str(raw_id)):
                 errors.append({
                     "path": f"$.tasks[{i}].id",
@@ -667,7 +706,20 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                         "form /^\\d{3}[A-Z]?$/"
                     ),
                 })
-            if "plan_file" in t:
+            # TASK-008: directory-only contract requires every task to
+            # declare its owning plan file (basename) so per-task dispatch
+            # and the `block-dependents` cascade can attribute work back
+            # to the correct file in the plan directory. Missing field is
+            # rejected; a present-but-invalid value (wrong type, escapes,
+            # path separators, leading dot, NUL byte, length > 255 bytes)
+            # surfaces as `invalid-plan-file`.
+            if "plan_file" not in t:
+                errors.append({
+                    "path": f"$.tasks[{i}].plan_file",
+                    "code": "missing-field",
+                    "message": f"tasks[{i}] missing field 'plan_file'",
+                })
+            else:
                 plan_file = t.get("plan_file")
                 if not isinstance(plan_file, str) or not _is_valid_plan_file_basename(plan_file):
                     errors.append({
@@ -700,7 +752,6 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
         })
         batches = []
     else:
-        alias_batch_index_warned = False
         for i, b in enumerate(batches):
             if not isinstance(b, dict):
                 errors.append({
@@ -710,18 +761,15 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                 })
                 continue
             if "index" not in b:
-                if "batch_index" in b:
-                    if not alias_batch_index_warned:
-                        warnings.append(
-                            "schedule uses legacy 'batch_index' field; canonical is 'index'"
-                        )
-                        alias_batch_index_warned = True
-                else:
-                    errors.append({
-                        "path": f"$.batches[{i}].index",
-                        "code": "missing-field",
-                        "message": f"batches[{i}] missing field 'index'",
-                    })
+                # TASK-008: directory-only contract. Legacy `batch_index`
+                # field is rejected as a missing canonical `index` (it
+                # surfaces as an `unknown-nested-field` error in strict
+                # mode via the per-key check below).
+                errors.append({
+                    "path": f"$.batches[{i}].index",
+                    "code": "missing-field",
+                    "message": f"batches[{i}] missing field 'index'",
+                })
             for key in ("task_ids", "file_locks"):
                 if key not in b:
                     errors.append({
@@ -3575,15 +3623,19 @@ def _is_preflight_always_ignored(path: str, plan_dir: str, plan_basename: str) -
 
 def cmd_preflight(args: argparse.Namespace) -> None:
     plan = Path(args.plan_file)
-    # Directory-mode input: read 00_INDEX.json, union every child's `Files:`
-    # declarations into the scope classifier, and treat the index + any
-    # chunks[].file under <plan_dir> as plan_doc (not source_blocking).
-    # The directory branch is the canonical path; the `else` file branch
-    # below is deprecated legacy-caller support and is slated for removal
-    # in TASK-008 (per docs/plans/per_task_dispatch_refactor_v2/).
-    is_dir_mode = plan.is_dir()
-    if not is_dir_mode and not plan.is_file():
-        _die(args, {"error": f"plan file not found: {plan}"})
+    # Directory-mode input is the sole supported shape: `00_INDEX.json`
+    # roster + one or more `TASK-NNN_*.md` child files. Single-file plan
+    # inputs are auto-promoted to a directory by SKILL.md Phase 0's
+    # `decompose-plan` invocation before preflight ever runs, so by the
+    # time we get here `plan.is_dir()` is guaranteed.
+    if not plan.is_dir():
+        _die(args, {"error": (
+            f"plan path must be a decomposed-plan directory (containing "
+            f"00_INDEX.json); got {plan} which is not a directory. "
+            "Single-file plans are auto-promoted via `plan_ops.py "
+            "decompose-plan` at Phase 0 of the skill; direct CLI callers "
+            "must pass a decomposed directory."
+        )})
 
     scope: dict[str, str] = {}
     base_branch: str | None = None
@@ -3595,75 +3647,64 @@ def cmd_preflight(args: argparse.Namespace) -> None:
     # below is an exact set-membership test against git-status output.
     plan_doc_set: set[str] = set()
 
-    if is_dir_mode:
-        roster_path = plan / "00_INDEX.json"
+    roster_path = plan / "00_INDEX.json"
+    try:
+        roster = _parse_index_roster(roster_path)
+    except FileNotFoundError as exc:
+        _die(args, {"error": (
+            f"missing-roster-chunk: 00_INDEX.json not found in {plan}: {exc}"
+        )})
+    except ValueError as exc:
+        _die(args, {"error": (
+            f"missing-roster-chunk: malformed 00_INDEX.json in {plan}: {exc}"
+        )})
+    # Verify every chunks[].file exists on disk BEFORE we try to read
+    # them. A missing child is a hard halt — the orchestrator cannot
+    # preflight a directory whose roster lies about its contents.
+    missing_chunks: list[str] = []
+    for entry in roster.values():
+        if not (plan / entry["file"]).is_file():
+            missing_chunks.append(entry["file"])
+    if missing_chunks:
+        _die(args, {"error": (
+            "missing-roster-chunk: chunks[].file declared in "
+            f"{roster_path} but missing on disk: {missing_chunks}"
+        )})
+    # Resolve the plan directory to a repo-relative POSIX path so it can
+    # be compared byte-for-byte against `git status --porcelain` output
+    # (which emits repo-relative POSIX paths). Falls back to the raw
+    # plan path if the git toplevel probe fails — we prefer pass-through
+    # over silently dropping to the loose heuristic.
+    toplevel_cp = _git(["rev-parse", "--show-toplevel"])
+    plan_dir_rel: str
+    if toplevel_cp.returncode == 0 and toplevel_cp.stdout.strip():
         try:
-            roster = _parse_index_roster(roster_path)
-        except FileNotFoundError as exc:
-            _die(args, {"error": (
-                f"missing-roster-chunk: 00_INDEX.json not found in {plan}: {exc}"
-            )})
-        except ValueError as exc:
-            _die(args, {"error": (
-                f"missing-roster-chunk: malformed 00_INDEX.json in {plan}: {exc}"
-            )})
-        # Verify every chunks[].file exists on disk BEFORE we try to read
-        # them. A missing child is a hard halt — the orchestrator cannot
-        # preflight a directory whose roster lies about its contents.
-        missing_chunks: list[str] = []
-        for entry in roster.values():
-            if not (plan / entry["file"]).is_file():
-                missing_chunks.append(entry["file"])
-        if missing_chunks:
-            _die(args, {"error": (
-                "missing-roster-chunk: chunks[].file declared in "
-                f"{roster_path} but missing on disk: {missing_chunks}"
-            )})
-        # Resolve the plan directory to a repo-relative POSIX path so it can
-        # be compared byte-for-byte against `git status --porcelain` output
-        # (which emits repo-relative POSIX paths). Falls back to the raw
-        # plan path if the git toplevel probe fails — we prefer pass-through
-        # over silently dropping to the loose heuristic.
-        toplevel_cp = _git(["rev-parse", "--show-toplevel"])
-        plan_dir_rel: str
-        if toplevel_cp.returncode == 0 and toplevel_cp.stdout.strip():
-            try:
-                repo_root = Path(toplevel_cp.stdout.strip()).resolve()
-                plan_dir_rel = plan.resolve().relative_to(repo_root).as_posix()
-            except (OSError, ValueError):
-                plan_dir_rel = plan.as_posix()
-        else:
+            repo_root = Path(toplevel_cp.stdout.strip()).resolve()
+            plan_dir_rel = plan.resolve().relative_to(repo_root).as_posix()
+        except (OSError, ValueError):
             plan_dir_rel = plan.as_posix()
-        # Union allowed_files per child so attribution stays child-local
-        # (per-task task_ids are unique across children by roster invariant).
-        plan_text = ""  # kept for downstream consumers that expect a string
-        for entry in roster.values():
-            child_path = plan / entry["file"]
-            child_text = _load_text(child_path)
-            for p, t in _allowed_files_union(child_text).items():
-                scope[p] = t
-            if base_branch is None:
-                base_m_child = re.search(
-                    r"^\*\*Base branch:\*\*\s*(\S+)\s*$", child_text, re.MULTILINE,
-                )
-                if base_m_child:
-                    base_branch = base_m_child.group(1).strip()
-            # chunks[].file may be a plain basename OR a subdir-prefixed
-            # relative path; PurePosixPath handles both and keeps the
-            # comparison in POSIX-space to match `git status` output.
-            chunk_rel = f"{plan_dir_rel}/{entry['file']}" if plan_dir_rel else entry["file"]
-            plan_doc_set.add(chunk_rel)
-        index_rel = f"{plan_dir_rel}/00_INDEX.json" if plan_dir_rel else "00_INDEX.json"
-        plan_doc_set.add(index_rel)
     else:
-        # Deprecated file-branch fallback; TASK-008 removes this.
-        plan_text = _load_text(plan)
-        scope = _allowed_files_union(plan_text)
-        base_m = re.search(
-            r"^\*\*Base branch:\*\*\s*(\S+)\s*$", plan_text, re.MULTILINE,
-        )
-        if base_m:
-            base_branch = base_m.group(1).strip()
+        plan_dir_rel = plan.as_posix()
+    # Union allowed_files per child so attribution stays child-local
+    # (per-task task_ids are unique across children by roster invariant).
+    for entry in roster.values():
+        child_path = plan / entry["file"]
+        child_text = _load_text(child_path)
+        for p, t in _allowed_files_union(child_text).items():
+            scope[p] = t
+        if base_branch is None:
+            base_m_child = re.search(
+                r"^\*\*Base branch:\*\*\s*(\S+)\s*$", child_text, re.MULTILINE,
+            )
+            if base_m_child:
+                base_branch = base_m_child.group(1).strip()
+        # chunks[].file may be a plain basename OR a subdir-prefixed
+        # relative path; PurePosixPath handles both and keeps the
+        # comparison in POSIX-space to match `git status` output.
+        chunk_rel = f"{plan_dir_rel}/{entry['file']}" if plan_dir_rel else entry["file"]
+        plan_doc_set.add(chunk_rel)
+    index_rel = f"{plan_dir_rel}/00_INDEX.json" if plan_dir_rel else "00_INDEX.json"
+    plan_doc_set.add(index_rel)
 
     dirty: dict[str, list] = {
         "plan_doc": [],
@@ -3678,20 +3719,16 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         if len(line) < 4:
             continue
         path = line[3:]
-        if is_dir_mode:
-            # Exact repo-relative path match against the pre-computed set of
-            # `<plan_dir>/00_INDEX.json` + every `<plan_dir>/<chunk>`. This
-            # correctly handles chunks[].file with subdir prefixes and
-            # rejects false-positive same-named directories elsewhere.
-            # Invariant: every chunks[].file basename (and 00_INDEX.json) is
-            # classified as plan_doc, NEVER source_blocking.
-            is_plan_doc = path in plan_doc_set
-        else:
-            # Deprecated file-branch fallback; TASK-008 removes this.
-            is_plan_doc = path == str(plan) or path.endswith(plan.name)
+        # Exact repo-relative path match against the pre-computed set of
+        # `<plan_dir>/00_INDEX.json` + every `<plan_dir>/<chunk>`. This
+        # correctly handles chunks[].file with subdir prefixes and
+        # rejects false-positive same-named directories elsewhere.
+        # Invariant: every chunks[].file basename (and 00_INDEX.json) is
+        # classified as plan_doc, NEVER source_blocking.
+        is_plan_doc = path in plan_doc_set
         # `_is_preflight_always_ignored` needs a plan_basename to match the
-        # per-plan schedule sidecar; in directory mode, use the directory
-        # name so `<dir>.schedule.json` lookups still resolve.
+        # per-plan schedule sidecar; use the directory name so
+        # `<dir>.schedule.json` lookups still resolve.
         ignore_basename = plan.name
         if is_plan_doc:
             dirty["plan_doc"].append(path)
@@ -3902,8 +3939,8 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
 
     tasks_by_id: dict[str, dict] = {}
     for t in data.get("tasks") or []:
-        raw_tid = t.get("id") if "id" in t else t.get("task_id")
-        tid = _normalize_task_id(str(raw_tid))
+        raw_tid = t.get("id")
+        tid = _normalize_task_id(str(raw_tid)) if raw_tid is not None else None
         if tid:
             tasks_by_id[tid] = t
 
@@ -3957,7 +3994,7 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
         break
 
     def _batch_index_of(b: dict) -> int:
-        raw = b.get("index") if "index" in b else b.get("batch_index")
+        raw = b.get("index")
         return raw if isinstance(raw, int) else 0
 
     if active_batch is None:
@@ -4009,8 +4046,8 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
     # batches are never selected even when globally ready.
     ready_in_batch: list[dict] = []
     for t in ready:
-        raw_tid = t.get("id") if "id" in t else t.get("task_id")
-        tid = _normalize_task_id(str(raw_tid))
+        raw_tid = t.get("id")
+        tid = _normalize_task_id(str(raw_tid)) if raw_tid is not None else None
         if tid in active_ids:
             ready_in_batch.append(t)
 
@@ -4019,8 +4056,8 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
     picked_files: list[str] = []
     claimed = set(locked)
     for t in ready_in_batch:
-        raw_tid = t.get("id") if "id" in t else t.get("task_id")
-        tid = _normalize_task_id(str(raw_tid))
+        raw_tid = t.get("id")
+        tid = _normalize_task_id(str(raw_tid)) if raw_tid is not None else None
         files = _files(t)
         if any(f in claimed for f in files):
             continue
@@ -4154,11 +4191,12 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
             "message": "no task ids provided",
         }]})
 
-    # Build tasks_by_id using the alias-tolerant pattern (the legacy
-    # `task_id` field is valid per _validate_schedule, just warned).
+    # Build tasks_by_id from the canonical `id` field. TASK-008 removed the
+    # legacy `task_id` alias; schedules using it are rejected upstream by
+    # `_validate_schedule` with a `missing-field` error on `$.tasks[i].id`.
     tasks_by_id: dict[str, dict] = {}
     for t in data.get("tasks") or []:
-        raw_tid = t.get("id") if "id" in t else t.get("task_id")
+        raw_tid = t.get("id")
         norm = _normalize_task_id(str(raw_tid)) if raw_tid is not None else None
         if norm:
             tasks_by_id[norm] = t
@@ -4207,7 +4245,7 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
     # task_ids become empty post-filter (V8); filter retained batch task_ids
     # to the closed set (V10); preserve original `index` values (V9).
     def _tid_of(t: dict) -> str | None:
-        raw = t.get("id") if "id" in t else t.get("task_id")
+        raw = t.get("id")
         return _normalize_task_id(str(raw)) if raw is not None else None
 
     out_tasks = [t for t in (data.get("tasks") or []) if _tid_of(t) in closed]
@@ -4313,15 +4351,11 @@ def cmd_parse_implementer_report(args: argparse.Namespace) -> None:
 
     files_changed = _list_section("Files changed")
 
+    # TASK-008 (per_task_dispatch_refactor_v2): the legacy `**Concerns:**`
+    # label was retired. Only the canonical `**Concerns for reviewer:**`
+    # bullet section is recognized. Reports that still use the legacy form
+    # surface as `missing-concerns-for-reviewer` diagnostics below.
     concerns = _list_section("Concerns for reviewer")
-    if not concerns:
-        legacy = _list_section("Concerns")
-        if legacy:
-            concerns = legacy
-            warnings.append(
-                "implementer report used legacy 'Concerns:' label; "
-                "canonical is 'Concerns for reviewer:'"
-            )
 
     plan_adaptations = _list_section("Plan adaptations")
 
@@ -5301,14 +5335,21 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
     TASK-004D_block_dependents_mutation.md for the full failure-stage
     semantics and double-failure precedence contract.
 
-    TASK-002 (directory mode): each dependent can be routed to a different
-    child plan file via the schedule's `tasks[].plan_file` (basename). When
-    absent, falls back to `--plan-file`. Per-file atomic write: one read +
-    one in-memory mutate pass + one `_write_text` call per unique file, with
-    run-log events carrying `plan_file` (basename) for audit attribution.
-    Pre-write containment check rejects `plan_file` values that escape the
-    `--plan-file` parent directory, and pre-write block-presence check
-    rejects `plan_file` values whose referenced task block is missing.
+    TASK-002 (directory mode): each dependent is routed to a child plan
+    file via the schedule's required `tasks[].plan_file` (basename).
+    TASK-008 (per_task_dispatch_refactor_v2) REMOVED the single-file
+    `--plan-file` fallback for dependents missing `plan_file`; every
+    dependent in the cascade must declare its own `plan_file` or the
+    subcommand halts with a structured `missing-plan-file` error. The
+    `--plan-file` argument is preserved as the DAG-lookup anchor (it
+    locates the schedule's parent plan_dir for resolution).
+
+    Per-file atomic write: one read + one in-memory mutate pass + one
+    `_write_text` call per unique file, with run-log events carrying
+    `plan_file` (basename) for audit attribution. Pre-write containment
+    check rejects `plan_file` values that escape the plan_dir, and
+    pre-write block-presence check rejects `plan_file` values whose
+    referenced task block is missing.
     """
     sched_path = Path(args.schedule_file)
     plan_path = Path(args.plan_file)
@@ -5326,11 +5367,11 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
         _die(args, {"error": f"cannot normalize --failed: {args.failed!r}"})
 
     plan_dir = plan_path.parent
-    default_plan_basename = plan_path.name
 
     # ---- PHASE 1: compute cascade (BFS; sibling order = tasks[] order) ----
-    # Also capture per-dependent plan_file (basename, or None for fallback)
-    # and record the tasks[] index for path-rooted error reporting.
+    # Also capture per-dependent plan_file (basename, or None — flagged
+    # as `missing-plan-file` in PHASE 1b) and record the tasks[] index
+    # for path-rooted error reporting.
     blocked: list[str] = []
     # id -> (plan_file_basename_or_None, tasks_index)
     routing: dict[str, tuple[str | None, int]] = {}
@@ -5340,7 +5381,7 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
     while queue:
         cur = queue.pop(0)
         for i, t in enumerate(tasks):
-            raw_tid = t.get("id") if "id" in t else t.get("task_id")
+            raw_tid = t.get("id")
             if raw_tid is None:
                 continue
             tid = _normalize_task_id(str(raw_tid))
@@ -5378,10 +5419,18 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
     for bid in blocked:
         pf_basename, task_idx = routing[bid]
         if pf_basename is None:
-            # No plan_file: fall back to --plan-file (single-file back-compat).
-            resolved_paths[bid] = plan_path
-            resolved_basenames[bid] = default_plan_basename
-            continue
+            # TASK-008 (per_task_dispatch_refactor_v2): the directory-only
+            # contract requires every dependent to declare `plan_file`.
+            # The single-file `--plan-file` fallback was REMOVED.
+            _die(args, {"errors": [{
+                "code": "missing-plan-file",
+                "path": f"$.tasks[{task_idx}].plan_file",
+                "failed_id": bid,
+                "plan_file": None,
+                "plan_mutations_applied": [],
+                "run_log_appended": [],
+                "remaining": list(remaining),
+            }]})
         # Defense-in-depth: even though TASK-001's validator catches bad
         # basenames at schedule-validation time, re-check here since
         # block-dependents is called directly and the schedule may not
@@ -5458,51 +5507,46 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
         else:
             groups[path_to_index[key]][1].append(bid)
 
-    # ---- PHASE 1d: pre-write block-presence check for multi-file cascade.
-    # Only apply this pre-check when directory-mode routing is in play
-    # (at least one dependent carries an explicit plan_file). For the
-    # pure single-file back-compat path, preserve the existing error
-    # semantics: plan_mutate failures are handled inline with partial
-    # persistence (see V5/V6/V15/V16).
-    any_routed = any(routing[bid][0] is not None for bid in blocked)
-    if any_routed:
-        # Read each target file once for the presence probe. Cache the
-        # content so we do not re-read during the mutate phase.
-        file_texts: dict[Path, str] = {}
-        for path, ids in groups:
-            try:
-                file_texts[path] = _load_text(path)
-            except OSError as e:
-                _die(args, {"errors": [{
-                    "failed_stage": "plan_read",
-                    "failed_id": None,
-                    "error": str(e),
-                    "plan_file": path.name,
-                    "plan_mutations_applied": [],
-                    "run_log_appended": [],
-                    "remaining": list(remaining),
-                }]})
-        for bid in blocked:
-            _, task_idx = routing[bid]
-            target = resolved_paths[bid]
-            text = file_texts[target]
-            _, task_blocks = _split_task_blocks(text)
-            found = any(tid == bid for tid, _ in task_blocks)
-            if not found:
-                _die(args, {"errors": [{
-                    "code": "dependent-block-missing",
-                    "path": f"$.tasks[{task_idx}]",
-                    "failed_id": bid,
-                    "plan_file": resolved_basenames[bid],
-                    "plan_mutations_applied": [],
-                    "run_log_appended": [],
-                    "remaining": list(remaining),
-                }]})
+    # ---- PHASE 1d: pre-write block-presence check.
+    # TASK-008 (per_task_dispatch_refactor_v2): the directory-only
+    # contract makes routing universal — every dependent has a resolved
+    # `plan_file`, so we always run the presence probe. The PHASE 1b
+    # missing-plan-file gate above guarantees we never reach this point
+    # with an unrouted dependent.
+    # Read each target file once for the presence probe. Cache the
+    # content so we do not re-read during the mutate phase.
+    file_texts: dict[Path, str] = {}
+    for path, ids in groups:
+        try:
+            file_texts[path] = _load_text(path)
+        except OSError as e:
+            _die(args, {"errors": [{
+                "failed_stage": "plan_read",
+                "failed_id": None,
+                "error": str(e),
+                "plan_file": path.name,
+                "plan_mutations_applied": [],
+                "run_log_appended": [],
+                "remaining": list(remaining),
+            }]})
+    for bid in blocked:
+        _, task_idx = routing[bid]
+        target = resolved_paths[bid]
+        text = file_texts[target]
+        _, task_blocks = _split_task_blocks(text)
+        found = any(tid == bid for tid, _ in task_blocks)
+        if not found:
+            _die(args, {"errors": [{
+                "code": "dependent-block-missing",
+                "path": f"$.tasks[{task_idx}]",
+                "failed_id": bid,
+                "plan_file": resolved_basenames[bid],
+                "plan_mutations_applied": [],
+                "run_log_appended": [],
+                "remaining": list(remaining),
+            }]})
 
     # ---- PHASE 2: per-file mutate-then-write.
-    # Back-compat for the pure single-file case (no plan_file routing):
-    # preserve exactly one _load_text / _write_text pair and the original
-    # inline failure semantics for plan_mutate errors (V5, V6, V15, V16).
     plan_mutations_applied: list[str] = []
     run_log_appended: list[str] = []
     # Per-id basename for run-log; computed for every applied id.
@@ -5514,21 +5558,8 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
     mutate_failure: dict | None = None
 
     for path, ids in groups:
-        # ---- PHASE 2a: plan read (skip if pre-check already cached). ----
-        if any_routed:
-            original = file_texts[path]  # type: ignore[name-defined]
-        else:
-            try:
-                original = _load_text(path)
-            except OSError as e:
-                _die(args, {"errors": [{
-                    "failed_stage": "plan_read",
-                    "failed_id": None,
-                    "error": str(e),
-                    "plan_mutations_applied": list(plan_mutations_applied),
-                    "run_log_appended": list(run_log_appended),
-                    "remaining": list(remaining),
-                }]})
+        # ---- PHASE 2a: plan read reuses the PHASE 1d pre-check cache. ----
+        original = file_texts[path]
 
         # ---- PHASE 2b: in-memory mutate loop for this group. ----
         mutated_text = original
@@ -5555,9 +5586,10 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
         if group_mutate_failure is not None and mutate_failure is None:
             mutate_failure = group_mutate_failure
 
-        # ---- PHASE 2c: if NO id flipped for this group AND this is the
-        # only group with any work, die now with the existing payload
-        # shape (V5 semantics for single-file runs). ----
+        # ---- PHASE 2c: if NO id flipped for this group, skip the write
+        # and continue. The deferred mutate failure (if any) is the
+        # primary stage; we surface it after every group has been
+        # attempted so partial cross-file persistence is preserved. ----
         if not mutated_in_memory:
             # No write needed for this group. Continue to the next.
             # If this is the ONLY group and nothing flipped anywhere,
@@ -5606,7 +5638,7 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
                 "task_id": bid,
                 "blocker_task_id": failed_id,
                 "reason": f"dependency TASK-{failed_id} failed",
-                "plan_file": applied_basenames.get(bid, default_plan_basename),
+                "plan_file": applied_basenames[bid],
             })
         except Exception as e:  # _append_run_log raises on tail-verify failure
             log_failure = {
@@ -7060,8 +7092,12 @@ def _certify_execute(
 #     contribute to the verdict; advisory checks (`portable_tier` until
 #     TASK-008 lands) appear in the report but do not flip `overall` to
 #     `fail` unless `--strict` is set.
-#   * `pass_with_alias` is still a pass (alias windows from TASK-001 are
-#     legitimate); `fail` is the only verdict-flipping status.
+#   * Status vocabulary is `pass | pass_with_alias | fail`. TASK-008
+#     removed every file-mode alias window, so post-cleanup checks emit
+#     plain `pass` when the runtime artifact matches the canonical set
+#     and `fail` otherwise — `pass_with_alias` is reserved for any
+#     future alias window that genuinely needs a deprecation pause.
+#     `fail` is the only verdict-flipping status.
 #   * Checks that grep source files report concrete path + line numbers
 #     in their `reason` strings so an operator can repair the drift
 #     without grep-spelunking.
@@ -7156,10 +7192,16 @@ def _audit_finding(
 
 
 def _check_status_vocabulary() -> dict:
-    """`ALLOWED_TASK_STATUSES` matches the canonical set, modulo aliases."""
+    """`ALLOWED_TASK_STATUSES` matches the canonical set.
+
+    TASK-008: the file-mode `open` alias was REMOVED. The directory-only
+    canonical set is the single accepted runtime form. This check reports
+    plain `pass` only when `ALLOWED_TASK_STATUSES` exactly equals the
+    canonical set; presence of `open` or any other legacy alias surfaces
+    as `extra=[...]` drift and fails the check.
+    """
     canonical = set(CANONICAL_CONTRACT["status_vocabulary"])
     actual = set(ALLOWED_TASK_STATUSES)
-    aliases = set(ALIAS_WINDOWS.get("status_vocabulary", []))
     canonical_payload = {
         "source": "CANONICAL_CONTRACT[status_vocabulary]",
         "value": sorted(canonical),
@@ -7177,25 +7219,7 @@ def _check_status_vocabulary() -> dict:
             actual=actual_payload,
             reason=None,
         )
-    if aliases and actual == canonical | aliases:
-        return _audit_finding(
-            check="status_vocabulary",
-            status="pass_with_alias",
-            canonical=canonical_payload,
-            actual=actual_payload,
-            reason=f"alias window active: {sorted(aliases)}",
-            locations=[
-                {
-                    "path": owning_path,
-                    "line": _audit_locate_constant("ALLOWED_TASK_STATUSES"),
-                    "reason": (
-                        f"alias window active: {sorted(aliases)} accepted "
-                        "alongside canonical status set"
-                    ),
-                },
-            ],
-        )
-    extra = sorted(actual - canonical - aliases)
+    extra = sorted(actual - canonical)
     missing = sorted(canonical - actual)
     return _audit_finding(
         check="status_vocabulary",
@@ -7219,19 +7243,22 @@ def _check_status_vocabulary() -> dict:
 
 
 def _check_schedule_wire_format() -> dict:
-    """`_validate_schedule` reads `id`/`index` (or the alias window).
+    """`_validate_schedule` reads the canonical `id` / `index` fields.
 
-    The check inspects the source of `_validate_schedule` for the
-    `t.get("id")` / `b.get("index")` patterns and the
-    `SCHEDULE_FIELD_ALIASES` mapping. Drift here would mean schedules
-    written by callers using the canonical wire format silently fail to
-    parse — exactly the Phase 5 failure mode this audit defends against.
+    TASK-008 REMOVED the file-mode `task_id` / `batch_index` aliases.
+    `_validate_schedule` now rejects schedules carrying those legacy
+    field names with a structured `missing-field` error. The check
+    still asserts that `_validate_schedule` actually reads the canonical
+    field names (`id` / `index`) — drift here would mean schedules
+    silently fail to parse.
     """
+    canonical_task_fields = list(CANONICAL_CONTRACT["schedule_task_fields"])
+    canonical_batch_fields = list(CANONICAL_CONTRACT["schedule_batch_fields"])
     canonical_payload = {
-        "source": "CANONICAL_CONTRACT[schedule_task_field, schedule_batch_field]",
+        "source": "CANONICAL_CONTRACT[schedule_task_fields, schedule_batch_fields]",
         "value": {
-            "task_field": CANONICAL_CONTRACT["schedule_task_field"],
-            "batch_field": CANONICAL_CONTRACT["schedule_batch_field"],
+            "task_fields": canonical_task_fields,
+            "batch_fields": canonical_batch_fields,
         },
     }
     owning_path = _audit_relpath(_SCRIPT_DIR / "plan_ops.py")
@@ -7253,7 +7280,7 @@ def _check_schedule_wire_format() -> dict:
             ],
         )
 
-    # Match both shapes the validator uses:
+    # Match both shapes the validator uses for the primary canonical names:
     #   `t.get("id")` / `b.get("index")` (lookup form)
     #   `if "id" not in t` / `if "index" not in b` (presence form).
     # The point is that `_validate_schedule` *names* the canonical field
@@ -7268,22 +7295,14 @@ def _check_schedule_wire_format() -> dict:
     ) or bool(
         re.search(r"""["']index["']\s+not\s+in\s+\w""", validator_src)
     )
-    aliases_present = (
-        "task_id" in SCHEDULE_FIELD_ALIASES
-        and SCHEDULE_FIELD_ALIASES["task_id"] == "id"
-        and "batch_index" in SCHEDULE_FIELD_ALIASES
-        and SCHEDULE_FIELD_ALIASES["batch_index"] == "index"
-    )
     actual_payload = {
-        "source": "_validate_schedule body + SCHEDULE_FIELD_ALIASES",
+        "source": "_validate_schedule body",
         "value": {
             "reads_id": task_pattern_present,
             "reads_index": batch_pattern_present,
-            "aliases": dict(SCHEDULE_FIELD_ALIASES),
         },
     }
     validator_line = _audit_locate_def("_validate_schedule")
-    aliases_line = _audit_locate_constant("SCHEDULE_FIELD_ALIASES")
     if not task_pattern_present or not batch_pattern_present:
         missing: list[str] = []
         if not task_pattern_present:
@@ -7301,27 +7320,6 @@ def _check_schedule_wire_format() -> dict:
                     "path": owning_path,
                     "line": validator_line,
                     "reason": f"missing canonical reads: {missing}",
-                },
-            ],
-        )
-    if aliases_present:
-        return _audit_finding(
-            check="schedule_wire_format",
-            status="pass_with_alias",
-            canonical=canonical_payload,
-            actual=actual_payload,
-            reason=(
-                "alias window active: SCHEDULE_FIELD_ALIASES maps "
-                "task_id->id, batch_index->index"
-            ),
-            locations=[
-                {
-                    "path": owning_path,
-                    "line": aliases_line,
-                    "reason": (
-                        "alias window active: SCHEDULE_FIELD_ALIASES maps "
-                        "task_id->id, batch_index->index"
-                    ),
                 },
             ],
         )
@@ -7353,15 +7351,18 @@ def inspect_validate_schedule_source() -> str:
 def _check_implementer_report_labels() -> dict:
     """`cmd_parse_implementer_report` searches the canonical labels.
 
-    Greps the function body for the literal `**Concerns for reviewer:**`
-    and `**Plan adaptations:**` substrings (or the documented alias
-    `**Concerns:**`). Drift here previously caused the orchestrator to
-    silently lose the implementer's revert guidance.
+    TASK-008 REMOVED the file-mode `**Concerns:**` alias.
+    `cmd_parse_implementer_report` no longer accepts the legacy label
+    as a fallback; only the canonical `**Concerns for reviewer:**`
+    section is recognized. The check still asserts that the parser
+    body names the canonical anchor labels — drift (a missing canonical
+    `**Concerns for reviewer:**` or `**Plan adaptations:**` literal)
+    fails.
     """
     canonical_payload = {
-        "source": "CANONICAL_CONTRACT[implementer_*_label]",
+        "source": "CANONICAL_CONTRACT[implementer_*_label(s)]",
         "value": {
-            "concerns": CANONICAL_CONTRACT["implementer_concerns_label"],
+            "concerns": CANONICAL_CONTRACT["implementer_concerns_labels"],
             "plan_adaptations": CANONICAL_CONTRACT[
                 "implementer_plan_adaptations_label"
             ],
@@ -7403,22 +7404,13 @@ def _check_implementer_report_labels() -> dict:
 
     canonical_concerns = "Concerns for reviewer"
     canonical_plan_adapt = "Plan adaptations"
-    legacy_concerns = "Concerns"
-    aliases = set(ALIAS_WINDOWS.get("implementer_concerns_label", []))
     has_canonical_concerns = canonical_concerns in body
     has_plan_adapt = canonical_plan_adapt in body
-    # The legacy `Concerns` literal is detected via a word-boundary match
-    # so the canonical `Concerns for reviewer` substring does not double-count.
-    has_legacy_concerns = bool(
-        re.search(r'"\s*Concerns\s*"', body)
-        or re.search(r"'\s*Concerns\s*'", body)
-    )
     actual_payload = {
         "source": "cmd_parse_implementer_report body",
         "value": {
             "has_concerns_for_reviewer": has_canonical_concerns,
             "has_plan_adaptations": has_plan_adapt,
-            "has_legacy_concerns": has_legacy_concerns,
         },
     }
     parser_def_line = _audit_locate_def(
@@ -7439,24 +7431,6 @@ def _check_implementer_report_labels() -> dict:
             locations=[{
                 "path": owning_path, "line": parser_def_line,
                 "reason": f"missing canonical labels in parser: {missing}",
-            }],
-        )
-    if has_legacy_concerns and "**Concerns:**" in aliases:
-        return _audit_finding(
-            check="implementer_report_labels",
-            status="pass_with_alias",
-            canonical=canonical_payload,
-            actual=actual_payload,
-            reason=(
-                "alias window active: parser still falls back to legacy "
-                "'**Concerns:**' label"
-            ),
-            locations=[{
-                "path": owning_path, "line": parser_def_line,
-                "reason": (
-                    "alias window active: parser still falls back to legacy "
-                    "'**Concerns:**' label"
-                ),
             }],
         )
     return _audit_finding(

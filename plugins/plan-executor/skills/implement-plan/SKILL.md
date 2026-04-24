@@ -30,7 +30,7 @@ Before running `/implement-plan` on a new plan — and after any substantive cha
 python3 plugins/plan-executor/scripts/plan_ops.py audit --json
 ```
 
-The audit cross-references the shipped artifacts against the canonical decisions declared in `plan_ops.py:CANONICAL_CONTRACT`. Any finding with `status: fail` MUST be resolved before proceeding with a real run. `status: pass_with_alias` is treated as pass (alias windows are deliberate); the report still names which alias is active so silent tolerance is impossible.
+The audit cross-references the shipped artifacts against the canonical decisions declared in `plan_ops.py:CANONICAL_CONTRACT`. Any finding with `status: fail` MUST be resolved before proceeding with a real run. TASK-008 removed every legacy alias window, so post-cleanup checks emit plain `pass` when the runtime artifact matches the canonical set and `fail` otherwise.
 
 `audit` is advisory at the Phase 0 preflight seam — it is NOT a hard gate (gates are TASK-005's job and are runtime-scoped to a specific execution; audit is standing / cross-cutting). The intent is to catch executor drift between the editor's terminal and the next orchestrator run. The `portable_tier` check is registered but advisory / `--strict`-only until TASK-008 lands; pass `--strict` to include it in the verdict.
 
@@ -92,7 +92,7 @@ All subcommands accept `--json` for machine-readable output.
 | `plan_ops.py acquire-lock / release-lock --plan-file ... --run-id ...` | Per-plan-file run-lock against `<run_lock>` |
 | `plan_ops.py path-info` | Emit configured `plan_dir` + derived `run_log` / `run_lock` / `schedule_glob` paths. Run once at Phase 0 to bind the `<plan_dir>` / `<run_log>` / `<run_lock>` / `<schedule_file>` placeholders used throughout this skill. |
 | `plan_ops.py gates --list\|--check <csv>\|--certify --mode dry-run\|execute` | Phase-gate predicates. The six canonical gates — `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`, `commit-safe` — return `{name, status ∈ pass\|fail\|not_applicable, reason}`. Used at Phase 0 preflight (schema + schedule + fixture + execution-safe + review-safe), after each Phase D.3 commit (`commit-safe` for that SHA), and at End-of-run (`--certify --mode execute --run-id <id>` for the full bundle). See §9.7 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
-| `plan_ops.py audit --list\|--json\|--report-file <path>\|--check <csv>\|--strict` | Standing self-audit (TASK-007). Cross-references shipped artifacts (`plan_ops.py`, `plan_codex_dispatch.py`, schema sidecars, SKILL.md, dispatch templates, design doc) against `CANONICAL_CONTRACT`. Findings carry `{check, tier ∈ default\|advisory, status ∈ pass\|pass_with_alias\|fail, canonical, actual, reason}`. Default verdict excludes advisory tier; `--strict` includes it. Run before any rerun and after substantive protocol changes. See §14 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
+| `plan_ops.py audit --list\|--json\|--report-file <path>\|--check <csv>\|--strict` | Standing self-audit (TASK-007). Cross-references shipped artifacts (`plan_ops.py`, `plan_codex_dispatch.py`, schema sidecars, SKILL.md, dispatch templates, design doc) against `CANONICAL_CONTRACT`. Findings carry `{check, tier ∈ default\|advisory, status ∈ pass\|fail, canonical, actual, reason}`. TASK-008 retired the legacy alias windows, so audit findings are now plain `pass`/`fail` only. Default verdict excludes advisory tier; `--strict` includes it. Run before any rerun and after substantive protocol changes. See §14 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
 
 ## Per-task `<plan-file>` resolution (TASK-004 write sites)
 
@@ -103,7 +103,7 @@ child_basename = task.plan_file
 child_path = <plans_dir> / child_basename
 ```
 
-I.e., every schedule entry carries `plan_file: "<child-basename>"` (the analyst emits it per TASK-003's contract); resolve against `<plans_dir>` to get the absolute child path and hand that to `--plan-file`. `block-dependents`'s internal cascade already does this per-dependent lookup natively (TASK-002 landed the implementation); the orchestrator just passes `--plan-file <failed-task's child path>` and lets the subcommand route each dependent's mutation to its own file.
+Every schedule entry carries `plan_file: "<child-basename>"` (the fat manifest from `build-tasks` populates it per directory-mode contract); resolve against `<plans_dir>` to get the absolute child path and hand that to `--plan-file`. `block-dependents`'s internal cascade does this per-dependent lookup natively; the orchestrator just passes `--plan-file <failed-task's child path>` and lets the subcommand route each dependent's mutation to its own file.
 
 Run-log events carry a `plan_file` field in their `fields` dict so the audit trail records which child each event mutated. The events with this field are:
 
@@ -414,17 +414,17 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
   --fields-json '{"reviewer":"codex","plan_file":"<basename>"}' --json
 
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
-  --plan-file <absolute plan> \
   --schedule-file <schedule_file> \
-  --plans-dir <plans_dir> \
   --repo-root <absolute repo root> \
   --timeout 180 \
   [--allow-gaps]
 
-# <absolute plan> is the directory path; <plans_dir> is the same directory path
-# (the reviewer reads the persisted <schedule_file> for the unified tasks[] and
-# does not need per-child files). Codex returns approved|approved-with-notes|
-# needs-replan against the unified schedule.
+# Schedule-only review (post-TASK-006/008): the reviewer reads only the persisted
+# <schedule_file> for the unified fat tasks[] (description + acceptance_criteria
+# included) and validates DAG / file-disjointness / classification / AC-vs-files
+# alignment from the schedule alone. --plan-file and --plans-dir were removed
+# in TASK-008. Codex returns approved|approved-with-notes|needs-replan against
+# the unified schedule.
 
 ```
 
@@ -603,7 +603,7 @@ Await all. For EVERY task (success or not) append `implement_done {task_id, outc
 printf '%s' "<agent_output>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" parse-implementer-report --stdin --json
 ```
 
-Gets `{outcome, files_changed, diff_summary, test_outcome, concerns, plan_adaptations, warnings, diagnostics, reversion_guidance?}`. `concerns` and `plan_adaptations` are `list[str]` (one entry per bullet); `warnings` is `list[str]` describing any legacy-alias label fallbacks (e.g., `**Concerns:**` instead of the canonical `**Concerns for reviewer:**`). `diagnostics` is a `list[dict]` of `{code, message}` entries flagging absent mandatory section headers (e.g. missing `**Plan adaptations:**`). Non-halting — surface to the reviewer for visibility; do not gate on it. Post-hoc scope check:
+Gets `{outcome, files_changed, diff_summary, test_outcome, concerns, plan_adaptations, warnings, diagnostics, reversion_guidance?}`. `concerns` and `plan_adaptations` are `list[str]` (one entry per bullet); `warnings` is `list[str]` reserved for future non-halting parser advisories (TASK-008 retired the legacy-alias warning channel — the deprecated `**Concerns:**` fallback was REMOVED). Missing `**Concerns for reviewer:**` section now surfaces as a `missing-concerns-for-reviewer` diagnostic. `diagnostics` is a `list[dict]` of `{code, message}` entries flagging absent mandatory section headers (e.g. missing `**Plan adaptations:**`). Non-halting — surface to the reviewer for visibility; do not gate on it. Post-hoc scope check:
 
 ```bash
 git diff --name-only HEAD -- <task.files>
@@ -645,7 +645,7 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
   --schedule-file <path> --plan-file <abs> --failed NNN --run-id <id> --json
 ```
 
-Pass the **failed task's** child file as `--plan-file` (same resolution rule). `block-dependents` reads the schedule's per-task `plan_file` for each dependent internally and routes each mutation to the right child file; siblings in other children flip there, not in the failed task's file. The `--plan-file` argument remains required as (a) the single-file back-compat fallback for any dependent whose schedule entry omits `plan_file` (file-mode CLI callers; TASK-008 removes this) and (b) the DAG-lookup anchor.
+Pass the **failed task's** child file as `--plan-file` (same resolution rule). `block-dependents` reads the schedule's per-task `plan_file` for each dependent internally and routes each mutation to the right child file; siblings in other children flip there, not in the failed task's file. The `--plan-file` argument serves as the DAG-lookup anchor; per-dependent mutation routes through each dependent's own `tasks[].plan_file`.
 
 Release this task's file locks. Remove the task from `ready`. Peer tasks in the same and later batches proceed independently. Do NOT proceed to Phase D for this task.
 
