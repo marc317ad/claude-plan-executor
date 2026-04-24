@@ -13845,6 +13845,134 @@ class TestPreflightDirectoryMode:
         ), body
         assert body["dirty_files"]["plan_doc"] == [], body
 
+    def test_directory_tracked_dirty_attributes_to_third_child_strict_scope(
+        self, tmp_path: Path,
+    ) -> None:
+        """TASK-003 dirty-tree coverage complementing the hotfix's TASK-002
+        attribution test. Proves the preflight scope union spans every child
+        in ``chunks[]`` (not just the first one) and that ``--strict-scope``
+        flips ``pass`` to False when any attributed file is dirty. Also pins
+        the "first non-null wins" ``base_branch`` invariant: all three
+        children declare ``**Base branch:** main`` so the resolved value
+        must be ``main``.
+        """
+        repo, plan_dir = self._init_repo_with_fixture(tmp_path)
+        # ``scratch/b.txt`` is in TASK-003's declared Files: list (committed
+        # as tracked content by _init_repo_with_fixture). Modify in-place to
+        # create a tracked-dirty file attributed to task_id 003.
+        (repo / "scratch" / "b.txt").write_text("CHANGED-B\n", encoding="utf-8")
+        # Default (non-strict) pass: plan_scope_dirty is a warning, not a
+        # halt. Source_blocking stays empty because the dirty file IS in
+        # scope.
+        cp_default = self._preflight(repo, plan_dir, strict_scope=False)
+        assert cp_default.returncode == 0, cp_default.stdout + cp_default.stderr
+        body_default = _parse_json(cp_default)
+        assert body_default["pass"] is True
+        assert body_default["dirty_files"]["source_blocking"] == []
+        scoped = body_default["dirty_files"]["plan_scope_dirty"]
+        assert any(
+            e["path"] == "scratch/b.txt" and e["task_id"] == "003" for e in scoped
+        ), scoped
+        assert any(
+            "scratch/b.txt" in w and "TASK-003" in w
+            for w in body_default["scope_warnings"]
+        )
+        # First-non-null-wins: every child declares main, so main wins.
+        assert body_default["base_branch"] == "main"
+
+        # --strict-scope flips pass to False (even though source_blocking is
+        # empty) because plan_scope_dirty is non-empty.
+        cp_strict = self._preflight(repo, plan_dir, strict_scope=True)
+        assert cp_strict.returncode != 0, cp_strict.stdout + cp_strict.stderr
+        body_strict = _parse_json(cp_strict)
+        assert body_strict["pass"] is False
+        strict_scoped = body_strict["dirty_files"]["plan_scope_dirty"]
+        assert any(
+            e["path"] == "scratch/b.txt" and e["task_id"] == "003"
+            for e in strict_scoped
+        ), strict_scoped
+
+    def test_directory_base_branch_first_non_null_wins(
+        self, tmp_path: Path,
+    ) -> None:
+        """Pins the "first non-null wins" ``base_branch`` contract by varying
+        per-child values. The shipped fixture has all three children declaring
+        ``**Base branch:** main`` — so the sibling
+        ``test_directory_tracked_dirty_attributes_to_third_child_strict_scope``
+        assertion that ``base_branch == "main"`` would still pass under a
+        buggy refactor that read only the first child, only the last child,
+        or any non-null child. This test varies the values so it distinguishes
+        the contract: child 001 declares NO base branch (null), child 002
+        declares ``release-2026-04``, child 003 declares ``main``. Preflight
+        must return the first non-null in roster order (002's value:
+        ``release-2026-04``). A refactor that picked "last non-null" would
+        return ``main``; a refactor that picked only the first roster entry
+        would return ``None`` or fall through to a default.
+        """
+        repo, plan_dir = self._init_repo_with_fixture(tmp_path)
+        # Child 001: remove the `**Base branch:**` line entirely (null child).
+        seed_path = plan_dir / "TASK-001_seed.md"
+        seed_text = seed_path.read_text(encoding="utf-8")
+        seed_mutated = re.sub(
+            r"^\*\*Base branch:\*\*.*\n", "", seed_text, count=1, flags=re.MULTILINE,
+        )
+        assert seed_mutated != seed_text, (
+            "fixture precondition: TASK-001_seed.md must contain a "
+            "**Base branch:** line to remove"
+        )
+        seed_path.write_text(seed_mutated, encoding="utf-8")
+        # Child 002: set to a distinct non-main branch name.
+        a_path = plan_dir / "TASK-002_write_a.md"
+        a_text = a_path.read_text(encoding="utf-8")
+        a_mutated = re.sub(
+            r"^\*\*Base branch:\*\*\s*\S+\s*$",
+            "**Base branch:** release-2026-04",
+            a_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        assert a_mutated != a_text, (
+            "fixture precondition: TASK-002_write_a.md must contain a "
+            "**Base branch:** line to rewrite"
+        )
+        a_path.write_text(a_mutated, encoding="utf-8")
+        # Child 003: explicitly set to main (distinct from child 002's value).
+        b_path = plan_dir / "TASK-003_write_b.md"
+        b_text = b_path.read_text(encoding="utf-8")
+        b_mutated = re.sub(
+            r"^\*\*Base branch:\*\*\s*\S+\s*$",
+            "**Base branch:** main",
+            b_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        assert b_mutated != b_text, (
+            "fixture precondition: TASK-003_write_b.md must contain a "
+            "**Base branch:** line to rewrite"
+        )
+        b_path.write_text(b_mutated, encoding="utf-8")
+        # Re-commit the mutated children so `git status` stays clean (prevents
+        # the mutation from polluting dirty_files classifications under test).
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "mutate base_branch fixture"],
+            cwd=repo, check=True,
+        )
+
+        cp = self._preflight(repo, plan_dir)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        # First-non-null-wins: 001 has no declaration, 002 has release-2026-04,
+        # 003 has main → 002's value wins because it's the first non-null in
+        # roster order. If a refactor changed selection to "last non-null" or
+        # "any", `main` would slip through; this assertion would then fail.
+        assert body["base_branch"] == "release-2026-04", (
+            "first-non-null-wins violated: expected release-2026-04 (from "
+            "child 002, the first roster entry with a non-null **Base "
+            f"branch:**), got {body.get('base_branch')!r}. Roster order was "
+            "001 (null) → 002 (release-2026-04) → 003 (main)."
+        )
+
 
 class TestDirectoryModeHotfixSmoke:
     """Hotfix TASK-004: in-process integration across the three hotfix seams.

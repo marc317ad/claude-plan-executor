@@ -119,7 +119,7 @@ With auto-promotion landed in TASK-001, every downstream phase can assume `plan_
 
 ### TASK-003: Preflight directory branch (remove file-branch fallthrough)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**

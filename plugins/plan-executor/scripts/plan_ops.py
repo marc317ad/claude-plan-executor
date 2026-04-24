@@ -3185,7 +3185,9 @@ def cmd_preflight(args: argparse.Namespace) -> None:
     # Directory-mode input: read 00_INDEX.json, union every child's `Files:`
     # declarations into the scope classifier, and treat the index + any
     # chunks[].file under <plan_dir> as plan_doc (not source_blocking).
-    # File branch below stays byte-identical to pre-hotfix behavior.
+    # The directory branch is the canonical path; the `else` file branch
+    # below is deprecated legacy-caller support and is slated for removal
+    # in TASK-008 (per docs/plans/per_task_dispatch_refactor_v2/).
     is_dir_mode = plan.is_dir()
     if not is_dir_mode and not plan.is_file():
         _die(args, {"error": f"plan file not found: {plan}"})
@@ -3261,6 +3263,7 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         index_rel = f"{plan_dir_rel}/00_INDEX.json" if plan_dir_rel else "00_INDEX.json"
         plan_doc_set.add(index_rel)
     else:
+        # Deprecated file-branch fallback; TASK-008 removes this.
         plan_text = _load_text(plan)
         scope = _allowed_files_union(plan_text)
         base_m = re.search(
@@ -3287,8 +3290,11 @@ def cmd_preflight(args: argparse.Namespace) -> None:
             # `<plan_dir>/00_INDEX.json` + every `<plan_dir>/<chunk>`. This
             # correctly handles chunks[].file with subdir prefixes and
             # rejects false-positive same-named directories elsewhere.
+            # Invariant: every chunks[].file basename (and 00_INDEX.json) is
+            # classified as plan_doc, NEVER source_blocking.
             is_plan_doc = path in plan_doc_set
         else:
+            # Deprecated file-branch fallback; TASK-008 removes this.
             is_plan_doc = path == str(plan) or path.endswith(plan.name)
         # `_is_preflight_always_ignored` needs a plan_basename to match the
         # per-plan schedule sidecar; in directory mode, use the directory
