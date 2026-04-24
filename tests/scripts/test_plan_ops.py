@@ -13762,3 +13762,244 @@ class TestPreflightDirectoryMode:
             body["dirty_files"]["source_blocking"]
         ), body
         assert body["dirty_files"]["plan_doc"] == [], body
+
+
+class TestDirectoryModeHotfixSmoke:
+    """Hotfix TASK-004: in-process integration across the three hotfix seams.
+
+    Chains the three touched command functions (`cmd_preflight`,
+    `cmd_plan_review`, `cmd_parse_plan_review_report`) by direct import
+    against the shipped ``tests/fixtures/directory_mode_plan/`` fixture.
+    Verifies the data flow between the three fixes — no single-task test
+    covers the interface contracts simultaneously.
+
+    Mock boundary: ``plan_codex_dispatch.invoke_codex`` is monkey-patched
+    so Codex does not actually run; the fake writes a canned parsed-body
+    JSON to ``output_path`` and returns a synthetic success dict. Both
+    test and target live in the same Python process; the orchestrator's
+    real subprocess path is exercised by the pre-existing
+    ``TestDirectoryMode*`` CLI-level suites earlier in this file.
+    """
+
+    def test_directory_mode_hotfix_smoke(
+        self, directory_mode_sandbox: Path,
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Preflight → plan-review (mocked Codex) → parse-plan-review-report.
+
+        Assertions:
+          * Step 1: cmd_preflight returns ``pass: true`` + empty
+            ``source_blocking`` against the fixture directory.
+          * Step 4: cmd_plan_review emits a success envelope keyed by the
+            directory basename; the fake invoke_codex is called exactly once.
+          * Step 5: cmd_parse_plan_review_report preserves ``notes`` from
+            the wrapper envelope verbatim into its emitted result.
+          * End-to-end: no ``plan_review_skipped`` event appears in the
+            sandboxed ``_run_log.jsonl``.
+        """
+        import argparse as _argparse
+        import importlib
+        import io
+        import sys as _sys
+
+        # Lazy-import the wrapper so sys.path (set up at module import
+        # time) resolves it from plugins/plan-executor/scripts/. Using
+        # importlib + invalidate_caches avoids a stale cache when this
+        # test runs after test modules that load the wrapper via
+        # spec_from_file_location under a different name.
+        importlib.invalidate_caches()
+        import plan_codex_dispatch
+
+        plan_dir = directory_mode_sandbox  # tmp_path / "decomposed_plan"
+
+        # Pre-seed the sandboxed run log so the end-to-end assertion below
+        # is always evaluated. The in-process command functions exercised
+        # here (cmd_preflight, cmd_plan_review, cmd_parse_plan_review_report)
+        # do not themselves emit log events, so without seeding the file
+        # would not exist and the `plan_review_skipped` guard would silently
+        # no-op. The fixture already monkey-patches RUN_LOG_PATH into tmp.
+        plan_ops.RUN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        plan_ops.RUN_LOG_PATH.touch()
+
+        # -- Step 1: preflight against the directory -----------------------
+        pre_ns = _argparse.Namespace(
+            command="preflight",
+            plan_file=str(plan_dir),
+            strict_branch=False,
+            strict_scope=False,
+            json=True,
+        )
+        pre_buf = io.StringIO()
+        import contextlib
+        with contextlib.redirect_stdout(pre_buf):
+            with pytest.raises(SystemExit) as excinfo:
+                plan_ops.cmd_preflight(pre_ns)
+        assert excinfo.value.code == 0, (
+            f"preflight exited non-zero: {pre_buf.getvalue()!r}"
+        )
+        pre_result = json.loads(pre_buf.getvalue())
+        assert pre_result["pass"] is True, pre_result
+        assert pre_result["dirty_files"]["source_blocking"] == [], pre_result
+
+        # -- Step 2: synthesize the schedule sidecar -----------------------
+        schedule_path = plan_dir / "directory_mode_plan.schedule.json"
+        schedule_payload = {
+            "outcome": "valid",
+            "tasks": [
+                {
+                    "id": "001",
+                    "agent": "claude",
+                    "files": ["scratch/.gitkeep"],
+                    "dependencies": [],
+                    "plan_file": "TASK-001_seed.md",
+                },
+                {
+                    "id": "002",
+                    "agent": "claude",
+                    "files": ["scratch/a.txt"],
+                    "dependencies": ["001"],
+                    "plan_file": "TASK-002_write_a.md",
+                },
+                {
+                    "id": "003",
+                    "agent": "claude",
+                    "files": ["scratch/b.txt"],
+                    "dependencies": ["001"],
+                    "plan_file": "TASK-003_write_b.md",
+                },
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["scratch/.gitkeep"]},
+                {
+                    "index": 2, "task_ids": ["002", "003"],
+                    "file_locks": ["scratch/a.txt", "scratch/b.txt"],
+                },
+            ],
+            "gaps": [],
+            "risks": [],
+        }
+        schedule_path.write_text(
+            json.dumps(schedule_payload), encoding="utf-8",
+        )
+
+        # -- Step 3: monkey-patch invoke_codex with a fake that writes the
+        #            canned parsed-body JSON to output_path and returns
+        #            the minimal success dict. ------------------------------
+        invoke_calls: list[dict] = []
+        canned_parsed_body = {
+            "plan_file": "directory_mode_plan",
+            "verdict": "approved-with-notes",
+            "findings": [],
+            "notes": ["cross-child parallelism ok"],
+            "summary": "ok",
+            "schedule_ok": True,
+        }
+
+        def _fake_invoke_codex(
+            *,
+            prompt: str, workdir: str, schema_path: str, output_path: str,
+            timeout_sec: int, sandbox: str | None = None,
+        ) -> dict:
+            invoke_calls.append({
+                "prompt_len": len(prompt),
+                "workdir": workdir,
+                "schema_path": schema_path,
+                "output_path": output_path,
+                "timeout_sec": timeout_sec,
+                "sandbox": sandbox,
+            })
+            # The wrapper reads `output_path` and JSON-parses the result into
+            # the envelope's `parsed` field, so we write the parsed body
+            # (NOT a nested envelope) to disk.
+            Path(output_path).write_text(
+                json.dumps(canned_parsed_body), encoding="utf-8",
+            )
+            return {
+                "status": "ok",
+                "exit_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "file_changes": [],
+                "wall_seconds": 0.01,
+            }
+
+        monkeypatch.setattr(
+            plan_codex_dispatch, "invoke_codex", _fake_invoke_codex,
+        )
+
+        # -- Step 4: cmd_plan_review, capturing the emitted envelope -------
+        pr_ns = _argparse.Namespace(
+            subcommand="plan-review",
+            plan_file=str(plan_dir),
+            schedule_file=str(schedule_path),
+            plans_dir=str(plan_dir),
+            repo_root=str(plan_dir),
+            dry_run=False,
+            timeout=60,
+            allow_gaps=False,
+            json=True,
+        )
+        # Drain pre-existing capsys buffer so our assertions see only the
+        # wrapper's stdout.
+        capsys.readouterr()
+        rc = plan_codex_dispatch.cmd_plan_review(pr_ns)
+        captured = capsys.readouterr()
+        assert rc == 0, (
+            f"cmd_plan_review returned non-zero: stdout={captured.out!r}, "
+            f"stderr={captured.err!r}"
+        )
+        assert len(invoke_calls) == 1, (
+            f"fake invoke_codex not called exactly once: {invoke_calls}"
+        )
+        wrapper_envelope = json.loads(captured.out)
+        assert wrapper_envelope["outcome"] == "success", wrapper_envelope
+        assert wrapper_envelope["subcommand"] == "plan-review", wrapper_envelope
+        assert wrapper_envelope["plan_file"] == "decomposed_plan", wrapper_envelope
+        assert wrapper_envelope["parsed"]["notes"] == [
+            "cross-child parallelism ok",
+        ], wrapper_envelope
+
+        # -- Step 5: pipe the captured envelope through
+        #            cmd_parse_plan_review_report via monkey-patched stdin.
+        monkeypatch.setattr(
+            _sys, "stdin", io.StringIO(json.dumps(wrapper_envelope)),
+        )
+        parse_ns = _argparse.Namespace(
+            command="parse-plan-review-report",
+            stdin=True,
+            json=True,
+        )
+        parse_buf = io.StringIO()
+        with contextlib.redirect_stdout(parse_buf):
+            with pytest.raises(SystemExit) as parse_exc:
+                plan_ops.cmd_parse_plan_review_report(parse_ns)
+        assert parse_exc.value.code == 0, (
+            f"parse-plan-review-report exited non-zero: "
+            f"{parse_buf.getvalue()!r}"
+        )
+        parse_result = json.loads(parse_buf.getvalue())
+        assert parse_result["notes"] == ["cross-child parallelism ok"], (
+            parse_result
+        )
+        assert parse_result["verdict"] == "approved-with-notes", parse_result
+        assert parse_result["outcome"] == "success", parse_result
+        assert parse_result["errors"] == [], parse_result
+
+        # -- End-to-end: no plan_review_skipped event in the sandboxed log.
+        # The log was pre-seeded above, so this assertion always runs and
+        # actually exercises the acceptance criterion.
+        run_log = plan_ops.RUN_LOG_PATH
+        assert run_log.is_file(), (
+            f"sandboxed run log missing at {run_log!s}"
+        )
+        events = [
+            json.loads(line)
+            for line in run_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        skipped = [
+            e for e in events if e.get("event") == "plan_review_skipped"
+        ]
+        assert skipped == [], (
+            f"unexpected plan_review_skipped events: {skipped}"
+        )

@@ -189,7 +189,7 @@ Two-line fix to the consumer-side gap in `e8945b0`. The validator already requir
 
 ### TASK-004: End-to-end directory-mode plan-review smoke (in-process)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
