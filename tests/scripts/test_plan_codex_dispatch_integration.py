@@ -755,3 +755,123 @@ def test_plan_review_allow_gaps_absent_prompt_unchanged(tmp_path):
     assert "Operator override (--allow-gaps)" not in prompt_no_flag, (
         "demotion clause leaked into prompt when --allow-gaps is not set"
     )
+
+
+# ---------------------------------------------------------------------------
+# TASK-001 — cmd_plan_review accepts a decomposed-plan directory.
+#
+# Dry-run only; no live Codex. Validates that the wrapper concatenates the
+# children named in 00_INDEX.json into a single plan_text and that the
+# envelope's plan_file uses the directory's basename rather than a child
+# filename. A missing 00_INDEX.json in a directory input must surface as
+# outcome=failure with a roster-shaped error and exit 1.
+# ---------------------------------------------------------------------------
+
+
+DIRECTORY_MODE_FIXTURE = (
+    REPO_ROOT / "tests" / "fixtures" / "directory_mode_plan"
+)
+
+
+def _write_dummy_schedule(tmp_path: Path) -> Path:
+    """Minimal schedule JSON that round-trips through the wrapper's parse."""
+    schedule = tmp_path / "directory_mode.schedule.json"
+    schedule.write_text(
+        json.dumps({
+            "outcome": "valid",
+            "tasks": [],
+            "batches": [],
+            "gaps": [],
+        }),
+        encoding="utf-8",
+    )
+    return schedule
+
+
+def test_plan_review_directory_dry_run_concats_children(tmp_path):
+    """--plan-file pointing at a directory: wrapper reads 00_INDEX.json,
+    concatenates chunks[].file contents into plan_text, and the rendered
+    prompt contains every child's ### TASK-00N heading. Envelope.plan_file
+    is the directory's own basename, not any child filename."""
+    schedule = _write_dummy_schedule(tmp_path)
+
+    cp = subprocess.run(
+        [
+            sys.executable, str(WRAPPER), "plan-review",
+            "--plan-file", str(DIRECTORY_MODE_FIXTURE),
+            "--schedule-file", str(schedule),
+            "--plans-dir", str(tmp_path),
+            "--repo-root", str(tmp_path),
+            "--dry-run",
+            "--timeout", "180",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+    )
+    assert cp.returncode == 0, (
+        f"dry-run exited non-zero rc={cp.returncode}\n"
+        f"STDOUT:\n{cp.stdout}\nSTDERR:\n{cp.stderr}"
+    )
+    body = json.loads(cp.stdout)
+    assert body["outcome"] == "dry_run", body
+    # plan_file field identifies the directory, not any child.
+    assert body["plan_file"] == DIRECTORY_MODE_FIXTURE.name, body["plan_file"]
+
+    prompt = body["prompt_preview"]
+    # Every child's task heading lands in the concatenated plan_text.
+    for heading in (
+        "### TASK-001:",
+        "### TASK-002:",
+        "### TASK-003:",
+    ):
+        assert heading in prompt, (
+            f"child task heading missing from concatenated prompt: {heading!r}"
+        )
+    # Per-child marker comments precede each concatenated section.
+    for child_name in (
+        "TASK-001_seed.md",
+        "TASK-002_write_a.md",
+        "TASK-003_write_b.md",
+    ):
+        assert f"<!-- {child_name} -->" in prompt, (
+            f"per-child marker missing for {child_name}"
+        )
+    # The prompt's Plan file header echoes the directory basename contract.
+    assert f"Plan file: {DIRECTORY_MODE_FIXTURE.name}" in prompt
+
+
+def test_plan_review_directory_without_index_fails_missing_roster(tmp_path):
+    """A directory lacking 00_INDEX.json returns exit 1 with a
+    missing-roster shaped error."""
+    bad_dir = tmp_path / "missing_roster_plan"
+    bad_dir.mkdir()
+    (bad_dir / "TASK-001_noop.md").write_text(
+        "# noop\n\n### TASK-001: noop\n",
+        encoding="utf-8",
+    )
+    schedule = _write_dummy_schedule(tmp_path)
+
+    cp = subprocess.run(
+        [
+            sys.executable, str(WRAPPER), "plan-review",
+            "--plan-file", str(bad_dir),
+            "--schedule-file", str(schedule),
+            "--plans-dir", str(tmp_path),
+            "--repo-root", str(tmp_path),
+            "--dry-run",
+            "--timeout", "180",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+    )
+    assert cp.returncode == 1, (
+        f"expected exit 1 for missing roster, got rc={cp.returncode}\n"
+        f"STDOUT:\n{cp.stdout}\nSTDERR:\n{cp.stderr}"
+    )
+    body = json.loads(cp.stdout)
+    assert body["outcome"] == "failure", body
+    assert body.get("error", "").startswith(
+        "Missing 00_INDEX.json in plan directory:"
+    ), body.get("error")

@@ -55,7 +55,7 @@ Two verification paths: pytest (automated, mocked — the CI gate) and an option
 
 ### TASK-001: `cmd_plan_review` accepts directory input
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** codex
 - **Files:**
@@ -226,3 +226,14 @@ The longer-form refactor in `docs/plans/per_task_dispatch_refactor.md` is the ar
 1. **TASK-003 of the refactor (`build-tasks`) must also extract `acceptance_criteria`** from each child's `- **Acceptance criteria:**` bullet list into a string array on the emitted schedule task. Without AC text in the schedule, TASK-005's schedule-only plan-review loses the per-task AC sanity check that the current plan-review performs against plan markdown.
 2. **TASK-008 of the refactor (mock envelope)** must match the full plan-review schema: `{plan_file, verdict, findings, notes, schedule_ok, summary}` — not the abbreviated `{verdict, findings}` the draft currently names.
 3. **Latent bug to bundle into refactor TASK-003** (optional): `_compute_schedule_batches` at `plan_ops.py:299` ignores `task.dependencies` when building batches; runtime `batch-next._ready()` at `plan_ops.py:2631` is the actual dependency gate. The persisted `batches[]` are therefore advisory, not authoritative. Either make `_compute_schedule_batches` dependency-aware, or document this invariant explicitly in `plan_ops.py`'s module docstring.
+
+## Execution log — 20260424T103924 (paused)
+
+Starting SHA: `c92d42097c8a1c154ddca9806280968572cf9b26`  → Ending SHA: `c92d42097c8a1c154ddca9806280968572cf9b26`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-001 | claude | codex | needs-rework (re-review after narrow-remediation; D.5 partial-agreement on first review) | (paused) | [narrow-remediation] first pass OK on Finding 0 (basename); re-review re-flagged Finding 1 (partial reads) that D.5 dismissed; also flagged missing-chunk error path has no test coverage. |
+| TASK-002 | claude | (not run) | (not run) | (paused) | Implementation succeeded and tests passed; review not dispatched because TASK-001 paused first in serial per-task review order. |
+| TASK-003 | codex | (not run) | (not run) | (not run) | Batch 2 not started. |
+| TASK-004 | claude | (not run) | (not run) | (not run) | Batch 3 not started (depends on 001,002,003). |

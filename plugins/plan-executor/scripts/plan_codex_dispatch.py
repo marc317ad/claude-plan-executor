@@ -1396,14 +1396,73 @@ def cmd_plan_review(args) -> int:
         ))
         return 1
 
-    try:
-        plan_text = plan_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        emit(make_envelope(
-            "plan", "plan-review", "failure",
-            error=f"Cannot read plan file: {exc}",
-        ))
-        return 1
+    # Directory-mode input: read 00_INDEX.json and concatenate chunks[].file
+    # contents into a single plan_text. Superseded children are intentionally
+    # included so the reviewer can see cross-plan supersession chains; we do
+    # NOT import ``_parse_index_roster`` from ``plan_ops.py`` — that loader
+    # enforces full roster validation the wrapper does not need for a
+    # read-and-concat.
+    if plan_path.is_dir():
+        roster_path = plan_path / "00_INDEX.json"
+        if not roster_path.exists():
+            emit(make_envelope(
+                "plan", "plan-review", "failure",
+                error=f"Missing 00_INDEX.json in plan directory: {plan_path}",
+            ))
+            return 1
+        try:
+            roster = json.loads(roster_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            emit(make_envelope(
+                "plan", "plan-review", "failure",
+                error=f"Cannot parse roster: {exc}",
+            ))
+            return 1
+        chunks = roster.get("chunks") if isinstance(roster, dict) else None
+        if not chunks:
+            emit(make_envelope(
+                "plan", "plan-review", "failure",
+                error=f"Roster has no chunks: {roster_path}",
+            ))
+            return 1
+        pieces: list[str] = []
+        for chunk in chunks:
+            child_name = chunk.get("file") if isinstance(chunk, dict) else None
+            if not isinstance(child_name, str) or not child_name:
+                emit(make_envelope(
+                    "plan", "plan-review", "failure",
+                    error="Roster chunk missing 'file' key",
+                ))
+                return 1
+            child_basename = Path(child_name).name
+            child = plan_path / child_name
+            if not child.exists():
+                emit(make_envelope(
+                    "plan", "plan-review", "failure",
+                    error=f"Roster chunk not found: {child_basename}",
+                ))
+                return 1
+            try:
+                child_text = child.read_text(encoding="utf-8")
+            except OSError as exc:
+                emit(make_envelope(
+                    "plan", "plan-review", "failure",
+                    error=f"Cannot read plan file: {exc}",
+                ))
+                return 1
+            pieces.append(f"<!-- {child_basename} -->\n{child_text}")
+        plan_text = "\n\n".join(pieces)
+        plan_basename = plan_path.name
+    else:
+        try:
+            plan_text = plan_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            emit(make_envelope(
+                "plan", "plan-review", "failure",
+                error=f"Cannot read plan file: {exc}",
+            ))
+            return 1
+        plan_basename = plan_path.name
 
     try:
         schedule_text = schedule_path.read_text(encoding="utf-8")
@@ -1452,7 +1511,7 @@ def cmd_plan_review(args) -> int:
     prompt = render_plan_review_prompt(
         plan_text,
         schedule_text,
-        plan_path.name,
+        plan_basename,
         str(plan_path),
         plans_dir,
         allow_gaps_demotion=allow_gaps_demotion,
@@ -1460,7 +1519,7 @@ def cmd_plan_review(args) -> int:
 
     if args.dry_run:
         emit({
-            "plan_file": plan_path.name,
+            "plan_file": plan_basename,
             "subcommand": "plan-review",
             "outcome": "dry_run",
             "dry_run": True,
@@ -1580,7 +1639,7 @@ def cmd_plan_review(args) -> int:
         )
         # Override the default `task_id` field with `plan_file` for plan-review
         # envelopes; keeps the contract distinct from implement/review.
-        envelope["plan_file"] = plan_path.name
+        envelope["plan_file"] = plan_basename
         emit(envelope)
         return 0
     finally:
