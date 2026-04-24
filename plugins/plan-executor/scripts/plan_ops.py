@@ -2378,11 +2378,92 @@ def _is_preflight_always_ignored(path: str, plan_dir: str, plan_basename: str) -
 
 def cmd_preflight(args: argparse.Namespace) -> None:
     plan = Path(args.plan_file)
-    if not plan.is_file():
+    # Directory-mode input: read 00_INDEX.json, union every child's `Files:`
+    # declarations into the scope classifier, and treat the index + any
+    # chunks[].file under <plan_dir> as plan_doc (not source_blocking).
+    # File branch below stays byte-identical to pre-hotfix behavior.
+    is_dir_mode = plan.is_dir()
+    if not is_dir_mode and not plan.is_file():
         _die(args, {"error": f"plan file not found: {plan}"})
 
-    plan_text = _load_text(plan)
-    scope = _allowed_files_union(plan_text)
+    scope: dict[str, str] = {}
+    base_branch: str | None = None
+    # Remediation (codex needs-rework 2026-04-24): exact repo-relative path set.
+    # The previous (basename + parent.name) predicate silently (a) missed
+    # chunks[].file entries that carry a subdir prefix and (b) false-matched
+    # unrelated same-named directories elsewhere in the repo. Build the full
+    # set of expected repo-relative plan_doc paths up front so classification
+    # below is an exact set-membership test against git-status output.
+    plan_doc_set: set[str] = set()
+
+    if is_dir_mode:
+        roster_path = plan / "00_INDEX.json"
+        try:
+            roster = _parse_index_roster(roster_path)
+        except FileNotFoundError as exc:
+            _die(args, {"error": (
+                f"missing-roster-chunk: 00_INDEX.json not found in {plan}: {exc}"
+            )})
+        except ValueError as exc:
+            _die(args, {"error": (
+                f"missing-roster-chunk: malformed 00_INDEX.json in {plan}: {exc}"
+            )})
+        # Verify every chunks[].file exists on disk BEFORE we try to read
+        # them. A missing child is a hard halt — the orchestrator cannot
+        # preflight a directory whose roster lies about its contents.
+        missing_chunks: list[str] = []
+        for entry in roster.values():
+            if not (plan / entry["file"]).is_file():
+                missing_chunks.append(entry["file"])
+        if missing_chunks:
+            _die(args, {"error": (
+                "missing-roster-chunk: chunks[].file declared in "
+                f"{roster_path} but missing on disk: {missing_chunks}"
+            )})
+        # Resolve the plan directory to a repo-relative POSIX path so it can
+        # be compared byte-for-byte against `git status --porcelain` output
+        # (which emits repo-relative POSIX paths). Falls back to the raw
+        # plan path if the git toplevel probe fails — we prefer pass-through
+        # over silently dropping to the loose heuristic.
+        toplevel_cp = _git(["rev-parse", "--show-toplevel"])
+        plan_dir_rel: str
+        if toplevel_cp.returncode == 0 and toplevel_cp.stdout.strip():
+            try:
+                repo_root = Path(toplevel_cp.stdout.strip()).resolve()
+                plan_dir_rel = plan.resolve().relative_to(repo_root).as_posix()
+            except (OSError, ValueError):
+                plan_dir_rel = plan.as_posix()
+        else:
+            plan_dir_rel = plan.as_posix()
+        # Union allowed_files per child so attribution stays child-local
+        # (per-task task_ids are unique across children by roster invariant).
+        plan_text = ""  # kept for downstream consumers that expect a string
+        for entry in roster.values():
+            child_path = plan / entry["file"]
+            child_text = _load_text(child_path)
+            for p, t in _allowed_files_union(child_text).items():
+                scope[p] = t
+            if base_branch is None:
+                base_m_child = re.search(
+                    r"^\*\*Base branch:\*\*\s*(\S+)\s*$", child_text, re.MULTILINE,
+                )
+                if base_m_child:
+                    base_branch = base_m_child.group(1).strip()
+            # chunks[].file may be a plain basename OR a subdir-prefixed
+            # relative path; PurePosixPath handles both and keeps the
+            # comparison in POSIX-space to match `git status` output.
+            chunk_rel = f"{plan_dir_rel}/{entry['file']}" if plan_dir_rel else entry["file"]
+            plan_doc_set.add(chunk_rel)
+        index_rel = f"{plan_dir_rel}/00_INDEX.json" if plan_dir_rel else "00_INDEX.json"
+        plan_doc_set.add(index_rel)
+    else:
+        plan_text = _load_text(plan)
+        scope = _allowed_files_union(plan_text)
+        base_m = re.search(
+            r"^\*\*Base branch:\*\*\s*(\S+)\s*$", plan_text, re.MULTILINE,
+        )
+        if base_m:
+            base_branch = base_m.group(1).strip()
 
     dirty: dict[str, list] = {
         "plan_doc": [],
@@ -2397,9 +2478,21 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         if len(line) < 4:
             continue
         path = line[3:]
-        if path == str(plan) or path.endswith(plan.name):
+        if is_dir_mode:
+            # Exact repo-relative path match against the pre-computed set of
+            # `<plan_dir>/00_INDEX.json` + every `<plan_dir>/<chunk>`. This
+            # correctly handles chunks[].file with subdir prefixes and
+            # rejects false-positive same-named directories elsewhere.
+            is_plan_doc = path in plan_doc_set
+        else:
+            is_plan_doc = path == str(plan) or path.endswith(plan.name)
+        # `_is_preflight_always_ignored` needs a plan_basename to match the
+        # per-plan schedule sidecar; in directory mode, use the directory
+        # name so `<dir>.schedule.json` lookups still resolve.
+        ignore_basename = plan.name
+        if is_plan_doc:
             dirty["plan_doc"].append(path)
-        elif _is_preflight_always_ignored(path, _PLAN_DIR_POSIX, plan.name):
+        elif _is_preflight_always_ignored(path, _PLAN_DIR_POSIX, ignore_basename):
             dirty["orchestrator_state"].append(path)
         elif path in scope:
             tid = scope[path]
@@ -2416,8 +2509,6 @@ def cmd_preflight(args: argparse.Namespace) -> None:
     branch_cp = _git(["rev-parse", "--abbrev-ref", "HEAD"])
     current_branch = branch_cp.stdout.strip()
 
-    base_m = re.search(r"^\*\*Base branch:\*\*\s*(\S+)\s*$", plan_text, re.MULTILINE)
-    base_branch = base_m.group(1).strip() if base_m else None
     base_branch_match = base_branch is None or current_branch == base_branch
 
     pass_flag = len(dirty["source_blocking"]) == 0

@@ -13572,3 +13572,163 @@ class TestDirectoryModeFileModeRegression:
             assert "plan_file" not in t, (
                 "batch-next must not inject plan_file into file-mode schedules"
             )
+
+
+class TestPreflightDirectoryMode:
+    """Hotfix TASK-002: `cmd_preflight` accepts a directory input and handles
+    decomposed plans per the same envelope schema as file mode.
+
+    Each test seeds a fresh git repo, copies the shipped
+    ``tests/fixtures/directory_mode_plan/`` in as the plan, commits the
+    initial tree, then runs `preflight --plan-file <dir>` and inspects the
+    JSON envelope. File-mode semantics are preserved; directory-mode tests
+    exercise the new branch.
+    """
+
+    def _preflight(
+        self, repo: Path, plan_dir: Path, *, strict_scope: bool = False,
+    ) -> subprocess.CompletedProcess:
+        cmd = [str(PY), str(SCRIPT), "preflight", "--plan-file", str(plan_dir), "--json"]
+        if strict_scope:
+            cmd.append("--strict-scope")
+        return subprocess.run(
+            cmd,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+        )
+
+    def _init_repo_with_fixture(
+        self, tmp_path: Path,
+    ) -> tuple[Path, Path]:
+        """Init a fresh git repo at tmp_path, copy the shipped fixture in as
+        ``docs/plans/decomposed_plan/``, seed a tracked ``scratch/a.txt`` +
+        ``scratch/b.txt`` so TASK-002/003's Files: paths are real tracked
+        files, and commit the whole tree. Returns (repo_root, plan_dir).
+        """
+        import shutil
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+        plans_root = tmp_path / "docs" / "plans"
+        plans_root.mkdir(parents=True)
+        plan_dir = plans_root / "decomposed_plan"
+        shutil.copytree(DIRECTORY_MODE_FIXTURE, plan_dir)
+        # Seed the Files: targets so they can be made dirty later.
+        (tmp_path / "scratch").mkdir()
+        (tmp_path / "scratch" / "a.txt").write_text("orig-a\n", encoding="utf-8")
+        (tmp_path / "scratch" / "b.txt").write_text("orig-b\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
+        return tmp_path, plan_dir
+
+    def test_clean_directory_passes(self, tmp_path: Path) -> None:
+        """Preflight on a clean tree against the fixture directory returns
+        ``pass: true``, empty ``plan_scope_dirty``, and no
+        ``source_blocking``. This is the happy-path acceptance from the
+        hotfix plan.
+        """
+        repo, plan_dir = self._init_repo_with_fixture(tmp_path)
+        cp = self._preflight(repo, plan_dir)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body["pass"] is True
+        assert body["dirty_files"]["source_blocking"] == []
+        assert body["dirty_files"]["plan_scope_dirty"] == []
+        # Each child declares `**Base branch:** main`; preflight picks the
+        # first child's value (TASK-001_seed.md → main).
+        assert body["base_branch"] == "main"
+
+    def test_directory_scope_dirty_attributes_to_child_task(
+        self, tmp_path: Path,
+    ) -> None:
+        """Dirtying ``scratch/a.txt`` (declared in TASK-002's Files:) lands
+        it in ``plan_scope_dirty`` attributed to task_id ``002`` — proving
+        the union spans every child and per-task attribution survives.
+        """
+        repo, plan_dir = self._init_repo_with_fixture(tmp_path)
+        (repo / "scratch" / "a.txt").write_text("CHANGED\n", encoding="utf-8")
+        cp = self._preflight(repo, plan_dir)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body["dirty_files"]["source_blocking"] == []
+        scoped = body["dirty_files"]["plan_scope_dirty"]
+        assert any(
+            e["path"] == "scratch/a.txt" and e["task_id"] == "002" for e in scoped
+        ), scoped
+        assert any(
+            "scratch/a.txt" in w and "TASK-002" in w for w in body["scope_warnings"]
+        )
+        assert body["pass"] is True
+
+    def test_directory_missing_roster_chunk_halts(self, tmp_path: Path) -> None:
+        """Preflight against a directory whose ``00_INDEX.json`` references
+        a child that is not on disk halts with a ``missing-roster-chunk``
+        error and non-zero exit.
+        """
+        repo, plan_dir = self._init_repo_with_fixture(tmp_path)
+        # Delete chunks[0].file (TASK-001_seed.md) from disk but leave the
+        # roster intact so the preflight validator sees the mismatch.
+        (plan_dir / "TASK-001_seed.md").unlink()
+        cp = self._preflight(repo, plan_dir)
+        assert cp.returncode != 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        err = body.get("error", "")
+        assert "missing-roster-chunk" in err, err
+        assert "TASK-001_seed.md" in err, err
+
+    def test_directory_plan_doc_exact_repo_relative_match(
+        self, tmp_path: Path,
+    ) -> None:
+        """Dirtying a chunk inside the real plan directory lands it in
+        ``plan_doc`` (not ``source_blocking``). Asserts the remediated
+        classifier uses the exact repo-relative path rather than the old
+        basename + parent-name heuristic.
+        """
+        repo, plan_dir = self._init_repo_with_fixture(tmp_path)
+        # Edit the index + a chunk so both show up in `git status`.
+        (plan_dir / "TASK-001_seed.md").write_text(
+            "changed plan child\n", encoding="utf-8",
+        )
+        (plan_dir / "00_INDEX.json").write_text(
+            (plan_dir / "00_INDEX.json").read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+        )
+        cp = self._preflight(repo, plan_dir)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        pd = body["dirty_files"]["plan_doc"]
+        assert "docs/plans/decomposed_plan/TASK-001_seed.md" in pd, body
+        assert "docs/plans/decomposed_plan/00_INDEX.json" in pd, body
+        assert body["dirty_files"]["source_blocking"] == [], body
+
+    def test_directory_plan_doc_rejects_same_named_sibling_tree(
+        self, tmp_path: Path,
+    ) -> None:
+        """A same-named directory elsewhere in the repo must NOT be
+        misclassified as plan text. Under the old (basename + parent.name)
+        predicate, a dirty ``other/decomposed_plan/TASK-001_seed.md`` file
+        would silently be absorbed into ``plan_doc``, hiding a legitimate
+        ``source_blocking`` hit. The remediated exact-path classifier
+        keeps it in ``source_blocking``.
+        """
+        repo, plan_dir = self._init_repo_with_fixture(tmp_path)
+        # Create a directory that shares the plan's basename but lives
+        # outside the true plan_dir, seed a file with the same basename
+        # as a chunk, and commit so `git status` only surfaces the
+        # subsequent modification.
+        decoy_dir = repo / "other" / "decomposed_plan"
+        decoy_dir.mkdir(parents=True)
+        decoy_file = decoy_dir / "TASK-001_seed.md"
+        decoy_file.write_text("decoy-initial\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "add decoy"], cwd=repo, check=True)
+        decoy_file.write_text("decoy-changed\n", encoding="utf-8")
+        cp = self._preflight(repo, plan_dir)
+        # Expect source_blocking to fire → preflight fails (exit non-zero).
+        assert cp.returncode != 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert "other/decomposed_plan/TASK-001_seed.md" in (
+            body["dirty_files"]["source_blocking"]
+        ), body
+        assert body["dirty_files"]["plan_doc"] == [], body

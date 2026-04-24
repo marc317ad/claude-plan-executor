@@ -121,7 +121,7 @@ Keep `plan_basename` as the directory name in the directory branch so the envelo
 
 ### TASK-002: `cmd_preflight` accepts directory input
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** codex
 - **Files:**
