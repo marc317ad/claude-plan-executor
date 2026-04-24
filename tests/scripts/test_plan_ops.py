@@ -10467,6 +10467,31 @@ class TestExtractTaskFiles:
         files = plan_ops._extract_task_files_from_plan(body, "001")
         assert files == ["example/seed.py", "example/other.py"], files
 
+    def test_strips_parenthetical_with_embedded_em_dash(self) -> None:
+        """Trailing `(annotation — prose)` with an em-dash *inside* the
+        parens must be stripped as a unit. Before the fix, the em-dash
+        triggered the dash-split first and the trailing-paren strip
+        never saw a closing `)`, mangling e.g.
+        `tests/fixtures/decomposer_inputs/ (create — canonical + ...)`
+        into `tests/fixtures/decomposer_inputs/ (create`. That desynced
+        commit-safe from commit-task's own staging logic."""
+        body = _GATES_SYNTHETIC_PLAN.replace(
+            "- **Files:**\n  - `example/seed.py` (create)\n",
+            (
+                "- **Files:**\n"
+                "  - tests/fixtures/decomposer_inputs/ "
+                "(create — canonical + malformed markdown fixtures)\n"
+                "  - plugins/plan-executor/skills/implement-plan/SKILL.md "
+                "(Phase 0 invocation note only — full prose cleanup "
+                "is TASK-002)\n"
+            ),
+        )
+        files = plan_ops._extract_task_files_from_plan(body, "001")
+        assert files == [
+            "tests/fixtures/decomposer_inputs/",
+            "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        ], files
+
 
 class TestGateFixtureValidSidecar:
     """`fixture-valid` is the schema+schedule aggregate; sidecar is required."""

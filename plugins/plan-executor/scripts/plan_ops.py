@@ -6025,16 +6025,21 @@ def _normalize_files_entry(raw: str) -> str:
     `normalize_file_path` so the commit guard/gate agree on allowlist keys.
     """
     cleaned = raw.strip()
+    # Strip trailing (create), (modify), (delete), (create \u2014 rationale),
+    # ... BEFORE the dash-split below. A parenthetical that itself contains
+    # an em-dash (`(create \u2014 canonical + malformed markdown fixtures)`)
+    # must be removed as a unit, otherwise the dash-split truncates the
+    # entry mid-parenthetical and the trailing-paren strip no longer sees
+    # a closing `)` to anchor on.
+    cleaned = re.sub(r"\s*\([^)]+\)\s*$", "", cleaned).strip()
     # Prefer leading backtick-quoted path so descriptive prose after
-    # the path (e.g., "`foo.py` (modify) -- description") doesn't
-    # weld to the path and break commit-safe.
+    # the path (e.g., "`foo.py` -- description") doesn't weld to the
+    # path and break commit-safe.
     m_backtick = re.match(r"`([^`]+)`", cleaned)
     if m_backtick:
         cleaned = m_backtick.group(1).strip()
     else:
-        cleaned = re.split(r"\s+[-\u2013\u2014]\s+", cleaned, 1)[0].strip()
-    # Strip trailing (create), (modify), (delete), ...
-    cleaned = re.sub(r"\s*\([^)]+\)\s*$", "", cleaned)
+        cleaned = re.split(r"\s+[-\u2013\u2014]\s+", cleaned, maxsplit=1)[0].strip()
     cleaned = cleaned.strip()
     # Strip wrapping backticks; `git show --name-only` never emits them.
     if cleaned.startswith("`") and cleaned.endswith("`") and len(cleaned) >= 2:
