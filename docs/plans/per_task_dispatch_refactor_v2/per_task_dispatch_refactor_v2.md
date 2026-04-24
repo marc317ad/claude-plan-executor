@@ -168,7 +168,7 @@ Move `tasks[]` construction from the `plan-analyst` agent into a deterministic `
 
 ### TASK-005: Per-child classifier fan-out
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** claude
 - **Files:**

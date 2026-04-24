@@ -6,7 +6,34 @@ All Agent dispatches include the **"You do NOT have the Agent tool"** constraint
 
 **Python interpolation.** Templates reference `{{python_path}}` as a text-level placeholder. The orchestrator substitutes the absolute interpreter path from `plan_ops.py preflight --json`'s `python_path` field at dispatch time (see SKILL.md §"Python interpreter resolution"). Do NOT hardcode a specific interpreter path here; the resolver in `plan_ops.py:_resolve_python` is the single source of truth.
 
-## Phase A — plan-analyst dispatch
+## Phase A-single — plan-analyst per-child classifier (default)
+
+Default Phase 1 invocation as of the per-task-dispatch refactor (v2). The orchestrator emits one dispatch per child file that did NOT declare `**Agent:**` in its source markdown; when every child already declares an agent, Phase 1 skips this template entirely (see SKILL.md §Analysis (Phase 1) step 2). The orchestrator emits N of these dispatches as **N discrete `Agent` tool-use blocks inside a single assistant turn** — not as an array-prompt wrapped inside one Agent call.
+
+Agent dispatch, `subagent_type: "plan-analyst"`, `model: "sonnet"` (narrower scope than the retired whole-plan opus dispatch — a single-child classification is within Sonnet's reliable envelope).
+
+> Classify exactly one task from the plan at `<absolute child plan path>`. Repo root: `<repo_root>`.
+>
+> Read the child plan file verbatim (it carries a single `### TASK-NNN:` H3 heading plus the standard metadata block — Status, Priority, Files, Dependencies, Test command, Acceptance criteria, Description, Implementation notes, Reversion guidance). Use the `claude` vs `codex` heuristics from your agent spec's classification rubric (scope ≤30 lines and ≤3 files plus a concrete test command → codex; multi-file coordination, async/routing/API contract changes, new module creation, priority `critical`, `Test command: none`, or underspecified acceptance criteria → claude). Do NOT emit a schedule, gaps, risks, or a batch table.
+>
+> You are classifying ONE task — return only the minimal JSON below. Do not re-validate structure, do not compute batches, do not surface cross-task gaps (`compute-schedule` handles DAG + file-disjointness downstream).
+>
+> **Output (required fenced `json` block, no prose outside it):**
+>
+> ```json
+> {
+>   "agent": "claude" | "codex",
+>   "classification_reason": "<one-line justification, ≤10 words>"
+> }
+> ```
+>
+> Emit nothing else — no markdown report, no `tasks[]`, no `batches[]`, no `gaps[]`. Any additional fields or prose outside the fenced JSON block will be rejected by the orchestrator as a malformed classifier reply.
+>
+> **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash.
+
+## Phase A — plan-analyst whole-plan dispatch (LEGACY — retained for direct CLI callers)
+
+**Legacy-only.** The orchestrator no longer dispatches this template by default. The per-task-dispatch refactor (v2) replaced whole-plan analyst dispatch with `plan_ops.py build-tasks` (deterministic fat-manifest synthesis) plus the per-child classifier fan-out above. This template is retained so direct CLI callers who still want a whole-plan analyst report (for offline inspection, debugging, or legacy integration) have a documented prompt. Do not wire it from SKILL.md.
 
 > Analyze this plan and emit the structured schedule defined by your agent spec. The plan file is at `<absolute plan path>`. Repo root: `<repo_root>`.
 >
@@ -59,7 +86,7 @@ Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, t
 }
 ```
 
-Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan` (when auto-revise is on — default), dispatch `plan-author` to apply findings to the plan file in place, then re-dispatch Phase A (plan-analyst) for structural re-validation, then re-run plan-review. A second `needs-replan` halts with `run_end reason=plan_review_failed`; no batches execute. If `--no-auto-revise` is set, the `needs-replan` route halts immediately with `run_end reason=plan_review_failed` instead of dispatching the author.
+Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan` (when auto-revise is on — default), dispatch `plan-author` to apply findings to the plan file in place, then re-run Phase 1 end-to-end (`build-tasks` → classifier fan-out → `compute-schedule` → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan, then re-run plan-review. A second `needs-replan` halts with `run_end reason=plan_review_failed`; no batches execute. If `--no-auto-revise` is set, the `needs-replan` route halts immediately with `run_end reason=plan_review_failed` instead of dispatching the author. (The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore — TASK-005 replaced it with the full Phase 1 re-run.)
 
 ## Phase 1.5a — plan-author dispatch (needs-replan auto-revise)
 
@@ -111,7 +138,7 @@ Dispatch prompt template:
 >
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
 
-After the author returns, the orchestrator re-dispatches `plan-analyst` (Phase A template) for structural re-validation of the revised plan file. If re-validation returns `invalid`, the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (valid or needs-enrichment — same allow-gaps routing as the first pass), Codex `plan-review` runs once more; that second verdict is binding.
+After the author returns, the orchestrator re-runs Phase 1 end-to-end (`build-tasks` → classifier fan-out → `compute-schedule` → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan. If the second-pass `build-tasks` surfaces fatal `errors[]` the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (clean tasks, or tasks with warnings — same allow-gaps / binding / analyst-triage routing as the first pass) Codex `plan-review` runs once more; that second verdict is binding. The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore.
 
 ## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)
 

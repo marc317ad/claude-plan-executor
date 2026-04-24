@@ -137,10 +137,12 @@ Optional:
   --codex-plan-review-binding
                           Codex `needs-replan` on plan review goes straight to halt;
                           no plan-review-triage third-opinion escalation.
-  --analyst-binding       Plan-analyst `needs-enrichment` goes straight to halt;
+  --analyst-binding       Plan-analyst `needs-enrichment` (today: non-empty
+                          `build-tasks warnings[]`) goes straight to halt;
                           no plan-review-triage third-opinion escalation.
                           Does NOT affect `--allow-gaps` short-circuit.
   --allow-gaps            Proceed past analyst outcome=needs-enrichment
+                          (today: proceed past non-empty `build-tasks warnings[]`)
   --strict-branch         Halt (not warn) if current branch != plan's Base branch
 ```
 
@@ -259,26 +261,105 @@ Append `run_start` via `plan_ops.py log-event`. Include `plan_file: "<dir-basena
 
 ## Analysis (Phase 1)
 
-Dispatch `plan-analyst` (Agent, `subagent_type: "plan-analyst"`, `model: "opus"`) with the Phase A template from `dispatch-templates.md`. Pass the directory path — the Phase A template's input slot holds whichever path the orchestrator received. The analyst's directory contract (TASK-003) emits per-task `plan_file: "<child-basename>"` on every `tasks[]` entry; the analyst output used by this skill (post-auto-promotion) always includes `plan_file`. `_validate_schedule` validates the field's shape when present but does not require it (file-mode CLI callers may still omit it; TASK-008 removes that back-compat). Extract the fenced ```json block from the analyst's report and feed it to:
+Phase 1 now runs as a four-step protocol: a deterministic `build-tasks` synthesis, an optional per-child classifier fan-out (only when some children lack `**Agent:**`), a `compute-schedule` rebatch, and a `write-schedule` persist + `schedule-valid` gate. The whole-plan `plan-analyst` dispatch is retired from the default path — the agent's primary role in this skill is now the narrow per-child classifier of step 2. Append `analyst_done` only after `write-schedule` persists, to preserve the existing event order on the Phase 1.5 downstream path.
+
+**Outcome vocabulary on this path.** The new Phase 1 surfaces structural failures as `errors[*]` from `build-tasks` (analogue of the old `outcome=invalid`) and quality gaps (missing `**Description:**` / `**Acceptance criteria:**` in a child) as `warnings[*]` (analogue of the old `outcome=needs-enrichment`). The allow-gaps / analyst-binding / analyst-triage seams below remain structurally intact but now key on `len(build_tasks.warnings) > 0` instead of an analyst-emitted `needs-enrichment` verdict. Full triage-payload wiring (what `warnings[]` look like when handed to the triage subagent) is deferred to TASK-007 of this refactor; until then treat the triage path as "present in the skill, behaviourally untouched by TASK-005".
+
+### Step 1 — Build the fat `tasks[]` manifest (deterministic)
 
 ```bash
-echo "<analyst_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" parse-schedule --stdin --json
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" build-tasks \
+  --plans-dir <plans_dir> --json
 ```
 
-Branch on `outcome`:
-- `invalid` → halt; surface report; log `run_end reason=analyst_invalid`; release lock.
-- `needs-enrichment` + `--allow-gaps` → log `analyst_triage_skipped {reason:"allow_gaps"}` and warn + proceed (today's demotion path preserved). NO triage dispatch. **`--allow-gaps` short-circuits proceed and wins over `--analyst-binding` when both are set** — evaluate this branch before `--analyst-binding`.
-- `needs-enrichment` + `--analyst-binding` (and `--allow-gaps` NOT set) → log `analyst_triage_skipped {reason:"binding_flag"}` and halt with `run_end reason=plan_analyst_failed`; release lock. NO triage dispatch.
-- `needs-enrichment` + neither flag set → dispatch Phase 1-triage (see below); triage verdict determines next step.
-- `valid` → proceed.
+Capture `{ok, outcome, tasks, batches, warnings, errors}`. Every `tasks[i]` carries `id`, `title`, `files`, `dependencies`, `priority`, `plan_file` (child basename), `description` (non-empty string per child), `acceptance_criteria` (ordered `string[]`), and optionally `agent` (emitted iff the child file declares `**Agent:**`). `batches` from this call is the topo + file-lock ordering `_build_tasks` computed; step 3 may recompute it after the classifier populates `agent` everywhere.
 
-**`--allow-gaps` semantics preserved.** `--allow-gaps` remains a pre-triage short-circuit on the analyst path: when set, the orchestrator bypasses analyst triage entirely and proceeds with today's soft-severity demotion behavior. Triage replaces the demotion *default* when `outcome=needs-enrichment` and neither `--analyst-binding` nor `--allow-gaps` is set; operators who want triage instead of the demotion simply omit `--allow-gaps`.
+Branch on the structured result:
 
-### Phase 1-triage — plan-analyst triage (needs-enrichment third opinion)
+- `ok == false` (non-empty `errors[]`) → halt; surface `errors[*]` verbatim; log `run_end reason=analyst_invalid`; release lock. This is the direct analogue of the retired analyst `outcome=invalid` branch.
+- `ok == true` AND `len(warnings) > 0` + `--allow-gaps` → log `analyst_triage_skipped {reason:"allow_gaps"}` and warn + proceed to step 2. NO triage dispatch. **`--allow-gaps` short-circuits proceed and wins over `--analyst-binding` when both are set** — evaluate this branch before `--analyst-binding`.
+- `ok == true` AND `len(warnings) > 0` + `--analyst-binding` (and `--allow-gaps` NOT set) → log `analyst_triage_skipped {reason:"binding_flag"}` and halt with `run_end reason=plan_analyst_failed`; release lock. NO triage dispatch.
+- `ok == true` AND `len(warnings) > 0` + neither flag set → dispatch Phase 1-triage (see below); triage verdict determines whether to proceed to step 2. Triage payload wiring onto `build-tasks warnings[]` is TASK-007's scope; v1 behaviour is structurally preserved but may short-circuit until TASK-007 lands.
+- `ok == true` AND `len(warnings) == 0` → proceed directly to step 2.
 
-**Fire conditions.** `outcome=needs-enrichment` AND `--allow-gaps` NOT set AND `--analyst-binding` NOT set. Evaluate `--allow-gaps` first: if set, skip triage and warn + proceed regardless of `--analyst-binding`. Only if `--allow-gaps` is NOT set does `--analyst-binding` take effect (halt). Otherwise take the skip branches above (allow-gaps → warn + proceed; binding → halt).
+**`--allow-gaps` semantics preserved.** `--allow-gaps` remains a pre-triage short-circuit on the analyst path: when set, the orchestrator bypasses analyst triage entirely and proceeds with today's soft-severity demotion behavior. Triage replaces the demotion *default* when `build-tasks` surfaces warnings and neither `--analyst-binding` nor `--allow-gaps` is set; operators who want triage instead of the demotion simply omit `--allow-gaps`.
 
-**Dispatch.** `Agent(subagent_type: "plan-review-triage", model: "sonnet", prompt: render(templates.PlanTriage, source="plan-analyst", plan_text, gaps, analyst_outcome, schedule_path, findings_count))`. Uses the Phase 1-triage / Phase 1.5.5 dispatch template from `dispatch-templates.md` with `source="plan-analyst"`.
+### Step 2 — Per-child classifier fan-out (conditional)
+
+Inspect the in-memory `tasks[]` array. Let `missing_agent_children = [t for t in tasks if "agent" not in t]` — one entry per child that did NOT declare `**Agent:**` in its source markdown.
+
+**Skip-classifier case.** If `missing_agent_children` is empty (every child already declares `**Agent:**`), the classifier step is skipped entirely. No Agent dispatches are issued in Phase 1, no network roundtrip, no model latency — Phase 1 collapses to `build-tasks + compute-schedule + write-schedule`. Proceed directly to step 3.
+
+**Fan-out case.** If `missing_agent_children` is non-empty, emit **N discrete `Agent` tool calls in a single assistant turn** — one per missing-agent child. The fan-out is N parallel tool-use blocks inside one response, NOT an array-prompt wrapped inside a single Agent tool call; this matches the existing Agent-tool contract in the parent agent's API and introduces no new tool-call shape.
+
+Pseudo-syntax (for illustration; the actual tool-call shape is the standard Agent tool, one per child):
+
+```
+# Inside ONE assistant turn, the orchestrator emits N separate tool-use blocks:
+[
+  Agent(subagent_type: "plan-analyst", model: "sonnet", prompt: render(templates.PhaseASingle, child=missing_agent_children[0])),
+  Agent(subagent_type: "plan-analyst", model: "sonnet", prompt: render(templates.PhaseASingle, child=missing_agent_children[1])),
+  ...
+  Agent(subagent_type: "plan-analyst", model: "sonnet", prompt: render(templates.PhaseASingle, child=missing_agent_children[N-1])),
+]
+# ^ N discrete Agent tool calls, emitted together in one response. The Agent-tool
+#   runtime dispatches them in parallel; the orchestrator receives N replies.
+```
+
+Each dispatch uses the **Phase A-single** template from `dispatch-templates.md` (subagent_type `plan-analyst`, model `sonnet` — narrower scope than the retired whole-plan opus dispatch). Each child agent reads exactly its one child file and returns minimal JSON `{agent: "claude"|"codex", classification_reason: "<one-line justification>"}`.
+
+Parse each reply and merge into the in-memory `tasks[]` array: for each child reply, set `tasks[i].agent = reply.agent` and `tasks[i].classification_reason = reply.classification_reason` on the matching entry (match by `plan_file` basename — the orchestrator knows which dispatch corresponds to which child).
+
+Malformed reply handling — a reply that does not parse as `{agent, classification_reason}` is treated the same as the analyst's historical malformed-report path: halt with `run_end reason=analyst_invalid`; surface the offending child basename + raw reply; release lock.
+
+Apply the `codex_available=false` preflight override here too — if the preflight flag was false, rewrite every `tasks[i].agent` to `"claude"` in the merged manifest before step 3 (consistent with the retired whole-plan analyst override, which the orchestrator used to apply after parsing the whole-plan JSON).
+
+### Step 3 — Recompute file-disjoint batches
+
+After the merged `tasks[]` has an `agent` field on every entry (either declared in source or filled by step 2), recompute `batches` so the persisted schedule reflects the final state. Pipe the in-memory JSON through `compute-schedule --stdin` and replace the `batches` array with the returned value:
+
+```bash
+printf '%s' "<merged_tasks_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
+  compute-schedule --stdin --json
+```
+
+**Shape-shift between `build-tasks` and `compute-schedule` / `write-schedule`.** `build-tasks` emits `{ok, outcome, tasks, batches, warnings, errors}` — six keys, not the canonical schedule shape. The orchestrator synthesizes the canonical 5-key top-level schedule `{outcome, tasks, batches, gaps, risks}` in memory by (a) keeping `tasks` from `build-tasks` (merged with step 2's `agent` populations), (b) discarding `ok` / `errors` (the caller already halted on errors in step 1), (c) **mapping `warnings[]` → `gaps[]`** via the transform `{task_id: w.task_id, type: w.code, severity: "soft", detail: w.message}` so the warning signal is preserved in the persisted schedule (each `build-tasks` warning carries `{code, task_id, plan_file, message}` — the `plan_file` field is dropped because `gaps[]` does not carry it; downstream lookup goes through `tasks[].plan_file` instead), and (d) defaulting `risks: []` (risks were legacy analyst output and are not synthesized on this path). The persisted `outcome` is derived from the mapped `gaps[]` to satisfy the schedule validator (which enforces `outcome='valid'` ⟺ `gaps == []` and `outcome='needs-enrichment'` ⟺ `gaps != []`): emit `outcome='needs-enrichment'` when `warnings[]` is non-empty (and the caller is on the warn+proceed branch — allow-gaps short-circuit, or analyst-triage `ship`/`ship-with-fixes` verdict), and `outcome='valid'` when `warnings[]` is empty. `compute-schedule` consumes `tasks[]` (it ignores the incoming `batches`), returns topo + file-lock batches; replace the schedule's `batches` array with that result. `write-schedule --stdin` in step 4 rejects any top-level key outside the canonical five, so this shape-shift is a hard pre-step — do not pipe the raw `build-tasks` output into `write-schedule`.
+
+No schedule file is written yet — this is purely an in-memory recomputation so the classifier-populated `agent` assignments are reflected in batch boundaries if they ever matter (they do not today, but the contract keeps future consumers honest).
+
+Apply filters at this seam (on the in-memory schedule, before persistence):
+
+- `--claude-only` or `codex_available=false` → rewrite `tasks[].agent = "claude"` in the in-memory schedule (persist to a scratch copy on disk for `batch-next`).
+- `--codex-only` → drop claude tasks.
+- `--task-ids` → now stays fully in-memory alongside every other branch. `filter-schedule` supports `--stdin` (user-authorized TASK-005 scope expansion), so the round-3 "pre-persist / filter / re-persist" workaround is retired. On the `--stdin` path `filter-schedule` accepts any schedule `outcome` that parses — including `outcome='needs-enrichment'` emitted by the Step 3 warnings→gaps mapping — so the in-memory schedule flows through filtering without a round-trip to disk. Sequence:
+  ```bash
+  # Filter the in-memory schedule directly; no mid-pipeline persistence.
+  in_memory_schedule=$(printf '%s' "$in_memory_schedule" \
+    | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" filter-schedule \
+      --stdin --task-ids <csv> --json)
+  ```
+  `filter-schedule` emits the requested IDs plus their transitive prerequisites in source order. Unknown requested ID halts with `unknown-task-id`; a transitive dep missing from `tasks[]` halts with `missing-dependency`; a cycle in the filtered subgraph halts with `dependency-cycle`. The in-memory invariant is now universal — **every branch waits for Step 4's lone `write-schedule`**. `--task-ids` no longer writes a mid-pipeline schedule. After filtering, re-run `compute-schedule --stdin` on the filtered in-memory schedule to recompute file-disjoint batches, then continue to Step 4. (The `--schedule-file` path of `filter-schedule` is retained for backward compatibility and still requires `outcome='valid'`; only `--stdin` relaxes that gate.)
+
+After any filter rewrite, re-compute file-disjoint batches by piping the in-memory JSON through `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" compute-schedule --stdin --json`, then replace the schedule's `batches` array with the returned `batches` **in memory**. Persistence still happens exclusively in Step 4.
+
+### Step 4 — Persist the schedule and gate
+
+Persist the final schedule (after filter rewrites and any required batch recomputation) by piping the in-memory JSON through `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" write-schedule --schedule-file <schedule_file> --stdin --json`. This is the sole supported path for persistence; never write the file with the Write tool or inline Python. `write-schedule` runs the same shared validator as `parse-schedule` and refuses to write on any validation error. **No mid-pipeline schedule file exists before this call on any branch** — steps 1-3 run entirely in memory; the first on-disk schedule is the `write-schedule` output. The `--task-ids` branch matches the default: `filter-schedule --stdin` (user-authorized TASK-005 scope expansion) closes the round-3 gap that previously required a one-time early persist. Step 4's call is the single canonical persistence point and the `schedule-valid` gate anchor for every branch.
+
+Immediately after the schedule is persisted, run the `schedule-valid` phase gate so the dry-run / execute promotion bundle is complete (the Phase 0 preflight batch excluded this gate because the schedule file did not exist yet):
+
+```bash
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
+  --check schedule-valid --schedule-file <schedule_file> --json
+```
+
+Halt on `status: fail` with `run_end reason=schedule_gate_failed`. `write-schedule` already refuses to persist on validation errors, so this gate is a redundant belt-and-braces check that the gate model and the writer agree by construction.
+
+### Phase 1-triage — plan-analyst triage (build-tasks warnings third opinion)
+
+**Fire conditions.** `build-tasks` returned `ok: true` with at least one entry in `warnings[]` (the new-flow analogue of the retired `outcome=needs-enrichment`), AND `--allow-gaps` NOT set AND `--analyst-binding` NOT set. Evaluate `--allow-gaps` first: if set, skip triage and warn + proceed regardless of `--analyst-binding`. Only if `--allow-gaps` is NOT set does `--analyst-binding` take effect (halt). Otherwise take the skip branches above (allow-gaps → warn + proceed; binding → halt).
+
+**Dispatch.** `Agent(subagent_type: "plan-review-triage", model: "sonnet", prompt: render(templates.PlanTriage, source="plan-analyst", plan_text, warnings, analyst_outcome, findings_count))`. Uses the Phase 1-triage / Phase 1.5.5 dispatch template from `dispatch-templates.md` with `source="plan-analyst"`. `schedule_path` is intentionally absent — no schedule file exists at this seam (Phase 1-triage fires from Step 1, before Step 4 `write-schedule`); the triage subagent operates solely on the plan text and `warnings[]`. The full shape of the `warnings[]` payload (field names, per-entry schema, renderer placeholder substitution) is TASK-007's scope; until that lands the triage template continues to reference "analyst gaps" in its prose — treat `warnings[]` as the new source that the template's legacy "gaps" placeholder binds to.
 
 **Parse.**
 
@@ -287,7 +368,7 @@ printf '%s' "<agent_output>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.p
   parse-plan-review-triage-report --stdin --source plan-analyst --findings-count <N> --json
 ```
 
-`<N>` is the length of the analyst's `gaps[]` from the prior `parse-schedule --json` call. The parser returns `{verdict, load_bearing, dismissed, summary, findings_count, source}`.
+`<N>` is the length of the `warnings[]` array from the prior `build-tasks --json` call (the new analogue of the retired analyst `gaps[]`). The parser returns `{verdict, load_bearing, dismissed, summary, findings_count, source}`.
 
 **Run-log events.** Wrap the dispatch:
 
@@ -307,37 +388,14 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
 
 | Verdict | Action (analyst source) |
 |---|---|
-| `ship` | Proceed to Phase 1.5 as-if the analyst returned `valid`. No `plan-author`, no re-analyst. Summary carries bare `[analyst-triage-disagreement]` banner listing analyst gaps verbatim. |
-| `ship-with-fixes` | Proceed to Phase 1.5. Analyst gaps carried to the summary's "Analyst triage notes" section. |
-| `partial-agreement` | Dispatch `plan-author` with a gaps payload filtered to the `load_bearing` indices only (new enrichment path). After plan-author + re-analyst, the re-analyst verdict is binding — no second triage. Dismissed gap indices carried to summary. |
-| `needs-rework` | Dispatch `plan-author` with the full gaps array (new auto-enrichment path). After plan-author + re-analyst, the re-analyst verdict is binding — no second triage. |
+| `ship` | **Continue Phase 1 at Step 2** (classifier/skip), then Step 3 (compute-schedule + filter seam), then Step 4 (write-schedule + `schedule-valid` gate). **Then proceed to Phase 1.5.** Triage treats the warnings as green-lit, so the persisted schedule preserves them under `gaps[]` via the Step 3 shape-shift mapping (`outcome='needs-enrichment'`, `severity: "soft"` on every mapped entry). No `plan-author`, no re-run of Phase 1. Summary carries bare `[analyst-triage-disagreement]` banner listing the `build-tasks warnings[]` verbatim. |
+| `ship-with-fixes` | **Continue Phase 1 at Step 2** (classifier/skip), then Step 3, then Step 4 (write-schedule + `schedule-valid` gate). **Then proceed to Phase 1.5.** Same schedule-shape behavior as `ship` (warnings preserved under `gaps[]`, `outcome='needs-enrichment'`); the difference versus `ship` is downstream routing: `build-tasks warnings[]` carried to the summary's "Analyst triage notes" section (rather than the bare `[analyst-triage-disagreement]` banner). |
+| `partial-agreement` | Dispatch `plan-author` with a warnings payload filtered to the `load_bearing` indices only (new enrichment path). After plan-author edits the child file in place, **re-run Phase 1 end-to-end** (`build-tasks → classifier → compute-schedule → write-schedule + schedule-valid gate`); the second-pass verdict is binding — no second triage. Dismissed warning indices carried to summary. |
+| `needs-rework` | Dispatch `plan-author` with the full `warnings[]` array (new auto-enrichment path). After plan-author + **full Phase 1 re-run** (`build-tasks → classifier → compute-schedule → write-schedule + schedule-valid gate`), the second-pass verdict is binding — no second triage. |
 
-On `partial-agreement` and `needs-rework`, re-run `plan-analyst` after the author edit; if re-analyst returns `needs-enrichment` a second time, halt with `run_end reason=plan_analyst_failed` — NO second analyst-source triage is dispatched. See the re-source-verdict-is-binding rule under `## Rules`.
+**Routing rationale.** Every verdict MUST land in a persisted, gate-validated schedule before Phase 1.5 fires — Phase 1.5 (Codex plan-review) requires `<schedule_file>` as mandatory input. The prior routing had `ship` / `ship-with-fixes` skip Step 2/3/4 directly to Phase 1.5, which left no persisted schedule on disk for the reviewer. The new routing keeps every verdict on the same Step 2 → Step 3 → Step 4 → Phase 1.5 rail; the verdict only controls (a) whether `plan-author` fires first and (b) the summary-banner text.
 
-Apply filters:
-- `--claude-only` or `codex_available=false` → rewrite `tasks[].agent = "claude"` in the in-memory schedule (persist to a scratch copy on disk for `batch-next`).
-- `--codex-only` → drop claude tasks.
-- `--task-ids` → pipe the analyst schedule through `filter-schedule | write-schedule` so the exact requested IDs and persistence happen in one shell pipeline (no inline Python):
-  ```bash
-  $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" filter-schedule \
-    --schedule-file <schedule_file> --task-ids <csv> --json \
-  | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" write-schedule \
-    --schedule-file <schedule_file> --stdin --json
-  ```
-  `filter-schedule` emits the requested IDs plus their transitive prerequisites in source order. Unknown requested ID halts with `unknown-task-id`; a transitive dep missing from `tasks[]` halts with `missing-dependency`; a cycle in the filtered subgraph halts with `dependency-cycle`.
-
-After any filter rewrite, re-compute file-disjoint batches by piping the in-memory JSON through `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" compute-schedule --stdin --json`, then replace the schedule's `batches` array with the returned `batches` before persisting.
-
-Persist the final schedule (after filter rewrites and any required batch recomputation) by piping the in-memory JSON through `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" write-schedule --schedule-file <schedule_file> --stdin --json`. This is the sole supported path for persistence; never write the file with the Write tool or inline Python (cf. rule at line 316). `write-schedule` runs the same shared validator as `parse-schedule` and refuses to write on any validation error.
-
-Immediately after the schedule is persisted, run the `schedule-valid` phase gate so the dry-run / execute promotion bundle is complete (the Phase 0 preflight batch excluded this gate because the schedule file did not exist yet):
-
-```bash
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
-  --check schedule-valid --schedule-file <schedule_file> --json
-```
-
-Halt on `status: fail` with `run_end reason=schedule_gate_failed`. `write-schedule` already refuses to persist on validation errors, so this gate is a redundant belt-and-braces check that the gate model and the writer agree by construction.
+On `partial-agreement` and `needs-rework`, re-run the Phase 1 `build-tasks → classifier → compute-schedule → write-schedule + schedule-valid gate` sequence after the author edit (TASK-007 wires the concrete re-run; v1 mirrors today's "re-run the analyst" loop against the refactored entrypoint). If the second pass still surfaces `warnings[*]`, halt with `run_end reason=plan_analyst_failed` — NO second analyst-source triage is dispatched. See the re-source-verdict-is-binding rule under `## Rules`.
 
 ### Phase 1.5 — Codex plan review (independent pre-dispatch gate)
 
@@ -462,11 +520,11 @@ On `partial-agreement` and `needs-rework` the routing then falls through to the 
      --fields-json '{"run_id":"<id>","plan_file":"<basename>","files_edited":[...],"findings_actioned":[...],"findings_skipped":[...]}' --json
    ```
 
-2. **Re-dispatch `plan-analyst`** (Phase A template) for structural re-validation of the revised plan file. The analyst reads the plan from disk — do NOT forward the author's edit report (that would invite ping-pong). Route on the re-validation outcome:
+2. **Re-run Phase 1** (`build-tasks → classifier → compute-schedule → write-schedule`) for structural re-validation of the revised plan file. The build step reads the plan from disk — do NOT forward the author's edit report (that would invite ping-pong). Route on the re-validation outcome:
 
-   - `invalid` → halt with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. The author produced a structurally broken revision; do not run the second review against a malformed plan.
-   - `needs-enrichment` → same allow-gaps routing as the first pass (halt if `--allow-gaps` is not set; warn and proceed otherwise).
-   - `valid` → proceed to step 3.
+   - `build-tasks errors[*] non-empty` → halt with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. The author produced a structurally broken revision; do not run the second review against a malformed plan.
+   - `build-tasks warnings[*] non-empty` → same allow-gaps routing as the first pass (halt if `--allow-gaps` is not set; warn and proceed otherwise).
+   - `build-tasks ok: true` with empty `warnings[]` → proceed to step 3.
 
 3. **Re-run Codex `plan-review`** on the revised plan. The second verdict is binding: `approved | approved-with-notes` → proceed to batch dispatch; `needs-replan` → halt per the "Second `needs-replan`" block below.
 
@@ -486,8 +544,8 @@ Release the run-lock and print the failure envelope. Do NOT call `fail-task` (no
 
 **Run-log event order** (V8, with plan-review triage interleaved on both pedantic-flag paths):
 
-- **Analyst branch** (Phase 1): `run_start` → `analyst_done {outcome:"needs-enrichment"}` → (if triage fires; neither `--analyst-binding` nor `--allow-gaps` set) `plan_review_triage_start {source:"plan-analyst"}` → `plan_review_triage_done {source:"plan-analyst", verdict}` → (branch by verdict) `schedule_written` (for `ship` / `ship-with-fixes`) | `plan_author_start` → `plan_author_done` → `analyst_done` → `schedule_written` (for `partial-agreement` / `needs-rework`). When `--analyst-binding` is set, emit `analyst_triage_skipped {reason:"binding_flag"}` and halt; when `--allow-gaps` is set, emit `analyst_triage_skipped {reason:"allow_gaps"}` and proceed with today's demotion.
-- **Codex branch** (Phase 1.5): ... → `schedule_written` → `plan_review_start {reviewer:"codex"}` → `plan_review_done {verdict:"needs-replan", findings_count}` → (if triage fires; neither `--codex-plan-review-binding` nor `--no-auto-revise` set) `plan_review_triage_start {source:"codex-plan-review"}` → `plan_review_triage_done {source:"codex-plan-review", verdict}` → (branch by verdict) `batch_start` (for `ship` / `ship-with-fixes`) | `plan_author_start` → `plan_author_done` → `analyst_done` → `plan_review_start` → `plan_review_done` → `batch_start` (for `partial-agreement` / `needs-rework`, only if the second verdict permits).
+- **Analyst branch** (Phase 1): `run_start` → (if `build-tasks` returns `warnings[*]` non-empty AND triage fires; neither `--analyst-binding` nor `--allow-gaps` set) `plan_review_triage_start {source:"plan-analyst"}` → `plan_review_triage_done {source:"plan-analyst", verdict}` → (branch by verdict) `schedule_written` → `analyst_done {outcome:"needs-enrichment"}` (for `ship` / `ship-with-fixes` — the `outcome` string preserves the legacy vocabulary for v1 log consumers) | `plan_author_start` → `plan_author_done` → `schedule_written` → `analyst_done` (for `partial-agreement` / `needs-rework`). When `build-tasks` returns with empty `warnings[]`, the triage events are skipped and the order is `run_start` → `schedule_written` → `analyst_done {outcome:"valid"}`. When `--analyst-binding` is set, emit `analyst_triage_skipped {reason:"binding_flag"}` and halt; when `--allow-gaps` is set, emit `analyst_triage_skipped {reason:"allow_gaps"}` and proceed to `schedule_written` → `analyst_done` with today's demotion. In every variant, **`analyst_done` is emitted only after `write-schedule` persists** — it marks end-of-Phase-1, not mid-pipeline. Classifier fan-out dispatches are not represented in this top-level order — they happen inside the single Phase 1 "step" between `run_start` and `schedule_written`.
+- **Codex branch** (Phase 1.5): ... → `schedule_written` → `analyst_done` → `plan_review_start {reviewer:"codex"}` → `plan_review_done {verdict:"needs-replan", findings_count}` → (if triage fires; neither `--codex-plan-review-binding` nor `--no-auto-revise` set) `plan_review_triage_start {source:"codex-plan-review"}` → `plan_review_triage_done {source:"codex-plan-review", verdict}` → (branch by verdict) `batch_start` (for `ship` / `ship-with-fixes`) | `plan_author_start` → `plan_author_done` → `schedule_written` → `analyst_done` → `plan_review_start` → `plan_review_done` → `batch_start` (for `partial-agreement` / `needs-rework`, only if the second verdict permits).
 
 Both source variants of the triage events share the event names `plan_review_triage_start` / `plan_review_triage_done`; the `source ∈ {plan-analyst, codex-plan-review}` field discriminates them in the log.
 
@@ -818,7 +876,7 @@ Do NOT auto-push. Do NOT auto-PR.
 - **Never commit a reviewer-flagged `needs-rework`.** Only clean / minor-findings / ship / ship-with-fixes commit automatically.
 - **Never `git add -A` or `git add .`.** Stage specific files only — `commit-task` already uses `--only`.
 - **Never retry a failed task inside the same run** beyond the one D.2b role-swap, the one D.2a.5 bounded remediation retry, the one D.2a.6 narrow-remediation retry, and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.
-- **Re-source-verdict is binding after plan-review triage + plan-author.** When a Phase 1-triage or Phase 1.5.5 triage returns `partial-agreement` or `needs-rework`, the subsequent `plan-author` → re-source-verdict sequence runs EXACTLY ONCE and that second source verdict is binding. On the analyst source (`source="plan-analyst"`), the re-source-verdict is the re-dispatched `plan-analyst`; a second `needs-enrichment` halts per `run_end reason=plan_analyst_failed`. On the Codex source (`source="codex-plan-review"`), the re-source-verdict is the re-dispatched Codex `plan-review`; a second `needs-replan` halts per `run_end reason=plan_review_failed`. NO second plan-review triage is dispatched on either path — mirrors the D.5 "re-review is binding" rule at task level.
+- **Re-source-verdict is binding after plan-review triage + plan-author.** When a Phase 1-triage or Phase 1.5.5 triage returns `partial-agreement` or `needs-rework`, the subsequent `plan-author` → re-source-verdict sequence runs EXACTLY ONCE and that second source verdict is binding. On the analyst source (`source="plan-analyst"`), the re-source-verdict is a re-run of Phase 1 (`build-tasks → classifier → compute-schedule → write-schedule`); a second round of non-empty `build-tasks warnings[]` halts per `run_end reason=plan_analyst_failed` (equivalent to the retired "second `needs-enrichment`"). On the Codex source (`source="codex-plan-review"`), the re-source-verdict is the re-dispatched Codex `plan-review`; a second `needs-replan` halts per `run_end reason=plan_review_failed`. NO second plan-review triage is dispatched on either path — mirrors the D.5 "re-review is binding" rule at task level.
 - **Never auto-`fail-task` on the D.2a.5 halt path.** A second `needs-rework` after a D.2a.5 remediation retry triggers `log-event type=awaiting_user` + `finalize-execution-log --outcome paused` and returns control to the user with pending edits left in the working tree. Calling `fail-task` on the paused run is allowed ONLY when the user's next conversation turn explicitly instructs it. Silent auto-revert on the post-remediation `needs-rework` path is a protocol violation.
 - **Plan-file body edits are narrowly allowed.** Allowed: (a) `**Status:**` bullet mutations; (b) append-only mutation of the tail execution-log section; (c) pre-dispatch format-only corrections needed to satisfy schema / phase-gate predicates (e.g., promoting a bulleted `- **Description:**` to the required prose-header `**Description:**`). Task semantics — prose, acceptance criteria, Files, Test command, Implementation notes, Reversion guidance, Dependencies, Scope boundaries — MUST NOT be altered; the orchestrator is not a plan author. Any format correction under (c) MUST be mentioned in the execution-log tail so the edit is auditable. The run log remains append-only.
 - **One commit per task** plus at most one `chore:` housekeeping commit per run. Narrow `git commit --only` in Phase D.3 is mandatory.
