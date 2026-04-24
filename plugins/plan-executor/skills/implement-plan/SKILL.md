@@ -94,6 +94,27 @@ All subcommands accept `--json` for machine-readable output.
 | `plan_ops.py gates --list\|--check <csv>\|--certify --mode dry-run\|execute` | Phase-gate predicates. The six canonical gates — `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`, `commit-safe` — return `{name, status ∈ pass\|fail\|not_applicable, reason}`. Used at Phase 0 preflight (schema + schedule + fixture + execution-safe + review-safe), after each Phase D.3 commit (`commit-safe` for that SHA), and at End-of-run (`--certify --mode execute --run-id <id>` for the full bundle). See §9.7 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
 | `plan_ops.py audit --list\|--json\|--report-file <path>\|--check <csv>\|--strict` | Standing self-audit (TASK-007). Cross-references shipped artifacts (`plan_ops.py`, `plan_codex_dispatch.py`, schema sidecars, SKILL.md, dispatch templates, design doc) against `CANONICAL_CONTRACT`. Findings carry `{check, tier ∈ default\|advisory, status ∈ pass\|pass_with_alias\|fail, canonical, actual, reason}`. Default verdict excludes advisory tier; `--strict` includes it. Run before any rerun and after substantive protocol changes. See §14 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
 
+## Per-task `<plan-file>` resolution (TASK-004 write sites)
+
+Five commands mutate plan markdown and therefore take `--plan-file`: `commit-task` (Phase D.3), `fail-task` (Phase C + D.4), `block-dependents` (Phase C + D.4), `update-plan-header` (End-of-run), and the `plan-author` auto-revise dispatch (Phase 1.5a). In file mode every call passes the single run-level plan file; in directory mode each call passes the current task's child file, resolved as:
+
+```
+child_basename = task.plan_file if task.plan_file else None
+child_path = (<plans_dir> / child_basename) if child_basename else <plan_path>
+```
+
+I.e., if the schedule entry for this task carries `plan_file: "<child-basename>"` (the analyst emits it per TASK-003's contract), resolve against `<plans_dir>` to get the absolute child path and hand that to `--plan-file`; if the entry omits `plan_file`, fall back to the single-file `<plan-path>` (back-compat — this is how every file-mode schedule looks). `block-dependents`'s internal cascade already does this per-dependent lookup natively (TASK-002 landed the implementation); the orchestrator just passes `--plan-file <failed-task's child path>` and lets the subcommand route each dependent's mutation to its own file.
+
+Run-log events carry a `plan_file` field in their `fields` dict for directory-mode tasks so the audit trail records which child each event mutated. The events with this field are:
+
+- `run_start` — `plan_file: "<dir-basename>"` when directory-mode; omit otherwise.
+- `batch_start` — `plan_file` per batch entry if any task in the batch carries `plan_file` (optional when all tasks share the same `plan_file`, but always-on is cheap and consistent).
+- `implement_start` — `plan_file: "<child-basename>"` for the current task.
+- `commit_done` — `plan_file: "<child-basename>"` (already captured by `commit-task` from the `--plan-file` argument; basename is derived automatically).
+- `run_end` — omit `plan_file` (it is a run-level event); the run's mode is inferrable from the presence of `plan_file` on child events.
+
+File-mode runs emit the existing event shapes byte-identically — the new `plan_file` field is added only on directory-mode events (and on the `commit_done` / `blocked` events, which already carried it starting with TASK-002's internals change).
+
 ## Parse arguments
 
 CLI surface:
@@ -143,6 +164,24 @@ Returns `{"plan_dir": "...", "run_log": "...", "run_lock": "...", "schedule_glob
 
 Use these placeholders verbatim in all subsequent commands; never hardcode `docs/plans`.
 
+**Directory-mode input (TASK-004).** `<plan-path>` may name either a single plan markdown file or a directory containing `00_INDEX.json` + one-or-more `### TASK-NNN` child `.md` files (a decomposed plan). Detect via `pathlib.Path(plan_path).is_dir()` — do NOT inspect trailing slashes or any other string-shape heuristic. Bindings differ per mode:
+
+| Binding | File mode | Directory mode |
+|---|---|---|
+| `<plans_dir>` | `plan_path.parent` | `plan_path` |
+| `<schedule_file>` | `<plan_dir>/{plan_path.stem}.schedule.json` | `<plan_dir>/{plan_path.name}.schedule.json` (directory basename, verbatim — no `.md` suffix to strip) |
+| `<run_lock>` key | `str(plan_path.resolve())` (absolute file path) | `str(plan_path.resolve())` (absolute directory path) |
+
+One run-lock entry per directory-run, not one per child — parallel children inside a single directory-run share the lock; a second `/implement-plan` invocation against the same directory halts on overlap. The `<run_lock>` key is whatever `acquire-lock --plan-file` is handed, so passing the directory path to `acquire-lock` in directory mode achieves this without any subcommand change.
+
+**v1 scope boundaries for directory mode (documented here so the reviewer does not re-litigate):**
+
+- `check-plan-deps` runs **once** against the directory's roster with today's single-file semantics (the roster's `depends_on_plans` is advisory at the roster root). No cross-directory dependency gate.
+- `fixture-valid` stays single-file — the shipped `sample_phase4.md` fixture continues to certify the single-file path; there is no directory-aware fixture in v1.
+- `finalize-execution-log` appends one §5 table **per child** (scoped to that child's tasks). No run-level aggregate table.
+- `update-plan-header` iterates the distinct `plan_file` values present in completed + failed tasks and flips each child's own top-level `**Status:**` independently. No synthesized run-level aggregate header.
+- `--task-ids` filtering relies on analyst-emitted globally-unique ids (the analyst rejects duplicate ids across children per TASK-003). No cross-child filtering semantics beyond "id is unique."
+
 Then run preflight:
 
 ```bash
@@ -164,6 +203,8 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" check-plan-deps \
 
 Halts on `pass: false` with the `unresolved[]` list. Halts on non-empty `errors[]` as internal-error. There is no `--allow-gaps` override — cross-plan deps are hard blockers.
 
+In directory mode, run `check-plan-deps` **once** against the directory's roster: pass `--plan-file <plans_dir>/<first chunks[].file>` and `--plans-dir <plans_dir>`. V1 scope boundary — `check-plan-deps` keeps today's single-roster semantics inside the directory; cross-directory `depends_on_plans` at the roster root remains advisory and is NOT a hard gate in v1.
+
 Then run the five pre-dispatch phase gates. The Phase 0 preflight halt set is `schema-valid`, `schedule-valid`, `fixture-valid` -- all three are strict halt-on-fail, with no warning tier and no demotion path. `schedule-valid` cannot actually run here because the schedule file is written later in Phase 1; it runs immediately after `write-schedule` persists the analyst output (see below) and carries the same strict halt-on-fail contract. Phase 0 therefore runs the four gates whose inputs exist now (`schema-valid`, `fixture-valid`, `execution-safe`, `review-safe`):
 
 ```bash
@@ -174,21 +215,38 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
 
 Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`. The halt is strict for every gate in the preflight set -- including `fixture-valid` -- with no per-plan exception and no demotion to warning. The frozen gate status vocabulary is `pass|fail|not_applicable`; there is no `warn` status and no `--warn-only` flag on the `gates` subcommand.
 
+**Directory mode — per-child `schema-valid` loop.** When `<plan-path>` is a directory, run `schema-valid` once per `chunks[].file` in `<plans_dir>/00_INDEX.json`, halting on the first failure. Emit the halt message as `schema-valid failed for child <basename>: <gate.reason>` so the operator can fix the offending child without scanning the full set. `fixture-valid` / `execution-safe` / `review-safe` still run once (they validate the executor itself and the shipped sample fixture, not the user's plan). Pseudocode sketch:
+
+```
+if plan_path.is_dir():
+    roster = plan_ops.load_00_index(plans_dir)
+    for chunk in roster["chunks"]:
+        child = plans_dir / chunk["file"]
+        r = gates_check(["schema-valid"], plan_file=child)
+        if r.failed:
+            halt("schema-valid failed for child " + chunk["file"] + ": " + r.reason)
+    gates_check(["fixture-valid", "execution-safe", "review-safe"])  # once
+else:
+    gates_check(["schema-valid", "fixture-valid", "execution-safe", "review-safe"], plan_file=plan_path)
+```
+
 Then acquire the run-lock:
 
 ```bash
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" acquire-lock --plan-file <absolute plan> --run-id <id>
 ```
 
-Overlap on the same plan → halt with the conflicting run_id.
+In file mode, `<absolute plan>` is the plan file's absolute path. In directory mode, `<absolute plan>` is the directory's absolute path — the lock file stores one entry per directory-run, not per child.
+
+Overlap on the same plan (or directory) → halt with the conflicting run_id.
 
 The lock file at `docs/plans/_run_lock.json` follows a strict canonical shape: a JSON object keyed by absolute plan path, with each entry containing exactly `{"run_id": "<id>", "acquired_at": "<opaque non-empty string>"}`. Any other shape (invalid JSON, extra keys, missing keys, top-level not an object, non-string or empty values) is rejected by `acquire-lock`. `--force` is a manual recovery tool — use it only to recover from a corrupted or stuck lock file. `--force` discards all existing entries (including entries for other plans), so do not run it while a legitimate run is in progress. `--run-id` must be a non-empty string; empty or non-string values are rejected before any file operation so a botched invocation cannot corrupt the lock file.
 
-Append `run_start` via `plan_ops.py log-event`.
+Append `run_start` via `plan_ops.py log-event`. In **directory mode**, include `plan_file: "<dir-basename>"` in the event's `fields` (dir-basename is the directory's own basename, e.g. `implement_plan_directory_mode`); file-mode runs omit the `plan_file` field from `run_start` exactly as today.
 
 ## Analysis (Phase 1)
 
-Dispatch `plan-analyst` (Agent, `subagent_type: "plan-analyst"`, `model: "opus"`) with the Phase A template from `dispatch-templates.md`. Extract the fenced ```json block from the analyst's report and feed it to:
+Dispatch `plan-analyst` (Agent, `subagent_type: "plan-analyst"`, `model: "opus"`) with the Phase A template from `dispatch-templates.md`. In file mode pass the single plan-file path verbatim; in directory mode pass the directory path — the Phase A template's input slot holds whichever path the orchestrator received. The analyst's directory-mode contract (TASK-003) emits per-task `plan_file: "<child-basename>"` on every `tasks[]` entry; the schedule wire format (validated by TASK-001's `_validate_schedule`) accepts both "every entry carries `plan_file`" (directory mode) and "no entry carries `plan_file`" (file mode) without further work. Extract the fenced ```json block from the analyst's report and feed it to:
 
 ```bash
 echo "<analyst_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" parse-schedule --stdin --json
@@ -287,10 +345,17 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
   --plan-file <absolute plan> \
   --schedule-file <schedule_file> \
-  --plans-dir <dirname of plan-file> \
+  --plans-dir <plans_dir> \
   --repo-root <absolute repo root> \
   --timeout 180 \
   [--allow-gaps]
+
+# In file mode: <absolute plan> is the plan file; <plans_dir> is its parent.
+# In directory mode: <absolute plan> is the directory path; <plans_dir> is the
+# same directory path (the reviewer reads the persisted <schedule_file> for the
+# unified tasks[] and does not need per-child files). Review semantics are
+# unchanged from file mode — Codex returns the same approved|approved-with-notes|
+# needs-replan verdict vocabulary against the unified schedule.
 
 ```
 
@@ -372,7 +437,7 @@ On `partial-agreement` and `needs-rework` the routing then falls through to the 
 
 **`needs-replan` branch — auto-revise path (default).** Auto-revise is on unless `--no-auto-revise` is set. When on, the orchestrator runs a three-step author → analyst → review sequence before the second verdict is accepted:
 
-1. **Dispatch `plan-author`** (Agent, `subagent_type: "plan-author"`, `model: "opus"`) using the Phase 1.5a template from `dispatch-templates.md`. Embed the plan path, the Codex findings array, the Codex summary verbatim, and the analyst annotations. **The findings array payload is parameterized by the route that reached this step:** on `partial-agreement` from Phase 1.5.5, construct a filtered findings array containing ONLY the entries whose indices appear in the triage `load_bearing` set and pass a reduced `findings_count` equal to that filtered length; on `needs-rework` (or when this step is reached without a triage split), embed the full Codex findings array verbatim with the original `findings_count`. Dismissed findings on `partial-agreement` are NOT forwarded to the author — they are carried only into the summary per the route table above. The author edits the single plan file in place; its write scope is keyed on the input plan path, not a directory glob. Wrap the dispatch with `plan_author_start` before and `plan_author_done` after:
+1. **Dispatch `plan-author`** (Agent, `subagent_type: "plan-author"`, `model: "opus"`) using the Phase 1.5a template from `dispatch-templates.md`. Embed the plan path, the Codex findings array, the Codex summary verbatim, and the analyst annotations. **The findings array payload is parameterized by the route that reached this step:** on `partial-agreement` from Phase 1.5.5, construct a filtered findings array containing ONLY the entries whose indices appear in the triage `load_bearing` set and pass a reduced `findings_count` equal to that filtered length; on `needs-rework` (or when this step is reached without a triage split), embed the full Codex findings array verbatim with the original `findings_count`. Dismissed findings on `partial-agreement` are NOT forwarded to the author — they are carried only into the summary per the route table above. The author edits the single plan file in place; its write scope is keyed on the input plan path, not a directory glob. In **directory mode**, the embedded plan path per finding is the child file named by the finding's `task_id` resolved via the schedule's `tasks[].plan_file` (same resolution rule as §Per-task `<plan-file>` resolution); findings that target the plan as a whole (schedule-level issues without a specific `task_id`) map to the first child named by the roster, with the full findings payload embedded. Wrap the dispatch with `plan_author_start` before and `plan_author_done` after:
 
    ```bash
    $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
@@ -443,13 +508,13 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" batch-next \
   --parallel N --json
 ```
 
-Empty batch + non-empty ready → halt "scheduler stuck". Empty batch + empty ready → exit loop. Append `batch_start` event. Add the batch's files to `locked_files`.
+Empty batch + non-empty ready → halt "scheduler stuck". Empty batch + empty ready → exit loop. Append `batch_start` event. Add the batch's files to `locked_files`. In **directory mode**, include each picked task's `plan_file` alongside its `task_id` in the `batch_start` event (e.g., `fields.tasks: [{"task_id": "002", "plan_file": "TASK-002_write_a.md"}, ...]`), so a cross-child parallel batch is visible in the run log.
 
 ### Phase B — Implement (parallel, one message)
 
 Dispatch all batch tasks in a **single message** — Claude via Agent, Codex via Bash:
 
-- Log `implement_start {task_id, agent, model?, batch_index}` per task (chain into the dispatch via `&&` when convenient).
+- Log `implement_start {task_id, agent, model?, batch_index}` per task (chain into the dispatch via `&&` when convenient). In **directory mode**, include `plan_file: "<child-basename>"` for the task so the run-log records which child file the implementer's commit will land in.
 - **Claude tasks** → `Agent(subagent_type: "plan-implementer", model: "opus", prompt: render(templates.PhaseB, ...))`.
 - **Codex tasks** → `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement --plan-file <abs> --task-id NNN --repo-root <abs> --timeout 300`.
 
@@ -494,6 +559,8 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
   [--reversion-guidance "<from implementer report>"] --json
 ```
 
+`<abs>` here is the current task's child file resolved per the rule in §Per-task `<plan-file>` resolution (directory mode) or the single run-level plan (file mode).
+
 This: (1) `git restore <files>` (Claude-side recovery; Codex-side restore was done inside the wrapper), (2) plan-status flip to `failed`, (3) run-log `failed {stage=implement, ...}` append.
 
 Then cascade `blocked` onto the failed task's transitive dependents (source-of-truth invariant: the plan file, not just the run-log):
@@ -502,6 +569,8 @@ Then cascade `blocked` onto the failed task's transitive dependents (source-of-t
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
   --schedule-file <path> --plan-file <abs> --failed NNN --run-id <id> --json
 ```
+
+Pass the **failed task's** child file as `--plan-file` (same resolution rule). `block-dependents` reads the schedule's per-task `plan_file` for each dependent internally and routes each mutation to the right child file; siblings in other children flip there, not in the failed task's file. The `--plan-file` argument remains required as (a) the single-file back-compat fallback for any dependent whose schedule entry omits `plan_file` and (b) the DAG-lookup anchor.
 
 Release this task's file locks. Remove the task from `ready`. Peer tasks in the same and later batches proceed independently. Do NOT proceed to Phase D for this task.
 
@@ -649,6 +718,8 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" commit-task \
   [--narrow-remediation-tag --dismissed-finding-ids I,J,K] --json
 ```
 
+`<abs>` is the current task's child file in directory mode, the single plan file in file mode — resolve per §Per-task `<plan-file>` resolution. `commit-task`'s `Plan:` commit trailer is derived from the `--plan-file` basename, so the resolution automatically attributes each commit to the correct child.
+
 `--remediation-tag` appends a `[remediation]` line to the commit body; set it only when the commit follows a successful D.2a.5 retry. `--narrow-remediation-tag` (with a non-empty `--dismissed-finding-ids` list) appends `[narrow-remediation]` + `[disagreement: I,J,K]` on adjacent lines; set it only when the commit follows a successful D.2a.6 retry. Argparse enforces four constraints: (a) `--narrow-remediation-tag` XOR `--remediation-tag`, (b) `--dismissed-finding-ids` XOR `--disagreement-tag`, (c) `--dismissed-finding-ids` requires `--narrow-remediation-tag`, (d) `--narrow-remediation-tag` requires non-empty `--dismissed-finding-ids`.
 
 This: (1) guard check for unexpected staged overlap, (2) plan-status flip to `done`, (3) `git commit --only <files> <plan-file> -m "feat(TASK-NNN): <title>\n\n<diff summary>\n\nPlan: <basename>"`, (4) SHA capture, (5) run-log `commit_done` append.
@@ -697,7 +768,7 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
   --schedule-file <path> --plan-file <abs> --failed NNN --run-id <id> --json
 ```
 
-Same atomic shape as Phase C.
+Same atomic shape as Phase C, and the same per-task `<plan-file>` resolution: `<abs>` is the failed task's child file in directory mode; `block-dependents` internally routes each dependent's mutation to its own child per the schedule's `tasks[].plan_file`.
 
 ### Phase E — Next batch
 
@@ -705,8 +776,8 @@ Release this task's file locks. Loop to Phase A.
 
 ## End of run
 
-1. `plan_ops.py update-plan-header --status <complete|partial>` (complete iff `failed == 0`; else partial).
-2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. `--rows-json` row schema: each row is an object with exactly these six required string keys — `task`, `agent`, `reviewer`, `verdict`, `commit`, `notes` (no extras; values must all be strings). Verdict cells should include any `[disagreement]` / `[remediation]` / `[narrow-remediation]` markers in prose. Missing or unknown keys exit 1 with the full allowed-field list in the error message. Use `--outcome paused` when exiting via the D.2a.5 OR D.2a.6 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting.
+1. `plan_ops.py update-plan-header --status <complete|partial>` (complete iff `failed == 0`; else partial). In **file mode**, call once against the single plan file. In **directory mode**, partition completed + failed tasks by their `plan_file` value, and call `update-plan-header` once per distinct child basename: `--plan-file <plans_dir>/<child-basename> --status <per-child status>`. Per-child status is `complete` iff every task that lived in that child passed, else `partial`. Do NOT synthesize a run-level aggregate header — v1 boundary (documented in §Directory-mode input). Children with no tasks in completed+failed are untouched.
+2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. `--rows-json` row schema: each row is an object with exactly these six required string keys — `task`, `agent`, `reviewer`, `verdict`, `commit`, `notes` (no extras; values must all be strings). Verdict cells should include any `[disagreement]` / `[remediation]` / `[narrow-remediation]` markers in prose. Missing or unknown keys exit 1 with the full allowed-field list in the error message. Use `--outcome paused` when exiting via the D.2a.5 OR D.2a.6 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting. In **directory mode**, partition rows by `plan_file` (same basenames as step 1) and call `finalize-execution-log --plan-file <plans_dir>/<child-basename> --rows-json '<child-scoped rows>'` once per distinct child. No run-level aggregate table — v1 boundary.
 3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5 or D.2a.6).
 4. Print summary: counts `{done, failed}`, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
 5. Housekeeping commit (skip if `done == 0 AND failed == 0`):

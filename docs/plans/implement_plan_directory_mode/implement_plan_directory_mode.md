@@ -130,7 +130,7 @@ The analyst subagent reads files directly (it has the Read tool). `00_INDEX.json
 
 ### TASK-004: Orchestrator directory-mode driver
 
-- **Status:** open
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**

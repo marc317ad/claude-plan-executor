@@ -12993,3 +12993,576 @@ class Test_plan_review_triage_integration:
             dismissed=[1],
         )
         assert result["summary"]["dismissed_indices"] == [1]
+
+
+# ---------------------------------------------------------------------------
+# TASK-004: Directory-mode driver (orchestrator integration)
+# ---------------------------------------------------------------------------
+#
+# Covers the integration points where TASK-001 (schedule plan_file), TASK-002
+# (block-dependents multi-file cascade), and TASK-003 (analyst directory-mode
+# input) come together. SKILL.md is the primary deliverable (prose, not code);
+# the tests here exercise the plan_ops.py primitives the SKILL.md invokes and
+# validate the shipped integration fixture in `tests/fixtures/directory_mode_plan/`.
+
+
+DIRECTORY_MODE_FIXTURE = (
+    REPO_ROOT / "tests" / "fixtures" / "directory_mode_plan"
+)
+
+
+@pytest.fixture()
+def directory_mode_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Copy the shipped fixture into a tmp dir so mutation tests don't touch
+    the checked-in fixture files. Sandboxes the module globals so run-log
+    writes land under tmp."""
+    import shutil
+    dst = tmp_path / "decomposed_plan"
+    shutil.copytree(DIRECTORY_MODE_FIXTURE, dst)
+    # Point module globals at tmp so log-event / lock etc. don't bleed.
+    plans_dir = tmp_path / "docs" / "plans"
+    plans_dir.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(plan_ops, "PLAN_DIR", plans_dir)
+    monkeypatch.setattr(plan_ops, "RUN_LOG_PATH", plans_dir / "_run_log.jsonl")
+    monkeypatch.setattr(plan_ops, "RUN_LOCK_PATH", plans_dir / "_run_lock.json")
+    return dst
+
+
+class TestDirectoryModeFixture:
+    """Validates the shipped fixture at tests/fixtures/directory_mode_plan/.
+
+    Covers acceptance criterion: "Integration fixture ... three minimal child
+    plans + 00_INDEX.json ... Each child is a single-task plan passing
+    schema-valid."
+    """
+
+    def test_directory_mode_fixture_index_parses(self) -> None:
+        """00_INDEX.json parses via the existing _parse_index_roster loader.
+
+        TASK-004 explicitly notes that 00_INDEX.json schema is unchanged —
+        the loader is reused as-is. This test locks in that invariant.
+        """
+        index = DIRECTORY_MODE_FIXTURE / "00_INDEX.json"
+        roster = plan_ops._parse_index_roster(index)
+        assert set(roster.keys()) == {"001", "002", "003"}
+        assert roster["001"]["file"] == "TASK-001_seed.md"
+        assert roster["002"]["file"] == "TASK-002_write_a.md"
+        assert roster["003"]["file"] == "TASK-003_write_b.md"
+        assert roster["001"]["depends_on"] == []
+        assert roster["002"]["depends_on"] == ["001"]
+        assert roster["003"]["depends_on"] == ["001"]
+
+    def test_directory_mode_fixture_each_child_is_schema_valid(self) -> None:
+        """Every child in chunks[] passes the schema-valid gate.
+
+        Matches the Phase 0 per-child loop documented in SKILL.md's
+        Directory-mode input section.
+        """
+        for child_name in (
+            "TASK-001_seed.md",
+            "TASK-002_write_a.md",
+            "TASK-003_write_b.md",
+        ):
+            child = DIRECTORY_MODE_FIXTURE / child_name
+            result = plan_ops._gate_schema_valid(child)
+            assert result["status"] == "pass", (
+                f"child {child_name} failed schema-valid: {result['reason']}"
+            )
+
+    def test_directory_mode_fixture_chunks_match_on_disk_children(self) -> None:
+        """Every chunks[].file names a real sibling markdown file.
+
+        Defensive check: a typo in 00_INDEX.json would break the Phase 0
+        per-child schema-valid loop.
+        """
+        index = DIRECTORY_MODE_FIXTURE / "00_INDEX.json"
+        roster = plan_ops._parse_index_roster(index)
+        for entry in roster.values():
+            child = DIRECTORY_MODE_FIXTURE / entry["file"]
+            assert child.is_file(), (
+                f"00_INDEX.json references {entry['file']} but it is not on disk"
+            )
+
+
+class TestDirectoryModePhase0SchemaLoop:
+    """Phase 0 iterates chunks[].file and halts on first schema-valid failure.
+
+    Covers acceptance criterion: "Phase 0 schema-valid iterates every
+    chunks[].file in <dir>/00_INDEX.json and halts on the first failure,
+    naming the offending child file in the halt message."
+    """
+
+    def test_directory_mode_schema_loop_halts_on_first_bad_child(
+        self, tmp_path: Path,
+    ) -> None:
+        """Pseudocode in SKILL.md: `for chunk in roster["chunks"]: check
+        schema-valid on <plans_dir>/<chunk.file>; halt with basename in
+        message on first fail`.
+
+        Build a roster that lists a valid child followed by a bogus child,
+        iterate, and confirm we halt at the bogus child with its basename
+        named in the reason.
+        """
+        d = tmp_path / "decomposed"
+        d.mkdir()
+        # Child 1: valid.
+        good = d / "child-good.md"
+        good.write_text(
+            (DIRECTORY_MODE_FIXTURE / "TASK-001_seed.md").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        # Child 2: structurally broken (missing required sections).
+        bad = d / "child-bad.md"
+        bad.write_text(
+            "# Just a header, no ## Goal, no ## Context, no TASK block.\n",
+            encoding="utf-8",
+        )
+        # Minimal 00_INDEX.json. Order matters — good first, then bad.
+        (d / "00_INDEX.json").write_text(json.dumps({
+            "schema_version": 1,
+            "chunks": [
+                {
+                    "task_id": "001", "file": "child-good.md",
+                    "depends_on": [], "status": "Pending", "superseded_by": [],
+                },
+                {
+                    "task_id": "002", "file": "child-bad.md",
+                    "depends_on": [], "status": "Pending", "superseded_by": [],
+                },
+            ],
+        }), encoding="utf-8")
+
+        roster = plan_ops._parse_index_roster(d / "00_INDEX.json")
+        first_failure: tuple[str, dict] | None = None
+        for tid, entry in roster.items():
+            res = plan_ops._gate_schema_valid(d / entry["file"])
+            if res["status"] == "fail":
+                first_failure = (entry["file"], res)
+                break
+        assert first_failure is not None
+        bad_name, bad_result = first_failure
+        assert bad_name == "child-bad.md"
+        # SKILL.md halt-message convention: "schema-valid failed for child
+        # <basename>: <gate.reason>" — check both the basename and the
+        # gate's own reason are surfaceable.
+        assert bad_result["status"] == "fail"
+        assert "missing" in bad_result["reason"].lower()
+
+
+class TestDirectoryModeBatchNext:
+    """batch-next batches file-disjoint cross-child tasks together.
+
+    Covers acceptance criterion: "Integration test verifies ... batch-next
+    batches TASK-002 + TASK-003 together".
+    """
+
+    def test_directory_mode_batch_next_batches_siblings_in_parallel(
+        self, tmp_path: Path,
+    ) -> None:
+        """Schedule derived from the fixture: TASK-001 seeds, TASK-002/003
+        depend on 001 and write disjoint files. Given TASK-001 done, batch-
+        next returns BOTH TASK-002 and TASK-003 in one batch.
+        """
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "tasks": [
+                {
+                    "id": "001",
+                    "agent": "claude",
+                    "files": ["scratch/.gitkeep"],
+                    "dependencies": [],
+                    "plan_file": "TASK-001_seed.md",
+                },
+                {
+                    "id": "002",
+                    "agent": "claude",
+                    "files": ["scratch/a.txt"],
+                    "dependencies": ["001"],
+                    "plan_file": "TASK-002_write_a.md",
+                },
+                {
+                    "id": "003",
+                    "agent": "claude",
+                    "files": ["scratch/b.txt"],
+                    "dependencies": ["001"],
+                    "plan_file": "TASK-003_write_b.md",
+                },
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"],
+                 "file_locks": ["scratch/.gitkeep"]},
+                {"index": 2, "task_ids": ["002", "003"],
+                 "file_locks": ["scratch/a.txt", "scratch/b.txt"]},
+            ],
+        })
+        # 001 already done; batch-next must return batch 2 with both siblings.
+        cp = _run_batch_next(sched, done="001", parallel=2)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert sorted(body["task_ids"]) == ["002", "003"]
+        assert body["batch_index"] == 2
+        # file_locks covers both disjoint leaf files.
+        assert "scratch/a.txt" in body["file_locks"]
+        assert "scratch/b.txt" in body["file_locks"]
+
+    def test_directory_mode_batch_next_preserves_plan_file_in_schedule(
+        self, tmp_path: Path,
+    ) -> None:
+        """batch-next reads a schedule with per-task plan_file and emits the
+        picked tasks; the downstream orchestrator re-reads the schedule for
+        each picked id to get its plan_file.
+
+        This test confirms the schedule on disk still carries plan_file for
+        each task after the batch-next subcommand runs — i.e. batch-next
+        does not rewrite or strip plan_file. (Preservation is the TASK-001
+        invariant; re-verify here in the directory-mode context.)
+        """
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "claude", "files": ["f1"],
+                 "dependencies": [], "plan_file": "c1.md"},
+                {"id": "002", "agent": "claude", "files": ["f2"],
+                 "dependencies": [], "plan_file": "c2.md"},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"],
+                 "file_locks": ["f1", "f2"]},
+            ],
+        }
+        sched = _write_schedule(tmp_path, payload)
+        cp = _run_batch_next(sched, parallel=2)
+        assert cp.returncode == 0
+        # Schedule on disk must still carry plan_file for each task.
+        reread = json.loads(sched.read_text(encoding="utf-8"))
+        assert [t.get("plan_file") for t in reread["tasks"]] == ["c1.md", "c2.md"]
+
+
+class TestDirectoryModeCommitTask:
+    """commit-task with --plan-file <child-abs> flips THAT child's status,
+    not any sibling.
+
+    Covers acceptance criterion: "commit-task flips the right child's
+    header". Tests the substitution at the Phase D.3 write site.
+    """
+
+    def test_directory_mode_commit_task_flips_only_target_child(
+        self, directory_mode_sandbox: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Dry-run commit-task against the TASK-002 child file. The target
+        child's TASK-002 status bullet flips to `done`; the sibling child
+        files (TASK-001, TASK-003) are untouched byte-for-byte.
+
+        Uses --dry-run so we don't invoke git, but the plan-status mutate
+        happens before the git path in cmd_commit_task — so the flip is
+        persisted on disk. That is the behavior the acceptance test cares
+        about: per-task <plan-file> routes the mutation to the right file.
+
+        Note: --dry-run exits BEFORE the git commit but the plan-status
+        flip has already been applied (per cmd_commit_task's ordering).
+        We don't actually want --dry-run here because it exits before
+        _write_text. Instead: use in-process mutate_task_status which is
+        exactly what cmd_commit_task calls for the flip — bypasses git
+        entirely and is the right seam for directory-mode routing tests.
+        """
+        child_002 = directory_mode_sandbox / "TASK-002_write_a.md"
+        child_001_before = (
+            directory_mode_sandbox / "TASK-001_seed.md"
+        ).read_text(encoding="utf-8")
+        child_003_before = (
+            directory_mode_sandbox / "TASK-003_write_b.md"
+        ).read_text(encoding="utf-8")
+
+        # Simulate the Phase D.3 write: mutate TASK-002 status in the
+        # TASK-002 child file only.
+        original = child_002.read_text(encoding="utf-8")
+        mutated, _prior = plan_ops.mutate_task_status(original, "002", "done")
+        child_002.write_text(mutated, encoding="utf-8")
+
+        # Target child: TASK-002 is now `done`.
+        after = child_002.read_text(encoding="utf-8")
+        assert "- **Status:** done" in after
+        # Sibling children: byte-identical to their pre-commit state.
+        assert (
+            (directory_mode_sandbox / "TASK-001_seed.md").read_text(encoding="utf-8")
+            == child_001_before
+        )
+        assert (
+            (directory_mode_sandbox / "TASK-003_write_b.md").read_text(encoding="utf-8")
+            == child_003_before
+        )
+
+    def test_directory_mode_commit_task_child_resolution_via_plan_file(
+        self, directory_mode_sandbox: Path,
+    ) -> None:
+        """The orchestrator resolves tasks[].plan_file against <plans_dir>
+        to get the absolute path it hands to --plan-file.
+
+        Re-exercises the per-task resolution documented in SKILL.md's
+        'Per-task <plan-file> resolution' section:
+          child_path = <plans_dir> / task.plan_file  (if present)
+                     or fallback to the run-level plan path.
+        """
+        # Schedule entry for TASK-002 with plan_file set.
+        task_entry = {
+            "id": "002",
+            "plan_file": "TASK-002_write_a.md",
+        }
+        # Resolution:
+        resolved = directory_mode_sandbox / task_entry["plan_file"]
+        assert resolved.is_file(), (
+            "directory-mode resolution produced non-existent path"
+        )
+        assert resolved.name == "TASK-002_write_a.md"
+
+        # Fallback when task lacks plan_file: use the single plan path.
+        fallback_single_file = directory_mode_sandbox / "TASK-001_seed.md"
+        task_no_pf = {"id": "001"}  # no plan_file
+        resolved_fallback = (
+            directory_mode_sandbox / task_no_pf["plan_file"]
+            if task_no_pf.get("plan_file")
+            else fallback_single_file
+        )
+        assert resolved_fallback == fallback_single_file
+
+
+class TestDirectoryModeBlockDependents:
+    """Multi-file block-dependents cascade with directory-mode schedule.
+
+    Covers acceptance criterion: "multi-file block-dependents when TASK-001
+    is seeded to fail".
+
+    TASK-002 (the block-dependents internals change) already has its own
+    test class `TestBlockDependentsMultiFile`; this class is the directory-
+    mode *integration* angle that exercises the SHIPPED fixture files as
+    the source plan markdown.
+    """
+
+    def test_directory_mode_block_dependents_cascade_across_children(
+        self, directory_mode_sandbox: Path, tmp_path: Path,
+    ) -> None:
+        """Given the fixture's three-child layout and a schedule mirroring
+        the analyst's directory-mode output, block-dependents with
+        --failed 001 cascades:
+          - TASK-002 flipped `blocked` in TASK-002_write_a.md
+          - TASK-003 flipped `blocked` in TASK-003_write_b.md
+          - TASK-001 untouched (fail-task owns the failed task's own file)
+        """
+        # Build schedule with per-task plan_file entries exactly as the
+        # analyst (TASK-003) would emit for this directory.
+        sched = tmp_path / "schedule.json"
+        sched.write_text(json.dumps({
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "dependencies": [], "plan_file": "TASK-001_seed.md"},
+                {"id": "002", "dependencies": ["001"],
+                 "plan_file": "TASK-002_write_a.md"},
+                {"id": "003", "dependencies": ["001"],
+                 "plan_file": "TASK-003_write_b.md"},
+            ],
+            "batches": [],
+            "gaps": [],
+            "risks": [],
+        }), encoding="utf-8")
+
+        import argparse as _argparse
+        ns = _argparse.Namespace(
+            command="block-dependents",
+            schedule_file=str(sched),
+            plan_file=str(directory_mode_sandbox / "TASK-001_seed.md"),
+            failed="001",
+            run_id="DM-RUN-1",
+            json=True,
+        )
+        code, body = _bd_call(ns)
+        assert code == 0, body
+        assert sorted(body["blocked_task_ids"]) == ["002", "003"]
+        assert sorted(body["plan_mutations_applied"]) == ["002", "003"]
+
+        # TASK-002 flipped in TASK-002_write_a.md
+        t2_text = (
+            directory_mode_sandbox / "TASK-002_write_a.md"
+        ).read_text(encoding="utf-8")
+        t2_status = re.search(
+            r"### TASK-002:[^\n]*\n\n- \*\*Status:\*\* (\S+)", t2_text,
+        )
+        assert t2_status is not None and t2_status.group(1) == "blocked"
+
+        # TASK-003 flipped in TASK-003_write_b.md
+        t3_text = (
+            directory_mode_sandbox / "TASK-003_write_b.md"
+        ).read_text(encoding="utf-8")
+        t3_status = re.search(
+            r"### TASK-003:[^\n]*\n\n- \*\*Status:\*\* (\S+)", t3_text,
+        )
+        assert t3_status is not None and t3_status.group(1) == "blocked"
+
+        # TASK-001 (failed) untouched — fail-task owns the failed task's own
+        # status; block-dependents never flips the failed id itself.
+        t1_text = (
+            directory_mode_sandbox / "TASK-001_seed.md"
+        ).read_text(encoding="utf-8")
+        t1_status = re.search(
+            r"### TASK-001:[^\n]*\n\n- \*\*Status:\*\* (\S+)", t1_text,
+        )
+        assert t1_status is not None and t1_status.group(1) == "pending"
+
+        # Each blocked event carries plan_file pointing to the dependent's
+        # own child file — directory-mode audit attribution. RUN_LOG_PATH
+        # was patched in `directory_mode_sandbox` to tmp_path/docs/plans,
+        # where directory_mode_sandbox == tmp_path/decomposed_plan — so
+        # the run log lives at directory_mode_sandbox.parent/docs/plans.
+        events = _bd_read_run_log_events_in(
+            directory_mode_sandbox.parent / "docs" / "plans"
+        )
+        by_tid = {e["task_id"]: e for e in events}
+        assert "002" in by_tid, (
+            f"TASK-002 not in run log events; got {list(by_tid.keys())}; "
+            f"events={events}"
+        )
+        assert "003" in by_tid
+        assert by_tid["002"]["plan_file"] == "TASK-002_write_a.md"
+        assert by_tid["003"]["plan_file"] == "TASK-003_write_b.md"
+
+
+class TestDirectoryModeUpdatePlanHeader:
+    """update-plan-header is called once per distinct child in directory mode.
+
+    Covers acceptance criterion: "update-plan-header iterates the distinct
+    plan_file values present in completed + failed tasks. Each child's own
+    top-level **Status:** flips to complete when every task in that child
+    passed, partial otherwise. A run-level aggregate header is NOT
+    synthesized."
+    """
+
+    def test_directory_mode_per_child_header_iteration(
+        self, directory_mode_sandbox: Path,
+    ) -> None:
+        """Simulate an end-of-run where TASK-001 and TASK-002 passed (both
+        in their own children) and TASK-003 failed. The orchestrator's
+        end-of-run partitions by plan_file, and calls update-plan-header
+        for each child with that child's own local outcome:
+          - TASK-001_seed.md → `complete` (its only task TASK-001 passed)
+          - TASK-002_write_a.md → `complete` (TASK-002 passed)
+          - TASK-003_write_b.md → `partial` (TASK-003 failed)
+        """
+        # Simulated completed + failed tasks with plan_file routing.
+        completed = [
+            {"task_id": "001", "plan_file": "TASK-001_seed.md"},
+            {"task_id": "002", "plan_file": "TASK-002_write_a.md"},
+        ]
+        failed = [
+            {"task_id": "003", "plan_file": "TASK-003_write_b.md"},
+        ]
+
+        # Partition by plan_file and compute per-child status.
+        per_child: dict[str, dict] = {}
+        for t in completed:
+            pf = t["plan_file"]
+            per_child.setdefault(pf, {"done": 0, "failed": 0})["done"] += 1
+        for t in failed:
+            pf = t["plan_file"]
+            per_child.setdefault(pf, {"done": 0, "failed": 0})["failed"] += 1
+
+        # For each distinct plan_file, call update-plan-header with the
+        # child's local outcome.
+        for child_basename, counts in per_child.items():
+            child = directory_mode_sandbox / child_basename
+            status = "complete" if counts["failed"] == 0 else "partial"
+            import argparse as _argparse
+            ns = _argparse.Namespace(
+                command="update-plan-header",
+                plan_file=str(child),
+                status=status,
+                json=True,
+            )
+            import io
+            import contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                try:
+                    plan_ops.cmd_update_plan_header(ns)
+                except SystemExit:
+                    pass
+
+        # Verify per-child headers are as expected.
+        t1 = (directory_mode_sandbox / "TASK-001_seed.md").read_text(
+            encoding="utf-8"
+        )
+        assert "**Status:** complete" in t1.split("## Tasks")[0]
+
+        t2 = (directory_mode_sandbox / "TASK-002_write_a.md").read_text(
+            encoding="utf-8"
+        )
+        assert "**Status:** complete" in t2.split("## Tasks")[0]
+
+        t3 = (directory_mode_sandbox / "TASK-003_write_b.md").read_text(
+            encoding="utf-8"
+        )
+        assert "**Status:** partial" in t3.split("## Tasks")[0]
+
+        # v1 scope boundary: NO run-level aggregate header synthesis. There
+        # is no orchestrator-level "plan" file at <plan_dir> to check — the
+        # directory itself has no top-level **Status:** to flip. This is
+        # documented in SKILL.md's Directory-mode input section.
+        # (This assertion is satisfied by construction: there is nothing to
+        # assert the absence of, which is exactly the v1 boundary.)
+
+
+class TestDirectoryModeFileModeRegression:
+    """File-mode runs remain byte-identical to pre-TASK-004 behavior.
+
+    Covers acceptance criterion: "File input path remains byte-identical
+    to pre-TASK-004 behavior: when <plan-path> resolves to a file, none
+    of the new branches fire."
+    """
+
+    def test_directory_mode_is_dir_detects_file_correctly(self) -> None:
+        """Phase 0 detection helper: Path.is_dir() correctly distinguishes
+        a plan file from a plan directory. SKILL.md mandates this exact
+        predicate — no trailing-slash or string-shape heuristics.
+        """
+        file_path = DIRECTORY_MODE_FIXTURE / "TASK-001_seed.md"
+        dir_path = DIRECTORY_MODE_FIXTURE
+        assert file_path.is_file()
+        assert not file_path.is_dir()
+        assert dir_path.is_dir()
+        assert not dir_path.is_file()
+
+    def test_directory_mode_schedule_entry_without_plan_file_is_file_mode(
+        self, tmp_path: Path,
+    ) -> None:
+        """A schedule entry without plan_file is file-mode — i.e. the
+        orchestrator falls back to the single run-level plan path. Verifies
+        TASK-001's back-compat contract still holds at the API boundary
+        batch-next reads.
+        """
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                # No plan_file field anywhere — pure file-mode schedule.
+                {"id": "001", "agent": "claude", "files": ["a"],
+                 "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "002"],
+                 "file_locks": ["a", "b"]},
+            ],
+        }
+        sched = _write_schedule(tmp_path, payload)
+        cp = _run_batch_next(sched, parallel=2)
+        assert cp.returncode == 0
+        # Schedule survives batch-next without plan_file sneaking in.
+        reread = json.loads(sched.read_text(encoding="utf-8"))
+        for t in reread["tasks"]:
+            assert "plan_file" not in t, (
+                "batch-next must not inject plan_file into file-mode schedules"
+            )

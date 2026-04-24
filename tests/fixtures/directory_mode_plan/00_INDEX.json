@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "parallel_batches": [
+    ["001"],
+    ["002", "003"]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_seed.md",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_write_a.md",
+      "depends_on": ["001"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_write_b.md",
+      "depends_on": ["001"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
