@@ -706,9 +706,16 @@ def test_plan_review_allow_gaps_hard_gaps_block(tmp_path):
 
 
 def test_plan_review_allow_gaps_absent_prompt_unchanged(tmp_path):
-    """Without --allow-gaps, the rendered prompt must be byte-identical
-    to current output (no demotion clause, no other drift), regardless
-    of the schedule's gap shape."""
+    """Without --allow-gaps, the rendered prompt carries no demotion clause
+    and the core schedule-only scaffold is intact (TASK-006 prompt body).
+
+    Updated for TASK-006: the prompt is now schedule-only, so the frozen
+    invariants pin the schedule-only scaffold rather than the retired
+    `Plan document (verbatim):` block. `plan_file` is derived from the
+    schedule sidecar stem (see `cmd_plan_review`) — the legacy
+    `plan.name` basename no longer round-trips since the wrapper does
+    not read the plan markdown.
+    """
     soft_gaps = [
         {"type": "unresolvable-test", "detail": "foo", "severity": "soft"},
     ]
@@ -719,38 +726,55 @@ def test_plan_review_allow_gaps_absent_prompt_unchanged(tmp_path):
     prompt_no_flag = body_no_flag["prompt_preview"]
     assert _DEMOTION_CLAUSE_NEEDLE not in prompt_no_flag
 
-    # Second assertion set: pin the no-flag prompt against frozen literal
-    # invariants (NOT against the renderer imported from the module under
-    # test — that would make accidental renderer-default drift invisible).
-    # These substrings capture the acceptance-criteria invariants for the
-    # "no flag => unchanged" contract: no demotion clause, plan basename
-    # intact, full verdict vocabulary intact, and the core prompt scaffold
-    # phrases unchanged.
+    # TASK-006 envelope-shape invariant: the dry-run envelope stays with
+    # its pre-TASK-006 shape — plan_file, subcommand, outcome, dry_run,
+    # prompt_preview. No new top-level `schedule_file` field. TASK-008
+    # may revisit this.
+    assert "schedule_file" not in body_no_flag, (
+        f"dry-run envelope must not carry schedule_file; got keys: "
+        f"{list(body_no_flag.keys())}"
+    )
+    # Positive contract: required pre-TASK-006 keys remain present.
+    for required in ("plan_file", "subcommand", "outcome", "dry_run",
+                     "prompt_preview"):
+        assert required in body_no_flag, (
+            f"dry-run envelope missing {required!r}; got keys: "
+            f"{list(body_no_flag.keys())}"
+        )
+
+    # Derive plan_basename the way `cmd_plan_review` does in TASK-006:
+    # sidecar stem (schedule.name without trailing `.schedule.json`).
+    expected_plan_basename = schedule.name[: -len(".schedule.json")]
+
     frozen_invariants = [
-        # Demotion clause MUST be absent.
-        # (Negative asserted separately below.)
-        # Plan basename round-trips.
-        f"Plan file: {plan.name}",
-        f'`plan_file` must be "{plan.name}".',
-        # Full verdict vocabulary present verbatim.
+        # Plan basename round-trips from schedule stem.
+        f"Plan file: {expected_plan_basename}",
+        f'`plan_file` must be "{expected_plan_basename}".',
+        # Full verdict vocabulary present verbatim (schedule-only phrasing).
         "Verdict vocabulary (pick exactly one):",
-        "`approved` — the plan is workable as written and no "
+        "`approved` — the schedule is workable as written and no "
         "substantiated blocking issue is present.",
-        "`approved-with-notes` — the plan is workable but has "
+        "`approved-with-notes` — the schedule is workable but has "
         "non-blocking issues, minor gaps, or operator-accepted soft gaps.",
-        "`needs-replan` — the plan has a concrete blocking defect that "
-        "should be fixed before dispatch.",
-        # Core prompt scaffold.
-        "Review the plan and its persisted schedule.",
+        "`needs-replan` — the schedule has a concrete blocking defect "
+        "that should be fixed before dispatch.",
+        # Core prompt scaffold — schedule-only after TASK-006.
+        "Review the persisted schedule for this plan.",
         "Cross-plan dependency resolution has already been verified",
         "Persisted schedule JSON:",
-        "Plan document (verbatim):",
+        # New tasks[i]-path guidance landed in TASK-006.
+        "tasks[i]",
         "Return schema-compliant JSON only, no markdown fences",
     ]
     for needle in frozen_invariants:
         assert needle in prompt_no_flag, (
             f"frozen no-flag invariant missing from prompt: {needle!r}"
         )
+    # The retired plan-markdown block must not appear in the schedule-only
+    # prompt.
+    assert "Plan document (verbatim):" not in prompt_no_flag, (
+        "TASK-006 schedule-only prompt must not carry the plan-markdown block"
+    )
     # Demotion clause opener must be absent in the no-flag path.
     assert "Operator override (--allow-gaps)" not in prompt_no_flag, (
         "demotion clause leaked into prompt when --allow-gaps is not set"
@@ -758,13 +782,14 @@ def test_plan_review_allow_gaps_absent_prompt_unchanged(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# TASK-001 — cmd_plan_review accepts a decomposed-plan directory.
+# TASK-006 — cmd_plan_review is schedule-only.
 #
-# Dry-run only; no live Codex. Validates that the wrapper concatenates the
-# children named in 00_INDEX.json into a single plan_text and that the
-# envelope's plan_file uses the directory's basename rather than a child
-# filename. A missing 00_INDEX.json in a directory input must surface as
-# outcome=failure with a roster-shaped error and exit 1.
+# Dry-run only; no live Codex. TASK-001 originally validated that the
+# wrapper read a plan directory's 00_INDEX.json and concatenated each
+# chunk's markdown into the prompt. TASK-006 removes that path entirely:
+# the reviewer reads only the persisted schedule JSON (fat manifest).
+# These tests were updated in place to pin the schedule-only contract
+# instead of the retired concat path.
 # ---------------------------------------------------------------------------
 
 
@@ -773,9 +798,15 @@ DIRECTORY_MODE_FIXTURE = (
 )
 
 
-def _write_dummy_schedule(tmp_path: Path) -> Path:
-    """Minimal schedule JSON that round-trips through the wrapper's parse."""
-    schedule = tmp_path / "directory_mode.schedule.json"
+def _write_dummy_schedule(tmp_path: Path, stem: str = "directory_mode_plan") -> Path:
+    """Minimal schedule JSON that round-trips through the wrapper's parse.
+
+    Sidecar naming follows the in-directory convention per `_plan_paths.py:69`:
+    ``<plan_dir>/<plan_dir-stem>.schedule.json``. The wrapper derives
+    ``plan_basename`` from the sidecar's parent directory (when it matches
+    the stem) or the sidecar stem itself.
+    """
+    schedule = tmp_path / f"{stem}.schedule.json"
     schedule.write_text(
         json.dumps({
             "outcome": "valid",
@@ -788,19 +819,25 @@ def _write_dummy_schedule(tmp_path: Path) -> Path:
     return schedule
 
 
-def test_plan_review_directory_dry_run_concats_children(tmp_path):
-    """--plan-file pointing at a directory: wrapper reads 00_INDEX.json,
-    concatenates chunks[].file contents into plan_text, and the rendered
-    prompt contains every child's ### TASK-00N heading. Envelope.plan_file
-    is the directory's own basename, not any child filename."""
-    schedule = _write_dummy_schedule(tmp_path)
+def test_plan_review_directory_sidecar_plan_file_derived_from_directory(tmp_path):
+    """When the schedule sidecar lives inside the plan directory
+    (``<plan_dir>/<plan_dir-stem>.schedule.json``), the wrapper derives
+    ``envelope.plan_file`` from the directory's own basename — matching
+    the identity used by every other downstream consumer.
+
+    Replaces the retired TASK-001 directory-concat test: the wrapper no
+    longer reads chunks[].file, so there is nothing to concatenate.
+    """
+    # Drop the sidecar inside the fixture-equivalent copy so the wrapper's
+    # parent-name derivation fires.
+    plan_dir = tmp_path / DIRECTORY_MODE_FIXTURE.name
+    plan_dir.mkdir()
+    schedule = _write_dummy_schedule(plan_dir, stem=plan_dir.name)
 
     cp = subprocess.run(
         [
             sys.executable, str(WRAPPER), "plan-review",
-            "--plan-file", str(DIRECTORY_MODE_FIXTURE),
             "--schedule-file", str(schedule),
-            "--plans-dir", str(tmp_path),
             "--repo-root", str(tmp_path),
             "--dry-run",
             "--timeout", "180",
@@ -815,49 +852,42 @@ def test_plan_review_directory_dry_run_concats_children(tmp_path):
     )
     body = json.loads(cp.stdout)
     assert body["outcome"] == "dry_run", body
-    # plan_file field identifies the directory, not any child.
-    assert body["plan_file"] == DIRECTORY_MODE_FIXTURE.name, body["plan_file"]
+    # plan_file identifies the plan directory, derived from the sidecar
+    # parent (NOT from --plan-file, which the wrapper no longer accepts).
+    assert body["plan_file"] == plan_dir.name, body["plan_file"]
 
     prompt = body["prompt_preview"]
-    # Every child's task heading lands in the concatenated plan_text.
-    for heading in (
-        "### TASK-001:",
-        "### TASK-002:",
-        "### TASK-003:",
-    ):
-        assert heading in prompt, (
-            f"child task heading missing from concatenated prompt: {heading!r}"
-        )
-    # Per-child marker comments precede each concatenated section.
+    # The prompt's Plan file header echoes the directory basename.
+    assert f"Plan file: {plan_dir.name}" in prompt
+    # Schedule-only prompt: no plan-markdown block, no child-file
+    # concat markers.
+    assert "Plan document (verbatim):" not in prompt
     for child_name in (
         "TASK-001_seed.md",
         "TASK-002_write_a.md",
         "TASK-003_write_b.md",
     ):
-        assert f"<!-- {child_name} -->" in prompt, (
-            f"per-child marker missing for {child_name}"
+        assert f"<!-- {child_name} -->" not in prompt, (
+            "TASK-006 schedule-only prompt must not concat child markdown"
         )
-    # The prompt's Plan file header echoes the directory basename contract.
-    assert f"Plan file: {DIRECTORY_MODE_FIXTURE.name}" in prompt
 
 
-def test_plan_review_directory_without_index_fails_missing_roster(tmp_path):
-    """A directory lacking 00_INDEX.json returns exit 1 with a
-    missing-roster shaped error."""
-    bad_dir = tmp_path / "missing_roster_plan"
-    bad_dir.mkdir()
-    (bad_dir / "TASK-001_noop.md").write_text(
-        "# noop\n\n### TASK-001: noop\n",
-        encoding="utf-8",
-    )
-    schedule = _write_dummy_schedule(tmp_path)
+def test_plan_review_schedule_only_ignores_deprecated_plan_file(tmp_path):
+    """Passing the deprecated `--plan-file` (even at a non-existent path)
+    no longer fails the dispatch — the wrapper ignores it and emits a
+    stderr deprecation notice. Replaces the retired
+    `test_plan_review_directory_without_index_fails_missing_roster`:
+    the wrapper no longer inspects the plan directory, so a missing
+    roster is not an error condition at the plan-review layer.
+    """
+    schedule = _write_dummy_schedule(tmp_path, stem="sample_plan")
+    bogus_plan_file = tmp_path / "missing_directory"  # never created
 
     cp = subprocess.run(
         [
             sys.executable, str(WRAPPER), "plan-review",
-            "--plan-file", str(bad_dir),
+            "--plan-file", str(bogus_plan_file),  # deprecated shim
             "--schedule-file", str(schedule),
-            "--plans-dir", str(tmp_path),
             "--repo-root", str(tmp_path),
             "--dry-run",
             "--timeout", "180",
@@ -866,12 +896,12 @@ def test_plan_review_directory_without_index_fails_missing_roster(tmp_path):
         text=True,
         cwd=str(tmp_path),
     )
-    assert cp.returncode == 1, (
-        f"expected exit 1 for missing roster, got rc={cp.returncode}\n"
+    # Dispatch should succeed; --plan-file is ignored.
+    assert cp.returncode == 0, (
+        f"expected exit 0 for deprecated --plan-file, got rc={cp.returncode}\n"
         f"STDOUT:\n{cp.stdout}\nSTDERR:\n{cp.stderr}"
     )
     body = json.loads(cp.stdout)
-    assert body["outcome"] == "failure", body
-    assert body.get("error", "").startswith(
-        "Missing 00_INDEX.json in plan directory:"
-    ), body.get("error")
+    assert body["outcome"] == "dry_run", body
+    # Deprecation notice must land on stderr.
+    assert "--plan-file is deprecated" in cp.stderr, cp.stderr
