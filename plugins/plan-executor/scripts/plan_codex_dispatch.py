@@ -18,8 +18,9 @@ Usage (resolve $PYTHON via `plan_ops.py preflight --json`'s python_path):
         --files f1,f2 [--review-focus bugs] [--dry-run] [--timeout SECS]
 
     $PYTHON scripts/plan_codex_dispatch.py plan-review \
-        --plan-file PATH --schedule-file PATH --plans-dir PATH \
-        --repo-root PATH [--dry-run] [--timeout SECS]
+        --schedule-file PATH --repo-root PATH [--dry-run] [--timeout SECS]
+        # TASK-006: schedule-only. --plan-file / --plans-dir accepted for
+        # one version (deprecation shim, removed in TASK-008).
 """
 
 from __future__ import annotations
@@ -268,19 +269,38 @@ def render_implement_prompt(task: dict, context: str) -> str:
 
 
 def render_plan_review_prompt(
-    plan_text: str,
     schedule_json: str,
-    plan_basename: str,
-    plan_abs_path: str,
-    plans_dir: str,
+    plan_basename: str | None = None,
+    plan_text: str | None = None,
+    plan_abs_path: str | None = None,
+    plans_dir: str | None = None,
     allow_gaps_demotion: bool = False,
 ) -> str:
-    """Prompt template for Phase 1.5 — Codex reviews the plan + schedule.
+    """Prompt template for Phase 1.5 — Codex reviews the persisted schedule.
 
-    The analyst (Claude/Opus) authored the plan; Codex provides an independent
-    pre-dispatch review. Input shape is the plan markdown plus the persisted
-    schedule JSON — not a diff — so this prompt is intentionally distinct
-    from the `review` subcommand prompt.
+    Schedule-only (TASK-006): the plan markdown is no longer rendered into
+    the prompt. With the fat manifest from TASK-004, every per-task
+    `description` + `acceptance_criteria` the reviewer needs to validate
+    intent lives inside the schedule JSON directly. Callers should pass the
+    plan directory basename as ``plan_basename`` so the reviewer's
+    envelope.plan_file round-trips correctly. The legacy ``plan_text`` /
+    ``plan_abs_path`` / ``plans_dir`` arguments are accepted but unused —
+    they remain here for one-version backward compatibility while upstream
+    call sites drop the actuals (TASK-008 removes the parameters entirely).
+
+    Positional-order warning: the pre-TASK-006 positional signature was
+    ``(plan_text, schedule_json, plan_basename, plan_abs_path, plans_dir,
+    allow_gaps_demotion)``. The current order puts ``schedule_json`` first
+    because ``plan_text`` is now unused. An external legacy caller that
+    still uses the pre-TASK-006 6-positional shape would silently misroute
+    arguments (plan-text string bound to ``schedule_json`` and vice versa)
+    rather than raising ``TypeError``. No such callsite exists in-tree
+    today; the only live caller in ``cmd_plan_review`` already uses
+    kwargs. TASK-008 will drop the legacy params entirely, closing this
+    window. ``allow_gaps_demotion`` is intentionally kept as
+    positional-or-keyword (no ``*`` keyword-only separator) to avoid
+    breaking any TASK-003-era positional caller that supplies the flag
+    as the 6th positional.
 
     When ``allow_gaps_demotion`` is True, the prompt carries an extra
     demotion clause instructing the reviewer to treat schedule_ok=false
@@ -289,6 +309,10 @@ def render_plan_review_prompt(
     condition from the persisted schedule + the operator's ``--allow-gaps``
     flag; this function is a pure prompt renderer.
     """
+    # Legacy args intentionally accepted but unused; they exist solely so
+    # stale callers do not crash during the TASK-006→TASK-008 transition.
+    del plan_text, plan_abs_path, plans_dir
+    plan_label = plan_basename if plan_basename else "(schedule-only; no plan file)"
     demotion_clause = (
         "\nOperator override (--allow-gaps): the user explicitly opted "
         "in to soft gaps. The persisted schedule's gaps[] contains only "
@@ -301,74 +325,90 @@ def render_plan_review_prompt(
         else ""
     )
     return (
-        f"Review the plan and its persisted schedule. The plan was authored "
-        f"by a peer analyst; you are an independent pre-dispatch reviewer.\n\n"
-        f"Plan file: {plan_basename}\n\n"
+        f"Review the persisted schedule for this plan. The plan was authored "
+        f"by a peer analyst and decomposed into a fat manifest by "
+        f"`plan_ops.py build-tasks`; you are an independent pre-dispatch "
+        f"reviewer working from the schedule JSON alone.\n\n"
+        f"Plan file: {plan_label}\n\n"
         f"Cross-plan dependency resolution has already been verified by the "
         f"orchestrator in Phase 0 preflight. Do not check or report on "
-        f"cross-plan dependencies. Focus only on plan structure, schedule "
-        f"sanity, and coordination risk within the supplied plan and "
+        f"cross-plan dependencies. Focus only on schedule structure, task "
+        f"intent, and coordination risk expressed within the supplied "
         f"schedule.\n\n"
         f"Your job is to determine whether this plan is workable to execute, "
         f"not whether it is perfect.\n\n"
         f"Review standard:\n"
         f"1. Report only concrete, text-supported issues visible in the "
-        f"supplied plan or schedule.\n"
+        f"supplied schedule (including per-task `description` and "
+        f"`acceptance_criteria`).\n"
         f"2. Before recording a finding, inspect the specific alleged gap, "
-        f"contradiction, or risk in the provided material. Do not render an "
+        f"contradiction, or risk in the schedule. Do not render an "
         f"uninformed verdict.\n"
         f"3. A finding is blocking only if it would likely cause execution "
         f"failure, invalid scheduling, ambiguous ownership, unbounded scope, "
         f"or acceptance criteria that cannot be executed or evaluated.\n"
         f"4. Minor omissions, polish improvements, or low-confidence concerns "
         f"are not blocking. Those belong in `approved-with-notes` at most.\n"
-        f"5. If an issue is not explicit in the plan or persisted schedule, "
-        f"do not infer it into a blocking finding.\n\n"
+        f"5. If an issue is not explicit in the persisted schedule, do not "
+        f"infer it into a blocking finding.\n\n"
         f"Output discipline:\n"
         f"- Put concrete execution-impact issues in `findings`.\n"
         f"- Put low-signal concerns, small polish suggestions, and "
         f"non-blocking observations in `notes` instead of `findings`.\n"
         f"- Each finding must include `blocking: true` only for issues that "
-        f"justify `needs-replan`; otherwise use `blocking: false`.\n\n"
+        f"justify `needs-replan`; otherwise use `blocking: false`.\n"
+        f"- Section references in findings should use `tasks[i]` paths "
+        f"(e.g. `tasks[002].test_command`, `tasks[000].description`, "
+        f"`batches[1]`) rather than plan-markdown line numbers. The "
+        f"schedule JSON is the single source of truth.\n\n"
         f"Check specifically:\n"
-        f"1. Does every task have clear acceptance criteria, a test command "
-        f"or accepted deferred-testing signal, and a reasonably scoped Files "
-        f"list?\n"
-        f"   Accepted deferred-testing signals — do NOT flag these:\n"
-        f"   - Canonical: `Test command: deferred (TASK-NNN[A-Z]?)` "
-        f"with optional trailing note, OR\n"
-        f"   - Back-compat: `Test command: none` with a parenthetical that "
-        f"references a sibling task in this plan, e.g. "
-        f"`Test command: none (pure agent spec; end-to-end exercise lands in "
-        f"TASK-NNN[A-Z]?)`.\n"
+        f"1. DAG shape: does every `tasks[i].dependencies` entry resolve to "
+        f"another task id in the schedule? Are there cycles? Is the "
+        f"`batches[]` order a valid topological sort of the DAG?\n"
+        f"2. File disjointness within a batch: do any two tasks scheduled in "
+        f"the same batch share a path in their `files[]` lists? Concurrent "
+        f"writers must be disjoint.\n"
+        f"3. Classification sanity: does every task carry an `agent` field "
+        f"matching the task's nature (Codex for large mechanical edits, "
+        f"Claude for schema/prose/judgment work)? Flag obvious misfits, but "
+        f"only when the mismatch is visible from the description + files + "
+        f"test_command.\n"
+        f"4. Test-command reachability: does `tasks[i].test_command` point "
+        f"at a runnable invocation or an accepted deferred-testing signal? "
+        f"Accepted deferred-testing signals — do NOT flag these:\n"
+        f"   - Canonical: `deferred (TASK-NNN[A-Z]?)` with optional trailing "
+        f"note, OR\n"
+        f"   - Back-compat: `none` with a parenthetical that references a "
+        f"sibling task in this schedule, e.g. `none (pure agent spec; "
+        f"end-to-end exercise lands in TASK-NNN[A-Z]?)`.\n"
         f"   The referenced `TASK-NNN[A-Z]?` must resolve to a task declared "
-        f"in this plan. Treat these as deferred-testing notes, not blocking "
-        f"gaps. Flag only bare `Test command: none` with no valid "
-        f"sibling-task deferral.\n"
-        f"2. Does the schedule match the plan?\n"
-        f"   - Every planned task should appear in `tasks[]`.\n"
-        f"   - Every batch should contain file-disjoint tasks.\n"
-        f"3. Is there any concrete issue that would cost execution time to "
-        f"discover mid-run, such as contradictory file annotations, missing "
-        f"ownership boundaries, untestable acceptance criteria, or invalid "
-        f"task grouping?\n\n"
+        f"in this schedule. Treat these as deferred-testing notes, not "
+        f"blocking gaps. Flag only bare `none` with no valid sibling-task "
+        f"deferral.\n"
+        f"5. AC-vs-files alignment: for each task, are the listed `files[]` "
+        f"plausibly sufficient to satisfy `acceptance_criteria[]`? Flag "
+        f"obvious mismatches (AC references a file absent from `files[]`; "
+        f"AC describes behaviour the `files[]` list cannot plausibly reach).\n"
+        f"6. Intent completeness: is `tasks[i].description` non-empty and "
+        f"non-trivial? Is `tasks[i].acceptance_criteria[]` non-empty? A task "
+        f"missing either field is a likely-blocking gap (implementer cannot "
+        f"work without knowing what to build or how to know they are "
+        f"done).\n\n"
         f"{demotion_clause}"
         f"Verdict vocabulary (pick exactly one):\n"
-        f"- `approved` — the plan is workable as written and no "
+        f"- `approved` — the schedule is workable as written and no "
         f"substantiated blocking issue is present.\n"
-        f"- `approved-with-notes` — the plan is workable but has "
+        f"- `approved-with-notes` — the schedule is workable but has "
         f"non-blocking issues, minor gaps, or operator-accepted soft gaps.\n"
-        f"- `needs-replan` — the plan has a concrete blocking defect that "
-        f"should be fixed before dispatch.\n"
+        f"- `needs-replan` — the schedule has a concrete blocking defect "
+        f"that should be fixed before dispatch.\n"
         f"Do not use `needs-replan` for nits, preferences, or weak "
         f"inferences.\n"
         f"If there are no non-blocking observations, return `notes: []`.\n\n"
-        f"Plan document (verbatim):\n\n"
-        f"```markdown\n{plan_text}\n```\n\n"
         f"Persisted schedule JSON:\n\n"
         f"```json\n{schedule_json}\n```\n\n"
         f"Return schema-compliant JSON only, no markdown fences, no trailing "
-        f"commentary. `plan_file` must be \"{plan_basename}\".\n"
+        f"commentary. `plan_file` must be \"{plan_label}\".\n"
     )
 
 
@@ -1372,22 +1412,30 @@ def cmd_review(args) -> int:
 
 
 def cmd_plan_review(args) -> int:
-    """Phase 1.5 — Codex independently reviews the plan + schedule.
+    """Phase 1.5 — Codex independently reviews the persisted schedule.
 
-    Input shape: plan markdown + schedule JSON (not a diff).
+    Schedule-only (TASK-006). The plan markdown is no longer read or
+    rendered into the prompt; with the fat manifest from TASK-004, every
+    per-task `description` + `acceptance_criteria` the reviewer needs
+    lives inside the schedule JSON directly. ``--schedule-file`` is the
+    sole required input. ``--plan-file`` is accepted for one-version
+    backward compatibility — the value is ignored and a deprecation
+    notice is printed to stderr (TASK-008 removes the flag).
+
     Verdict vocabulary: approved | approved-with-notes | needs-replan.
     Wrapper owns the sandbox baseline + cleanup, matching implement/review.
     """
-    plan_path = Path(args.plan_file).resolve()
+    # TASK-006 one-version deprecation shim: accept but ignore --plan-file.
+    supplied_plan_file = getattr(args, "plan_file", None)
+    if supplied_plan_file:
+        sys.stderr.write(
+            "plan_codex_dispatch: --plan-file is deprecated for plan-review "
+            "(schedule-only as of TASK-006; flag removed in TASK-008). "
+            f"Ignoring value: {supplied_plan_file}\n"
+        )
+
     schedule_path = Path(args.schedule_file).resolve()
     repo_root = str(Path(args.repo_root).resolve())
-
-    if not plan_path.exists():
-        emit(make_envelope(
-            "plan", "plan-review", "failure",
-            error=f"Plan file not found: {plan_path}",
-        ))
-        return 1
 
     if not schedule_path.exists():
         emit(make_envelope(
@@ -1396,73 +1444,29 @@ def cmd_plan_review(args) -> int:
         ))
         return 1
 
-    # Directory-mode input: read 00_INDEX.json and concatenate chunks[].file
-    # contents into a single plan_text. Superseded children are intentionally
-    # included so the reviewer can see cross-plan supersession chains; we do
-    # NOT import ``_parse_index_roster`` from ``plan_ops.py`` — that loader
-    # enforces full roster validation the wrapper does not need for a
-    # read-and-concat.
-    if plan_path.is_dir():
-        roster_path = plan_path / "00_INDEX.json"
-        if not roster_path.exists():
-            emit(make_envelope(
-                "plan", "plan-review", "failure",
-                error=f"Missing 00_INDEX.json in plan directory: {plan_path}",
-            ))
-            return 1
-        try:
-            roster = json.loads(roster_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            emit(make_envelope(
-                "plan", "plan-review", "failure",
-                error=f"Cannot parse roster: {exc}",
-            ))
-            return 1
-        chunks = roster.get("chunks") if isinstance(roster, dict) else None
-        if not chunks:
-            emit(make_envelope(
-                "plan", "plan-review", "failure",
-                error=f"Roster has no chunks: {roster_path}",
-            ))
-            return 1
-        pieces: list[str] = []
-        for chunk in chunks:
-            child_name = chunk.get("file") if isinstance(chunk, dict) else None
-            if not isinstance(child_name, str) or not child_name:
-                emit(make_envelope(
-                    "plan", "plan-review", "failure",
-                    error="Roster chunk missing 'file' key",
-                ))
-                return 1
-            child_basename = Path(child_name).name
-            child = plan_path / child_name
-            if not child.exists():
-                emit(make_envelope(
-                    "plan", "plan-review", "failure",
-                    error=f"Roster chunk not found: {child_basename}",
-                ))
-                return 1
-            try:
-                child_text = child.read_text(encoding="utf-8")
-            except OSError as exc:
-                emit(make_envelope(
-                    "plan", "plan-review", "failure",
-                    error=f"Cannot read plan file: {exc}",
-                ))
-                return 1
-            pieces.append(f"<!-- {child_basename} -->\n{child_text}")
-        plan_text = "\n\n".join(pieces)
-        plan_basename = plan_path.name
+    # `plan_basename` populates envelope.plan_file (the schema still carries
+    # this identifier so downstream triage/author routing can look up the
+    # plan). Preferred source: the schedule's own parent-directory basename,
+    # which for directory-mode sidecars (``<plan_dir>/<stem>.schedule.json``
+    # per ``_plan_paths.py:69``) IS the plan-directory basename. For plans
+    # outside the directory-mode layout we fall back to the schedule file's
+    # own stem.
+    #
+    # Directory-mode signal: the sibling ``00_INDEX.json`` roster, which
+    # plan_ops writes as the canonical marker for decomposed plans. Keying
+    # off that file (rather than a ``parent_name == sidecar_stem`` match)
+    # preserves the plan-directory identity when the sidecar has been
+    # renamed away from its parent directory (e.g., a copied/renamed plan
+    # directory still containing ``directory_mode_plan.schedule.json``).
+    parent_dir = schedule_path.parent
+    if (parent_dir / "00_INDEX.json").is_file() and parent_dir.name:
+        plan_basename = parent_dir.name
+    elif schedule_path.name.endswith(".schedule.json"):
+        # File-mode fallback: strip the full ``.schedule.json`` double
+        # suffix (``Path.stem`` only peels ``.json``, leaving ``.schedule``).
+        plan_basename = schedule_path.name[: -len(".schedule.json")]
     else:
-        try:
-            plan_text = plan_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            emit(make_envelope(
-                "plan", "plan-review", "failure",
-                error=f"Cannot read plan file: {exc}",
-            ))
-            return 1
-        plan_basename = plan_path.name
+        plan_basename = schedule_path.stem
 
     try:
         schedule_text = schedule_path.read_text(encoding="utf-8")
@@ -1507,13 +1511,9 @@ def cmd_plan_review(args) -> int:
                 for g in gaps
             )
 
-    plans_dir = str(Path(args.plans_dir).resolve())
     prompt = render_plan_review_prompt(
-        plan_text,
         schedule_text,
         plan_basename,
-        str(plan_path),
-        plans_dir,
         allow_gaps_demotion=allow_gaps_demotion,
     )
 
@@ -1523,7 +1523,6 @@ def cmd_plan_review(args) -> int:
             "subcommand": "plan-review",
             "outcome": "dry_run",
             "dry_run": True,
-            "schedule_file": str(schedule_path),
             "prompt_preview": prompt,
         })
         return 0
@@ -1696,24 +1695,34 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Review focus area (default: bugs)")
 
     # plan-review subcommand: Phase 1.5 pre-dispatch plan-level review.
-    # Different input shape from `review` (plan markdown + schedule JSON,
-    # not a diff) and different verdict vocabulary
+    # Schedule-only as of TASK-006 — the reviewer reads the persisted
+    # schedule JSON (including the fat manifest's per-task description +
+    # acceptance_criteria) and NEVER the plan markdown. Verdict vocab is
     # (approved | approved-with-notes | needs-replan), so it is a sibling
     # subcommand rather than a mode of `review`.
     pr = subparsers.add_parser(
         "plan-review",
-        help="Dispatch a plan-level review to Codex (Phase 1.5)",
+        help="Dispatch a plan-level review to Codex (Phase 1.5, schedule-only)",
     )
-    pr.add_argument("--plan-file", required=True,
-                    help="Absolute path to plan document")
+    # --plan-file is deprecated as of TASK-006. The wrapper accepts it for
+    # one version so stale callers don't crash; the value is ignored and a
+    # stderr deprecation notice is printed. TASK-008 removes the argument
+    # declaration entirely.
+    pr.add_argument("--plan-file", required=False, default=None,
+                    help="DEPRECATED (TASK-006). Ignored; kept for one-version "
+                         "backward compatibility and removed in TASK-008. "
+                         "plan-review reads the persisted schedule JSON only.")
     pr.add_argument("--schedule-file", required=True,
-                    help="Absolute path to persisted schedule JSON")
-    pr.add_argument("--plans-dir", required=True,
-                    help="Absolute path to the plans directory containing "
-                         "00_INDEX.json. Retained for wrapper-side diagnostics "
-                         "and forward-compat; the reviewer no longer performs "
-                         "its own dependency check (orchestrator Phase 0 owns "
-                         "that gate).")
+                    help="Absolute path to persisted schedule JSON. Sole "
+                         "required input — schedule carries the fat manifest "
+                         "(per-task description + acceptance_criteria).")
+    # --plans-dir is retained as optional (legacy callers may still pass it
+    # for wrapper-side diagnostics). Schedule-only review does not use it;
+    # TASK-008 is expected to drop it alongside --plan-file.
+    pr.add_argument("--plans-dir", required=False, default=None,
+                    help="DEPRECATED (TASK-006). Ignored by schedule-only "
+                         "plan-review; kept optional for one-version "
+                         "backward compatibility and removed in TASK-008.")
     pr.add_argument("--repo-root", required=True,
                     help="Absolute path to the repo root passed as `codex -C`. "
                          "Required — plans typically live in a subdirectory "

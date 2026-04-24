@@ -191,7 +191,7 @@ Replace the whole-plan analyst dispatch with a fan-out. Parallelism is a free by
 
 ### TASK-006: Schedule-only plan-review
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
