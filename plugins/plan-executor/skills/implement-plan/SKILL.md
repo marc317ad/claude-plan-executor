@@ -111,7 +111,7 @@ Run-log events carry a `plan_file` field in their `fields` dict for directory-mo
 - `batch_start` — `plan_file` per batch entry if any task in the batch carries `plan_file` (optional when all tasks share the same `plan_file`, but always-on is cheap and consistent).
 - `implement_start` — `plan_file: "<child-basename>"` for the current task.
 - `commit_done` — `plan_file: "<child-basename>"` (already captured by `commit-task` from the `--plan-file` argument; basename is derived automatically).
-- `run_end` — omit `plan_file` (it is a run-level event); the run's mode is inferrable from the presence of `plan_file` on child events.
+- `run_end` — `plan_file: "<dir-basename>"` when directory-mode; omit otherwise. Matches `run_start` so the run-bracket pair is symmetric and consumers don't have to special-case the closing event.
 
 File-mode runs emit the existing event shapes byte-identically — the new `plan_file` field is added only on directory-mode events (and on the `commit_done` / `blocked` events, which already carried it starting with TASK-002's internals change).
 
@@ -778,7 +778,7 @@ Release this task's file locks. Loop to Phase A.
 
 1. `plan_ops.py update-plan-header --status <complete|partial>` (complete iff `failed == 0`; else partial). In **file mode**, call once against the single plan file. In **directory mode**, partition completed + failed tasks by their `plan_file` value, and call `update-plan-header` once per distinct child basename: `--plan-file <plans_dir>/<child-basename> --status <per-child status>`. Per-child status is `complete` iff every task that lived in that child passed, else `partial`. Do NOT synthesize a run-level aggregate header — v1 boundary (documented in §Directory-mode input). Children with no tasks in completed+failed are untouched.
 2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. `--rows-json` row schema: each row is an object with exactly these six required string keys — `task`, `agent`, `reviewer`, `verdict`, `commit`, `notes` (no extras; values must all be strings). Verdict cells should include any `[disagreement]` / `[remediation]` / `[narrow-remediation]` markers in prose. Missing or unknown keys exit 1 with the full allowed-field list in the error message. Use `--outcome paused` when exiting via the D.2a.5 OR D.2a.6 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting. In **directory mode**, partition rows by `plan_file` (same basenames as step 1) and call `finalize-execution-log --plan-file <plans_dir>/<child-basename> --rows-json '<child-scoped rows>'` once per distinct child. No run-level aggregate table — v1 boundary.
-3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5 or D.2a.6).
+3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5 or D.2a.6). In **directory mode**, include `plan_file: "<dir-basename>"` in the event's `fields` (same value as the `run_start` pair).
 4. Print summary: counts `{done, failed}`, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
 5. Housekeeping commit (skip if `done == 0 AND failed == 0`):
    ```bash
