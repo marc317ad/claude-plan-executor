@@ -10326,6 +10326,47 @@ class TestGateCommitSafe:
         result = plan_ops._gate_commit_safe(None, None, None)
         assert result["status"] == "fail"
 
+    def test_directory_scoped_files_entry_allows_children(
+        self, tmp_path: Path,
+    ) -> None:
+        """A Files: entry with a trailing slash (e.g.
+        `tests/fixtures/decomposer_inputs/`) allows any path under
+        that directory. Plans that declare a fixture directory must
+        not need to enumerate each child file individually."""
+        repo, plan = self._make_repo_with_plan(tmp_path)
+        plan.write_text(
+            _GATES_SYNTHETIC_PLAN.replace(
+                "- **Files:**\n  - `example/seed.py` (create)\n",
+                (
+                    "- **Files:**\n"
+                    "  - example/seed.py\n"
+                    "  - tests/fixtures/decomposer_inputs/ "
+                    "(create — canonical + malformed fixtures)\n"
+                ),
+            ).replace("**Status:** pending", "**Status:** done"),
+            encoding="utf-8",
+        )
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        fx_dir = repo / "tests" / "fixtures" / "decomposer_inputs"
+        fx_dir.mkdir(parents=True)
+        (fx_dir / "canonical.md").write_text("canonical\n", encoding="utf-8")
+        (fx_dir / "malformed.md").write_text("malformed\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "example", "tests", "plan.md"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat(TASK-001): seed + fixtures"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "pass", result
+
 
 class TestCertifyBundles:
     """`--certify --mode dry-run|execute` bundles."""

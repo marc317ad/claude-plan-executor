@@ -6239,9 +6239,17 @@ def _gate_commit_safe(
             ),
         )
     changed = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    # Directory-scoped Files: entries (trailing slash, e.g.
+    # `tests/fixtures/decomposer_inputs/`) allow any path under that
+    # directory. Treat them as prefix matches rather than exact-string
+    # equality so plans that declare a fixture directory don't need to
+    # enumerate every child file individually.
+    allowed_prefixes = {a for a in allowed if a.endswith("/")}
     offending: list[str] = []
     for path in changed:
         if path in allowed:
+            continue
+        if any(path.startswith(p) for p in allowed_prefixes):
             continue
         # Shared always-ignore set (COMMIT_ALWAYS_IGNORE) covers the
         # run-log, run-lock, per-plan schedule sidecar, and
