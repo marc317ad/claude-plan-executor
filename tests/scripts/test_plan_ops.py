@@ -6903,6 +6903,23 @@ def _plan_review_envelope(
     return envelope
 
 
+def _plan_review_triage_envelope(
+    *,
+    verdict: str = "ship",
+    load_bearing: list[int] | None = None,
+    dismissed: list[int] | None = None,
+    summary: str = "triage rationale",
+) -> str:
+    """Build a synthetic triage markdown report for parser-driven tests."""
+    payload = {
+        "verdict": verdict,
+        "load_bearing": load_bearing if load_bearing is not None else [],
+        "dismissed": dismissed if dismissed is not None else [],
+        "summary": summary,
+    }
+    return "Summary\n\n```json\n" + json.dumps(payload) + "\n```\n"
+
+
 class TestPlanReviewSchemaFile:
     """V10 scaffold — the schema file exists and is valid JSON with the
     expected verdict vocabulary. Codex unavailability is handled at the
@@ -12356,7 +12373,7 @@ class TestAuditSchemasEnumSetCompare:
     }
     _REQUIRED = [
         "task_id", "verdict", "findings",
-        "scope_ok", "acceptance_met", "summary",
+        "notes", "scope_ok", "acceptance_met", "summary",
     ]
 
     def _write_schemas(
@@ -12545,3 +12562,434 @@ class TestPlanReviewTriageContract:
         body = json.loads(cp.stdout or cp.stderr)
         messages = " ".join(e.get("message", "") for e in body.get("errors", []))
         assert needle in messages, (needle, messages)
+
+
+class Test_plan_review_triage_integration:
+    """TASK-006 harness — parser-driven routing simulation for both triage seams."""
+
+    _ANALYST_GAPS = [
+        {
+            "location": "TASK-001",
+            "missing_field": "Files",
+            "severity": "soft",
+            "detail": "Missing explicit Files bullet.",
+        },
+        {
+            "location": "TASK-002",
+            "missing_field": "Dependencies",
+            "severity": "hard",
+            "detail": "Missing dependency declaration.",
+        },
+    ]
+    _CODEX_FINDINGS = [
+        {
+            "severity": "important",
+            "message": "Acceptance criteria are underspecified.",
+            "location": "TASK-001",
+        },
+        {
+            "severity": "minor",
+            "message": "Dependency rationale should be explicit.",
+            "location": "TASK-002",
+        },
+    ]
+
+    def _parse_triage(
+        self,
+        *,
+        source: str,
+        verdict: str,
+        load_bearing: list[int] | None = None,
+        dismissed: list[int] | None = None,
+        findings_count: int = 2,
+        summary: str = "triage rationale",
+    ) -> dict:
+        cp = subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-triage-report", "--stdin",
+                "--source", source,
+                "--findings-count", str(findings_count),
+                "--json",
+            ],
+            input=_plan_review_triage_envelope(
+                verdict=verdict,
+                load_bearing=load_bearing,
+                dismissed=dismissed,
+                summary=summary,
+            ),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stdout or cp.stderr
+        return json.loads(cp.stdout)
+
+    def _simulate(
+        self,
+        *,
+        source: str,
+        verdict: str,
+        analyst_binding: bool = False,
+        codex_plan_review_binding: bool = False,
+        allow_gaps: bool = False,
+        no_auto_revise: bool = False,
+        load_bearing: list[int] | None = None,
+        dismissed: list[int] | None = None,
+    ) -> dict:
+        events: list[dict] = []
+        summary: dict = {}
+        dispatches: list[dict] = []
+        run_end: dict | None = None
+
+        def log(event: str, **fields: object) -> None:
+            events.append({"event": event, **fields})
+
+        if source == "plan-analyst":
+            log("run_start", run_id="R1")
+            log(
+                "analyst_done",
+                run_id="R1",
+                outcome="needs-enrichment",
+                gaps_count=len(self._ANALYST_GAPS),
+            )
+            if allow_gaps:
+                log(
+                    "analyst_triage_skipped",
+                    run_id="R1",
+                    reason="allow_gaps",
+                )
+                log("schedule_written", run_id="R1")
+                return {
+                    "events": events,
+                    "summary": summary,
+                    "dispatches": dispatches,
+                    "run_end": run_end,
+                    "route": "proceed",
+                }
+            if analyst_binding:
+                log(
+                    "analyst_triage_skipped",
+                    run_id="R1",
+                    reason="binding_flag",
+                )
+                run_end = {"reason": "plan_analyst_failed"}
+                log("run_end", run_id="R1", outcome="failed", **run_end)
+                return {
+                    "events": events,
+                    "summary": summary,
+                    "dispatches": dispatches,
+                    "run_end": run_end,
+                    "route": "halt",
+                }
+
+            parsed = self._parse_triage(
+                source=source,
+                verdict=verdict,
+                load_bearing=load_bearing,
+                dismissed=dismissed,
+                findings_count=len(self._ANALYST_GAPS),
+            )
+            log(
+                "plan_review_triage_start",
+                run_id="R1",
+                source=source,
+                findings_count=len(self._ANALYST_GAPS),
+            )
+            log(
+                "plan_review_triage_done",
+                run_id="R1",
+                source=source,
+                verdict=parsed["verdict"],
+                load_bearing_count=len(parsed["load_bearing"] or []),
+                dismissed_count=len(parsed["dismissed"] or []),
+            )
+            if verdict == "ship":
+                summary["banner"] = "[analyst-triage-disagreement]"
+                summary["analyst_gaps"] = list(self._ANALYST_GAPS)
+                log("schedule_written", run_id="R1")
+                route = "proceed"
+            elif verdict == "ship-with-fixes":
+                summary["Analyst triage notes"] = list(self._ANALYST_GAPS)
+                log("schedule_written", run_id="R1")
+                route = "proceed"
+            elif verdict == "partial-agreement":
+                dispatches.append({
+                    "agent": "plan-author",
+                    "source": source,
+                    "payload": [self._ANALYST_GAPS[i] for i in parsed["load_bearing"]],
+                })
+                summary["dismissed_indices"] = parsed["dismissed"]
+                log("plan_author_start", run_id="R1", source=source)
+                log("plan_author_done", run_id="R1", source=source)
+                log("analyst_done", run_id="R1", outcome="valid")
+                log("schedule_written", run_id="R1")
+                route = "plan-author"
+            else:
+                dispatches.append({
+                    "agent": "plan-author",
+                    "source": source,
+                    "payload": list(self._ANALYST_GAPS),
+                })
+                log("plan_author_start", run_id="R1", source=source)
+                log("plan_author_done", run_id="R1", source=source)
+                log("analyst_done", run_id="R1", outcome="valid")
+                log("schedule_written", run_id="R1")
+                route = "plan-author"
+            return {
+                "events": events,
+                "summary": summary,
+                "dispatches": dispatches,
+                "run_end": run_end,
+                "route": route,
+            }
+
+        log("schedule_written", run_id="R1")
+        log("plan_review_start", run_id="R1", reviewer="codex")
+        log(
+            "plan_review_done",
+            run_id="R1",
+            verdict="needs-replan",
+            findings_count=len(self._CODEX_FINDINGS),
+        )
+        if codex_plan_review_binding:
+            run_end = {"reason": "plan_review_failed"}
+            log("run_end", run_id="R1", outcome="failed", **run_end)
+            return {
+                "events": events,
+                "summary": summary,
+                "dispatches": dispatches,
+                "run_end": run_end,
+                "route": "halt",
+            }
+        if no_auto_revise:
+            run_end = {"reason": "plan_review_failed"}
+            log("run_end", run_id="R1", outcome="failed", **run_end)
+            return {
+                "events": events,
+                "summary": summary,
+                "dispatches": dispatches,
+                "run_end": run_end,
+                "route": "halt",
+            }
+
+        parsed = self._parse_triage(
+            source=source,
+            verdict=verdict,
+            load_bearing=load_bearing,
+            dismissed=dismissed,
+            findings_count=len(self._CODEX_FINDINGS),
+        )
+        log(
+            "plan_review_triage_start",
+            run_id="R1",
+            source=source,
+            findings_count=len(self._CODEX_FINDINGS),
+        )
+        log(
+            "plan_review_triage_done",
+            run_id="R1",
+            source=source,
+            verdict=parsed["verdict"],
+            load_bearing_count=len(parsed["load_bearing"] or []),
+            dismissed_count=len(parsed["dismissed"] or []),
+        )
+        if verdict == "ship":
+            summary["banner"] = "[plan-review-disagreement]"
+            summary["plan_review_findings"] = list(self._CODEX_FINDINGS)
+            log("batch_start", run_id="R1")
+            route = "proceed"
+        elif verdict == "ship-with-fixes":
+            summary["Plan review notes"] = list(self._CODEX_FINDINGS)
+            log("batch_start", run_id="R1")
+            route = "proceed"
+        elif verdict == "partial-agreement":
+            dispatches.append({
+                "agent": "plan-author",
+                "source": source,
+                "payload": [self._CODEX_FINDINGS[i] for i in parsed["load_bearing"]],
+            })
+            summary["Plan review notes"] = list(self._CODEX_FINDINGS)
+            summary["dismissed_indices"] = parsed["dismissed"]
+            log("plan_author_start", run_id="R1", source=source)
+            log("plan_author_done", run_id="R1", source=source)
+            log("analyst_done", run_id="R1", outcome="valid")
+            log("plan_review_start", run_id="R1", reviewer="codex")
+            log("plan_review_done", run_id="R1", verdict="approved")
+            log("batch_start", run_id="R1")
+            route = "plan-author"
+        else:
+            dispatches.append({
+                "agent": "plan-author",
+                "source": source,
+                "payload": list(self._CODEX_FINDINGS),
+            })
+            log("plan_author_start", run_id="R1", source=source)
+            log("plan_author_done", run_id="R1", source=source)
+            log("analyst_done", run_id="R1", outcome="valid")
+            log("plan_review_start", run_id="R1", reviewer="codex")
+            log("plan_review_done", run_id="R1", verdict="approved")
+            log("batch_start", run_id="R1")
+            route = "plan-author"
+        return {
+            "events": events,
+            "summary": summary,
+            "dispatches": dispatches,
+            "run_end": run_end,
+            "route": route,
+        }
+
+    @pytest.mark.parametrize(
+        ("source", "verdict", "route"),
+        [
+            ("plan-analyst", "ship", "proceed"),
+            ("plan-analyst", "ship-with-fixes", "proceed"),
+            ("plan-analyst", "partial-agreement", "plan-author"),
+            ("plan-analyst", "needs-rework", "plan-author"),
+            ("codex-plan-review", "ship", "proceed"),
+            ("codex-plan-review", "ship-with-fixes", "proceed"),
+            ("codex-plan-review", "partial-agreement", "plan-author"),
+            ("codex-plan-review", "needs-rework", "plan-author"),
+        ],
+    )
+    def test_routes_each_source_and_verdict(
+        self, source: str, verdict: str, route: str,
+    ) -> None:
+        load_bearing = [0] if verdict == "partial-agreement" else None
+        dismissed = [1] if verdict == "partial-agreement" else None
+        result = self._simulate(
+            source=source,
+            verdict=verdict,
+            load_bearing=load_bearing,
+            dismissed=dismissed,
+        )
+        assert result["route"] == route
+        if route == "proceed":
+            assert result["dispatches"] == []
+            assert result["run_end"] is None
+        else:
+            assert [d["agent"] for d in result["dispatches"]] == ["plan-author"]
+
+    def test_analyst_binding_short_circuits_with_plan_analyst_failed(self) -> None:
+        result = self._simulate(
+            source="plan-analyst",
+            verdict="ship",
+            analyst_binding=True,
+        )
+        assert result["route"] == "halt"
+        assert result["run_end"] == {"reason": "plan_analyst_failed"}
+        assert [e["event"] for e in result["events"][-2:]] == [
+            "analyst_triage_skipped",
+            "run_end",
+        ]
+
+    def test_codex_plan_review_binding_short_circuits_with_plan_review_failed(self) -> None:
+        result = self._simulate(
+            source="codex-plan-review",
+            verdict="ship",
+            codex_plan_review_binding=True,
+        )
+        assert result["route"] == "halt"
+        assert result["run_end"] == {"reason": "plan_review_failed"}
+        assert [e["event"] for e in result["events"][-1:]] == ["run_end"]
+
+    def test_allow_gaps_preserves_pre_triage_short_circuit(self) -> None:
+        result = self._simulate(
+            source="plan-analyst",
+            verdict="needs-rework",
+            allow_gaps=True,
+            analyst_binding=True,
+        )
+        assert result["route"] == "proceed"
+        assert result["run_end"] is None
+        assert result["dispatches"] == []
+        assert [e["event"] for e in result["events"][-2:]] == [
+            "analyst_triage_skipped",
+            "schedule_written",
+        ]
+        assert result["events"][-2]["reason"] == "allow_gaps"
+
+    def test_no_auto_revise_preserves_codex_halt_without_triage(self) -> None:
+        result = self._simulate(
+            source="codex-plan-review",
+            verdict="needs-rework",
+            no_auto_revise=True,
+        )
+        assert result["route"] == "halt"
+        assert result["run_end"] == {"reason": "plan_review_failed"}
+        assert result["dispatches"] == []
+        assert not any(
+            e["event"] == "plan_review_triage_start" for e in result["events"]
+        )
+
+    @pytest.mark.parametrize(
+        ("source", "verdict", "downstream_event"),
+        [
+            ("plan-analyst", "ship", "schedule_written"),
+            ("plan-analyst", "ship-with-fixes", "schedule_written"),
+            ("plan-analyst", "partial-agreement", "plan_author_start"),
+            ("plan-analyst", "needs-rework", "plan_author_start"),
+            ("codex-plan-review", "ship", "batch_start"),
+            ("codex-plan-review", "ship-with-fixes", "batch_start"),
+            ("codex-plan-review", "partial-agreement", "plan_author_start"),
+            ("codex-plan-review", "needs-rework", "plan_author_start"),
+        ],
+    )
+    def test_run_log_event_ordering_matches_documented_routing(
+        self, source: str, verdict: str, downstream_event: str,
+    ) -> None:
+        load_bearing = [0] if verdict == "partial-agreement" else None
+        dismissed = [1] if verdict == "partial-agreement" else None
+        result = self._simulate(
+            source=source,
+            verdict=verdict,
+            load_bearing=load_bearing,
+            dismissed=dismissed,
+        )
+        triage_start_idx = next(
+            i for i, event in enumerate(result["events"])
+            if event["event"] == "plan_review_triage_start"
+        )
+        triage_done_idx = next(
+            i for i, event in enumerate(result["events"])
+            if event["event"] == "plan_review_triage_done"
+        )
+        downstream_idx = next(
+            i for i, event in enumerate(result["events"])
+            if event["event"] == downstream_event
+        )
+        assert triage_start_idx < triage_done_idx < downstream_idx
+        assert result["events"][triage_start_idx]["source"] == source
+        assert result["events"][triage_done_idx]["source"] == source
+
+    @pytest.mark.parametrize(
+        ("source", "verdict", "summary_key", "expected"),
+        [
+            ("plan-analyst", "ship", "banner", "[analyst-triage-disagreement]"),
+            ("codex-plan-review", "ship", "banner", "[plan-review-disagreement]"),
+            ("plan-analyst", "ship-with-fixes", "Analyst triage notes", _ANALYST_GAPS),
+            ("codex-plan-review", "ship-with-fixes", "Plan review notes", _CODEX_FINDINGS),
+        ],
+    )
+    def test_summary_carryover_for_ship_and_ship_with_fixes(
+        self,
+        source: str,
+        verdict: str,
+        summary_key: str,
+        expected: object,
+    ) -> None:
+        result = self._simulate(source=source, verdict=verdict)
+        assert result["summary"][summary_key] == expected
+
+    @pytest.mark.parametrize(
+        "source",
+        ["plan-analyst", "codex-plan-review"],
+    )
+    def test_partial_agreement_summary_lists_dismissed_indices(self, source: str) -> None:
+        result = self._simulate(
+            source=source,
+            verdict="partial-agreement",
+            load_bearing=[0],
+            dismissed=[1],
+        )
+        assert result["summary"]["dismissed_indices"] == [1]

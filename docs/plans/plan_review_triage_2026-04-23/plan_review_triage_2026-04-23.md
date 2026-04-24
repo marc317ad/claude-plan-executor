@@ -270,7 +270,7 @@ The `_plan_review_envelope` helper at `test_plan_ops.py:6827` is the shape to mi
 
 ### TASK-006: Integration harness for Phase 1-triage / Phase 1.5.5 orchestrator wiring
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** codex
 - **Files:**
