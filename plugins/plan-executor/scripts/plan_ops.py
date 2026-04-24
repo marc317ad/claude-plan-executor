@@ -4054,21 +4054,57 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
 
 
 def cmd_filter_schedule(args: argparse.Namespace) -> None:
-    sched_path = Path(args.schedule_file)
-    if not sched_path.is_file():
+    # 0. Input-mode selection. `--schedule-file` and `--stdin` are mutually
+    # exclusive; exactly one MUST be supplied. `--stdin` was added so the
+    # orchestrator's Phase 1 `--task-ids` branch can stay fully in-memory
+    # without the round-3 pre-persist/filter/re-persist workaround.
+    use_stdin = bool(getattr(args, "stdin", False))
+    sched_file = getattr(args, "schedule_file", None)
+    if use_stdin and sched_file:
         _die(args, {"errors": [{
             "path": "$",
-            "code": "file-not-found",
-            "message": f"schedule file not found: {sched_path}",
+            "code": "input-mode-conflict",
+            "message": (
+                "--schedule-file and --stdin are mutually exclusive; "
+                "supply exactly one"
+            ),
         }]})
-    try:
-        data = json.loads(sched_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
+    if not use_stdin and not sched_file:
         _die(args, {"errors": [{
             "path": "$",
-            "code": "json-decode",
-            "message": f"schedule json decode: {e}",
+            "code": "input-mode-missing",
+            "message": (
+                "filter-schedule requires exactly one of --schedule-file "
+                "or --stdin"
+            ),
         }]})
+
+    if use_stdin:
+        raw = sys.stdin.read()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            _die(args, {"errors": [{
+                "path": "$",
+                "code": "json-decode",
+                "message": f"schedule json decode: {e}",
+            }]})
+    else:
+        sched_path = Path(sched_file)
+        if not sched_path.is_file():
+            _die(args, {"errors": [{
+                "path": "$",
+                "code": "file-not-found",
+                "message": f"schedule file not found: {sched_path}",
+            }]})
+        try:
+            data = json.loads(sched_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            _die(args, {"errors": [{
+                "path": "$",
+                "code": "json-decode",
+                "message": f"schedule json decode: {e}",
+            }]})
     if not isinstance(data, dict):
         _die(args, {"errors": [{
             "path": "$",
@@ -4081,10 +4117,14 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
     if errors:
         _die(args, {"errors": errors, "warnings": warnings})
 
-    # 2. Source-not-valid rejection (V4). Filtering an already-broken schedule
-    # is meaningless — the orchestrator should surface the source outcome
-    # instead.
-    if data.get("outcome") != "valid":
+    # 2. Source-not-valid rejection (V4). On the file path, filtering an
+    # already-broken schedule is meaningless — the orchestrator should
+    # surface the source outcome instead. On the --stdin path this
+    # requirement is relaxed: in-memory schedules carrying
+    # outcome='needs-enrichment' (e.g. from build-tasks warnings→gaps
+    # mapping) are accepted so Phase 1's `--task-ids` branch can filter
+    # without round-tripping through a file.
+    if not use_stdin and data.get("outcome") != "valid":
         _die(args, {"errors": [{
             "path": "$.outcome",
             "code": "source-not-valid",
@@ -4192,13 +4232,48 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
     if ref_errors:
         _die(args, {"errors": ref_errors})
 
-    # 9. Emit canonical schedule. gaps=[] and risks=[] are intentional —
-    # inheriting source-level gaps/risks would either contradict
-    # outcome=valid (per _validate_schedule:381-386) or carry stale
-    # references to filtered-out tasks. Success stdout MUST contain ONLY
-    # these five keys so write-schedule --stdin accepts the output
+    # 9. Emit canonical schedule. On the file path, gaps=[] and risks=[]
+    # are intentional — inheriting source-level gaps/risks would either
+    # contradict outcome=valid (per _validate_schedule:606-611) or carry
+    # stale references to filtered-out tasks. Success stdout MUST contain
+    # ONLY these five keys so write-schedule --stdin accepts the output
     # byte-for-byte (V11, V12, V13). Do NOT add warnings/errors/other
     # metadata on the success path.
+    #
+    # On the --stdin path the source outcome may be 'needs-enrichment'
+    # (Phase 1's `--task-ids` branch feeds in the build-tasks warnings→gaps
+    # shape). Silently dropping those gaps would contradict that contract
+    # and upgrade the schedule to 'valid' even when a retained task still
+    # carries a gap. Carry forward input gaps (and risks) whose `task_id`
+    # references a retained task, then derive outcome from the filtered
+    # gaps: non-empty → needs-enrichment, empty → valid.
+    if use_stdin:
+        src_gaps = data.get("gaps") or []
+        src_risks = data.get("risks") or []
+
+        def _gap_retained(g: object) -> bool:
+            if not isinstance(g, dict):
+                return False
+            raw_tid = g.get("task_id")
+            if raw_tid is None:
+                # Gap without a task_id reference: preserve as a global
+                # gap (cannot be tied to a filtered-out task).
+                return True
+            norm = _normalize_task_id(str(raw_tid))
+            return norm is not None and norm in closed
+
+        filtered_gaps = [g for g in src_gaps if _gap_retained(g)]
+        filtered_risks = [r for r in src_risks if _gap_retained(r)]
+        out_outcome = "needs-enrichment" if filtered_gaps else "valid"
+        _emit(args, {
+            "outcome": out_outcome,
+            "tasks": out_tasks,
+            "batches": out_batches,
+            "gaps": filtered_gaps,
+            "risks": filtered_risks,
+        })
+        return
+
     _emit(args, {
         "outcome": "valid",
         "tasks": out_tasks,
@@ -8180,8 +8255,22 @@ def build_parser() -> argparse.ArgumentParser:
         "filter-schedule",
         help="Filter schedule by --task-ids and emit canonical schedule on stdout",
     )
-    p_fs.add_argument("--schedule-file", required=True,
-                      help="Path to source schedule JSON")
+    # `--schedule-file` and `--stdin` are mutually exclusive alternatives for
+    # the source schedule. Exactly one MUST be supplied; the manual enforcement
+    # lives in `cmd_filter_schedule` so both are declared `required=False` here.
+    p_fs.add_argument("--schedule-file", required=False, default=None,
+                      help="Path to source schedule JSON (mutually exclusive with --stdin)")
+    p_fs.add_argument("--stdin", action="store_true",
+                      help=(
+                          "Read source schedule JSON from stdin (mutually "
+                          "exclusive with --schedule-file). Relaxation vs the "
+                          "file path: outcome='valid' is NOT required on the "
+                          "--stdin path; in-memory schedules with "
+                          "outcome='needs-enrichment' (e.g. from "
+                          "build-tasks warnings→gaps mapping) are also "
+                          "accepted. File-path behaviour is preserved for "
+                          "backward compatibility."
+                      ))
     p_fs.add_argument("--task-ids", required=True,
                       help="CSV of task ids; canonical, plain, or TASK-NNN forms")
     _add_json(p_fs)

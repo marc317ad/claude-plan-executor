@@ -6253,6 +6253,180 @@ class TestFilterSchedule:
         assert written["outcome"] == "valid"
         assert [t["id"] for t in written["tasks"]] == ["001", "002"]
 
+    # ------------------------------------------------------------------
+    # --stdin input mode (TASK-005 remediation round 4).
+    #
+    # User-authorized scope expansion: `filter-schedule` gains a `--stdin`
+    # alternative to `--schedule-file` so the orchestrator's Phase 1
+    # `--task-ids` branch can stay fully in-memory. On the `--stdin` path
+    # the `outcome='valid'` gate is relaxed — an in-memory schedule
+    # carrying `outcome='needs-enrichment'` (from build-tasks warnings→gaps
+    # mapping) is also accepted. The file path is unchanged.
+    # ------------------------------------------------------------------
+
+    def test_filter_schedule_stdin_accepts_valid_outcome(self) -> None:
+        # --stdin happy path: valid outcome, transitive closure works, output
+        # is the canonical 5-key envelope matching the file path.
+        payload = json.dumps(_full_schedule_fixture())
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "filter-schedule",
+             "--stdin", "--task-ids", "2", "--json"],
+            input=payload,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert set(body.keys()) == {"outcome", "tasks", "batches", "gaps", "risks"}
+        assert body["outcome"] == "valid"
+        # Transitive closure: requesting 002 pulls in 001.
+        assert [t["id"] for t in body["tasks"]] == ["001", "002"]
+        assert body["gaps"] == []
+        assert body["risks"] == []
+
+    def test_filter_schedule_stdin_accepts_needs_enrichment_outcome(self) -> None:
+        # --stdin MUST accept outcome='needs-enrichment' with non-empty
+        # gaps[] — this is the shape the orchestrator synthesizes from
+        # build-tasks warnings→gaps mapping before Step 3. The file path
+        # would reject this with `source-not-valid`; the stdin path lets
+        # the in-memory pipeline proceed.
+        #
+        # Phase 1 contract: gaps referencing a retained task MUST be
+        # carried forward on the stdin path (and the outcome MUST stay
+        # 'needs-enrichment' when any such gap remains). Silently forcing
+        # outcome='valid'/gaps=[] would drop the build-tasks warning→gap
+        # that prompted this call.
+        payload = {
+            "outcome": "needs-enrichment",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": ["001"]},
+                {"id": "003", "agent": "codex", "files": ["c"],
+                 "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "003"],
+                 "file_locks": ["a", "c"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+            "gaps": [
+                {"task_id": "002", "type": "missing-acceptance-criteria",
+                 "severity": "soft", "detail": "no acceptance bullets"},
+            ],
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "filter-schedule",
+             "--stdin", "--task-ids", "2", "--json"],
+            input=json.dumps(payload),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, (
+            f"needs-enrichment source rejected on --stdin path:\n"
+            f"stdout={cp.stdout}\nstderr={cp.stderr}"
+        )
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in (body.get("errors") or [])]
+        # Specifically MUST NOT trip the file-path `source-not-valid` guard.
+        assert "source-not-valid" not in codes, body
+        # Retained task 002 still carries a gap → outcome stays
+        # 'needs-enrichment' and the gap is preserved byte-for-byte.
+        assert body["outcome"] == "needs-enrichment", body
+        assert [t["id"] for t in body["tasks"]] == ["001", "002"]
+        assert body["gaps"] == [
+            {"task_id": "002", "type": "missing-acceptance-criteria",
+             "severity": "soft", "detail": "no acceptance bullets"},
+        ], body
+        assert body["risks"] == []
+
+    def test_filter_schedule_stdin_drops_gaps_for_excluded_tasks(self) -> None:
+        # Phase 1 contract: gaps that reference a task filtered out of the
+        # closed set MUST NOT survive into the output, and when no gaps
+        # remain after filtering the outcome flips to 'valid'. This guards
+        # against stale `task_id` references leaking into downstream
+        # consumers (write-schedule / batch-next).
+        payload = {
+            "outcome": "needs-enrichment",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"],
+                 "dependencies": []},
+                {"id": "002", "agent": "claude", "files": ["b"],
+                 "dependencies": ["001"]},
+                {"id": "003", "agent": "codex", "files": ["c"],
+                 "dependencies": []},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001", "003"],
+                 "file_locks": ["a", "c"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+            # Gap on 003 (excluded by --task-ids 2) MUST be dropped; gap
+            # on 004 references an unknown id and MUST be dropped too.
+            "gaps": [
+                {"task_id": "003", "type": "vague-ac",
+                 "severity": "hard", "detail": "excluded task gap"},
+            ],
+            # Risk entries carrying a task_id follow the same policy.
+            "risks": [
+                {"task_id": "003", "id": "R9",
+                 "description": "risk on excluded task"},
+            ],
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "filter-schedule",
+             "--stdin", "--task-ids", "2", "--json"],
+            input=json.dumps(payload),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, (
+            f"needs-enrichment source with excluded-task gaps rejected:\n"
+            f"stdout={cp.stdout}\nstderr={cp.stderr}"
+        )
+        body = _parse_json(cp)
+        # No gaps remain → outcome flips back to 'valid' so downstream
+        # write-schedule accepts the output.
+        assert body["outcome"] == "valid", body
+        assert body["gaps"] == [], body
+        assert body["risks"] == [], body
+        assert [t["id"] for t in body["tasks"]] == ["001", "002"]
+
+    def test_filter_schedule_mutually_exclusive_input(self, tmp_path: Path) -> None:
+        # Both --schedule-file and --stdin supplied → error.
+        sched = tmp_path / "conflict.schedule.json"
+        sched.write_text(json.dumps(_full_schedule_fixture()), encoding="utf-8")
+        cp_both = subprocess.run(
+            [str(PY), str(SCRIPT), "filter-schedule",
+             "--schedule-file", str(sched), "--stdin",
+             "--task-ids", "2", "--json"],
+            input=json.dumps(_full_schedule_fixture()),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp_both.returncode == 1
+        body = _parse_json(cp_both)
+        codes = [e.get("code") for e in (body.get("errors") or [])]
+        assert "input-mode-conflict" in codes, body
+
+        # Neither --schedule-file nor --stdin supplied → error.
+        cp_neither = subprocess.run(
+            [str(PY), str(SCRIPT), "filter-schedule",
+             "--task-ids", "2", "--json"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp_neither.returncode == 1
+        body = _parse_json(cp_neither)
+        codes = [e.get("code") for e in (body.get("errors") or [])]
+        assert "input-mode-missing" in codes, body
+
 
 # ---------------------------------------------------------------------------
 # TASK-014A — D.2a.5 bounded remediation retry surface
