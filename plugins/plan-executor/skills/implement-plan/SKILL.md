@@ -115,6 +115,12 @@ Optional:
   --no-auto-revise        Disable auto-revise on needs-replan — halt instead of dispatching plan-author.
   --codex-review-binding  Codex critical on Claude goes straight to fail-task;
                           no §8.4 third-opinion escalation
+  --codex-plan-review-binding
+                          Codex `needs-replan` on plan review goes straight to halt;
+                          no plan-review-triage third-opinion escalation.
+  --analyst-binding       Plan-analyst `needs-enrichment` goes straight to halt;
+                          no plan-review-triage third-opinion escalation.
+                          Does NOT affect `--allow-gaps` short-circuit.
   --allow-gaps            Proceed past analyst outcome=needs-enrichment
   --strict-branch         Halt (not warn) if current branch != plan's Base branch
 ```
@@ -190,9 +196,52 @@ echo "<analyst_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" pars
 
 Branch on `outcome`:
 - `invalid` → halt; surface report; log `run_end reason=analyst_invalid`; release lock.
-- `needs-enrichment` + no `--allow-gaps` → halt with gaps listed.
-- `needs-enrichment` + `--allow-gaps` → warn + proceed.
+- `needs-enrichment` + `--allow-gaps` → log `analyst_triage_skipped {reason:"allow_gaps"}` and warn + proceed (today's demotion path preserved). NO triage dispatch. **`--allow-gaps` short-circuits proceed and wins over `--analyst-binding` when both are set** — evaluate this branch before `--analyst-binding`.
+- `needs-enrichment` + `--analyst-binding` (and `--allow-gaps` NOT set) → log `analyst_triage_skipped {reason:"binding_flag"}` and halt with `run_end reason=plan_analyst_failed`; release lock. NO triage dispatch.
+- `needs-enrichment` + neither flag set → dispatch Phase 1-triage (see below); triage verdict determines next step.
 - `valid` → proceed.
+
+**`--allow-gaps` semantics preserved.** `--allow-gaps` remains a pre-triage short-circuit on the analyst path: when set, the orchestrator bypasses analyst triage entirely and proceeds with today's soft-severity demotion behavior. Triage replaces the demotion *default* when `outcome=needs-enrichment` and neither `--analyst-binding` nor `--allow-gaps` is set; operators who want triage instead of the demotion simply omit `--allow-gaps`.
+
+### Phase 1-triage — plan-analyst triage (needs-enrichment third opinion)
+
+**Fire conditions.** `outcome=needs-enrichment` AND `--allow-gaps` NOT set AND `--analyst-binding` NOT set. Evaluate `--allow-gaps` first: if set, skip triage and warn + proceed regardless of `--analyst-binding`. Only if `--allow-gaps` is NOT set does `--analyst-binding` take effect (halt). Otherwise take the skip branches above (allow-gaps → warn + proceed; binding → halt).
+
+**Dispatch.** `Agent(subagent_type: "plan-review-triage", model: "sonnet", prompt: render(templates.PlanTriage, source="plan-analyst", plan_text, gaps, analyst_outcome, schedule_path, findings_count))`. Uses the Phase 1-triage / Phase 1.5.5 dispatch template from `dispatch-templates.md` with `source="plan-analyst"`.
+
+**Parse.**
+
+```bash
+printf '%s' "<agent_output>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
+  parse-plan-review-triage-report --stdin --source plan-analyst --findings-count <N> --json
+```
+
+`<N>` is the length of the analyst's `gaps[]` from the prior `parse-schedule --json` call. The parser returns `{verdict, load_bearing, dismissed, summary, findings_count, source}`.
+
+**Run-log events.** Wrap the dispatch:
+
+```bash
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event plan_review_triage_start \
+  --fields-json '{"run_id":"<id>","plan_file":"<basename>","source":"plan-analyst","findings_count":<N>}' --json
+
+# Agent dispatch (plan-review-triage, model: sonnet) — Phase 1-triage template.
+
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event plan_review_triage_done \
+  --fields-json '{"run_id":"<id>","plan_file":"<basename>","source":"plan-analyst","verdict":"<v>","load_bearing_count":<k>,"dismissed_count":<m>,"summary":"..."}' --json
+```
+
+**Route by verdict.** (Verdict-routing language is shared with Phase 1.5.5 — see the routing ladder there. The concrete per-source actions are:)
+
+| Verdict | Action (analyst source) |
+|---|---|
+| `ship` | Proceed to Phase 1.5 as-if the analyst returned `valid`. No `plan-author`, no re-analyst. Summary carries bare `[analyst-triage-disagreement]` banner listing analyst gaps verbatim. |
+| `ship-with-fixes` | Proceed to Phase 1.5. Analyst gaps carried to the summary's "Analyst triage notes" section. |
+| `partial-agreement` | Dispatch `plan-author` with a gaps payload filtered to the `load_bearing` indices only (new enrichment path). After plan-author + re-analyst, the re-analyst verdict is binding — no second triage. Dismissed gap indices carried to summary. |
+| `needs-rework` | Dispatch `plan-author` with the full gaps array (new auto-enrichment path). After plan-author + re-analyst, the re-analyst verdict is binding — no second triage. |
+
+On `partial-agreement` and `needs-rework`, re-run `plan-analyst` after the author edit; if re-analyst returns `needs-enrichment` a second time, halt with `run_end reason=plan_analyst_failed` — NO second analyst-source triage is dispatched. See the re-source-verdict-is-binding rule under `## Rules`.
 
 Apply filters:
 - `--claude-only` or `codex_available=false` → rewrite `tasks[].agent = "claude"` in the in-memory schedule (persist to a scratch copy on disk for `batch-next`).
@@ -272,13 +321,58 @@ Append `plan_review_done {verdict, findings_count, summary}` and route by verdic
 |---|---|
 | `approved` | Proceed to Phase 2 (batch dispatch). |
 | `approved-with-notes` | Proceed to Phase 2. Carry `findings[]` into the final run summary under a *"Plan review notes"* section. Do not gate execution on notes. |
-| `needs-replan` | Dispatch `plan-author` (if auto-revise on), then re-validate via `plan-analyst`, then re-run Codex `plan-review`. Second `needs-replan` halts. |
+| `needs-replan` | Dispatch Phase 1.5.5 plan-review-triage (default, unless `--codex-plan-review-binding` or `--no-auto-revise`). Triage verdict routes per the table in §Phase 1.5.5 below: `ship`/`ship-with-fixes` proceed to Phase 2 directly; `partial-agreement`/`needs-rework` dispatch `plan-author` with a filtered or full findings payload, then re-analyst, then re-run Codex `plan-review`. Second `needs-replan` halts. |
 
 **`--allow-gaps` severity-aware demotion (TASK-003).** When the orchestrator was invoked with `--allow-gaps`, forward the flag to the wrapper by appending `--allow-gaps` to the `plan-review` command above. The wrapper inspects the persisted schedule and, **iff** `gaps[]` is non-empty AND every entry's `severity` is `"soft"` AND the schedule has no structural violations (`outcome == "needs-enrichment"` — `"valid"` by contract requires empty `gaps[]`, and missing/unknown outcomes suppress the demotion), injects a demotion clause into the Codex prompt. Codex then returns verdict `approved-with-notes` (with the demotion recorded in its `summary`) instead of `needs-replan`, which routes directly to Phase 2 and **explicitly short-circuits the `plan-author` auto-revise dispatch**. Any hard-severity gap (or a structural violation) suppresses the demotion clause — the reviewer applies the standard verdict vocabulary and `needs-replan` still dispatches `plan-author` per the routing table above. The wrapper never mutates the persisted schedule; the demotion is a pure function of the prompt inputs.
 
+### Phase 1.5.5 — plan-review triage (needs-replan third opinion)
+
+**Fire conditions.** Codex verdict `needs-replan` AND `--codex-plan-review-binding` NOT set AND `--no-auto-revise` NOT set.
+
+**Skip conditions.**
+
+- `--codex-plan-review-binding` → halt immediately with `run_end reason=plan_review_failed`; NO triage dispatch, NO plan-author dispatch. Parallel to `--codex-review-binding` at task level.
+- `--no-auto-revise` → halt immediately (today's behavior, unchanged); NO triage dispatch.
+
+**Dispatch.** `Agent(subagent_type: "plan-review-triage", model: "sonnet", prompt: render(templates.PlanTriage, source="codex-plan-review", plan_text, findings, codex_summary, schedule_path, findings_count))`. Uses the same Phase 1-triage / Phase 1.5.5 dispatch template from `dispatch-templates.md` with `source="codex-plan-review"` — single template, two seams.
+
+**Parse.**
+
+```bash
+printf '%s' "<agent_output>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
+  parse-plan-review-triage-report --stdin --source codex-plan-review --findings-count <N> --json
+```
+
+`<N>` is the `findings_count` from the prior `parse-plan-review-report --json` call.
+
+**Run-log events.** Wrap the dispatch:
+
+```bash
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event plan_review_triage_start \
+  --fields-json '{"run_id":"<id>","plan_file":"<basename>","source":"codex-plan-review","findings_count":<N>}' --json
+
+# Agent dispatch (plan-review-triage, model: sonnet) — Phase 1.5.5 template.
+
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event plan_review_triage_done \
+  --fields-json '{"run_id":"<id>","plan_file":"<basename>","source":"codex-plan-review","verdict":"<v>","load_bearing_count":<k>,"dismissed_count":<m>,"summary":"..."}' --json
+```
+
+**Route by verdict.**
+
+| Verdict | Action (Codex source) |
+|---|---|
+| `ship` | Proceed to Phase 2 (batch dispatch). Skip `plan-author`, skip re-analyst, skip second plan-review. Summary carries bare `[plan-review-disagreement]` banner listing Codex findings verbatim. |
+| `ship-with-fixes` | Proceed to Phase 2. Codex findings carried to the summary's "Plan review notes" section. |
+| `partial-agreement` | Dispatch `plan-author` with a findings payload filtered to the `load_bearing` indices only. Dismissed findings carried verbatim to the summary's "Plan review notes" section with the dismissed indices called out. Then re-analyst, then re-run Codex `plan-review`; the second verdict is binding — no second triage. |
+| `needs-rework` | Dispatch `plan-author` with the full findings array (today's auto-revise behavior). Then re-analyst, then re-run Codex `plan-review`; the second verdict is binding — no second triage. |
+
+On `partial-agreement` and `needs-rework` the routing then falls through to the existing author → analyst → review sequence documented below; the triage selects the payload the author receives (filtered vs full) but does NOT change the three-step sequence.
+
 **`needs-replan` branch — auto-revise path (default).** Auto-revise is on unless `--no-auto-revise` is set. When on, the orchestrator runs a three-step author → analyst → review sequence before the second verdict is accepted:
 
-1. **Dispatch `plan-author`** (Agent, `subagent_type: "plan-author"`, `model: "opus"`) using the Phase 1.5a template from `dispatch-templates.md`. Embed the plan path, the Codex findings array verbatim, the Codex summary verbatim, and the analyst annotations. The author edits the single plan file in place; its write scope is keyed on the input plan path, not a directory glob. Wrap the dispatch with `plan_author_start` before and `plan_author_done` after:
+1. **Dispatch `plan-author`** (Agent, `subagent_type: "plan-author"`, `model: "opus"`) using the Phase 1.5a template from `dispatch-templates.md`. Embed the plan path, the Codex findings array, the Codex summary verbatim, and the analyst annotations. **The findings array payload is parameterized by the route that reached this step:** on `partial-agreement` from Phase 1.5.5, construct a filtered findings array containing ONLY the entries whose indices appear in the triage `load_bearing` set and pass a reduced `findings_count` equal to that filtered length; on `needs-rework` (or when this step is reached without a triage split), embed the full Codex findings array verbatim with the original `findings_count`. Dismissed findings on `partial-agreement` are NOT forwarded to the author — they are carried only into the summary per the route table above. The author edits the single plan file in place; its write scope is keyed on the input plan path, not a directory glob. Wrap the dispatch with `plan_author_start` before and `plan_author_done` after:
 
    ```bash
    $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
@@ -314,7 +408,12 @@ Release the run-lock and print the failure envelope. Do NOT call `fail-task` (no
 
 **Retry failures** — if the `plan-author` dispatch itself fails (malformed report, out-of-scope writes) or the re-validation analyst returns `outcome=invalid`, halt with `run_end reason=plan_review_failed` same as the second-`needs-replan` path.
 
-**Run-log event order** (V8): `run_start` → `analyst_done` → `schedule_written` → `plan_review_start {reviewer:"codex"}` → `plan_review_done {verdict, findings_count}` → (on `needs-replan` with auto-revise on) `plan_author_start` → `plan_author_done` → `analyst_done` → `plan_review_start` → `plan_review_done` → `batch_start` (only if verdict permits).
+**Run-log event order** (V8, with plan-review triage interleaved on both pedantic-flag paths):
+
+- **Analyst branch** (Phase 1): `run_start` → `analyst_done {outcome:"needs-enrichment"}` → (if triage fires; neither `--analyst-binding` nor `--allow-gaps` set) `plan_review_triage_start {source:"plan-analyst"}` → `plan_review_triage_done {source:"plan-analyst", verdict}` → (branch by verdict) `schedule_written` (for `ship` / `ship-with-fixes`) | `plan_author_start` → `plan_author_done` → `analyst_done` → `schedule_written` (for `partial-agreement` / `needs-rework`). When `--analyst-binding` is set, emit `analyst_triage_skipped {reason:"binding_flag"}` and halt; when `--allow-gaps` is set, emit `analyst_triage_skipped {reason:"allow_gaps"}` and proceed with today's demotion.
+- **Codex branch** (Phase 1.5): ... → `schedule_written` → `plan_review_start {reviewer:"codex"}` → `plan_review_done {verdict:"needs-replan", findings_count}` → (if triage fires; neither `--codex-plan-review-binding` nor `--no-auto-revise` set) `plan_review_triage_start {source:"codex-plan-review"}` → `plan_review_triage_done {source:"codex-plan-review", verdict}` → (branch by verdict) `batch_start` (for `ship` / `ship-with-fixes`) | `plan_author_start` → `plan_author_done` → `analyst_done` → `plan_review_start` → `plan_review_done` → `batch_start` (for `partial-agreement` / `needs-rework`, only if the second verdict permits).
+
+Both source variants of the triage events share the event names `plan_review_triage_start` / `plan_review_triage_done`; the `source ∈ {plan-analyst, codex-plan-review}` field discriminates them in the log.
 
 ### Dry-run mode
 
@@ -637,6 +736,7 @@ Do NOT auto-push. Do NOT auto-PR.
 - **Never commit a reviewer-flagged `needs-rework`.** Only clean / minor-findings / ship / ship-with-fixes commit automatically.
 - **Never `git add -A` or `git add .`.** Stage specific files only — `commit-task` already uses `--only`.
 - **Never retry a failed task inside the same run** beyond the one D.2b role-swap, the one D.2a.5 bounded remediation retry, the one D.2a.6 narrow-remediation retry, and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.
+- **Re-source-verdict is binding after plan-review triage + plan-author.** When a Phase 1-triage or Phase 1.5.5 triage returns `partial-agreement` or `needs-rework`, the subsequent `plan-author` → re-source-verdict sequence runs EXACTLY ONCE and that second source verdict is binding. On the analyst source (`source="plan-analyst"`), the re-source-verdict is the re-dispatched `plan-analyst`; a second `needs-enrichment` halts per `run_end reason=plan_analyst_failed`. On the Codex source (`source="codex-plan-review"`), the re-source-verdict is the re-dispatched Codex `plan-review`; a second `needs-replan` halts per `run_end reason=plan_review_failed`. NO second plan-review triage is dispatched on either path — mirrors the D.5 "re-review is binding" rule at task level.
 - **Never auto-`fail-task` on the D.2a.5 halt path.** A second `needs-rework` after a D.2a.5 remediation retry triggers `log-event type=awaiting_user` + `finalize-execution-log --outcome paused` and returns control to the user with pending edits left in the working tree. Calling `fail-task` on the paused run is allowed ONLY when the user's next conversation turn explicitly instructs it. Silent auto-revert on the post-remediation `needs-rework` path is a protocol violation.
 - **Plan-file body edits are narrowly allowed.** Allowed: (a) `**Status:**` bullet mutations; (b) append-only mutation of the tail execution-log section; (c) pre-dispatch format-only corrections needed to satisfy schema / phase-gate predicates (e.g., promoting a bulleted `- **Description:**` to the required prose-header `**Description:**`). Task semantics — prose, acceptance criteria, Files, Test command, Implementation notes, Reversion guidance, Dependencies, Scope boundaries — MUST NOT be altered; the orchestrator is not a plan author. Any format correction under (c) MUST be mentioned in the execution-log tail so the edit is auditable. The run log remains append-only.
 - **One commit per task** plus at most one `chore:` housekeeping commit per run. Narrow `git commit --only` in Phase D.3 is mandatory.

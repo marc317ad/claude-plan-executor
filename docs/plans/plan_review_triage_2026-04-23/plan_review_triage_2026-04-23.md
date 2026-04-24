@@ -200,7 +200,7 @@ Place the new section AFTER Phase 1.5a (plan-author) and BEFORE Phase B (plan-im
 
 ### TASK-004: SKILL.md orchestrator wiring — dual insertion points + CLI flags + run-log events
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
@@ -302,3 +302,16 @@ After this plan is executed, both of today's pedantic-flag halts on plan-stage o
 Both paths share one agent spec, one schema, one parser (parameterized by `--source`), and one dispatch template. Mirrors the Phase D.5 mechanism that task-level review already uses successfully, adapted for two plan-stage insertion points.
 
 **Future work (v2, not in this plan):** `--triage-model {claude|gemini}` flag once `PLAN_GEMINI_INTEGRATION_2026-04-21.md` is shipped. The Gemini Investigator role's codebase-investigation tools would (a) widen the triage evidence gate beyond plan-text cross-reference into actual source-code verification, strengthening the dismissal-evidence rule, and (b) close the same-family caveat on the analyst-source path (Claude analyst / Gemini triage is cross-family; today's Claude analyst / Claude triage is not).
+
+## Execution log — 20260423T231237 (paused)
+
+Starting SHA: `467bacc941b9747b98ee91f4c2eede0cd6c35fc5`  → Ending SHA: `2b90e2a888919d91b487d91fe5506722bd0a6e8d`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | codex | claude | ship-with-fixes | 8582b45 | minor finding: intra-bucket duplicate check missing in parser |
+| 002 | claude | codex | minor-findings | 625bf19 | Codex Analyst triage notes concern dismissed - TASK-004 AC authoritative |
+| 003 | claude | codex | minor-findings [narrow-remediation] [disagreement: 1] | 2b90e2a | D.5 split: finding 0 load-bearing (fixed), finding 1 dismissed |
+| 004 | claude | codex | needs-rework (paused D.2a.5) | - | Original 2 findings fixed; re-review raised NEW concerns. Pending in working tree. |
+| 005 | codex | - | failed | - | Blocked: TASK-001 parser lacks intra-bucket duplicate rejection |
+| 006 | - | - | not-reached | - | Depends on TASK-004 |
