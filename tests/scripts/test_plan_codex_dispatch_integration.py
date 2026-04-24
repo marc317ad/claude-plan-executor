@@ -680,7 +680,7 @@ def test_plan_review_allow_gaps_demotes_soft_gap_verdict(tmp_path):
         "demotion clause missing from prompt when --allow-gaps + soft gaps"
     )
     assert "approved-with-notes" in prompt
-    assert "surface the demotion in your `summary`" in prompt
+    assert "mention that demotion in the `summary`" in prompt
 
 
 def test_plan_review_allow_gaps_hard_gaps_block(tmp_path):
@@ -734,11 +734,12 @@ def test_plan_review_allow_gaps_absent_prompt_unchanged(tmp_path):
         f'`plan_file` must be "{plan.name}".',
         # Full verdict vocabulary present verbatim.
         "Verdict vocabulary (pick exactly one):",
-        "`approved` — plan is ready to execute as-is.",
-        "`approved-with-notes` — plan is ready; notes carried into run "
-        "summary but no re-plan needed.",
-        "`needs-replan` — plan has a blocking issue; analyst must revise "
-        "before any batch runs.",
+        "`approved` — the plan is workable as written and no "
+        "substantiated blocking issue is present.",
+        "`approved-with-notes` — the plan is workable but has "
+        "non-blocking issues, minor gaps, or operator-accepted soft gaps.",
+        "`needs-replan` — the plan has a concrete blocking defect that "
+        "should be fixed before dispatch.",
         # Core prompt scaffold.
         "Review the plan and its persisted schedule.",
         "Cross-plan dependency resolution has already been verified",

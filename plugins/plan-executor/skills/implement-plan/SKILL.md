@@ -367,7 +367,7 @@ The full wrapper envelope (produced by `plan_codex_dispatch.py plan-review`) has
   "subcommand": "plan-review",
   "outcome": "success",
   "codex_exit_code": 0,
-  "parsed": { "plan_file": "...", "verdict": "...", "findings": [...], "schedule_ok": true, "summary": "..." }
+  "parsed": { "plan_file": "...", "verdict": "...", "findings": [...], "notes": [...], "schedule_ok": true, "summary": "..." }
 }
 ```
 
@@ -378,7 +378,7 @@ printf '%s' "<envelope>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
   parse-plan-review-report --stdin --json
 ```
 
-`parse-plan-review-report` validates the envelope against `codex_plan_review_schema.json` and extracts `{plan_file, verdict, findings_count, findings, schedule_ok, summary}`. Cross-plan dependency resolution is verified by the orchestrator's Phase 0 `check-plan-deps` gate and is no longer surfaced by the reviewer. Schema violations halt with structured `errors[*]`. Wrapper timeout / parse_error / failure outcomes surface as `outcome ∈ {timeout, parse_error, failure}`; treat as `plan_review_skipped {reason:"codex_unavailable"}` for routing purposes — the pre-dispatch gate degrades on reviewer-side errors rather than blocking execution.
+`parse-plan-review-report` validates the envelope against `codex_plan_review_schema.json` and extracts `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}`. Cross-plan dependency resolution is verified by the orchestrator's Phase 0 `check-plan-deps` gate and is no longer surfaced by the reviewer. Schema violations halt with structured `errors[*]`. Wrapper timeout / parse_error / failure outcomes surface as `outcome ∈ {timeout, parse_error, failure}`; treat as `plan_review_skipped {reason:"codex_unavailable"}` for routing purposes — the pre-dispatch gate degrades on reviewer-side errors rather than blocking execution.
 
 Append `plan_review_done {verdict, findings_count, summary}` and route by verdict:
 

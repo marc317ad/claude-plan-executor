@@ -34,7 +34,7 @@ Timeout **180s**. Wrapper captures a pre-dispatch baseline and performs delta-bo
 
 **`--allow-gaps` (TASK-003).** Pass-through of the orchestrator's `--allow-gaps` opt-in. When supplied AND the persisted schedule's `gaps[]` is non-empty with every entry's `severity == "soft"` AND the schedule has no structural violations (`outcome == "needs-enrichment"` — `"valid"` by contract requires empty `gaps[]`, and missing/unknown outcomes suppress the demotion), the wrapper appends this literal demotion clause to the rendered Codex prompt (just before the "Verdict vocabulary" block):
 
-> Operator override (--allow-gaps): the user explicitly opted in to soft gaps. The persisted schedule's gaps[] contains only soft-severity entries and no structural violations. If schedule_ok would otherwise be false for THIS reason alone, demote the verdict from `needs-replan` to `approved-with-notes` and surface the demotion in your `summary` string (e.g. "Demoted to approved-with-notes under --allow-gaps: soft gaps only."). Hard gaps or structural violations are not covered by this override — select the standard verdict in those cases.
+> Operator override (--allow-gaps): the user explicitly opted in to soft gaps. The persisted schedule's gaps[] contains only soft-severity entries and no structural violations. If schedule_ok would otherwise be false for this reason alone, demote the verdict from `needs-replan` to `approved-with-notes` and mention that demotion in the `summary`. Hard gaps or structural violations are not covered by this override.
 
 The demotion yields `approved-with-notes`, which routes straight to Phase 2 and bypasses the `plan-author` auto-revise dispatch. **Hard gaps still trigger plan-author auto-revise** — any `severity: "hard"` entry (or any structural schedule violation) suppresses the demotion clause entirely, so the reviewer selects the standard verdict and `needs-replan` routes through the normal Phase 1.5a path. The wrapper never mutates the persisted schedule; demotion is a pure function of the prompt inputs.
 
@@ -47,11 +47,13 @@ Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, t
   "findings": [
     {
       "severity": "critical | important | minor",
+      "blocking": true,
       "section": "<where in the plan>",
       "concern": "<what is wrong or risky>",
       "suggested_change": "<how to fix>"
     }
   ],
+  "notes": ["<non-blocking observation>", "..."],
   "schedule_ok": true,
   "summary": "<one-paragraph rationale>"
 }
@@ -315,7 +317,7 @@ Worked examples (terse, synthetic):
 - Finding: "Acceptance criterion V2 requires a regression test covering the empty-input branch; the diff adds the branch but no test asserts it." Verdict: **`needs-rework`**. Justification: declared verification criterion is unmet — a ship-blocker.
 - Finding: "Transitive closure may loop forever on cycles; cycle check only runs after." Verdict without verification: **`minor-findings`** phrased as a question. Justification: hypothesis — tracing `001→002→001` by hand or running the cycle test would have confirmed or refuted it. When unverified, downgrade and ask.
 
-Wrapper returns `parsed.verdict ∈ {clean, minor-findings, needs-rework}` per `scripts/codex_review_schema.json`; orchestrator routes by verdict.
+Wrapper returns `parsed.verdict ∈ {clean, minor-findings, needs-rework}` per `scripts/codex_review_schema.json`; findings carry `severity`, `confidence`, `file`, `line`, `issue`, and `suggested_fix`, plus top-level `notes[]` for non-blocking observations. Orchestrator routes by verdict.
 
 ## Phase D-Claude — code-reviewer on Codex work
 

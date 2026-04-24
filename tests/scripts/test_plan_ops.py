@@ -8758,6 +8758,7 @@ class TestTask019ReviewerFindingDisposition:
         ):
             finding = {
                 "severity": "minor",
+                "confidence": "medium",
                 "file": "a.py",
                 "line": 1,
                 "issue": "x",
@@ -8788,6 +8789,7 @@ class TestTask019ReviewerFindingDisposition:
         # V8 — backward-compat. Finding without disposition is valid.
         finding = {
             "severity": "minor",
+            "confidence": "medium",
             "file": "a.py",
             "line": 1,
             "issue": "x",
@@ -8971,6 +8973,7 @@ class TestTask022LogEventFindingsJson:
         # line under key `findings`, alongside the `--fields-json` keys.
         findings_array = [{
             "severity": "minor",
+            "confidence": "medium",
             "file": "a.py",
             "line": 1,
             "issue": "x",
@@ -9053,6 +9056,7 @@ class TestTask022LogEventFindingsJson:
         # with `--findings-json`; the orchestrator MUST pick one source.
         findings_array = [{
             "severity": "minor",
+            "confidence": "medium",
             "file": "a.py",
             "line": 1,
             "issue": "x",
@@ -9092,6 +9096,7 @@ class TestTask022CommitDoneFindings:
         plan = tmp_git_repo / "docs" / "plans" / "sample.md"
         findings_payload = [{
             "severity": "minor",
+            "confidence": "medium",
             "file": "src/foo.py",
             "line": 7,
             "issue": "rename variable",
@@ -9235,6 +9240,7 @@ class TestTask022SpecDeferenceValidator:
     ) -> None:
         finding = {
             "severity": "minor",
+            "confidence": "medium",
             "file": "a.py",
             "line": 1,
             "issue": "x",

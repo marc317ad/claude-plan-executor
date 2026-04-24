@@ -15,14 +15,29 @@
             "type": "string",
             "enum": ["critical", "important", "minor"]
           },
+          "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
           "file": { "type": "string" },
           "line": { "type": "integer" },
           "issue": { "type": "string" },
           "suggested_fix": { "type": "string" }
         },
-        "required": ["severity", "file", "line", "issue", "suggested_fix"],
+        "required": [
+          "severity",
+          "confidence",
+          "file",
+          "line",
+          "issue",
+          "suggested_fix"
+        ],
         "additionalProperties": false
       }
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
     },
     "scope_ok": { "type": "boolean" },
     "acceptance_met": { "type": "boolean" },
@@ -32,6 +47,7 @@
     "task_id",
     "verdict",
     "findings",
+    "notes",
     "scope_ok",
     "acceptance_met",
     "summary"

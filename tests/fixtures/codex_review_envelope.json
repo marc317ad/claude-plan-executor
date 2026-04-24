@@ -4,12 +4,14 @@
   "findings": [
     {
       "severity": "minor",
+      "confidence": "high",
       "file": "plugins/plan-executor/scripts/example.py",
       "line": 42,
       "issue": "Comment '# TODO: refactor later' is stale; the refactor already landed in this diff.",
       "suggested_fix": "Delete the comment or replace it with a short note describing the new shape."
     }
   ],
+  "notes": [],
   "scope_ok": true,
   "acceptance_met": true,
   "summary": "Diff addresses acceptance criteria without scope inflation. One stale comment remains; non-load-bearing, safe to ship with a follow-up."
