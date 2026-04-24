@@ -52,14 +52,14 @@ The directory-as-argument surface survives only as: (a) the `/implement-plan <di
 
 ### TASK-001: Heuristic plan-decomposition subcommand + shared parsing helpers
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** claude
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py
   - plugins/plan-executor/skills/implement-plan/SKILL.md (Phase 0 invocation note only — full prose cleanup is TASK-002)
   - tests/scripts/test_plan_ops.py
-  - tests/fixtures/decomposer_inputs/ (new — canonical + malformed markdown fixtures)
+  - tests/fixtures/decomposer_inputs/ (create — canonical + malformed markdown fixtures)
 - **Dependencies:** []
 - **Test command:** `python3 -m pytest tests/scripts/test_plan_ops.py -q -k "decompose_plan or DecomposePlan or parse_task_block"`
 - **Acceptance criteria:**
@@ -197,7 +197,7 @@ Replace the whole-plan analyst dispatch with a fan-out. Parallelism is a free by
 - **Files:**
   - plugins/plan-executor/scripts/plan_codex_dispatch.py
   - plugins/plan-executor/scripts/codex_plan_review_schema.json
-  - tests/scripts/test_plan_codex_dispatch.py
+  - tests/scripts/test_plan_codex_dispatch.py (create)
 - **Dependencies:** [004, 005]
 - **Test command:** `python3 -m pytest tests/scripts/test_plan_codex_dispatch.py -q -k plan_review`
 - **Acceptance criteria:**
@@ -279,8 +279,8 @@ Final prose + canonical-contract sweep, plus deletion of the now-unreachable fil
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
-  - tests/scripts/test_implement_plan_directory_smoke.py
-  - tests/fixtures/directory_mode_plan/directory_mode_plan.schedule.json (new — canonical schedule sidecar IN the plan directory per `_plan_paths.py` convention)
+  - tests/scripts/test_implement_plan_directory_smoke.py (create)
+  - tests/fixtures/directory_mode_plan/directory_mode_plan.schedule.json (create — canonical schedule sidecar IN the plan directory per `_plan_paths.py` convention)
 - **Dependencies:** [008]
 - **Test command:** `python3 -m pytest tests/scripts/test_implement_plan_directory_smoke.py -q`
 - **Acceptance criteria:**
@@ -318,3 +318,11 @@ Lock in the new directory-only path with an integration test that stays green as
 - Fix the pre-existing `test_analyst_to_parse_schedule_roundtrip` failure at `test_plan_ops.py:5194`. The analyst subprocess returns a Claude Agent SDK response wrapper (`type`, `subtype`, `duration_ms`, …) instead of the inner schedule JSON. Unrelated to this plan but needs to be green before Phase 2 CI-gates start reporting reliable red/green.
 - Remove the deprecated `--plan-file` shim on `plan-review` after one release cycle (TASK-008 removes the argparse declaration; the implementation-ignore path stays for the deprecation window).
 - Optionally build the `plan-decomposer` plugin (separate plan: `docs/plans/build-plan-decomposer-plugin.md`) as a user-facing CLI alias for `plan_ops.py decompose-plan`. No longer load-bearing for Phase 2 — `decompose-plan` is the authoritative implementation.
+
+## Execution log — 20260424T122957 (paused)
+
+Starting SHA: `0bc13335f72787ca8e2b4fbc87c6d0b31b437b4e`  → Ending SHA: `0bc13335f72787ca8e2b4fbc87c6d0b31b437b4e`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-001 | claude | codex | needs-rework (binding re-review after D.2a.5 remediation) | (uncommitted — paused) | Round-1 findings (schema-valid, $PYTHON bootstrap, idempotency) all fixed in remediation. Round-2 binding re-review surfaced 3 NEW concerns: permissive task-header regex, hardcoded chunk status=Pending, 00_INDEX.json missing canonical manifest fields. Awaiting user decision per D.2a.5 hard rule. |

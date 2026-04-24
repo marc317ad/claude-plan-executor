@@ -185,6 +185,12 @@ ALLOWED_LOG_EVENTS = {
     # to preserve the "no run-log mutation on failure" invariant.
     "v_check_passed",
     "v_check_failed",
+    # TASK-001 (per_task_dispatch_refactor_v2). Emitted by SKILL.md Phase 0
+    # when single-file input is auto-promoted to directory mode via
+    # `plan_ops.py decompose-plan`. Fields: `{source_file, produced_dir,
+    # task_count}`. The produced directory is treated identically to a
+    # user-authored decomposed directory after this event.
+    "decompose_auto_promote",
 }
 # Accepted values for `finalize-execution-log --outcome`. `paused` is added
 # per TASK-014A for the D.2a.5 awaiting-user pause — the run halted mid-flight
@@ -1491,6 +1497,804 @@ def _split_task_blocks(plan_text: str) -> tuple[str, list[tuple[str, str]]]:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(plan_text)
         blocks.append((m.group(1), plan_text[m.start() : end]))
     return preamble, blocks
+
+
+# ---------------------------------------------------------------------------
+# TASK-001 shared parsing helpers.
+#
+# Both `decompose-plan` (reads whole-plan `## TASK-NNN:` H2 headings) and
+# TASK-004's forthcoming `build-tasks` (reads child-plan `### TASK-NNN:` H3
+# headings) use the same primitives. Extracting them here keeps the grammar
+# single-sourced: every markdown → task-dict conversion flows through these
+# three helpers against the appropriate heading level.
+# ---------------------------------------------------------------------------
+
+
+def _task_header_re(level: int) -> re.Pattern[str]:
+    """Return a compiled regex for `^<level-hashes> TASK-NNN[A-Z]?: <title>`.
+
+    `level=2` matches `## TASK-NNN:`; `level=3` matches `### TASK-NNN:`.
+    Captures the id in group 1 and the title in group 2.
+
+    The grammar is pinned to three-digit task ids (with an optional single
+    alpha suffix for sub-tasks, e.g. `TASK-004A`). Short forms like
+    `TASK-1:` or `TASK-12:` are *not* accepted; malformed plans must
+    surface a `malformed-task-header` error rather than silently accept
+    the short id. `_malformed_task_headers()` provides the loose-match
+    pre-scan that powers that error.
+    """
+    if level not in (2, 3):
+        raise ValueError(f"unsupported heading level {level!r}; expected 2 or 3")
+    hashes = "#" * level
+    return re.compile(
+        rf"^{hashes} TASK-(\d{{3}}[A-Z]?):\s*(.+?)\s*$",
+        re.MULTILINE,
+    )
+
+
+def _malformed_task_headers(
+    plan_text: str, level: int,
+) -> list[tuple[str, int]]:
+    """Return `[(raw_id, source_line)]` for headers that look like TASK
+    headings at the given level but do NOT match the strict three-digit
+    grammar. Used by `_decompose_plan` to emit structured
+    `malformed-task-header` errors instead of silently dropping the block.
+    """
+    if level not in (2, 3):
+        raise ValueError(f"unsupported heading level {level!r}; expected 2 or 3")
+    hashes = "#" * level
+    # Loose regex: any digit run (1+), with optional alpha suffix. Matches
+    # both canonical `TASK-001` and malformed `TASK-1`, `TASK-12`, etc.
+    loose = re.compile(
+        rf"^{hashes} TASK-(\d+[A-Z]?):\s*.+?\s*$",
+        re.MULTILINE,
+    )
+    strict = _task_header_re(level)
+    offenders: list[tuple[str, int]] = []
+    for m in loose.finditer(plan_text):
+        if strict.match(plan_text, m.start()):
+            continue
+        raw_id = m.group(1)
+        source_line = plan_text.count("\n", 0, m.start()) + 1
+        offenders.append((raw_id, source_line))
+    return offenders
+
+
+def _split_task_blocks_at_level(
+    plan_text: str,
+    level: int,
+) -> tuple[str, list[tuple[str, str, str, int]]]:
+    """Split plan body on task-heading boundaries at the given heading level.
+
+    Returns `(preamble, [(task_id, title, block_text, source_line), ...])`.
+    `task_id` is the **raw** id as it appears in the heading (e.g. `001` or
+    `4A`); callers normalize via `_normalize_task_id`. `source_line` is the
+    1-indexed line number of the heading in `plan_text`, which malformed-
+    input error reports pin to the offending block.
+    """
+    pattern = _task_header_re(level)
+    matches = list(pattern.finditer(plan_text))
+    if not matches:
+        return plan_text, []
+    preamble = plan_text[: matches[0].start()]
+    blocks: list[tuple[str, str, str, int]] = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(plan_text)
+        block_text = plan_text[m.start() : end]
+        raw_id = m.group(1)
+        title = m.group(2).strip()
+        # 1-indexed line number of the heading. `count("\n", 0, start)`
+        # is the number of newlines before the heading, so line = that + 1.
+        source_line = plan_text.count("\n", 0, m.start()) + 1
+        blocks.append((raw_id, title, block_text, source_line))
+    return preamble, blocks
+
+
+def _extract_metadata_field(block: str, key: str) -> str | None:
+    """Extract the value of a `- **<key>:**` inline metadata bullet.
+
+    Accepts both inline (`- **Priority:** high`) and trailing-space variants.
+    Returns the stripped value, or None if the bullet is absent. Backtick
+    wrappers around the value are preserved so callers can distinguish
+    ``- **Test command:** `cmd args``` from a bare command; the callers that
+    need the unwrapped form strip them explicitly.
+    """
+    pattern = re.compile(
+        rf"^\s*-\s*\*\*{re.escape(key)}:\*\*\s*(.+?)\s*$",
+        re.MULTILINE,
+    )
+    m = pattern.search(block)
+    if not m:
+        return None
+    return m.group(1).strip()
+
+
+def _extract_bullet_list(block: str, heading: str) -> list[str]:
+    """Extract bullet items nested under a `- **<heading>:**` marker.
+
+    Supports two shapes:
+
+      1. Standalone marker with indented children:
+             - **Files:**
+               - path/a.py
+               - path/b.py
+      2. Inline form with a single value or comma list:
+             - **Files:** path/a.py
+             - **Files:** path/a.py, path/b.py
+
+    Returns the list of raw item strings in document order (stripped of
+    leading `-` + whitespace; backticks and `(create|modify|delete)`
+    annotations are left intact so callers can inspect them).
+
+    Returns `[]` if the heading bullet exists but has no items (e.g.
+    `- **Dependencies:** none` normalizes to `[]` for the caller).
+    """
+    # Standalone marker form.
+    standalone = re.search(
+        rf"^(\s*)-\s*\*\*{re.escape(heading)}:\*\*\s*$",
+        block,
+        re.MULTILINE,
+    )
+    if standalone:
+        base_indent_str = standalone.group(1) or ""
+        base_indent = len(base_indent_str)
+        items: list[str] = []
+        child_indent: int | None = None
+        for line in block[standalone.end():].splitlines():
+            if not line.strip():
+                # Blank lines inside a bullet list are tolerated so long as
+                # the next non-blank line is still indented deeper than the
+                # heading bullet. If the next non-blank line is at or above
+                # base_indent, the list has ended.
+                continue
+            indent = len(line) - len(line.lstrip(" \t"))
+            stripped = line.strip()
+            if indent <= base_indent:
+                break
+            is_bullet = stripped.startswith("- ") or stripped == "-"
+            if not is_bullet:
+                # Non-bullet continuation inside the list (rare) ends it.
+                break
+            if child_indent is None:
+                child_indent = indent
+            elif indent > child_indent:
+                # Nested sub-bullet — skip; we only collect the top-level
+                # children of the heading bullet.
+                continue
+            raw = stripped[1:].strip() if stripped != "-" else ""
+            items.append(raw)
+        return items
+    # Inline form. Returns a single-element list unless the value is empty
+    # or a literal `none` / `[]`. Comma-separated inline lists are split.
+    inline = re.search(
+        rf"^\s*-\s*\*\*{re.escape(heading)}:\*\*\s+(.+?)\s*$",
+        block,
+        re.MULTILINE,
+    )
+    if inline:
+        raw_value = inline.group(1).strip()
+        if not raw_value:
+            return []
+        if raw_value.lower() in {"none", "[]"}:
+            return []
+        # `[001, 002]` → `001, 002`; also handles loose `[001,002]` with
+        # no space. Non-bracketed comma lists are split verbatim.
+        if raw_value.startswith("[") and raw_value.endswith("]"):
+            inner = raw_value[1:-1].strip()
+            if not inner:
+                return []
+            return [piece.strip() for piece in inner.split(",") if piece.strip()]
+        return [piece.strip() for piece in raw_value.split(",") if piece.strip()]
+    return []
+
+
+def _extract_prose_section(block: str, heading: str) -> str | None:
+    """Extract a `**<heading>:**` paragraph section from a task block.
+
+    Returns the stripped prose (possibly multi-line) following the `**Xyz:**`
+    marker, or None if the marker is absent. Stops at the next `**Xyz:**`
+    paragraph marker or the end of the block, whichever comes first.
+    """
+    pattern = re.compile(
+        rf"^\*\*{re.escape(heading)}:\*\*\s*(?:\n|\s+)",
+        re.MULTILINE,
+    )
+    m = pattern.search(block)
+    if not m:
+        return None
+    tail = block[m.end():]
+    # Next paragraph-level `**Xyz:**` marker closes the section.
+    end_m = re.search(r"^\*\*[^*]+:\*\*", tail, re.MULTILINE)
+    if end_m:
+        tail = tail[: end_m.start()]
+    return tail.strip() or None
+
+
+def _parse_task_block(
+    markdown: str,
+    level: int,
+    *,
+    raw_id: str | None = None,
+    title: str | None = None,
+    source_line: int | None = None,
+) -> dict:
+    """Parse a single task block at H2 (`level=2`) or H3 (`level=3`).
+
+    If `raw_id` / `title` / `source_line` are not supplied, they are derived
+    from the first matching heading in `markdown`.
+
+    Returns a dict with keys:
+        id (str, normalized 3-digit), title (str), source_line (int),
+        priority (str | None), depends_on (list[str] of normalized ids),
+        test_command (str | None), agent (str | None, omitted → None),
+        files (list[str], raw entries — callers normalize),
+        acceptance_criteria (list[str]), description (str | None),
+        reversion_guidance (str | None), status (str | None).
+
+    No validation — that is the caller's job. Missing fields are returned
+    as `None` / `[]` so the caller can report structured errors pinned to
+    `source_line`.
+    """
+    if raw_id is None or title is None or source_line is None:
+        pattern = _task_header_re(level)
+        m = pattern.search(markdown)
+        if not m:
+            raise ValueError(
+                f"no H{level} `TASK-NNN:` heading found in the supplied block"
+            )
+        raw_id = m.group(1)
+        title = m.group(2).strip()
+        source_line = markdown.count("\n", 0, m.start()) + 1
+        block = markdown[m.start():]
+    else:
+        block = markdown
+    normalized_id = _normalize_task_id(raw_id)
+    canonical_id = normalized_id if normalized_id is not None else raw_id
+    # Extract the inline `Test command` in stripped form (strip surrounding
+    # backticks if present — downstream consumers want the bare command).
+    test_raw = _extract_metadata_field(block, "Test command")
+    test_command: str | None = None
+    if test_raw is not None:
+        test_unwrapped = test_raw.strip()
+        if (
+            len(test_unwrapped) >= 2
+            and test_unwrapped.startswith("`")
+            and test_unwrapped.endswith("`")
+        ):
+            test_unwrapped = test_unwrapped[1:-1]
+        test_command = test_unwrapped
+    # Dependencies: inline only; `_extract_bullet_list` handles `none` /
+    # `[]` / `[001, 002]` / `001, 002` equivalently.
+    raw_deps = _extract_bullet_list(block, "Dependencies")
+    deps: list[str] = []
+    for d in raw_deps:
+        nd = _normalize_task_id(d)
+        # Keep the raw form if normalization fails so the caller can
+        # surface an "unresolvable dep" error pinned to the task id.
+        deps.append(nd if nd is not None else d.strip())
+    # Files: standalone or inline form; leave raw so the caller can inspect
+    # `(create|modify|delete)` annotations as needed.
+    files = _extract_bullet_list(block, "Files")
+    acceptance_criteria = _extract_bullet_list(block, "Acceptance criteria")
+    agent_raw = _extract_metadata_field(block, "Agent")
+    priority_raw = _extract_metadata_field(block, "Priority")
+    status_raw = _extract_metadata_field(block, "Status")
+    description = _extract_prose_section(block, "Description")
+    reversion_raw = _extract_metadata_field(block, "Reversion guidance")
+    return {
+        "id": canonical_id,
+        "raw_id": raw_id,
+        "title": title,
+        "source_line": source_line,
+        "priority": priority_raw,
+        "depends_on": deps,
+        "test_command": test_command,
+        "agent": agent_raw,
+        "files": files,
+        "acceptance_criteria": acceptance_criteria,
+        "description": description,
+        "reversion_guidance": reversion_raw,
+        "status": status_raw,
+    }
+
+
+def _slugify_title(title: str, *, max_words: int = 4) -> str:
+    """Produce a lowercase underscore slug of up to `max_words` tokens.
+
+    Drops punctuation; collapses whitespace. Matches the convention used by
+    the existing `docs/plans/DUAL_AGENT_Plans/TASK-NNN_<slug>.md` children
+    (short, hand-authored, readable). Empty or punctuation-only titles
+    fall back to `task` so the produced filename is always non-empty.
+    """
+    tokens = re.findall(r"[A-Za-z0-9]+", title.lower())
+    if not tokens:
+        return "task"
+    return "_".join(tokens[:max_words]) or "task"
+
+
+def _compute_decompose_batches(
+    task_ids: list[str],
+    deps: dict[str, list[str]],
+) -> tuple[list[list[str]], list[dict]]:
+    """Topo-sort `task_ids` into parallel batches using `deps`.
+
+    Returns `(batches, errors)`. A cycle produces one error with
+    `code: "cyclic-dependency"` and the remaining unscheduled ids. Ids in
+    `deps` values that are not in `task_ids` are ignored here (the caller
+    surfaces those as `unresolvable-dep` errors before calling this helper).
+    """
+    id_set = set(task_ids)
+    # Normalized depends_on filtered to the known id set.
+    remaining: dict[str, set[str]] = {
+        tid: {d for d in deps.get(tid, []) if d in id_set} for tid in task_ids
+    }
+    batches: list[list[str]] = []
+    while remaining:
+        ready = sorted(tid for tid, ds in remaining.items() if not ds)
+        if not ready:
+            cycle_ids = sorted(remaining.keys())
+            return batches, [
+                {
+                    "code": "cyclic-dependency",
+                    "message": (
+                        "dependency cycle detected among tasks "
+                        f"{cycle_ids}"
+                    ),
+                    "task_ids": cycle_ids,
+                }
+            ]
+        batches.append(ready)
+        for rid in ready:
+            del remaining[rid]
+        for tid in remaining:
+            remaining[tid].difference_update(ready)
+    return batches, []
+
+
+def _extract_plan_context_section(plan_text: str) -> str | None:
+    """Extract the body of a whole-plan `## Context` section, if present.
+
+    Returns the stripped paragraph(s) between `## Context` and the next
+    top-level `## ` heading, or None if the section is missing / empty.
+    Used by the decomposer to populate the `## Context` block of each
+    emitted child file so the output satisfies `_gate_schema_valid`
+    (which requires top-level Goal / Context / Verification sections).
+    """
+    m = re.search(r"^## Context\s*$", plan_text, re.MULTILINE)
+    if not m:
+        return None
+    tail = plan_text[m.end():]
+    end_m = re.search(r"^## ", tail, re.MULTILINE)
+    if end_m:
+        tail = tail[: end_m.start()]
+    body = tail.strip()
+    return body or None
+
+
+def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> str:
+    """Render a decomposed task dict as a child-plan markdown file.
+
+    Shape matches the `### TASK-NNN:` H3 grammar TASK-004 `build-tasks`
+    parses AND the `_gate_schema_valid` top-level contract: `## Goal`,
+    `## Context`, `## Verification`, and `## Tasks` wrapping the H3
+    block. `**Reversion guidance:**` is emitted UNCONDITIONALLY — when
+    the source task provides guidance it is used verbatim; when it
+    omits the field, the stable sentinel `none` is emitted so the
+    child grammar matches the pinned contract without exception.
+
+    `plan_context`, when supplied, is the whole-plan `## Context`
+    section body; it is used to populate the child's `## Context`
+    section verbatim so the child carries the same narrative context as
+    the parent plan. If absent, the task's `description` is used.
+    """
+    tid = task["id"]
+    title = task["title"]
+    parts: list[str] = []
+    # ---- Top-level sections required by `_gate_schema_valid` ------------
+    # Goal: derived from the task title (deterministic, 1:1 mapping).
+    parts.append(f"# TASK-{tid} — {title}")
+    parts.append("")
+    parts.append("## Goal")
+    parts.append("")
+    parts.append(title)
+    parts.append("")
+    # Context: prefer the parent plan's `## Context` block for parity
+    # with hand-authored child plans (see the shipped
+    # `tests/fixtures/directory_mode_plan/TASK-001_seed.md`); otherwise
+    # fall back to the task's own description, otherwise a stub.
+    parts.append("## Context")
+    parts.append("")
+    context_body = (plan_context or "").strip()
+    if not context_body:
+        context_body = (task.get("description") or "").strip()
+    if not context_body:
+        context_body = (
+            f"Auto-decomposed child for TASK-{tid}. See the source plan for "
+            "broader context."
+        )
+    parts.append(context_body)
+    parts.append("")
+    # Verification: derived from the task's acceptance-criteria list.
+    parts.append("## Verification")
+    parts.append("")
+    ac_list = task.get("acceptance_criteria") or []
+    if ac_list:
+        for ac in ac_list:
+            parts.append(f"- {ac}")
+    else:
+        parts.append("- See acceptance criteria under the task block below.")
+    parts.append("")
+    # Tasks section wraps the H3 task block.
+    parts.append("## Tasks")
+    parts.append("")
+    # ---- H3 task block (unchanged grammar, preserves byte-identical
+    # `build-tasks` input) -----------------------------------------------
+    parts.append(f"### TASK-{tid}: {title}")
+    parts.append("")
+    # Metadata bullets in canonical order.
+    parts.append(f"- **Status:** {task.get('status') or 'pending'}")
+    priority = task.get("priority")
+    if priority:
+        parts.append(f"- **Priority:** {priority}")
+    agent = task.get("agent")
+    if agent:
+        parts.append(f"- **Agent:** {agent}")
+    # Files: always emit the standalone marker form for predictability.
+    parts.append("- **Files:**")
+    if task.get("files"):
+        for f in task["files"]:
+            parts.append(f"  - {f}")
+    # Dependencies: inline list, `[]` if empty for parser unambiguity.
+    deps = task.get("depends_on") or []
+    if deps:
+        parts.append(f"- **Dependencies:** [{', '.join(deps)}]")
+    else:
+        parts.append("- **Dependencies:** []")
+    test_cmd = task.get("test_command")
+    if test_cmd is None or test_cmd == "":
+        parts.append("- **Test command:** none")
+    elif test_cmd.strip().lower() == "none":
+        # Source wrote the literal sentinel; preserve it unwrapped so the
+        # round-trip is byte-identical.
+        parts.append("- **Test command:** none")
+    else:
+        parts.append(f"- **Test command:** `{test_cmd}`")
+    parts.append("- **Acceptance criteria:**")
+    for ac in task.get("acceptance_criteria") or []:
+        parts.append(f"  - {ac}")
+    # `**Reversion guidance:**` is emitted UNCONDITIONALLY so the child
+    # grammar matches the pinned contract stated in the plan's task
+    # description (child files always include the section). When the
+    # source task omits reversion guidance, emit the stable `none`
+    # sentinel; the parser already tolerates it (round-trips as the
+    # literal string "none" which downstream consumers treat as absent).
+    reversion = task.get("reversion_guidance")
+    if reversion:
+        parts.append(f"- **Reversion guidance:** {reversion}")
+    else:
+        parts.append("- **Reversion guidance:** none")
+    parts.append("")
+    description = task.get("description") or ""
+    parts.append("**Description:**")
+    if description:
+        parts.append(description)
+    parts.append("")
+    return "\n".join(parts)
+
+
+def _decompose_plan(
+    plan_path: Path,
+    out_dir: Path,
+    *,
+    force: bool = False,
+) -> dict:
+    """Core decomposition logic. Returns `{ok, errors, tasks, out_dir, ...}`.
+
+    No side effects on failure — files are written only when `errors == []`.
+    """
+    if not plan_path.is_file():
+        return {
+            "ok": False,
+            "errors": [
+                {
+                    "code": "plan-not-found",
+                    "message": f"plan file not found: {plan_path}",
+                }
+            ],
+        }
+    try:
+        plan_text = plan_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "ok": False,
+            "errors": [
+                {
+                    "code": "plan-unreadable",
+                    "message": f"cannot read {plan_path}: {exc}",
+                }
+            ],
+        }
+    _, raw_blocks = _split_task_blocks_at_level(plan_text, level=2)
+    errors: list[dict] = []
+    # Surface malformed headers (short ids like `## TASK-1:` or `## TASK-12:`)
+    # as structured errors before the `no-tasks` fallback — a tightened
+    # grammar must fail loudly, not silently accept or silently drop blocks.
+    for raw_id, source_line in _malformed_task_headers(plan_text, level=2):
+        errors.append(
+            {
+                "code": "malformed-task-header",
+                "raw_id": raw_id,
+                "message": (
+                    f"`## TASK-{raw_id}:` at line {source_line} does not match "
+                    "the required three-digit TASK-NNN[A] grammar"
+                ),
+                "source_line": source_line,
+            }
+        )
+    if errors:
+        return {"ok": False, "errors": errors}
+    if not raw_blocks:
+        errors.append(
+            {
+                "code": "no-tasks",
+                "message": (
+                    f"no `## TASK-NNN:` headings found in {plan_path.name}; "
+                    "the whole-plan decomposer requires H2 task headings"
+                ),
+                "source_line": 1,
+            }
+        )
+        return {"ok": False, "errors": errors}
+    parsed: list[dict] = []
+    seen_ids: dict[str, int] = {}
+    for raw_id, title, block_text, source_line in raw_blocks:
+        task = _parse_task_block(
+            block_text,
+            level=2,
+            raw_id=raw_id,
+            title=title,
+            source_line=source_line,
+        )
+        tid = task["id"]
+        if tid in seen_ids:
+            errors.append(
+                {
+                    "code": "duplicate-id",
+                    "task_id": tid,
+                    "message": (
+                        f"TASK-{tid} appears twice in plan; first at line "
+                        f"{seen_ids[tid]}, duplicate at line {source_line}"
+                    ),
+                    "source_line": source_line,
+                    "first_seen_line": seen_ids[tid],
+                }
+            )
+            continue
+        seen_ids[tid] = source_line
+        parsed.append(task)
+    # Validate required metadata per task.
+    for task in parsed:
+        tid = task["id"]
+        if not task.get("priority"):
+            errors.append(
+                {
+                    "code": "missing-required-metadata",
+                    "task_id": tid,
+                    "field": "Priority",
+                    "message": f"TASK-{tid} missing `**Priority:**` metadata",
+                    "source_line": task["source_line"],
+                }
+            )
+        if task.get("test_command") is None:
+            errors.append(
+                {
+                    "code": "missing-required-metadata",
+                    "task_id": tid,
+                    "field": "Test command",
+                    "message": (
+                        f"TASK-{tid} missing `**Test command:**` metadata"
+                    ),
+                    "source_line": task["source_line"],
+                }
+            )
+    # Validate dependency ids exist in the plan.
+    known_ids = {t["id"] for t in parsed}
+    for task in parsed:
+        tid = task["id"]
+        for dep in task["depends_on"]:
+            if dep not in known_ids:
+                errors.append(
+                    {
+                        "code": "unresolvable-dep",
+                        "task_id": tid,
+                        "dep_id": dep,
+                        "message": (
+                            f"TASK-{tid} depends on TASK-{dep} which is not "
+                            "declared in this plan"
+                        ),
+                        "source_line": task["source_line"],
+                    }
+                )
+    # If no structural errors so far, compute batches (cycles surface here).
+    batches: list[list[str]] = []
+    if not errors:
+        task_ids = [t["id"] for t in parsed]
+        deps_map = {t["id"]: t["depends_on"] for t in parsed}
+        batches, batch_errors = _compute_decompose_batches(task_ids, deps_map)
+        if batch_errors:
+            # Pin cycle error to the first cycle-member's source line so
+            # the reporter can jump to the offending block.
+            by_id = {t["id"]: t["source_line"] for t in parsed}
+            for err in batch_errors:
+                first = err.get("task_ids", [None])[0]
+                if first and first in by_id:
+                    err["source_line"] = by_id[first]
+            errors.extend(batch_errors)
+    if errors:
+        return {"ok": False, "errors": errors}
+    # Build manifest + child files.
+    plan_title_m = re.search(r"^#\s+(.+?)\s*$", plan_text, re.MULTILINE)
+    plan_title = plan_title_m.group(1).strip() if plan_title_m else plan_path.stem
+    plan_context = _extract_plan_context_section(plan_text)
+    # Extract plan-level `**Base branch:**` metadata (whole-plan header).
+    # Defaults to "main" if the source plan omits the declaration.
+    base_branch_m = re.search(
+        r"^\s*\**Base branch:\**\s*(.+?)\s*$",
+        plan_text,
+        re.MULTILINE,
+    )
+    base_branch = (
+        base_branch_m.group(1).strip() if base_branch_m else "main"
+    )
+    chunks: list[dict] = []
+    child_files: dict[str, str] = {}
+    for task in parsed:
+        slug = _slugify_title(task["title"])
+        child_name = f"TASK-{task['id']}_{slug}.md"
+        # Carry through the source task's `**Status:**` field into the
+        # manifest chunk so an auto-decomposed directory respects the
+        # source's completion state. `ALLOWED_INDEX_STATUSES` is a narrow
+        # capitalized set ({Done, Pending, Superseded}) distinct from the
+        # task-level vocabulary ({pending, open, in-progress, done,
+        # failed, blocked, skipped}); map `done` → "Done" and everything
+        # else (including missing) → "Pending".
+        raw_status = (task.get("status") or "").strip().lower()
+        if raw_status == "done":
+            chunk_status = "Done"
+        else:
+            chunk_status = "Pending"
+        chunks.append(
+            {
+                "task_id": task["id"],
+                "file": child_name,
+                "priority": task["priority"],
+                "depends_on": task["depends_on"],
+                "status": chunk_status,
+                "superseded_by": [],
+            }
+        )
+        child_files[child_name] = _render_child_task_file(
+            task, plan_context=plan_context,
+        )
+    # Handle target directory.
+    target = out_dir
+    existing_manifest: dict | None = None
+    if target.exists():
+        if not target.is_dir():
+            return {
+                "ok": False,
+                "errors": [
+                    {
+                        "code": "out-dir-not-directory",
+                        "message": (
+                            f"--out-dir {target} exists and is not a directory"
+                        ),
+                    }
+                ],
+            }
+        existing = [p for p in target.iterdir() if p.name != ".gitkeep"]
+        if existing and not force:
+            return {
+                "ok": False,
+                "errors": [
+                    {
+                        "code": "out-dir-not-empty",
+                        "message": (
+                            f"--out-dir {target} is non-empty; pass --force "
+                            "to overwrite"
+                        ),
+                        "existing": sorted(p.name for p in existing),
+                    }
+                ],
+            }
+        # `--force` rerun: preserve the prior manifest's `created`
+        # timestamp if it parses cleanly, so byte-identical output holds
+        # across day boundaries for the same source plan.
+        prior_index = target / "00_INDEX.json"
+        if force and prior_index.is_file():
+            try:
+                existing_manifest = json.loads(
+                    prior_index.read_text(encoding="utf-8"),
+                )
+                if not isinstance(existing_manifest, dict):
+                    existing_manifest = None
+            except (OSError, json.JSONDecodeError):
+                existing_manifest = None
+    # `created` is deterministic across `--force` reruns: preserve the
+    # prior manifest's value if present + valid; otherwise stamp today.
+    created_value: str | None = None
+    if existing_manifest is not None:
+        prior_created = existing_manifest.get("created")
+        if isinstance(prior_created, str) and prior_created.strip():
+            created_value = prior_created
+    if created_value is None:
+        created_value = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    manifest = {
+        "schema_version": 1,
+        "source": "decompose-plan",
+        "plan_title": plan_title,
+        "source_plan_file": plan_path.name,
+        "created": created_value,
+        "base_branch": base_branch,
+        "depends_on_plans": [],
+        "supersedes": [],
+        "parallel_batches": batches,
+        "chunks": chunks,
+    }
+    target.mkdir(parents=True, exist_ok=True)
+    # On `--force`, sweep stale `TASK-*.md` children that the new chunk
+    # set does not cover. If the source plan shrinks or a task is
+    # renamed (slug change), the prior child file must be removed so
+    # the decomposed directory matches the canonical
+    # {00_INDEX.json, TASK-NNN_<slug>.md, ...} shape. Only files
+    # matching the `TASK-*.md` glob are touched — unrelated notes or
+    # user files in the directory are left alone.
+    if force and target.is_dir():
+        keep_names = set(child_files.keys())
+        for stale in target.glob("TASK-*.md"):
+            if stale.is_file() and stale.name not in keep_names:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+    # Write manifest + children atomically-per-file. Idempotent under
+    # --force: byte-identical rewrites of the same content if the source
+    # plan did not change.
+    manifest_text = json.dumps(manifest, indent=2, sort_keys=False) + "\n"
+    (target / "00_INDEX.json").write_text(manifest_text, encoding="utf-8")
+    for name, body in child_files.items():
+        (target / name).write_text(body, encoding="utf-8")
+    return {
+        "ok": True,
+        "errors": [],
+        "produced_dir": str(target),
+        "task_count": len(parsed),
+        "children": [c["file"] for c in chunks],
+        "parallel_batches": batches,
+    }
+
+
+def cmd_decompose_plan(args: argparse.Namespace) -> None:
+    """Heuristic plan-decomposition: whole-plan markdown → directory layout.
+
+    Reads a `## TASK-NNN:` whole-plan file and writes a sibling directory
+    containing `00_INDEX.json` plus one `TASK-NNN_<slug>.md` child per task.
+    Each child carries a `### TASK-NNN:` H3 sub-heading (matches the
+    child-plan grammar `build-tasks` parses).
+
+    Malformed plans (missing headers, duplicate ids, missing required
+    metadata, unresolvable or cyclic dependencies) error loudly with
+    structured `errors[*]` entries pinned to source line numbers.
+    """
+    plan_path = Path(args.plan_file).resolve()
+    if args.out_dir:
+        out_dir = Path(args.out_dir).resolve()
+    else:
+        out_dir = plan_path.parent / plan_path.stem
+    result = _decompose_plan(plan_path, out_dir, force=bool(args.force))
+    if not result["ok"]:
+        _die(args, {"errors": result["errors"]})
+    _emit(args, result, exit_code=0)
 
 
 def _find_status_bullet(block: str) -> re.Match | None:
@@ -6893,6 +7697,33 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Promote unknown nested fields from warning to error")
     _add_json(p_sched)
 
+    p_decomp = sub.add_parser(
+        "decompose-plan",
+        help=(
+            "Heuristic whole-plan → decomposed-directory split. Reads a "
+            "`## TASK-NNN:` plan markdown file and writes a sibling "
+            "directory with `00_INDEX.json` + one `TASK-NNN_<slug>.md` "
+            "per task (H3 sub-heading grammar)."
+        ),
+    )
+    p_decomp.add_argument(
+        "--plan-file", required=True,
+        help="Path to the whole-plan markdown file to decompose",
+    )
+    p_decomp.add_argument(
+        "--out-dir", default=None,
+        help=(
+            "Destination directory; default <file-parent>/<file-stem>/. "
+            "Refuses to overwrite a non-empty existing directory unless "
+            "--force is set."
+        ),
+    )
+    p_decomp.add_argument(
+        "--force", action="store_true",
+        help="Overwrite an existing non-empty --out-dir",
+    )
+    _add_json(p_decomp)
+
     p_comp = sub.add_parser("compute-schedule", help="Compute priority order + disjoint batches")
     p_comp.add_argument("--stdin", action="store_true", required=True,
                         help="Read JSON schedule from stdin")
@@ -7368,6 +8199,7 @@ def main(argv: list[str] | None = None) -> None:
     handlers = {
         "preflight": cmd_preflight,
         "parse-schedule": cmd_parse_schedule,
+        "decompose-plan": cmd_decompose_plan,
         "compute-schedule": cmd_compute_schedule,
         "write-schedule": cmd_write_schedule,
         "batch-next": cmd_batch_next,

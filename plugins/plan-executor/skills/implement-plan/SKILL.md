@@ -150,6 +150,24 @@ Mutual exclusions: `--codex-only` + `--claude-only` → error. Normalize `--task
 
 ## Pre-flight (Phase 0)
 
+**Auto-promote single-file input to directory mode (TASK-001).** Before any other Phase 0 step, if `pathlib.Path(plan_path).is_file()` — i.e. the user passed a single markdown plan, not a decomposed directory — invoke the heuristic decomposer so every downstream phase can assume directory mode. This call runs **before** `$PYTHON` is bound (`$PYTHON` is pinned from the `preflight --json` output that runs later in this phase), so it uses the literal bootstrap interpreter `python3` on `$PATH`:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" decompose-plan --plan-file <absolute plan> --json
+```
+
+The subcommand reads the whole-plan `## TASK-NNN:` markdown and writes a sibling directory at `<file-parent>/<file-stem>/` containing `00_INDEX.json` plus one `TASK-NNN_<slug>.md` child per task (each child uses the `### TASK-NNN:` H3 sub-heading that `build-tasks` and every downstream parser expects). On success the result JSON carries `produced_dir` + `task_count`; rebind `<plan-path>` ← `produced_dir` and proceed as if the user had passed a directory from the start. On malformed input the subcommand exits 1 with a structured `errors[*]` list (missing `## TASK-NNN:` headers, duplicate ids, missing required metadata, unresolvable deps, cycles) — surface the errors verbatim and halt without acquiring the lock. Append a run-log event (still via the bootstrap interpreter — `$PYTHON` is bound only after preflight):
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event decompose_auto_promote \
+  --fields-json '{"source_file":"<original plan-path>","produced_dir":"<produced_dir>","task_count":<n>}'
+```
+
+`preflight` runs next (see below) and pins `$PYTHON` for every subsequent `$PYTHON ...` command line in this skill.
+
+Do NOT read the produced child files into the orchestrator's context — the `ls` of the directory is enough; every subsequent phase opens children on demand. The produced directory is treated identically to a user-authored decomposed directory: run-log `plan_file` metadata on `run_start` reflects the directory basename, not the original file. The single `decompose-plan` invocation is the orchestrator's only direct interaction with the whole-plan markdown — after this point everything downstream sees a directory. **Full consolidation of the dual-mode "Input shape" prose (bindings table, v1 scope callouts, mixed-mode wording below) is TASK-002's scope; this Phase 0 note lands the behavior and waits for that prose pass.**
+
 First, bind the path placeholders used throughout this skill by querying the configured plan directory:
 
 ```bash

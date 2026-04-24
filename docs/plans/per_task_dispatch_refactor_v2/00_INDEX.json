@@ -1,21 +1,39 @@
 {
   "schema_version": 1,
   "source": "manual-sidecar",
-  "plan_title": "Per-Task Dispatch Refactor (v2 — post-hotfix)",
+  "plan_title": "Per-Task Dispatch Refactor (v2 \u2014 post-hotfix)",
   "created": "2026-04-24",
   "base_branch": "main",
   "depends_on_plans": [],
   "supersedes": [],
   "parallel_batches": [
-    ["001"],
-    ["002"],
-    ["003"],
-    ["004"],
-    ["005"],
-    ["006"],
-    ["007"],
-    ["008"],
-    ["009"]
+    [
+      "001"
+    ],
+    [
+      "002"
+    ],
+    [
+      "003"
+    ],
+    [
+      "004"
+    ],
+    [
+      "005"
+    ],
+    [
+      "006"
+    ],
+    [
+      "007"
+    ],
+    [
+      "008"
+    ],
+    [
+      "009"
+    ]
   ],
   "chunks": [
     {
@@ -23,14 +41,16 @@
       "file": "per_task_dispatch_refactor_v2.md",
       "priority": "critical",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
       "task_id": "002",
       "file": "per_task_dispatch_refactor_v2.md",
       "priority": "high",
-      "depends_on": ["001"],
+      "depends_on": [
+        "001"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -38,7 +58,9 @@
       "task_id": "003",
       "file": "per_task_dispatch_refactor_v2.md",
       "priority": "high",
-      "depends_on": ["002"],
+      "depends_on": [
+        "002"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -46,7 +68,9 @@
       "task_id": "004",
       "file": "per_task_dispatch_refactor_v2.md",
       "priority": "high",
-      "depends_on": ["003"],
+      "depends_on": [
+        "003"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -54,7 +78,9 @@
       "task_id": "005",
       "file": "per_task_dispatch_refactor_v2.md",
       "priority": "medium",
-      "depends_on": ["004"],
+      "depends_on": [
+        "004"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -62,7 +88,10 @@
       "task_id": "006",
       "file": "per_task_dispatch_refactor_v2.md",
       "priority": "high",
-      "depends_on": ["004", "005"],
+      "depends_on": [
+        "004",
+        "005"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -70,7 +99,9 @@
       "task_id": "007",
       "file": "per_task_dispatch_refactor_v2.md",
       "priority": "medium",
-      "depends_on": ["006"],
+      "depends_on": [
+        "006"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -78,7 +109,14 @@
       "task_id": "008",
       "file": "per_task_dispatch_refactor_v2.md",
       "priority": "medium",
-      "depends_on": ["002", "003", "004", "005", "006", "007"],
+      "depends_on": [
+        "002",
+        "003",
+        "004",
+        "005",
+        "006",
+        "007"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -86,7 +124,9 @@
       "task_id": "009",
       "file": "per_task_dispatch_refactor_v2.md",
       "priority": "high",
-      "depends_on": ["008"],
+      "depends_on": [
+        "008"
+      ],
       "status": "Pending",
       "superseded_by": []
     }

@@ -14019,3 +14019,937 @@ class TestDirectoryModeHotfixSmoke:
         assert skipped == [], (
             f"unexpected plan_review_skipped events: {skipped}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TASK-001 (per_task_dispatch_refactor_v2): decompose-plan subcommand +
+# shared parsing helpers. Tests live here so they share the existing
+# `isolated_plan` / `_run` / `_parse_json` plumbing with the rest of the
+# suite.
+# ---------------------------------------------------------------------------
+
+
+DECOMPOSER_INPUTS_DIR = REPO_ROOT / "tests" / "fixtures" / "decomposer_inputs"
+
+
+class TestParseTaskBlockHelper:
+    """Direct unit coverage for the shared parsing helpers.
+
+    Exercises `_parse_task_block`, `_extract_metadata_field`, and
+    `_extract_bullet_list` against both H2 (whole-plan) and H3 (child-plan)
+    inputs so the contract stays grammar-agnostic at different levels.
+    """
+
+    H2_BLOCK = (
+        "## TASK-005: Example task\n"
+        "\n"
+        "- **Status:** pending\n"
+        "- **Priority:** high\n"
+        "- **Agent:** codex\n"
+        "- **Files:**\n"
+        "  - src/a.py\n"
+        "  - src/b.py\n"
+        "- **Dependencies:** [001, 002]\n"
+        "- **Test command:** `pytest tests/`\n"
+        "- **Acceptance criteria:**\n"
+        "  - AC one\n"
+        "  - AC two\n"
+        "- **Reversion guidance:** `git restore .`\n"
+        "\n"
+        "**Description:**\n"
+        "Multi-line description\n"
+        "continues here.\n"
+    )
+
+    H3_BLOCK = (
+        "### TASK-007: Child task\n"
+        "\n"
+        "- **Status:** open\n"
+        "- **Priority:** critical\n"
+        "- **Files:**\n"
+        "  - foo.py\n"
+        "- **Dependencies:** none\n"
+        "- **Test command:** `true`\n"
+        "- **Acceptance criteria:**\n"
+        "  - it works\n"
+        "\n"
+        "**Description:**\n"
+        "Child block.\n"
+    )
+
+    def test_parse_task_block_h2_full(self) -> None:
+        task = plan_ops._parse_task_block(self.H2_BLOCK, level=2)
+        assert task["id"] == "005"
+        assert task["title"] == "Example task"
+        assert task["priority"] == "high"
+        assert task["agent"] == "codex"
+        assert task["status"] == "pending"
+        assert task["depends_on"] == ["001", "002"]
+        assert task["test_command"] == "pytest tests/"
+        assert task["files"] == ["src/a.py", "src/b.py"]
+        assert task["acceptance_criteria"] == ["AC one", "AC two"]
+        assert "Multi-line description" in (task["description"] or "")
+        assert "continues here" in (task["description"] or "")
+        assert task["reversion_guidance"] == "`git restore .`"
+        assert task["source_line"] == 1
+
+    def test_parse_task_block_h3_minimal(self) -> None:
+        task = plan_ops._parse_task_block(self.H3_BLOCK, level=3)
+        assert task["id"] == "007"
+        assert task["title"] == "Child task"
+        assert task["priority"] == "critical"
+        assert task["agent"] is None
+        assert task["status"] == "open"
+        assert task["depends_on"] == []
+        assert task["test_command"] == "true"
+        assert task["files"] == ["foo.py"]
+        assert task["acceptance_criteria"] == ["it works"]
+
+    def test_parse_task_block_wrong_level_raises(self) -> None:
+        with pytest.raises(ValueError):
+            plan_ops._parse_task_block(self.H2_BLOCK, level=3)
+
+    def test_extract_metadata_field_present(self) -> None:
+        assert plan_ops._extract_metadata_field(
+            self.H2_BLOCK, "Priority",
+        ) == "high"
+        assert plan_ops._extract_metadata_field(
+            self.H2_BLOCK, "Agent",
+        ) == "codex"
+
+    def test_extract_metadata_field_missing(self) -> None:
+        assert plan_ops._extract_metadata_field(
+            self.H3_BLOCK, "Agent",
+        ) is None
+        assert plan_ops._extract_metadata_field(
+            self.H2_BLOCK, "Nonexistent",
+        ) is None
+
+    def test_extract_bullet_list_standalone(self) -> None:
+        assert plan_ops._extract_bullet_list(
+            self.H2_BLOCK, "Files",
+        ) == ["src/a.py", "src/b.py"]
+        assert plan_ops._extract_bullet_list(
+            self.H2_BLOCK, "Acceptance criteria",
+        ) == ["AC one", "AC two"]
+
+    def test_extract_bullet_list_inline_brackets(self) -> None:
+        assert plan_ops._extract_bullet_list(
+            self.H2_BLOCK, "Dependencies",
+        ) == ["001", "002"]
+
+    def test_extract_bullet_list_inline_none(self) -> None:
+        assert plan_ops._extract_bullet_list(
+            self.H3_BLOCK, "Dependencies",
+        ) == []
+
+    def test_extract_bullet_list_missing_heading(self) -> None:
+        assert plan_ops._extract_bullet_list(
+            self.H3_BLOCK, "Reversion guidance",
+        ) == []
+
+
+class TestDecomposePlan:
+    """End-to-end coverage for the `decompose-plan` subcommand.
+
+    Each fixture under `tests/fixtures/decomposer_inputs/` exercises a
+    specific branch: canonical success, duplicate ids, missing metadata,
+    unresolvable deps, cycles. Round-trip validation checks that the
+    emitted `00_INDEX.json` + child files reparse via the shared helpers.
+    """
+
+    def test_canonical_round_trip(self, tmp_path: Path) -> None:
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp = _run(
+            "decompose-plan", "--plan-file", str(src), "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        assert res["ok"] is True
+        assert res["task_count"] == 3
+        assert res["parallel_batches"] == [["001"], ["002", "003"]]
+        produced = Path(res["produced_dir"])
+        assert produced.is_dir()
+        # Canonical manifest shape.
+        manifest = json.loads(
+            (produced / "00_INDEX.json").read_text(encoding="utf-8"),
+        )
+        assert manifest["schema_version"] == 1
+        assert manifest["source"] == "decompose-plan"
+        assert [c["task_id"] for c in manifest["chunks"]] == [
+            "001", "002", "003",
+        ]
+        # Manifest parses via the existing loader (same shape the
+        # directory-mode fixture uses).
+        roster = plan_ops._parse_index_roster(produced / "00_INDEX.json")
+        assert set(roster.keys()) == {"001", "002", "003"}
+        # Each child carries the H3 sub-heading + canonical metadata block.
+        for chunk in manifest["chunks"]:
+            child_path = produced / chunk["file"]
+            assert child_path.is_file()
+            body = child_path.read_text(encoding="utf-8")
+            # H3 heading (NOT H2).
+            assert re.search(
+                rf"^### TASK-{chunk['task_id']}: ", body, re.MULTILINE,
+            ), body
+            assert "- **Status:**" in body
+            assert "- **Priority:**" in body
+            assert "- **Files:**" in body
+            assert "- **Dependencies:**" in body
+            assert "- **Test command:**" in body
+            assert "- **Acceptance criteria:**" in body
+            assert "**Description:**" in body
+            # Children re-parse via the shared helper at level=3.
+            task = plan_ops._parse_task_block(body, level=3)
+            assert task["id"] == chunk["task_id"]
+            # Description is non-empty and acceptance_criteria is a
+            # non-empty list — the "fat" manifest invariant TASK-004
+            # depends on.
+            assert task["description"] and task["description"].strip()
+            assert len(task["acceptance_criteria"]) >= 1
+
+    def test_canonical_force_idempotent(self, tmp_path: Path) -> None:
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp1 = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp1.returncode == 0, cp1.stderr
+        produced = Path(_parse_json(cp1)["produced_dir"])
+        # Snapshot content of every produced file.
+        first_snapshot = {
+            p.name: p.read_bytes() for p in produced.iterdir() if p.is_file()
+        }
+        # Rerun without --force should fail on non-empty out-dir.
+        cp2 = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp2.returncode == 1
+        err = _parse_json(cp2)["errors"]
+        assert any(e["code"] == "out-dir-not-empty" for e in err)
+        # Rerun with --force should succeed and produce byte-identical output.
+        cp3 = _run(
+            "decompose-plan", "--plan-file", str(src), "--force", "--json",
+        )
+        assert cp3.returncode == 0, cp3.stderr
+        second_snapshot = {
+            p.name: p.read_bytes() for p in produced.iterdir() if p.is_file()
+        }
+        assert first_snapshot.keys() == second_snapshot.keys()
+        for name, blob in first_snapshot.items():
+            assert second_snapshot[name] == blob, (
+                f"--force rerun produced non-identical content for {name}"
+            )
+
+    def test_missing_metadata_structured_error(self, tmp_path: Path) -> None:
+        src = tmp_path / "missing_metadata.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "missing_metadata.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp.returncode == 1
+        err = _parse_json(cp)["errors"]
+        assert any(
+            e["code"] == "missing-required-metadata"
+            and e["task_id"] == "001"
+            and e["field"] == "Priority"
+            for e in err
+        ), err
+        # Source-line pinning must name a real line in the fixture.
+        src_lines = src.read_text(encoding="utf-8").splitlines()
+        assert all(1 <= e["source_line"] <= len(src_lines) for e in err), err
+
+    def test_duplicate_ids_structured_error(self, tmp_path: Path) -> None:
+        src = tmp_path / "duplicate_ids.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "duplicate_ids.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp.returncode == 1
+        err = _parse_json(cp)["errors"]
+        dup = [e for e in err if e["code"] == "duplicate-id"]
+        assert dup and dup[0]["task_id"] == "001", err
+        assert dup[0]["first_seen_line"] < dup[0]["source_line"], dup[0]
+
+    def test_unresolvable_deps_structured_error(self, tmp_path: Path) -> None:
+        src = tmp_path / "unresolvable_deps.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "unresolvable_deps.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp.returncode == 1
+        err = _parse_json(cp)["errors"]
+        unresolved = [e for e in err if e["code"] == "unresolvable-dep"]
+        assert unresolved and unresolved[0]["task_id"] == "001"
+        assert unresolved[0]["dep_id"] == "999", unresolved
+
+    def test_cyclic_deps_structured_error(self, tmp_path: Path) -> None:
+        src = tmp_path / "cyclic_deps.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "cyclic_deps.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp.returncode == 1
+        err = _parse_json(cp)["errors"]
+        cycles = [e for e in err if e["code"] == "cyclic-dependency"]
+        assert cycles, err
+        assert set(cycles[0]["task_ids"]) == {"001", "002"}
+
+    def test_malformed_header_structured_error(self, tmp_path: Path) -> None:
+        """`## TASK-1:` (one digit) must be rejected with a structured
+        `malformed-task-header` error pinned to the offending source line,
+        NOT silently normalized to `001` or silently dropped as `no-tasks`.
+        """
+        src = tmp_path / "malformed_header.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "malformed_header.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp.returncode == 1
+        err = _parse_json(cp)["errors"]
+        malformed = [e for e in err if e["code"] == "malformed-task-header"]
+        assert malformed, err
+        assert malformed[0]["raw_id"] == "1", malformed
+        # Pins a real source line in the fixture.
+        src_lines = src.read_text(encoding="utf-8").splitlines()
+        assert 1 <= malformed[0]["source_line"] <= len(src_lines), malformed
+        # The offending line IS the one-digit TASK heading.
+        assert src_lines[malformed[0]["source_line"] - 1].startswith(
+            "## TASK-1:"
+        ), src_lines[malformed[0]["source_line"] - 1]
+        # Critically: no `no-tasks` fallback. The error surfaces loudly.
+        assert not any(e["code"] == "no-tasks" for e in err), err
+
+    def test_decompose_preserves_source_task_status(
+        self, tmp_path: Path,
+    ) -> None:
+        """Auto-decomposed manifest chunks must carry through each source
+        task's `**Status:**` (mapped to `{Done, Pending}`), not blanket
+        every chunk as `Pending`. A whole-plan task already marked `done`
+        must NOT be reintroduced to the scheduler as pending work.
+        """
+        src = tmp_path / "status_mix.md"
+        src.write_text(
+            "# Status-mix fixture\n"
+            "\n"
+            "**Base branch:** main\n"
+            "\n"
+            "## Goal\n\nGoal.\n\n## Context\n\nCtx.\n\n## Verification\n\nV.\n\n"
+            "## Tasks\n\n"
+            "## TASK-001: Done already\n"
+            "\n"
+            "- **Status:** done\n"
+            "- **Priority:** high\n"
+            "- **Files:**\n"
+            "  - a.txt (create)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `true`\n"
+            "- **Acceptance criteria:**\n"
+            "  - it works\n"
+            "\n"
+            "**Description:**\nAlready completed.\n\n"
+            "## TASK-002: Still pending\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** medium\n"
+            "- **Files:**\n"
+            "  - b.txt (create)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `true`\n"
+            "- **Acceptance criteria:**\n"
+            "  - it works\n"
+            "\n"
+            "**Description:**\nTo-do.\n",
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(
+            src, tmp_path / "out", force=True,
+        )
+        assert res["ok"] is True, res
+        manifest = json.loads(
+            (Path(res["produced_dir"]) / "00_INDEX.json").read_text(
+                encoding="utf-8",
+            ),
+        )
+        by_id = {c["task_id"]: c for c in manifest["chunks"]}
+        assert by_id["001"]["status"] == "Done", by_id["001"]
+        assert by_id["002"]["status"] == "Pending", by_id["002"]
+        # Both statuses are in the narrow index vocabulary.
+        for chunk in manifest["chunks"]:
+            assert chunk["status"] in plan_ops.ALLOWED_INDEX_STATUSES, chunk
+
+    def test_decompose_manifest_has_canonical_schema_fields(
+        self, tmp_path: Path,
+    ) -> None:
+        """Emitted `00_INDEX.json` carries the same top-level keys as the
+        canonical manual-sidecar manifest (see
+        `docs/plans/per_task_dispatch_refactor_v2/00_INDEX.json`), with
+        correct types. This is the schema-compatibility invariant: an
+        auto-decomposed directory must be consumable by the same loader
+        that reads hand-authored directories.
+        """
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(
+            src, tmp_path / "out", force=True,
+        )
+        assert res["ok"] is True, res
+        manifest = json.loads(
+            (Path(res["produced_dir"]) / "00_INDEX.json").read_text(
+                encoding="utf-8",
+            ),
+        )
+        # Canonical top-level keys present with the right types.
+        assert manifest["schema_version"] == 1
+        assert isinstance(manifest["source"], str) and manifest["source"]
+        assert isinstance(manifest["plan_title"], str) and manifest["plan_title"]
+        assert isinstance(manifest["created"], str) and manifest["created"]
+        assert manifest["base_branch"] == "main"
+        assert manifest["depends_on_plans"] == []
+        assert manifest["supersedes"] == []
+        assert isinstance(manifest["parallel_batches"], list)
+        assert isinstance(manifest["chunks"], list)
+        # Compare the emitted top-level key set against the canonical
+        # manual-sidecar manifest. The decomposer may add additional
+        # provenance keys (e.g. `source_plan_file`) but must emit at
+        # least every canonical top-level field.
+        canonical_path = (
+            REPO_ROOT
+            / "docs" / "plans"
+            / "per_task_dispatch_refactor_v2" / "00_INDEX.json"
+        )
+        canonical = json.loads(
+            canonical_path.read_text(encoding="utf-8"),
+        )
+        missing = set(canonical.keys()) - set(manifest.keys())
+        assert not missing, (
+            f"decomposed manifest missing canonical top-level keys: "
+            f"{sorted(missing)}"
+        )
+
+    def test_decompose_plan_timing_budget(self, tmp_path: Path) -> None:
+        """Decomposition for a 10-task plan completes under 100 ms wall.
+
+        AC requires heuristic-only (no LLM, no network) with a soft budget.
+        """
+        src = tmp_path / "perf.md"
+        body = [
+            "# Perf test plan",
+            "",
+            "**Status:** pending",
+            "",
+            "## Goal",
+            "",
+            "Perf target.",
+            "",
+            "## Context",
+            "",
+            "Context.",
+            "",
+            "## Verification",
+            "",
+            "ok.",
+            "",
+            "## Tasks",
+            "",
+        ]
+        for i in range(1, 11):
+            body += [
+                f"## TASK-{i:03d}: Task {i}",
+                "",
+                "- **Status:** pending",
+                "- **Priority:** high",
+                "- **Files:**",
+                f"  - scratch/x{i}.txt",
+                "- **Dependencies:** []",
+                "- **Test command:** `true`",
+                "- **Acceptance criteria:**",
+                "  - it works",
+                "- **Reversion guidance:** cleanup",
+                "",
+                "**Description:**",
+                f"Body for TASK-{i:03d}.",
+                "",
+            ]
+        src.write_text("\n".join(body), encoding="utf-8")
+        import time
+        t0 = time.perf_counter()
+        res = plan_ops._decompose_plan(
+            src, tmp_path / "perf_out", force=True,
+        )
+        elapsed = time.perf_counter() - t0
+        assert res["ok"] is True, res
+        # Generous 500 ms budget so slow CI hardware does not flake — the AC
+        # "<100 ms for a 10-task plan" is the target on local hardware; CI
+        # baselines add I/O and import overhead.
+        assert elapsed < 0.5, f"decompose took {elapsed*1000:.1f}ms; too slow"
+
+    def test_decompose_to_child_grammar_matches_level3_helper(
+        self, tmp_path: Path,
+    ) -> None:
+        """Round-trip: decompose emits H3 children that reparse via the same
+        shared helpers at level=3. This is the grammar-contract test TASK-004
+        depends on — if the decomposer emits a shape `build-tasks` can't
+        read, it shows up here.
+        """
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(
+            src, tmp_path / "out", force=True,
+        )
+        assert res["ok"] is True, res
+        manifest = json.loads(
+            (Path(res["produced_dir"]) / "00_INDEX.json").read_text(
+                encoding="utf-8",
+            ),
+        )
+        for chunk in manifest["chunks"]:
+            body = (Path(res["produced_dir"]) / chunk["file"]).read_text(
+                encoding="utf-8",
+            )
+            task = plan_ops._parse_task_block(body, level=3)
+            assert task["id"] == chunk["task_id"]
+            assert task["priority"] == chunk["priority"]
+            assert task["depends_on"] == chunk["depends_on"]
+            # Description + acceptance_criteria round-trip. The "fat"
+            # invariant TASK-006's schedule-only plan-review needs.
+            assert task["description"] and task["description"].strip(), task
+            assert task["acceptance_criteria"], task
+
+    def test_decompose_default_out_dir_sibling(self, tmp_path: Path) -> None:
+        """Default --out-dir is `<file-parent>/<file-stem>/`."""
+        src = tmp_path / "nested" / "canonical.md"
+        src.parent.mkdir()
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp.returncode == 0, cp.stderr
+        produced = Path(_parse_json(cp)["produced_dir"])
+        assert produced == (src.parent / "canonical").resolve()
+
+    def test_decompose_auto_promote_event_accepted(
+        self, isolated_plan: Path,
+    ) -> None:
+        """Orchestrator smoke: Phase 0 wire-up emits a `decompose_auto_promote`
+        log event after a successful decomposition. The event name must be
+        in `ALLOWED_LOG_EVENTS` so `log-event` accepts it, and the fields
+        payload the skill passes (`{source_file, produced_dir, task_count}`)
+        must round-trip through the JSONL writer.
+
+        Real end-to-end `/implement-plan <file.md>` dispatch happens inside
+        Claude Code's slash-command runtime and cannot be simulated here; this
+        test locks in the contract pieces that live in `plan_ops.py`.
+        """
+        # Contract: the event type is in the allowed set.
+        assert "decompose_auto_promote" in plan_ops.ALLOWED_LOG_EVENTS
+        # Wire-up: `log-event` accepts the expected field payload.
+        cp = _run(
+            "log-event",
+            "--event", "decompose_auto_promote",
+            "--fields-json",
+            json.dumps(
+                {
+                    "run_id": "R_SMOKE",
+                    "source_file": "docs/plans/demo.md",
+                    "produced_dir": "docs/plans/demo",
+                    "task_count": 3,
+                }
+            ),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        assert _parse_json(cp)["ok"] is True
+        lines = plan_ops.RUN_LOG_PATH.read_text(
+            encoding="utf-8",
+        ).splitlines()
+        assert len(lines) == 1
+        rec = json.loads(lines[0])
+        assert rec["event"] == "decompose_auto_promote"
+        assert rec["source_file"] == "docs/plans/demo.md"
+        assert rec["produced_dir"] == "docs/plans/demo"
+        assert rec["task_count"] == 3
+
+    def test_decompose_children_pass_schema_valid_gate(
+        self, tmp_path: Path,
+    ) -> None:
+        """Every auto-decomposed child carries the full top-level §5 layout
+        (`## Goal`, `## Context` or `## Scoped Context`, `## Verification`,
+        and `## Tasks` wrapping the H3 block), so the Phase 0 `schema-valid`
+        gate that runs per-child on a decomposed directory passes.
+
+        This is the Codex-review load-bearing finding: without these
+        sections the auto-promoted directory would immediately fail
+        preflight on the first child file the gate inspects.
+        """
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(
+            src, tmp_path / "out", force=True,
+        )
+        assert res["ok"] is True, res
+        produced = Path(res["produced_dir"])
+        manifest = json.loads(
+            (produced / "00_INDEX.json").read_text(encoding="utf-8"),
+        )
+        for chunk in manifest["chunks"]:
+            child = produced / chunk["file"]
+            gate = plan_ops._gate_schema_valid(child)
+            assert gate["status"] == "pass", (
+                f"child {chunk['file']} failed schema-valid: "
+                f"{gate.get('reason')!r}; body preview:\n"
+                f"{child.read_text(encoding='utf-8')[:600]}"
+            )
+            body = child.read_text(encoding="utf-8")
+            # Positive-shape checks mirroring the layout in the shipped
+            # hand-authored fixture `tests/fixtures/directory_mode_plan/
+            # TASK-001_seed.md`: top-level Goal, Context, Verification,
+            # and Tasks sections precede the `### TASK-NNN:` block.
+            assert re.search(r"^## Goal\b", body, re.MULTILINE), body
+            assert re.search(r"^## Context\b", body, re.MULTILINE), body
+            assert re.search(
+                r"^## Verification\b", body, re.MULTILINE,
+            ), body
+            assert re.search(r"^## Tasks\b", body, re.MULTILINE), body
+            # H3 task block still parses via the shared helper.
+            task = plan_ops._parse_task_block(body, level=3)
+            assert task["id"] == chunk["task_id"]
+
+    def test_decompose_force_rerun_is_cross_day_idempotent(
+        self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    ) -> None:
+        """Cross-day `--force` rerun produces byte-identical output.
+
+        `00_INDEX.json`'s `created` field is derived from the prior
+        manifest on `--force` when one exists, so re-running the
+        decomposer on a different day (or across day boundaries in CI)
+        cannot perturb the byte content.
+        """
+        import plan_ops as _plan_ops_module  # type: ignore
+
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+
+        class _FrozenDay1:
+            @classmethod
+            def now(cls, tz: object = None) -> "_FrozenDay1":
+                return cls()
+
+            def strftime(self, fmt: str) -> str:
+                return "2026-04-24"
+
+        class _FrozenDay2:
+            @classmethod
+            def now(cls, tz: object = None) -> "_FrozenDay2":
+                return cls()
+
+            def strftime(self, fmt: str) -> str:
+                return "2027-01-01"
+
+        out_dir = tmp_path / "out"
+        # Day 1: create the directory; records created="2026-04-24".
+        monkeypatch.setattr(_plan_ops_module, "datetime", _FrozenDay1)
+        res1 = _plan_ops_module._decompose_plan(src, out_dir, force=True)
+        assert res1["ok"] is True, res1
+        manifest1_text = (out_dir / "00_INDEX.json").read_text(
+            encoding="utf-8",
+        )
+        snapshot_day1 = {
+            p.name: p.read_bytes()
+            for p in out_dir.iterdir()
+            if p.is_file()
+        }
+        assert '"created": "2026-04-24"' in manifest1_text
+
+        # Day 2: `datetime.now()` now returns a different date. Under
+        # `--force`, the decomposer MUST preserve the prior manifest's
+        # `created` field so the output stays byte-identical.
+        monkeypatch.setattr(_plan_ops_module, "datetime", _FrozenDay2)
+        res2 = _plan_ops_module._decompose_plan(src, out_dir, force=True)
+        assert res2["ok"] is True, res2
+        snapshot_day2 = {
+            p.name: p.read_bytes()
+            for p in out_dir.iterdir()
+            if p.is_file()
+        }
+        assert snapshot_day1.keys() == snapshot_day2.keys()
+        for name, blob in snapshot_day1.items():
+            assert snapshot_day2[name] == blob, (
+                f"cross-day --force rerun produced non-identical content "
+                f"for {name}"
+            )
+
+    def test_decompose_fresh_day_stamps_today_when_no_prior_manifest(
+        self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
+    ) -> None:
+        """First-time decomposition (no prior `00_INDEX.json`) stamps
+        today's date, even under `--force`. The `--force` preservation
+        path only applies when a prior manifest is on disk."""
+        import plan_ops as _plan_ops_module  # type: ignore
+
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+
+        class _FrozenDay:
+            @classmethod
+            def now(cls, tz: object = None) -> "_FrozenDay":
+                return cls()
+
+            def strftime(self, fmt: str) -> str:
+                return "2027-06-15"
+
+        monkeypatch.setattr(_plan_ops_module, "datetime", _FrozenDay)
+        out_dir = tmp_path / "fresh_out"
+        res = _plan_ops_module._decompose_plan(src, out_dir, force=True)
+        assert res["ok"] is True, res
+        manifest = json.loads(
+            (out_dir / "00_INDEX.json").read_text(encoding="utf-8"),
+        )
+        assert manifest["created"] == "2027-06-15"
+
+    def test_decompose_child_always_emits_reversion_guidance(
+        self, tmp_path: Path,
+    ) -> None:
+        """Child file grammar is pinned: `**Reversion guidance:**` must
+        appear in every emitted child, even when the source task omits
+        the field. Emits the stable `none` sentinel in that case.
+        """
+        src = tmp_path / "no_rev.md"
+        src.write_text(
+            "# No-reversion fixture\n"
+            "\n"
+            "**Base branch:** main\n"
+            "\n"
+            "## Goal\n\nG.\n\n## Context\n\nC.\n\n## Verification\n\nV.\n\n"
+            "## Tasks\n\n"
+            "## TASK-001: Without reversion\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Files:**\n"
+            "  - foo.txt (create)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `true`\n"
+            "- **Acceptance criteria:**\n"
+            "  - it works\n"
+            "\n"
+            "**Description:**\nNo reversion guidance on source.\n",
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(
+            src, tmp_path / "out", force=True,
+        )
+        assert res["ok"] is True, res
+        produced = Path(res["produced_dir"])
+        manifest = json.loads(
+            (produced / "00_INDEX.json").read_text(encoding="utf-8"),
+        )
+        assert len(manifest["chunks"]) == 1
+        child = produced / manifest["chunks"][0]["file"]
+        body = child.read_text(encoding="utf-8")
+        # Unconditional emission: the header MUST be present.
+        assert "- **Reversion guidance:**" in body, body
+        # Sentinel value for the omitted case.
+        assert re.search(
+            r"^- \*\*Reversion guidance:\*\* none\s*$",
+            body,
+            re.MULTILINE,
+        ), body
+        # Round-trips cleanly: parser reads the sentinel as the literal
+        # string "none".
+        task = plan_ops._parse_task_block(body, level=3)
+        assert task["reversion_guidance"] == "none"
+
+    def test_decompose_force_removes_stale_children(
+        self, tmp_path: Path,
+    ) -> None:
+        """When the source plan shrinks (or a task slug changes) between
+        two `--force` runs, the decomposer MUST remove any stale
+        `TASK-*.md` files that the new chunk set no longer covers. The
+        directory's canonical shape is
+        `{00_INDEX.json, TASK-NNN_<slug>.md, ...}` and extra children
+        would diverge from that shape.
+        """
+        # Build a three-task source.
+        three_task_plan = (
+            "# Stale-children fixture\n"
+            "\n"
+            "**Base branch:** main\n"
+            "\n"
+            "## Goal\n\nG.\n\n## Context\n\nC.\n\n## Verification\n\nV.\n\n"
+            "## Tasks\n\n"
+        )
+        for idx in (1, 2, 3):
+            three_task_plan += (
+                f"## TASK-{idx:03d}: Task {idx}\n"
+                "\n"
+                "- **Status:** pending\n"
+                "- **Priority:** high\n"
+                "- **Files:**\n"
+                f"  - f{idx}.txt (create)\n"
+                "- **Dependencies:** []\n"
+                "- **Test command:** `true`\n"
+                "- **Acceptance criteria:**\n"
+                "  - it works\n"
+                "\n"
+                f"**Description:**\nBody {idx}.\n\n"
+            )
+        src = tmp_path / "plan.md"
+        src.write_text(three_task_plan, encoding="utf-8")
+        out_dir = tmp_path / "out"
+        res1 = plan_ops._decompose_plan(src, out_dir, force=True)
+        assert res1["ok"] is True, res1
+        children_before = sorted(
+            p.name for p in out_dir.glob("TASK-*.md")
+        )
+        assert len(children_before) == 3, children_before
+        stale_name = children_before[2]  # TASK-003's child file
+        assert (out_dir / stale_name).is_file()
+        # Drop an unrelated user note into the directory; the sweep
+        # must leave it alone.
+        user_note = out_dir / "NOTES.md"
+        user_note.write_text("personal notes\n", encoding="utf-8")
+        # Modify the source to remove TASK-003.
+        two_task_plan = (
+            "# Stale-children fixture\n"
+            "\n"
+            "**Base branch:** main\n"
+            "\n"
+            "## Goal\n\nG.\n\n## Context\n\nC.\n\n## Verification\n\nV.\n\n"
+            "## Tasks\n\n"
+        )
+        for idx in (1, 2):
+            two_task_plan += (
+                f"## TASK-{idx:03d}: Task {idx}\n"
+                "\n"
+                "- **Status:** pending\n"
+                "- **Priority:** high\n"
+                "- **Files:**\n"
+                f"  - f{idx}.txt (create)\n"
+                "- **Dependencies:** []\n"
+                "- **Test command:** `true`\n"
+                "- **Acceptance criteria:**\n"
+                "  - it works\n"
+                "\n"
+                f"**Description:**\nBody {idx}.\n\n"
+            )
+        src.write_text(two_task_plan, encoding="utf-8")
+        res2 = plan_ops._decompose_plan(src, out_dir, force=True)
+        assert res2["ok"] is True, res2
+        children_after = sorted(
+            p.name for p in out_dir.glob("TASK-*.md")
+        )
+        # Stale third child was swept.
+        assert stale_name not in children_after, children_after
+        assert len(children_after) == 2, children_after
+        # Manifest reflects the two-task shape.
+        manifest = json.loads(
+            (out_dir / "00_INDEX.json").read_text(encoding="utf-8"),
+        )
+        assert [c["task_id"] for c in manifest["chunks"]] == ["001", "002"]
+        # Unrelated user file was NOT touched.
+        assert user_note.is_file()
+        assert user_note.read_text(encoding="utf-8") == "personal notes\n"
+
+
+class TestSkillAutoPromoteBootstrapInterpreter:
+    """SKILL.md Phase 0 auto-promote must use a bootstrap interpreter
+    (literal `python3`), not `$PYTHON`. Per Phase 0's own ordering,
+    `$PYTHON` is only pinned *after* `preflight --json` runs, so
+    invoking `$PYTHON` before preflight is a direct contradiction.
+    """
+
+    SKILL = (
+        REPO_ROOT / "plugins" / "plan-executor"
+        / "skills" / "implement-plan" / "SKILL.md"
+    )
+
+    def test_auto_promote_uses_python3_not_pinned(self) -> None:
+        text = self.SKILL.read_text(encoding="utf-8")
+        # Find the auto-promote block (bounded by the section header the
+        # task ships) and confirm the `decompose-plan` invocation inside
+        # it does NOT reference `$PYTHON`.
+        start_m = re.search(
+            r"\*\*Auto-promote single-file input to directory mode",
+            text,
+        )
+        assert start_m is not None, "auto-promote block missing from SKILL.md"
+        # Scope the search to the block: until the next `## ` heading or
+        # the next top-level `**`-bold paragraph marker.
+        tail = text[start_m.end():]
+        # Pick a generous bound — the `path-info` section, or the next
+        # H2 heading, whichever comes first.
+        end_m = re.search(
+            r"^(?:## |First, bind the path placeholders)",
+            tail,
+            re.MULTILINE,
+        )
+        block = tail[: end_m.start()] if end_m else tail
+        # The decompose-plan invocation inside this block uses python3.
+        decompose_cmds = re.findall(
+            r"^[^\n]*plan_ops\.py[^\n]*decompose-plan[^\n]*$",
+            block,
+            re.MULTILINE,
+        )
+        assert decompose_cmds, (
+            "no decompose-plan invocation found inside auto-promote block"
+        )
+        for cmd in decompose_cmds:
+            assert "$PYTHON" not in cmd, (
+                f"auto-promote decompose-plan invocation must NOT use "
+                f"$PYTHON (it is not bound until preflight): {cmd!r}"
+            )
+            assert "python3" in cmd, (
+                f"auto-promote decompose-plan invocation must use the "
+                f"literal `python3` bootstrap interpreter: {cmd!r}"
+            )
