@@ -217,7 +217,7 @@ Make plan-review schedule-only. Codex no longer needs to read plan markdown to v
 
 ### TASK-007: Triage + author per-child targeting (backward-compatible)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** claude
 - **Files:**

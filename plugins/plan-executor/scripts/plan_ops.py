@@ -4387,6 +4387,12 @@ def _validate_plan_review_finding(item: object, *, path: str) -> list[dict]:
         "concern": str,
         "suggested_change": str,
     }
+    # target_task_id is optional (TASK-007 per-child targeting); when
+    # present it must be a string OR null. Absent means "schedule-level
+    # finding" (synthesized to null by the parser).
+    optional = {
+        "target_task_id",
+    }
     for key, typ in required.items():
         if key not in item:
             errors.append({
@@ -4409,6 +4415,17 @@ def _validate_plan_review_finding(item: object, *, path: str) -> list[dict]:
                     f"{typ.__name__}"
                 ),
             })
+    if "target_task_id" in item:
+        value = item["target_task_id"]
+        if not (value is None or isinstance(value, str)):
+            errors.append({
+                "path": f"{path}.target_task_id",
+                "code": "invalid-plan-review-finding-field",
+                "message": (
+                    "plan-review finding field 'target_task_id' must be a "
+                    "string or null"
+                ),
+            })
     severity = item.get("severity")
     if (
         isinstance(severity, str)
@@ -4424,7 +4441,7 @@ def _validate_plan_review_finding(item: object, *, path: str) -> list[dict]:
             ),
         })
     for key in item.keys():
-        if key not in required:
+        if key not in required and key not in optional:
             errors.append({
                 "path": f"{path}.{key}",
                 "code": "unknown-plan-review-finding-field",
@@ -4510,6 +4527,158 @@ def _validate_plan_review_parsed(parsed: object) -> list[dict]:
                 "message": f"parsed has unknown field {key!r}",
             })
     return errors
+
+
+# ---------------------------------------------------------------------------
+# TASK-007 / Phase 1.5.5 — triage finding prioritization.
+#
+# The Phase 1.5.5 triage-agent dispatch template instructs the agent to
+# reason about Codex plan-review findings in a prioritized order:
+# (a) blocking=true first, (b) then severity=critical, (c) then
+# severity=important, (d) then severity=minor. The ordering is advisory
+# prose in the dispatch template, but the orchestrator (or a dispatch
+# builder) calls `order_triage_findings` to produce the ordered payload
+# before rendering the template so the embedded per-finding JSON appears
+# in the documented order.
+# ---------------------------------------------------------------------------
+
+_TRIAGE_SEVERITY_RANK: dict[str, int] = {
+    "critical": 0,
+    "important": 1,
+    "minor": 2,
+}
+
+
+def order_triage_findings(findings: list[dict]) -> list[dict]:
+    """Return `findings` reordered by the documented triage priority ladder,
+    annotated with their original position as `source_index`.
+
+    Stable sort by the composite key:
+        (0 if blocking else 1, severity_rank, source_index)
+
+    where `severity_rank` is `critical=0 < important=1 < minor=2` and
+    unknown severities sort after the three named tiers (rank=99). The
+    source-index tie-breaker keeps entries within a tier in source order
+    — this matches the parser contract (`parse-plan-review-report`
+    preserves the original Codex `findings[]` order) and ensures
+    schedule-level entries (`target_task_id=None`) interleave by severity
+    just like task-targeted entries.
+
+    The returned list contains SHALLOW COPIES of the original finding
+    dicts, each annotated with a `source_index` integer field set to its
+    0-based position in the input list. All other original fields
+    (`target_task_id`, `section`, `concern`, `suggested_change`,
+    `severity`, `blocking`, ...) are preserved verbatim. The original
+    input dicts are NOT mutated. If an input dict already carries a
+    `source_index` key (e.g., the caller ran the helper twice by
+    mistake), the annotation overwrites it so the output is always
+    grounded in the current call's positions.
+
+    The `source_index` annotation is load-bearing: the Phase 1.5.5
+    triage-agent dispatch template instructs the triage agent to reference
+    `source_index` values — NOT positions in this presorted array — when
+    emitting `load_bearing` / `dismissed`. This preserves the contract that
+    `parse-plan-review-triage-report` validates indices against the
+    original Codex `parsed.findings[]` array (by `--findings-count`).
+
+    Intended caller: the orchestrator / dispatch builder for the Phase
+    1.5.5 triage-agent dispatch template (see
+    `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`)
+    and the `order-triage-findings` subcommand wrapper.
+    """
+    if not isinstance(findings, list):
+        raise TypeError(
+            f"order_triage_findings expects a list, got {type(findings).__name__}"
+        )
+
+    def _key(entry: tuple[int, object]) -> tuple[int, int, int]:
+        idx, f = entry
+        if not isinstance(f, dict):
+            # Defensive: non-dict entries sort to the very end, preserving
+            # source order among themselves.
+            return (2, 99, idx)
+        blocking_bucket = 0 if f.get("blocking") is True else 1
+        severity = f.get("severity")
+        sev_rank = _TRIAGE_SEVERITY_RANK.get(
+            severity if isinstance(severity, str) else "", 99,
+        )
+        return (blocking_bucket, sev_rank, idx)
+
+    indexed = list(enumerate(findings))
+    indexed.sort(key=_key)
+    ordered: list[dict] = []
+    for idx, f in indexed:
+        if isinstance(f, dict):
+            annotated = dict(f)
+            annotated["source_index"] = idx
+            ordered.append(annotated)
+        else:
+            # Defensive: non-dict entries pass through as-is (can't
+            # annotate a non-dict). Matches the defensive sort-key path.
+            ordered.append(f)  # type: ignore[arg-type]
+    return ordered
+
+
+def cmd_order_triage_findings(args: argparse.Namespace) -> None:
+    """Order-and-annotate triage findings for the Phase 1.5.5 dispatch.
+
+    Input on stdin: JSON — either a bare `list[dict]` of findings, OR a
+    parsed plan-review result object (the shape `parse-plan-review-report`
+    emits) that carries a top-level `findings` array. Either shape is
+    recognized; the helper extracts the list and returns the ordered
+    output.
+
+    Output (JSON): `{"ordered": [...], "errors": []}` on success, where
+    `ordered` is the priority-sorted list with each entry carrying a
+    `source_index` integer (its 0-based position in the input). This is
+    the exact payload the orchestrator substitutes for
+    `<codex_findings_json>` before rendering the Phase 1.5.5 triage
+    dispatch template — see
+    `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`.
+    """
+    raw = sys.stdin.read()
+    if not raw.strip():
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "empty-stdin",
+            "message": "order-triage-findings expects JSON on stdin",
+        }]})
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "json-decode",
+            "message": f"stdin is not valid JSON: {exc}",
+        }]})
+
+    if isinstance(payload, list):
+        findings = payload
+    elif isinstance(payload, dict) and isinstance(payload.get("findings"), list):
+        # Accept the `parse-plan-review-report` result envelope verbatim so
+        # the orchestrator can pipe that command's stdout straight in.
+        findings = payload["findings"]
+    else:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "invalid-type",
+            "message": (
+                "order-triage-findings expects a JSON list of findings or "
+                "a JSON object with a 'findings' list field"
+            ),
+        }]})
+
+    try:
+        ordered = order_triage_findings(findings)
+    except TypeError as exc:
+        _die(args, {"errors": [{
+            "path": "$",
+            "code": "invalid-type",
+            "message": str(exc),
+        }]})
+
+    _emit(args, {"ordered": ordered, "errors": []})
 
 
 def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
@@ -4629,12 +4798,26 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
 
     assert isinstance(parsed, dict)
     findings = parsed.get("findings") or []
+    # TASK-007 backward-compat: synthesize `target_task_id: null` on every
+    # finding that omits it. Old Codex envelopes (pre-TASK-007) do not
+    # carry the field; the parser normalizes the surface so downstream
+    # consumers (triage template, plan-author dispatcher) can read
+    # `target_task_id` uniformly. A schedule-level finding is the default
+    # when the field is absent or explicitly null.
+    normalized_findings: list = []
+    for item in findings:
+        if isinstance(item, dict):
+            normalized = dict(item)
+            normalized.setdefault("target_task_id", None)
+            normalized_findings.append(normalized)
+        else:
+            normalized_findings.append(item)
     result = {
         "plan_file": parsed.get("plan_file"),
         "outcome": outcome,
         "verdict": parsed.get("verdict"),
-        "findings_count": len(findings),
-        "findings": findings,
+        "findings_count": len(normalized_findings),
+        "findings": normalized_findings,
         "notes": parsed.get("notes") or [],
         "summary": parsed.get("summary", ""),
         "schedule_ok": parsed.get("schedule_ok"),
@@ -8292,6 +8475,18 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Read plan-review envelope JSON from stdin")
     _add_json(p_prr)
 
+    p_otf = sub.add_parser(
+        "order-triage-findings",
+        help=(
+            "Sort plan-review findings by (blocking, severity, source_index) "
+            "and annotate each with `source_index`; the orchestrator calls "
+            "this before rendering the Phase 1.5.5 triage dispatch template"
+        ),
+    )
+    p_otf.add_argument("--stdin", action="store_true", required=True,
+                       help="Read findings JSON from stdin")
+    _add_json(p_otf)
+
     p_prt = sub.add_parser(
         "parse-plan-review-triage-report",
         help=(
@@ -8723,6 +8918,7 @@ def main(argv: list[str] | None = None) -> None:
         "filter-schedule": cmd_filter_schedule,
         "parse-implementer-report": cmd_parse_implementer_report,
         "parse-plan-review-report": cmd_parse_plan_review_report,
+        "order-triage-findings": cmd_order_triage_findings,
         "parse-plan-review-triage-report": cmd_parse_plan_review_triage_report,
         "parse-d5-adjudication": cmd_parse_d5_adjudication,
         "commit-task": cmd_commit_task,

@@ -18,7 +18,8 @@
           "blocking": { "type": "boolean" },
           "section": { "type": "string" },
           "concern": { "type": "string" },
-          "suggested_change": { "type": "string" }
+          "suggested_change": { "type": "string" },
+          "target_task_id": { "type": ["string", "null"] }
         },
         "required": [
           "severity",

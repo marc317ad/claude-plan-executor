@@ -92,7 +92,12 @@ Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan` (wh
 
 Dispatched only when the first Phase 1.5 Codex `plan-review` returns `needs-replan` AND auto-revise is on (default; disabled by `--no-auto-revise`). The author revises the plan text in place so a second review can proceed. Agent dispatch, `subagent_type: "plan-author"`, `model: "opus"`.
 
-Orchestrator-side log emission wraps the dispatch:
+**Per-finding fan-out (TASK-007).** Phase 1.5a is no longer a single author dispatch over the whole plan. For each finding in the payload (filtered on `partial-agreement` to `load_bearing` indices, full on `needs-rework`), the orchestrator dispatches a separate `plan-author` agent. Each dispatch carries exactly ONE finding plus the inputs needed to locate its edit target; the author's write scope is locked to that single target. **The one-dispatch-per-finding rule applies uniformly to BOTH task-targeted AND schedule-level findings — schedule-level findings are NOT batched into a single dispatch.** Resolution per finding depends on `target_task_id`:
+
+- **Task-targeted (`target_task_id="NNN"`)** — triple is `{finding, target_task_id, child_plan_file}`. The orchestrator resolves `finding.target_task_id → child_plan_file` via the schedule's `tasks[].plan_file`; the author edits that one child file in place. `roster_file` is absent from this dispatch.
+- **Schedule-level (`target_task_id=null`)** — triple is `{finding, target_task_id=null, roster_file}`, with `child_plan_file` absent or explicitly `null`. The orchestrator passes `roster_file=<plan_dir>/00_INDEX.json` (absolute path to the schedule roster) so the author has a concrete file target. Each schedule-level finding still gets its own dispatch. The author's write scope is `roster_file` (roster edit) OR empty (emit `files_edited: []` with a justification note). If multiple schedule-level findings target the roster, each still dispatches separately; the author may touch `roster_file` idempotently across those dispatches.
+
+Orchestrator-side log emission wraps each per-child dispatch:
 
 ```bash
 {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
@@ -106,16 +111,25 @@ Orchestrator-side log emission wraps the dispatch:
   --fields-json '{"run_id":"<id>","plan_file":"<basename>","files_edited":[...],"findings_actioned":[...],"findings_skipped":[...]}' --json
 ```
 
-Dispatch prompt template:
+Two visually distinct prompt variants render based on `target_task_id`. The orchestrator picks ONE per dispatch; never render both in the same dispatch. The variants differ in their input line block AND in the prose describing the edit target — operators reading the dispatched prompt can tell at a glance which form was selected.
 
-> Apply Codex plan-review findings to the plan at `<absolute plan path>`. The first plan-review pass returned `needs-replan`; your job is to revise the plan text so a second review can proceed.
+---
+
+### Variant A — Task-targeted dispatch (`target_task_id != null`)
+
+Renders when the finding carries a non-null `target_task_id`. Inputs: `child_plan_file` (required), `target_task_id` (required). `roster_file` is NOT rendered on this path.
+
+> Apply a Codex plan-review finding to the child plan at `<absolute child_plan_file path>`. The first plan-review pass returned `needs-replan`; your job is to revise THIS child plan file so a second review can proceed. Your edit target is exactly one `### TASK-NNN:` sub-heading block in this file.
 >
-> Plan path: `<absolute plan path>` (edit this file in place)
+> Dispatch inputs:
 >
-> Codex findings (verbatim from `parsed.findings` of the wrapper envelope):
+> - `child_plan_file`: `<absolute child_plan_file path>` (edit this file in place)
+> - `target_task_id`: `<target_task_id>` (e.g., `"002"`)
+>
+> Codex finding (single entry from `parsed.findings[]` of the wrapper envelope):
 >
 > ```json
-> <codex_findings_json>
+> <codex_finding_json>
 > ```
 >
 > Codex summary (verbatim from `parsed.summary`):
@@ -130,15 +144,57 @@ Dispatch prompt template:
 > <analyst_annotations_json>
 > ```
 >
-> Apply a minimum-change edit per finding. Preserve untouched sections verbatim — do not re-flow or re-format text the findings do not reference. If a finding is vague, contradictory, or contradicts the plan's existing acceptance criteria, skip it with a written rationale in your report rather than invent intent. Your write scope is **exactly the plan path above** — do NOT edit any other file, including other plan documents. Do NOT edit source code, tests, or configuration.
+> Apply a minimum-change edit to resolve the finding. Preserve untouched sections verbatim — do not re-flow or re-format text the finding does not reference. If the finding is vague, contradictory, or contradicts the child's existing acceptance criteria, skip it with a written rationale in your report rather than invent intent. Your write scope is **exactly the child plan path above** — do NOT edit any other file, including other child plans under the same directory, the schedule roster at `00_INDEX.json`, source code, tests, or configuration.
 >
-> Emit a markdown report with three sections: `**Findings actioned:**` (one bullet per finding applied, with the file:line anchor), `**Findings skipped:**` (one bullet per finding not applied, with rationale), `**Files edited:**` (the list of plan paths you touched — typically just the one input plan).
+> Emit a markdown report with three sections: `**Findings actioned:**` (one bullet per finding applied, with the file:line anchor), `**Findings skipped:**` (one bullet per finding not applied, with rationale), `**Files edited:**` (the list of paths you touched — typically just the one input child plan).
 >
 > The `--no-auto-revise` orchestrator flag exists for users who prefer to apply revisions by hand; if you are seeing this prompt, auto-revise is on and you are expected to revise.
 >
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
 
-After the author returns, the orchestrator re-runs Phase 1 end-to-end (`build-tasks` → classifier fan-out → `compute-schedule` → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan. If the second-pass `build-tasks` surfaces fatal `errors[]` the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (clean tasks, or tasks with warnings — same allow-gaps / binding / analyst-triage routing as the first pass) Codex `plan-review` runs once more; that second verdict is binding. The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore.
+---
+
+### Variant B — Schedule-level dispatch (`target_task_id == null`)
+
+Renders when the finding carries `target_task_id=null`. Inputs: `roster_file` (required — absolute path to the schedule's `00_INDEX.json`), `target_task_id=null`. `child_plan_file` is NOT rendered on this path (there is no individual child file target for schedule-level concerns).
+
+> Apply a Codex plan-review **schedule-level** finding. The first plan-review pass returned `needs-replan` with a concern that targets the schedule as a whole (batch ordering, roster composition, cross-cutting structural issue) rather than a single `### TASK-NNN:` child block. This is a schedule-level finding — there is no individual child file target. Your allowed edit surface is the schedule roster file OR empty (no file edit).
+>
+> Dispatch inputs:
+>
+> - `roster_file`: `<absolute path to 00_INDEX.json>` (the schedule roster — edit this file in place only if a roster change resolves the finding)
+> - `target_task_id`: `null` (schedule-level — no individual child file target)
+> - `child_plan_file`: (absent on this path — do NOT edit any `### TASK-NNN:` child file)
+>
+> Codex finding (single entry from `parsed.findings[]` of the wrapper envelope):
+>
+> ```json
+> <codex_finding_json>
+> ```
+>
+> Codex summary (verbatim from `parsed.summary`):
+>
+> ```
+> <codex_summary>
+> ```
+>
+> Analyst annotations (verbatim, may be empty):
+>
+> ```json
+> <analyst_annotations_json>
+> ```
+>
+> This is a schedule-level finding — no individual child file targets. You may edit `roster_file` (the absolute path named above) OR emit `files_edited: []` with a justification note if no roster change is warranted for this finding. Do NOT edit any `### TASK-NNN:` child file, source code, tests, or configuration on this path.
+>
+> Apply a minimum-change roster edit (adjust `chunks[]` ordering, `depends_on` wiring, or metadata fields) when the finding translates concretely into a roster change. Preserve untouched sections of the roster verbatim — do not re-flow or re-format `chunks[]` entries the finding does not reference. If the finding is vague, contradictory, or does not translate into a concrete roster change, skip it with a written rationale in your report under `**Findings skipped:**` rather than invent intent; in that case `**Files edited:**` MUST be the empty list `[]`.
+>
+> Emit a markdown report with three sections: `**Findings actioned:**` (one bullet per finding applied, with the file:line anchor into `roster_file`), `**Findings skipped:**` (one bullet per finding not applied, with rationale), `**Files edited:**` (`[roster_file]` for a roster edit, or `[]` for a no-op).
+>
+> The `--no-auto-revise` orchestrator flag exists for users who prefer to apply revisions by hand; if you are seeing this prompt, auto-revise is on and you are expected to revise.
+>
+> **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
+
+After all per-child authors return, the orchestrator re-runs Phase 1 end-to-end (`build-tasks` → classifier fan-out → `compute-schedule` → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan. If the second-pass `build-tasks` surfaces fatal `errors[]` the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (clean tasks, or tasks with warnings — same allow-gaps / binding / analyst-triage routing as the first pass) Codex `plan-review` runs once more; that second verdict is binding. The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore.
 
 ## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)
 
@@ -165,11 +221,15 @@ Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` li
 >
 > *If `source == codex-plan-review`:*
 >
-> > Codex findings (verbatim from `parsed.findings` of the Phase 1.5 envelope):
+> > Codex findings (derived from `parsed.findings` of the Phase 1.5 envelope). Each finding carries `{severity, blocking, section, concern, suggested_change, target_task_id, source_index}` — `source_index` is the finding's 0-based position in the ORIGINAL Codex `parsed.findings[]` array (pre-sort), and the remaining fields are the TASK-007 per-child targeting shape: `target_task_id` names the child file the downstream `plan-author` will edit (or `null` for a schedule-level finding that targets `00_INDEX.json` or no file at all):
 > >
 > > ```json
 > > <codex_findings_json>
 > > ```
+> >
+> > **Findings are already presorted (TASK-007).** The orchestrator pre-sorts this array by (a) `blocking=true` first, (b) then `severity=critical`, (c) then `severity=important`, (d) then `severity=minor`, with stable source-order tie-breaking. The ordering is produced by `plan_ops.py order-triage-findings` before this template is rendered; you do NOT need to re-sort. Items with `target_task_id=null` are schedule-level concerns — evaluate them against the schedule JSON + roster rather than a single task block.
+> >
+> > **Index contract — use `source_index`, NOT array positions.** Your output indices (`load_bearing` / `dismissed`) MUST reference the `source_index` values carried on each finding above, NOT positions in this presorted array. `source_index` corresponds to the original Codex `parsed.findings[]` order (the downstream parser `parse-plan-review-triage-report --findings-count <N>` validates indices against that original array). Example: if the presorted array begins with a finding whose `source_index` is `2`, emitting `load_bearing: [0]` is WRONG — emit `load_bearing: [2]` to refer to that finding.
 > >
 > > Codex summary (verbatim from `parsed.summary`):
 > >
@@ -232,7 +292,7 @@ Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` li
 > **Hard rules for `partial-agreement`:**
 >
 > - Emit this verdict only when BOTH `load_bearing` and `dismissed` are non-empty. If every item is load-bearing → use `needs-rework`. If no item is → use `ship-with-fixes`. A unanimous split (empty bucket on either side) is a contract violation — the parser rejects it with `partial-agreement-invalid-split`.
-> - Indices in `load_bearing` and `dismissed` MUST be 0-based positions into the reviewer evidence array above (Codex `findings[]` or analyst `gaps[]` per source), disjoint, and in range `[0, findings_count)`. There is no `id` field on items; array index is the reference.
+> - Indices in `load_bearing` and `dismissed` MUST be 0-based and in range `[0, findings_count)`, and the two buckets MUST be disjoint. **When `source == codex-plan-review`, use the `source_index` value carried on each presorted finding** (the original Codex `parsed.findings[]` position). When `source == plan-analyst`, use positions into the `analyst_gaps_json` array above (analyst gaps are not presorted and carry no `source_index`). There is no `id` field on items; `source_index` (Codex path) or array position (analyst path) is the reference.
 >
 > **Output shape (shared across sources — the source discriminator lives in the dispatch input and the orchestrator's run-log event, NOT in your output):**
 >
@@ -258,7 +318,7 @@ Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` li
 > - No source-code reading. The triage adjudicates against the plan prose + schedule only.
 > - No Edit / Write / Agent tools. You are read-only on the plan and the schedule.
 > - No plan-file mutation. No schedule-file mutation.
-> - `load_bearing` / `dismissed` indices MUST be into the reviewer evidence array you were given; do NOT fabricate indices or reference items not in that array.
+> - `load_bearing` / `dismissed` indices MUST be into the reviewer evidence array you were given — on the `codex-plan-review` source, use the per-finding `source_index` value; on the `plan-analyst` source, use the 0-based position in `analyst_gaps_json`. Do NOT fabricate indices or reference items not in that array.
 >
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash.
 

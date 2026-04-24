@@ -7209,7 +7209,14 @@ class TestParsePlanReviewReport:
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
         assert body["findings_count"] == 2
-        assert body["findings"] == findings
+        # TASK-007: the parser synthesizes `target_task_id: null` on
+        # every finding that omits it (backward-compat). The output
+        # findings carry the same keys as the input PLUS the synthesized
+        # target_task_id, so equality must tolerate that augmentation.
+        expected = [
+            {**f, "target_task_id": None} for f in findings
+        ]
+        assert body["findings"] == expected
 
     def test_parse_plan_review_preserves_populated_notes(self) -> None:
         env = _plan_review_envelope()
@@ -7760,6 +7767,941 @@ class TestPlanReviewDocumentation:
         assert "plan-review" in text
         assert "--plan-file" in text
         assert "--schedule-file" in text
+
+
+# ---------------------------------------------------------------------------
+# TASK-007 — per-child targeting: plan-review findings gain optional
+# target_task_id; triage + author dispatches route per-child; backward-compat
+# with old Codex envelopes (no target_task_id) synthesizes null.
+# ---------------------------------------------------------------------------
+
+
+def _finding(
+    *,
+    severity: str = "important",
+    blocking: bool = False,
+    section: str = "tasks[001].test_command",
+    concern: str = "unreachable test",
+    suggested_change: str = "wire deferred-testing note",
+    target_task_id: str | None = ...,  # sentinel: absent vs present null
+) -> dict:
+    """Build a synthetic plan-review finding with optional target_task_id.
+
+    `target_task_id=...` (Ellipsis) means "omit the field entirely", which
+    mirrors an old pre-TASK-007 Codex envelope. Explicit `None` means the
+    producer emitted `target_task_id: null` (a schedule-level finding).
+    """
+    entry: dict = {
+        "severity": severity,
+        "blocking": blocking,
+        "section": section,
+        "concern": concern,
+        "suggested_change": suggested_change,
+    }
+    if target_task_id is not ...:
+        entry["target_task_id"] = target_task_id
+    return entry
+
+
+class TestTask007PlanReviewSchemaTargetTaskIdOptional:
+    """TASK-007 — `codex_plan_review_schema.json` findings[*] gains an
+    optional `target_task_id: string | null` field. It is NOT in the
+    required list, and `additionalProperties: false` continues to apply
+    (the field is enumerated in `properties`).
+    """
+
+    SCHEMA = _PLAN_REVIEW_SCHEMA
+
+    def test_schema_exposes_target_task_id_in_finding_properties(self) -> None:
+        schema = json.loads(self.SCHEMA.read_text(encoding="utf-8"))
+        finding = schema["properties"]["findings"]["items"]
+        assert "target_task_id" in finding["properties"], (
+            "findings[*].target_task_id must be enumerated in `properties` "
+            "so additionalProperties:false continues to permit it"
+        )
+        prop = finding["properties"]["target_task_id"]
+        # Type must admit both string and null (schedule-level findings
+        # carry null).
+        types = prop.get("type")
+        if isinstance(types, str):
+            types = [types]
+        assert "string" in types and "null" in types, prop
+
+    def test_schema_target_task_id_not_in_required(self) -> None:
+        schema = json.loads(self.SCHEMA.read_text(encoding="utf-8"))
+        finding = schema["properties"]["findings"]["items"]
+        required = set(finding.get("required", []))
+        assert "target_task_id" not in required, (
+            "target_task_id must remain optional so pre-TASK-007 Codex "
+            "envelopes continue to validate"
+        )
+
+    def test_schema_finding_additional_properties_stays_false(self) -> None:
+        schema = json.loads(self.SCHEMA.read_text(encoding="utf-8"))
+        finding = schema["properties"]["findings"]["items"]
+        # The TASK-007 change must not weaken the global
+        # additionalProperties:false gate on findings — extra unknown
+        # keys would still silently leak through.
+        assert finding.get("additionalProperties") is False
+
+
+class TestTask007PlanReviewSchemaBackwardCompat:
+    """TASK-007 — envelope with `target_task_id` present validates;
+    envelope without it still validates (not in `required`).
+    """
+
+    def _run_parser(self, envelope: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input=json.dumps(envelope),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_envelope_with_target_task_id_string_validates(self) -> None:
+        findings = [_finding(target_task_id="002")]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="approved-with-notes", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["findings"][0]["target_task_id"] == "002"
+
+    def test_envelope_with_target_task_id_null_validates(self) -> None:
+        findings = [_finding(target_task_id=None)]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="approved-with-notes", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["findings"][0]["target_task_id"] is None
+
+    def test_envelope_without_target_task_id_validates(self) -> None:
+        # `target_task_id=...` omits the field entirely — the pre-TASK-007
+        # Codex envelope shape. It MUST still validate (optional field).
+        findings = [_finding()]
+        # Safety check: the field really is absent on the wire.
+        assert "target_task_id" not in findings[0]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="approved-with-notes", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # The parser validates the raw envelope first; see the separate
+        # backward-compat synthesis test for the post-normalization value.
+        assert body["errors"] == []
+
+    def test_invalid_target_task_id_type_rejected(self) -> None:
+        """Non-string, non-null values (e.g., integer task id) MUST be
+        rejected. Old envelopes that accidentally emit `target_task_id: 2`
+        (integer) would otherwise slip through and break downstream
+        target-resolution in the orchestrator."""
+        bad = _finding()
+        bad["target_task_id"] = 42  # wrong type
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="approved-with-notes", findings=[bad],
+            )
+        )
+        assert cp.returncode == 1, cp.stdout
+        codes = [e["code"] for e in _parse_json(cp)["errors"]]
+        assert "invalid-plan-review-finding-field" in codes
+
+
+class TestTask007ParsePlanReviewReportSynthesizesNullTargetTaskId:
+    """TASK-007 — `parse-plan-review-report` surfaces `target_task_id`
+    when present; synthesizes `null` when absent (backward-compat with
+    pre-TASK-007 Codex envelopes). Schedule-level routing on the author
+    side keys off this normalized field, so the synthesis is the seam
+    that lets old envelopes plug into the new per-child dispatcher.
+    """
+
+    def _run_parser(self, envelope: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input=json.dumps(envelope),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_absent_field_synthesizes_null(self) -> None:
+        findings = [_finding()]
+        assert "target_task_id" not in findings[0]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="approved-with-notes", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert "target_task_id" in body["findings"][0]
+        assert body["findings"][0]["target_task_id"] is None, (
+            "parse-plan-review-report must synthesize null when the "
+            "pre-TASK-007 envelope omits target_task_id — routing to "
+            "the schedule-level author path depends on this default"
+        )
+
+    def test_present_string_value_preserved(self) -> None:
+        findings = [_finding(target_task_id="007")]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="approved-with-notes", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["findings"][0]["target_task_id"] == "007"
+
+    def test_present_null_value_preserved(self) -> None:
+        findings = [_finding(target_task_id=None)]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="approved-with-notes", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["findings"][0]["target_task_id"] is None
+
+    def test_mixed_findings_normalized_uniformly(self) -> None:
+        """Some findings carry target_task_id, some do not. Every
+        finding in the parser's output MUST carry the key — downstream
+        consumers iterate unconditionally."""
+        findings = [
+            _finding(target_task_id="001"),     # present string
+            _finding(),                           # absent entirely
+            _finding(target_task_id=None),       # present null
+        ]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="approved-with-notes", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert all(
+            "target_task_id" in f for f in body["findings"]
+        ), [f.keys() for f in body["findings"]]
+        assert body["findings"][0]["target_task_id"] == "001"
+        assert body["findings"][1]["target_task_id"] is None
+        assert body["findings"][2]["target_task_id"] is None
+
+
+class TestTask007TriageRoutingBlockingFirst:
+    """TASK-007 — Phase 1.5.5 triage dispatch template instructs the
+    triage agent to prioritize `blocking=true` findings first, then
+    `severity=critical`, then `severity=important`. The template also
+    embeds per-finding {target_task_id, blocking, severity} verbatim so
+    the agent can reason about the split.
+
+    The ordering is advisory (enforced as triage prose, not parser
+    logic — the triage agent returns indices into the ORIGINAL Codex
+    findings[] array). The tests below assert that:
+
+    1. The dispatch template documents the prioritization ladder.
+    2. Mixed-blocking findings survive round-trip through
+       `parse-plan-review-report` with per-finding blocking + severity
+       + target_task_id fields intact, so the downstream triage
+       template can render them in the prioritized order.
+    """
+
+    TEMPLATES = (
+        REPO_ROOT / "plugins" / "plan-executor" / "skills"
+        / "implement-plan" / "dispatch-templates.md"
+    )
+
+    def _run_parser(self, envelope: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input=json.dumps(envelope),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_triage_template_documents_prioritization_ladder(self) -> None:
+        text = self.TEMPLATES.read_text(encoding="utf-8")
+        # The per-finding fields must be named in the template so the
+        # embedded JSON carries them.
+        assert "target_task_id" in text
+        assert "blocking" in text
+        assert "severity" in text
+        # Ordering rule: blocking first, then critical, then important.
+        # The assertion matches the literal prose from the template
+        # (see dispatch-templates.md §Phase 1-triage / Phase 1.5.5 —
+        # TASK-007 injection).
+        assert "blocking=true" in text, text
+        assert "severity=critical" in text, text
+        assert "severity=important" in text, text
+
+    def test_mixed_blocking_findings_preserved_with_per_finding_fields(
+        self,
+    ) -> None:
+        """Round-trip through the parser preserves per-finding blocking,
+        severity, and target_task_id so the triage dispatcher can
+        reorder / embed them without re-deriving the shape."""
+        findings = [
+            _finding(
+                severity="minor",
+                blocking=False,
+                target_task_id="003",
+                section="tasks[003].description",
+                concern="minor nit",
+            ),
+            _finding(
+                severity="critical",
+                blocking=True,
+                target_task_id="001",
+                section="tasks[001].test_command",
+                concern="test_command unreachable",
+            ),
+            _finding(
+                severity="important",
+                blocking=False,
+                target_task_id=None,
+                section="batches[0]",
+                concern="schedule-level batch ordering",
+            ),
+        ]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="needs-replan", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        out = body["findings"]
+        # The parser preserves the source order — the triage template
+        # (not the parser) performs the prioritization re-ordering.
+        assert [f["blocking"] for f in out] == [False, True, False]
+        assert [f["severity"] for f in out] == [
+            "minor", "critical", "important",
+        ]
+        assert [f["target_task_id"] for f in out] == [
+            "003", "001", None,
+        ]
+
+    def test_triage_payload_orders_blocking_first_when_sorted(self) -> None:
+        """Exercises the production helper `plan_ops.order_triage_findings`
+        that the orchestrator / triage-dispatch builder calls before
+        rendering the Phase 1.5.5 triage template payload.
+
+        The parser preserves source order; `order_triage_findings` is the
+        single codepath that reorders by (blocking desc, severity-bucket,
+        source-index) AND annotates each entry with `source_index` so the
+        triage agent can reference original Codex positions in its
+        `load_bearing` / `dismissed` buckets. A regression where the
+        helper stops sorting or stops annotating would fail this test.
+        """
+        findings = [
+            # Deliberately place the blocking=true finding LAST so
+            # stable sort by priority key exposes a non-trivial reorder.
+            _finding(
+                severity="minor", blocking=False,
+                target_task_id="003", section="tasks[003].description",
+            ),
+            _finding(
+                severity="important", blocking=False,
+                target_task_id=None, section="batches[0]",
+            ),
+            _finding(
+                severity="critical", blocking=True,
+                target_task_id="001", section="tasks[001].test_command",
+            ),
+        ]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="needs-replan", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        parsed = _parse_json(cp)["findings"]
+
+        # Delegate to the production helper — this is the code the
+        # orchestrator / dispatch builder actually calls.
+        ordered = plan_ops.order_triage_findings(parsed)
+
+        # Helper returns a list of the same length containing annotated
+        # copies (no mutation of the input dicts).
+        assert len(ordered) == len(parsed)
+        assert all(isinstance(f, dict) for f in ordered)
+        # Annotated copies — the helper must NOT mutate the caller's
+        # finding dicts in place.
+        assert "source_index" not in parsed[0]
+        assert "source_index" not in parsed[1]
+        assert "source_index" not in parsed[2]
+
+        # blocking=true entry must come first; its source_index is 2
+        # (originally the LAST entry in `findings`).
+        assert ordered[0]["blocking"] is True
+        assert ordered[0]["severity"] == "critical"
+        assert ordered[0]["target_task_id"] == "001"
+        assert ordered[0]["source_index"] == 2
+        # After that, non-blocking important > non-blocking minor.
+        assert ordered[1]["blocking"] is False
+        assert ordered[1]["severity"] == "important"
+        assert ordered[1]["target_task_id"] is None
+        assert ordered[1]["source_index"] == 1
+        assert ordered[2]["blocking"] is False
+        assert ordered[2]["severity"] == "minor"
+        assert ordered[2]["target_task_id"] == "003"
+        assert ordered[2]["source_index"] == 0
+
+    def test_order_triage_findings_is_stable_within_tier(self) -> None:
+        """Stable within-tier ordering: two non-blocking important
+        findings keep their source order. A regression that swapped to
+        an unstable sort (or bucketed without source-index tie-break)
+        would fail this test. The annotated `source_index` must match
+        each finding's original 0-based position."""
+        findings = [
+            _finding(
+                severity="important", blocking=False,
+                target_task_id="001", section="tasks[001].a",
+                concern="first-important",
+            ),
+            _finding(
+                severity="critical", blocking=True,
+                target_task_id="002", section="tasks[002].b",
+                concern="blocking-critical",
+            ),
+            _finding(
+                severity="important", blocking=False,
+                target_task_id="003", section="tasks[003].c",
+                concern="second-important",
+            ),
+        ]
+        ordered = plan_ops.order_triage_findings(findings)
+        # blocking/critical first; originally at position 1.
+        assert ordered[0]["concern"] == "blocking-critical"
+        assert ordered[0]["source_index"] == 1
+        # Two non-blocking importants retain source order (0 before 2).
+        assert ordered[1]["concern"] == "first-important"
+        assert ordered[1]["source_index"] == 0
+        assert ordered[2]["concern"] == "second-important"
+        assert ordered[2]["source_index"] == 2
+
+    def test_order_triage_findings_empty_list(self) -> None:
+        """An empty input returns an empty list (defensive guard)."""
+        assert plan_ops.order_triage_findings([]) == []
+
+    def test_order_triage_findings_rejects_non_list(self) -> None:
+        """Non-list input raises TypeError so a caller bug surfaces
+        loudly rather than silently no-op'ing."""
+        with pytest.raises(TypeError):
+            plan_ops.order_triage_findings({"not": "a list"})  # type: ignore[arg-type]
+
+    def test_order_triage_findings_does_not_mutate_input(self) -> None:
+        """The helper must not mutate the caller's finding dicts in
+        place. A regression that added `source_index` to the input
+        would leak across call sites."""
+        findings = [
+            _finding(
+                severity="critical", blocking=True,
+                target_task_id="001",
+            ),
+            _finding(
+                severity="minor", blocking=False,
+                target_task_id=None,
+            ),
+        ]
+        before = [dict(f) for f in findings]
+        _ = plan_ops.order_triage_findings(findings)
+        assert findings == before
+
+    def test_triage_dispatch_uses_source_index_and_ordering_helper(self) -> None:
+        """Integration test wiring the production dispatch path together:
+
+        1. Codex's `parsed.findings` survive the `parse-plan-review-report`
+           parser in source order.
+        2. The orchestrator calls `plan_ops.py order-triage-findings` (the
+           single testable wire) to order + annotate findings before
+           rendering `<codex_findings_json>`.
+        3. The triage dispatch template documents that `load_bearing` /
+           `dismissed` reference `source_index`, NOT positions in the
+           presorted array.
+        4. A simulated triage response with `load_bearing=[source_index]`
+           correctly identifies the original Codex finding that was
+           flagged, even though it is no longer at that positional
+           index in the presorted payload.
+        """
+        # Mixed blocking/severity with the blocking=true finding placed
+        # LAST so a non-identity reorder is required.
+        findings = [
+            _finding(
+                severity="minor", blocking=False,
+                target_task_id="010", section="tasks[010].a",
+                concern="minor-first",
+            ),
+            _finding(
+                severity="important", blocking=False,
+                target_task_id=None, section="batches[0]",
+                concern="important-middle",
+            ),
+            _finding(
+                severity="critical", blocking=True,
+                target_task_id="020", section="tasks[020].b",
+                concern="blocking-last",
+            ),
+        ]
+
+        # Step 1: parse the plan-review envelope. The parser MUST preserve
+        # source order — the triage dispatch step performs the reorder.
+        cp_parse = subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input=json.dumps(
+                _plan_review_envelope(
+                    verdict="needs-replan", findings=findings,
+                )
+            ),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp_parse.returncode == 0, cp_parse.stderr
+        parsed_findings = json.loads(cp_parse.stdout)["findings"]
+        assert [f["concern"] for f in parsed_findings] == [
+            "minor-first", "important-middle", "blocking-last",
+        ]
+
+        # Step 2: call the new `order-triage-findings` subcommand — the
+        # single testable wire the orchestrator uses. Pipe the full
+        # parse-plan-review-report output so the dispatch-rendering
+        # site can be a one-liner pipeline. The subcommand accepts both
+        # {findings: [...]} envelopes and bare lists.
+        cp_order = subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "order-triage-findings", "--stdin", "--json",
+            ],
+            input=cp_parse.stdout,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp_order.returncode == 0, cp_order.stderr
+        ordered = json.loads(cp_order.stdout)["ordered"]
+
+        # Prioritized order: blocking first (was source_index=2), then
+        # non-blocking important (source_index=1), then non-blocking
+        # minor (source_index=0).
+        assert [f["concern"] for f in ordered] == [
+            "blocking-last", "important-middle", "minor-first",
+        ]
+        assert [f["source_index"] for f in ordered] == [2, 1, 0]
+
+        # Step 3: the dispatch template documents the `source_index`
+        # contract. The triage agent must NOT return 0 to mean "the
+        # first entry in the presorted array"; it must return the
+        # `source_index` value carried on that entry.
+        template = self.TEMPLATES.read_text(encoding="utf-8")
+        assert "source_index" in template
+        assert "codex-plan-review" in template
+        # Explicit prose asserting that indices reference `source_index`.
+        assert "source_index" in template
+        # The ordering wire must be referenced by name so operators can
+        # discover the orchestrator contract by reading the template.
+        assert "order-triage-findings" in template
+
+        # Step 4: simulate a triage response that flags the blocking
+        # finding as load-bearing. The triage agent sees the blocking
+        # entry at presorted position 0 — but per the `source_index`
+        # contract it MUST emit `load_bearing=[2]` (the original Codex
+        # position). The parser validates against the ORIGINAL findings
+        # count and accepts the source_index value.
+        triage_report = _plan_review_triage_envelope(
+            verdict="partial-agreement",
+            load_bearing=[2],  # source_index of the blocking finding
+            dismissed=[0, 1],  # source_indices of the dismissed pair
+            summary="blocking-last is load-bearing; others dismissed",
+        )
+        cp_triage = subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-triage-report", "--stdin",
+                "--source", "codex-plan-review",
+                "--findings-count", str(len(parsed_findings)),
+                "--json",
+            ],
+            input=triage_report,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp_triage.returncode == 0, cp_triage.stdout or cp_triage.stderr
+        triage = json.loads(cp_triage.stdout)
+        assert triage["verdict"] == "partial-agreement"
+        assert triage["load_bearing"] == [2]
+        assert triage["dismissed"] == [0, 1]
+
+        # Translating the triage selection back to the original Codex
+        # findings[] array via source_index values identifies the correct
+        # concern — the blocking one that was placed LAST in the input.
+        load_bearing_findings = [
+            parsed_findings[i] for i in triage["load_bearing"]
+        ]
+        assert [f["concern"] for f in load_bearing_findings] == [
+            "blocking-last",
+        ]
+        assert load_bearing_findings[0]["blocking"] is True
+        assert load_bearing_findings[0]["target_task_id"] == "020"
+
+
+class TestTask007AuthorPerChildTargeting:
+    """TASK-007 — Phase 1.5a `plan-author` dispatch receives per-finding
+    {finding, target_task_id, child_plan_file} triples and fans out
+    one dispatch per finding. Two findings with different target_task_id
+    values produce two separate author dispatches, each scoped to one
+    child file. Schedule-level findings (target_task_id=null) route to
+    a single "schedule-level — no child file" author dispatch.
+
+    The fan-out itself is orchestrator prose (SKILL.md + dispatch-templates.md
+    read by the parent agent). These tests assert that:
+
+    1. The parser surfaces distinct target_task_id values per finding so
+       the orchestrator can group by child.
+    2. The SKILL.md + dispatch-templates.md prose documents the per-finding
+       payload shape and the schedule-level exception.
+    3. The plan-author.md agent spec accepts child_plan_file (per-child)
+       AND 00_INDEX.json (schedule-level) as valid edit targets.
+    """
+
+    SKILL = (
+        REPO_ROOT / "plugins" / "plan-executor" / "skills"
+        / "implement-plan" / "SKILL.md"
+    )
+    TEMPLATES = (
+        REPO_ROOT / "plugins" / "plan-executor" / "skills"
+        / "implement-plan" / "dispatch-templates.md"
+    )
+    AGENT = (
+        REPO_ROOT / "plugins" / "plan-executor" / "agents" / "plan-author.md"
+    )
+
+    def _run_parser(self, envelope: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input=json.dumps(envelope),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_two_findings_different_target_task_id_yield_distinct_targets(
+        self,
+    ) -> None:
+        """Two findings with different target_task_id values parse with
+        distinct target_task_id on each — the orchestrator uses this
+        field to dispatch one author per child."""
+        findings = [
+            _finding(
+                target_task_id="002",
+                section="tasks[002].test_command",
+                concern="bad test command",
+            ),
+            _finding(
+                target_task_id="005",
+                section="tasks[005].description",
+                concern="description missing",
+            ),
+        ]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="needs-replan", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)["findings"]
+        # Grouping by target_task_id yields two distinct buckets, i.e.,
+        # two separate author dispatches.
+        by_target: dict[str | None, list[dict]] = {}
+        for f in out:
+            by_target.setdefault(f["target_task_id"], []).append(f)
+        assert set(by_target.keys()) == {"002", "005"}
+        assert len(by_target["002"]) == 1
+        assert len(by_target["005"]) == 1
+        # Each bucket carries the original finding shape verbatim so
+        # the dispatcher can embed it in the per-child payload.
+        assert by_target["002"][0]["concern"] == "bad test command"
+        assert by_target["005"][0]["concern"] == "description missing"
+
+    def test_two_findings_build_two_dispatches_with_distinct_child_files(
+        self,
+    ) -> None:
+        """Integration-style: parsing two findings with different non-null
+        target_task_id values and running the per-finding fan-out (resolve
+        target_task_id → schedule tasks[].plan_file → child_plan_file) must
+        produce TWO distinct dispatch payloads, each with its own
+        child_plan_file. Guards against a dispatch-builder regression that
+        could collapse both findings onto one child or drop one dispatch."""
+        findings = [
+            _finding(
+                target_task_id="002",
+                section="tasks[002].test_command",
+                concern="bad test command",
+            ),
+            _finding(
+                target_task_id="005",
+                section="tasks[005].description",
+                concern="description missing",
+            ),
+        ]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="needs-replan", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        parsed_findings = _parse_json(cp)["findings"]
+
+        # Synthetic schedule tasks[] mapping — the orchestrator's resolver
+        # uses target_task_id as the key to look up the child plan_file.
+        schedule_tasks = {
+            "002": "/tmp/plan_dir/TASK-002_fix-test.md",
+            "005": "/tmp/plan_dir/TASK-005_description.md",
+        }
+
+        # Build one dispatch per finding (the TASK-007 per-finding fan-out).
+        dispatches: list[dict] = []
+        for finding in parsed_findings:
+            target_task_id = finding["target_task_id"]
+            assert target_task_id is not None, (
+                "both findings are task-targeted so neither resolves to the "
+                "schedule-level path"
+            )
+            dispatches.append({
+                "agent": "plan-author",
+                "source": "codex-plan-review",
+                "finding": finding,
+                "target_task_id": target_task_id,
+                "child_plan_file": schedule_tasks[target_task_id],
+            })
+
+        # Two findings with different targets yield TWO dispatches.
+        assert len(dispatches) == 2, (
+            "per-finding fan-out must emit one dispatch per finding; "
+            "collapsing two findings into one dispatch is a regression"
+        )
+        # Each dispatch carries a distinct child_plan_file.
+        child_files = [d["child_plan_file"] for d in dispatches]
+        assert len(set(child_files)) == 2, (
+            "dispatches must target distinct child plan files when findings "
+            f"have different target_task_id values; got {child_files}"
+        )
+        # target_task_id is preserved per-dispatch so the author agent
+        # knows which child to edit.
+        assert {d["target_task_id"] for d in dispatches} == {"002", "005"}
+        # The finding payload is embedded verbatim so the author sees
+        # the original concern/section/etc.
+        concerns = {d["target_task_id"]: d["finding"]["concern"] for d in dispatches}
+        assert concerns == {
+            "002": "bad test command",
+            "005": "description missing",
+        }
+
+    def test_schedule_level_findings_each_surface_as_separate_entry(self) -> None:
+        """Findings with target_task_id=null each surface as their own
+        parser-emitted entry — the orchestrator emits ONE author dispatch
+        per schedule-level finding (not a single collapsed dispatch across
+        all null-target findings). The parser preserves one-to-one
+        payload-to-finding correspondence so the fan-out contract
+        (N findings → N author dispatches) holds uniformly for task-targeted
+        and schedule-level findings alike."""
+        findings = [
+            _finding(target_task_id=None, section="batches[0]"),
+            _finding(target_task_id=None, section="roster"),
+        ]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="needs-replan", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)["findings"]
+        schedule_level = [f for f in out if f["target_task_id"] is None]
+        assert len(schedule_level) == 2, (
+            "parser preserves both findings as independent entries so the "
+            "orchestrator can dispatch one author per schedule-level "
+            "finding, matching the uniform per-finding fan-out contract"
+        )
+
+    def test_dispatch_templates_document_per_finding_payload(self) -> None:
+        text = self.TEMPLATES.read_text(encoding="utf-8")
+        # The Phase 1.5a block must name the per-finding triple shape.
+        assert "child_plan_file" in text, text
+        assert "target_task_id" in text, text
+        # Fan-out wording: one dispatch per finding (per-child).
+        assert (
+            "per finding" in text
+            or "per-child" in text
+            or "one finding per dispatch" in text
+            or "per-finding" in text
+        ), text
+        # Schedule-level exception must be documented with the
+        # 00_INDEX.json OR empty edit-target language.
+        assert "00_INDEX.json" in text, text
+        assert (
+            "schedule-level" in text or "schedule level" in text
+        ), text
+
+    def test_author_per_child_targeting_includes_schedule_level_as_separate_dispatch(
+        self,
+    ) -> None:
+        """N findings → N author dispatches, regardless of target_task_id
+        null/non-null. Two findings — one task-targeted ("001") and one
+        schedule-level (null) — each surface as an independent parser
+        entry so the orchestrator's per-finding fan-out emits TWO
+        separate author dispatches (not a single one that collapses the
+        schedule-level finding into a whole-plan sweep).
+
+        Also asserts the orchestrator-side contracts (SKILL.md +
+        dispatch-templates.md) document one-dispatch-per-finding for
+        schedule-level findings and do NOT describe a batched
+        'single schedule-level author dispatch'.
+        """
+        findings = [
+            _finding(
+                target_task_id="001",
+                section="tasks[001].test_command",
+                concern="task-targeted concern",
+            ),
+            _finding(
+                target_task_id=None,
+                section="batches[0]",
+                concern="schedule-level concern",
+            ),
+        ]
+        cp = self._run_parser(
+            _plan_review_envelope(
+                verdict="needs-replan", findings=findings,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)["findings"]
+
+        # Parser surfaces BOTH findings as independent entries — this is
+        # what the orchestrator keys on to emit one author dispatch per
+        # finding. A collapsed dispatch would require the parser to fold
+        # null-target findings together; it does not.
+        assert len(out) == 2, (
+            "both findings must surface as separate entries so the "
+            "orchestrator dispatches one author per finding"
+        )
+
+        # Each finding's target_task_id is preserved verbatim, so the
+        # orchestrator can build the {finding, target_task_id,
+        # child_plan_file} triple independently for each finding.
+        targets = [f["target_task_id"] for f in out]
+        assert targets == ["001", None], (
+            "parser preserves target_task_id per-finding so each finding "
+            "gets its own author dispatch — the task-targeted and "
+            "schedule-level findings must remain distinguishable"
+        )
+
+        # Distinct triples → distinct dispatches. Grouping preserves
+        # one-to-one correspondence.
+        assert out[0]["concern"] == "task-targeted concern"
+        assert out[1]["concern"] == "schedule-level concern"
+
+        # Orchestrator-prose contract: SKILL.md must describe the
+        # uniform per-finding fan-out and MUST NOT describe a single
+        # collapsed schedule-level author dispatch.
+        skill_text = self.SKILL.read_text(encoding="utf-8")
+        assert (
+            "one-dispatch-per-finding" in skill_text
+            or "per-finding" in skill_text
+            or "per finding" in skill_text
+        ), (
+            "SKILL.md §Phase 1.5a must document the one-dispatch-per-"
+            "finding fan-out"
+        )
+        # The legacy "single schedule-level author dispatch" phrasing
+        # must be gone (it was the contract violation Codex flagged).
+        assert "single \"schedule-level\" author dispatch" not in skill_text, (
+            "SKILL.md must not describe schedule-level findings as "
+            "collapsing into a single author dispatch"
+        )
+
+        # Dispatch-templates mirrors the same contract.
+        tpl_text = self.TEMPLATES.read_text(encoding="utf-8")
+        assert "single \"schedule-level\" author dispatch" not in tpl_text, (
+            "dispatch-templates.md must not describe schedule-level "
+            "findings as routing to a single dispatch"
+        )
+        assert (
+            "single schedule-level author dispatch" not in tpl_text
+        ), (
+            "dispatch-templates.md must not batch schedule-level "
+            "findings into one dispatch"
+        )
+
+    def test_skill_md_documents_per_child_author_fanout(self) -> None:
+        text = self.SKILL.read_text(encoding="utf-8")
+        # The fan-out is named explicitly in the needs-replan auto-revise
+        # section so an orchestrator reading the skill top-down can
+        # implement the shift from single-dispatch to per-child fan-out.
+        assert "per-child" in text or "per child" in text, (
+            "SKILL.md §Phase 1.5a must document the per-child author "
+            "fan-out"
+        )
+        assert "target_task_id" in text, (
+            "SKILL.md §Phase 1.5a must name target_task_id as the "
+            "resolution key"
+        )
+        assert "child_plan_file" in text or "plan_file" in text, (
+            "SKILL.md §Phase 1.5a must name the child file edit target"
+        )
+        # Schedule-level exception.
+        assert "schedule-level" in text or "schedule level" in text, (
+            "SKILL.md §Phase 1.5a must document the schedule-level "
+            "(target_task_id=null) exception"
+        )
+
+    def test_plan_author_agent_accepts_child_plan_file(self) -> None:
+        text = self.AGENT.read_text(encoding="utf-8")
+        # The agent spec MUST declare child_plan_file as the edit target
+        # for per-task findings.
+        assert "child_plan_file" in text, (
+            "plan-author.md must declare child_plan_file as the edit "
+            "target for per-task findings"
+        )
+        # And 00_INDEX.json OR empty (files_edited: []) for schedule-level.
+        assert "00_INDEX.json" in text, (
+            "plan-author.md must declare 00_INDEX.json as the allowed "
+            "edit surface for schedule-level findings"
+        )
+        assert (
+            "schedule-level" in text or "schedule level" in text
+        ), (
+            "plan-author.md must name the schedule-level path"
+        )
+        # Child-grammar guidance — H3 `### TASK-NNN:` sub-heading.
+        assert "### TASK-NNN" in text, (
+            "plan-author.md must document the `### TASK-NNN:` child "
+            "sub-heading grammar (TASK-007 parser guidance)"
+        )
 
 
 class TestPlanCodexDispatchPlanReviewSubcommand:
@@ -9533,13 +10475,16 @@ class TestTask025PlanAuthorSubagent:
         assert "**Findings skipped:**" in text, text
         assert "**Files edited:**" in text, text
 
-        # Write-scope invariant: the agent is bound to the single input
+        # Write-scope invariant: the agent is bound to a single input
         # plan path, not a directory glob. The acceptance criterion
-        # calls out this phrasing.
+        # calls out this phrasing. TASK-007 shifted the write target
+        # from "single plan file" (whole-plan) to "single child plan
+        # file" (per-child fan-out); accept either phrasing.
         assert (
             "single plan file passed" in text
             or "single plan file passed as input" in text
             or "single plan file" in text
+            or "single child plan file" in text
         ), text
 
     def test_v2_allowed_log_events_includes_plan_author_events(
@@ -12873,18 +13818,34 @@ class Test_plan_review_triage_integration:
             "detail": "Missing dependency declaration.",
         },
     ]
+    # TASK-007 per-finding fan-out coverage — finding 0 is task-targeted
+    # (target_task_id="001"), finding 1 is schedule-level (target_task_id=None).
+    # The schedule-level entry is required so the simulator can exercise
+    # the {finding, target_task_id=null, roster_file} triple that has no
+    # child_plan_file.
     _CODEX_FINDINGS = [
         {
             "severity": "important",
             "message": "Acceptance criteria are underspecified.",
             "location": "TASK-001",
+            "target_task_id": "001",
         },
         {
             "severity": "minor",
-            "message": "Dependency rationale should be explicit.",
-            "location": "TASK-002",
+            "message": "Batch ordering is ambiguous.",
+            "location": "batches[0]",
+            "target_task_id": None,
         },
     ]
+
+    # Simulated schedule + plan-dir so the Codex-branch fan-out can
+    # resolve target_task_id -> child_plan_file (task-targeted) and
+    # pass roster_file=<plan_dir>/00_INDEX.json (schedule-level).
+    _PLAN_DIR = "/tmp/sim_plan_dir"
+    _SCHEDULE_TASKS = {
+        "001": f"{_PLAN_DIR}/TASK-001_seed.md",
+    }
+    _ROSTER_FILE = f"{_PLAN_DIR}/00_INDEX.json"
 
     def _parse_triage(
         self,
@@ -12916,6 +13877,36 @@ class Test_plan_review_triage_integration:
         )
         assert cp.returncode == 0, cp.stdout or cp.stderr
         return json.loads(cp.stdout)
+
+    def _build_author_dispatch(
+        self, source: str, finding: dict,
+    ) -> dict:
+        """Build a single plan-author dispatch payload for ONE finding
+        (TASK-007 per-finding fan-out).
+
+        Shape by target_task_id:
+
+        - target_task_id != None (task-targeted): payload carries
+          {finding, target_task_id, child_plan_file}; roster_file is
+          absent.
+        - target_task_id is None (schedule-level): payload carries
+          {finding, target_task_id: None, roster_file}; child_plan_file
+          is absent.
+        """
+        target_task_id = finding.get("target_task_id")
+        dispatch: dict = {
+            "agent": "plan-author",
+            "source": source,
+            "finding": finding,
+            "target_task_id": target_task_id,
+        }
+        if target_task_id is None:
+            # Schedule-level — roster_file present, child_plan_file absent.
+            dispatch["roster_file"] = self._ROSTER_FILE
+        else:
+            # Task-targeted — child_plan_file resolved via schedule tasks[].
+            dispatch["child_plan_file"] = self._SCHEDULE_TASKS[target_task_id]
+        return dispatch
 
     def _simulate(
         self,
@@ -13096,28 +14087,38 @@ class Test_plan_review_triage_integration:
             log("batch_start", run_id="R1")
             route = "proceed"
         elif verdict == "partial-agreement":
-            dispatches.append({
-                "agent": "plan-author",
-                "source": source,
-                "payload": [self._CODEX_FINDINGS[i] for i in parsed["load_bearing"]],
-            })
+            # TASK-007: one plan-author dispatch per forwarded finding, each
+            # carrying a single {finding, target_task_id, child_plan_file}
+            # triple (child_plan_file on task-targeted path; roster_file on
+            # schedule-level path with child_plan_file absent).
+            forwarded_findings = [
+                self._CODEX_FINDINGS[i] for i in parsed["load_bearing"]
+            ]
+            for finding in forwarded_findings:
+                dispatches.append(
+                    self._build_author_dispatch(source, finding)
+                )
             summary["Plan review notes"] = list(self._CODEX_FINDINGS)
             summary["dismissed_indices"] = parsed["dismissed"]
-            log("plan_author_start", run_id="R1", source=source)
-            log("plan_author_done", run_id="R1", source=source)
+            for _ in forwarded_findings:
+                log("plan_author_start", run_id="R1", source=source)
+                log("plan_author_done", run_id="R1", source=source)
             log("analyst_done", run_id="R1", outcome="valid")
             log("plan_review_start", run_id="R1", reviewer="codex")
             log("plan_review_done", run_id="R1", verdict="approved")
             log("batch_start", run_id="R1")
             route = "plan-author"
         else:
-            dispatches.append({
-                "agent": "plan-author",
-                "source": source,
-                "payload": list(self._CODEX_FINDINGS),
-            })
-            log("plan_author_start", run_id="R1", source=source)
-            log("plan_author_done", run_id="R1", source=source)
+            # needs-rework: full findings array forwarded, still fanned out
+            # one dispatch per finding (uniform per-finding contract).
+            forwarded_findings = list(self._CODEX_FINDINGS)
+            for finding in forwarded_findings:
+                dispatches.append(
+                    self._build_author_dispatch(source, finding)
+                )
+            for _ in forwarded_findings:
+                log("plan_author_start", run_id="R1", source=source)
+                log("plan_author_done", run_id="R1", source=source)
             log("analyst_done", run_id="R1", outcome="valid")
             log("plan_review_start", run_id="R1", reviewer="codex")
             log("plan_review_done", run_id="R1", verdict="approved")
@@ -13160,7 +14161,33 @@ class Test_plan_review_triage_integration:
             assert result["dispatches"] == []
             assert result["run_end"] is None
         else:
-            assert [d["agent"] for d in result["dispatches"]] == ["plan-author"]
+            # Every dispatched agent is plan-author regardless of path.
+            assert all(
+                d["agent"] == "plan-author" for d in result["dispatches"]
+            )
+            # Codex path fans out one dispatch per forwarded finding
+            # (TASK-007). Analyst path still emits a single dispatch.
+            if source == "codex-plan-review":
+                expected_n = (
+                    1 if verdict == "partial-agreement"  # load_bearing=[0]
+                    else len(self._CODEX_FINDINGS)  # needs-rework → all
+                )
+                assert len(result["dispatches"]) == expected_n
+                # Each Codex-path dispatch carries a SINGLE finding — no
+                # array payload, no collapsed whole-plan dispatch.
+                for d in result["dispatches"]:
+                    assert "finding" in d, (
+                        "Codex-path dispatch must carry a single `finding` "
+                        "(not a `payload` array) per TASK-007 fan-out"
+                    )
+                    assert "payload" not in d or not isinstance(
+                        d.get("payload"), list
+                    ), (
+                        "legacy array-payload shape is forbidden on the "
+                        "Codex fan-out path"
+                    )
+            else:
+                assert len(result["dispatches"]) == 1
 
     def test_analyst_binding_short_circuits_with_plan_analyst_failed(self) -> None:
         result = self._simulate(
@@ -13285,6 +14312,90 @@ class Test_plan_review_triage_integration:
             dismissed=[1],
         )
         assert result["summary"]["dismissed_indices"] == [1]
+
+    def test_author_fan_out_one_dispatch_per_finding_including_schedule_level(
+        self,
+    ) -> None:
+        """TASK-007 contract — the Codex `needs-rework` path produces N
+        plan-author dispatches when N findings are forwarded, each
+        carrying a SINGLE finding (not an array). Including the
+        schedule-level `target_task_id=null` path: that dispatch has
+        `roster_file` present and `child_plan_file` absent / null.
+
+        Exercises the fan-out with both a task-targeted finding (index 0,
+        `target_task_id="001"`) and a schedule-level finding (index 1,
+        `target_task_id=None`) in the same review pass.
+        """
+        result = self._simulate(
+            source="codex-plan-review",
+            verdict="needs-rework",
+        )
+        dispatches = result["dispatches"]
+
+        # N findings forwarded → N dispatches (one per finding).
+        assert len(dispatches) == len(self._CODEX_FINDINGS), (
+            "needs-rework must fan out one plan-author dispatch per "
+            "forwarded finding (legacy single-dispatch-with-array-payload "
+            f"shape is forbidden); got {len(dispatches)} dispatches for "
+            f"{len(self._CODEX_FINDINGS)} findings"
+        )
+
+        # Each dispatch is plan-author with a single-finding payload.
+        for d in dispatches:
+            assert d["agent"] == "plan-author"
+            assert "finding" in d, (
+                "dispatch must carry a single `finding` (not a `payload` "
+                "array) per TASK-007 fan-out contract"
+            )
+            assert not isinstance(d.get("payload"), list), (
+                "dispatch must not carry an array `payload` — the legacy "
+                "collapsed shape is forbidden on the fan-out path"
+            )
+
+        # Task-targeted dispatch — target_task_id="001", child_plan_file
+        # resolved from schedule tasks[], roster_file absent.
+        task_targeted = [d for d in dispatches if d["target_task_id"] == "001"]
+        assert len(task_targeted) == 1, (
+            "exactly one task-targeted dispatch for target_task_id='001'"
+        )
+        dt = task_targeted[0]
+        assert "child_plan_file" in dt, (
+            "task-targeted dispatch must carry child_plan_file resolved "
+            "via the schedule's tasks[].plan_file"
+        )
+        assert dt["child_plan_file"] == self._SCHEDULE_TASKS["001"]
+        assert "roster_file" not in dt, (
+            "roster_file must NOT render on the task-targeted path"
+        )
+        assert dt["finding"]["target_task_id"] == "001"
+
+        # Schedule-level dispatch — target_task_id=None, roster_file
+        # present (absolute path to 00_INDEX.json), child_plan_file
+        # absent / null.
+        schedule_level = [d for d in dispatches if d["target_task_id"] is None]
+        assert len(schedule_level) == 1, (
+            "exactly one schedule-level dispatch for target_task_id=None"
+        )
+        ds = schedule_level[0]
+        assert "roster_file" in ds, (
+            "schedule-level dispatch must carry roster_file so the "
+            "author has a concrete edit target"
+        )
+        assert ds["roster_file"] == self._ROSTER_FILE
+        # child_plan_file must be absent (not just None) on the
+        # schedule-level path — the two shapes are mutually exclusive.
+        assert "child_plan_file" not in ds or ds.get("child_plan_file") is None, (
+            "child_plan_file must be absent (or explicitly null) on the "
+            "schedule-level path"
+        )
+        assert ds["finding"]["target_task_id"] is None
+
+        # Each dispatched finding is one of the forwarded findings
+        # (no duplicates, no fabrications).
+        dispatched_findings = [d["finding"] for d in dispatches]
+        assert dispatched_findings == list(self._CODEX_FINDINGS), (
+            "forwarded findings preserved in order, one per dispatch"
+        )
 
 
 # ---------------------------------------------------------------------------
