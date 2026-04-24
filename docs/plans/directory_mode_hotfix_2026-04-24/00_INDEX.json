@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "Directory-mode hotfix — unblock /implement-plan <dir> at the protocol layer",
+  "created": "2026-04-24",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "parallel_batches": [
+    ["001", "002"],
+    ["003"],
+    ["004"]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "directory_mode_hotfix_2026-04-24.md",
+      "priority": "critical",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "directory_mode_hotfix_2026-04-24.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "directory_mode_hotfix_2026-04-24.md",
+      "priority": "medium",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "directory_mode_hotfix_2026-04-24.md",
+      "priority": "high",
+      "depends_on": ["001", "002", "003"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

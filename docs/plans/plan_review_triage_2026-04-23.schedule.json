@@ -1,0 +1,126 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Triage schema + source-parameterized parser subcommand",
+      "agent": "codex",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/codex_plan_review_triage_schema.json",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"plan_review_triage\" -x",
+      "classification_reason": "Plan declares Agent: codex; bounded parser + schema"
+    },
+    {
+      "id": "002",
+      "title": "plan-review-triage subagent spec (dual-source)",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/agents/plan-review-triage.md"
+      ],
+      "test_command": "none (agent spec; exercised by TASK-004's integration)",
+      "classification_reason": "New design-heavy agent spec"
+    },
+    {
+      "id": "003",
+      "title": "Plan-triage dispatch template (source-parameterized)",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md"
+      ],
+      "test_command": "none (template documentation; exercised by TASK-004's integration)",
+      "classification_reason": "New template, design decisions"
+    },
+    {
+      "id": "004",
+      "title": "SKILL.md orchestrator wiring",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ],
+      "test_command": "none (orchestrator prose; exercised by TASK-006's integration harness)",
+      "classification_reason": "Multi-cut orchestrator prose"
+    },
+    {
+      "id": "005",
+      "title": "Regression harness for the triage contract",
+      "agent": "codex",
+      "priority": "medium",
+      "files": [
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"plan_review_triage_contract\" -x",
+      "classification_reason": "Single file, bounded tests"
+    },
+    {
+      "id": "006",
+      "title": "Integration harness for Phase 1-triage / Phase 1.5.5 orchestrator wiring",
+      "agent": "codex",
+      "priority": "medium",
+      "files": [
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"plan_review_triage_integration\" -x",
+      "classification_reason": "Single file, bounded tests"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/codex_plan_review_triage_schema.json",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002",
+        "005"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-review-triage.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": [
+        "004"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ]
+    },
+    {
+      "index": 5,
+      "task_ids": [
+        "006"
+      ],
+      "file_locks": [
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

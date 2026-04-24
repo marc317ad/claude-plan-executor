@@ -1,0 +1,65 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Seed scratch directory",
+      "agent": "codex",
+      "priority": "high",
+      "files": [
+        "scratch/.gitkeep"
+      ],
+      "test_command": "test -d scratch",
+      "classification_reason": "Single empty file",
+      "plan_file": "TASK-001_seed.md"
+    },
+    {
+      "id": "002",
+      "title": "Write scratch/a.txt",
+      "agent": "codex",
+      "priority": "high",
+      "files": [
+        "scratch/a.txt"
+      ],
+      "test_command": "test -f scratch/a.txt",
+      "classification_reason": "Single file, mechanical",
+      "plan_file": "TASK-002_write_a.md"
+    },
+    {
+      "id": "003",
+      "title": "Write scratch/b.txt",
+      "agent": "codex",
+      "priority": "high",
+      "files": [
+        "scratch/b.txt"
+      ],
+      "test_command": "test -f scratch/b.txt",
+      "classification_reason": "Single file, mechanical",
+      "plan_file": "TASK-003_write_b.md"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "scratch/.gitkeep"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002",
+        "003"
+      ],
+      "file_locks": [
+        "scratch/a.txt",
+        "scratch/b.txt"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}
