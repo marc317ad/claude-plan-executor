@@ -98,7 +98,7 @@ Replace the archived v1 TASK-001 "halt with pointer to plan-decomposer plugin" a
 
 ### TASK-002: SKILL prose consolidation (single-track "Input shape")
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
