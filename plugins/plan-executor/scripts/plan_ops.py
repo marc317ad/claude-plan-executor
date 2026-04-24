@@ -161,6 +161,13 @@ ALLOWED_LOG_EVENTS = {
     "plan_review_start",
     "plan_review_done",
     "plan_review_skipped",
+    # Phase 1-triage / Phase 1.5.5 plan-review triage events. Dual-sourced on
+    # `source ∈ {plan-analyst, codex-plan-review}` per the SKILL.md routing;
+    # `analyst_triage_skipped` records the pre-triage short-circuits
+    # (`--allow-gaps` / `--analyst-binding`).
+    "plan_review_triage_start",
+    "plan_review_triage_done",
+    "analyst_triage_skipped",
     # `plan_author_start` / `plan_author_done` are added per TASK-025 for the
     # needs-replan auto-revise path: when Codex returns `needs-replan` on the
     # first plan-review pass and auto-revise is on, the orchestrator dispatches
