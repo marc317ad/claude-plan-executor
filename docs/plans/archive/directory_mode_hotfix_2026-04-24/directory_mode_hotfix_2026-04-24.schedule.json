@@ -1,0 +1,120 @@
+{
+  "outcome": "needs-enrichment",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "`cmd_plan_review` accepts directory input",
+      "agent": "claude",
+      "priority": "critical",
+      "files": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "tests/scripts/test_plan_codex_dispatch_integration.py"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_codex_dispatch_integration.py -q -k \"plan_review and directory\"",
+      "classification_reason": "Critical priority, protocol boundary"
+    },
+    {
+      "id": "002",
+      "title": "`cmd_preflight` accepts directory input",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_ops.py -q -k \"preflight and directory\"",
+      "classification_reason": "Multi-concern classifier plus base_branch"
+    },
+    {
+      "id": "003",
+      "title": "`parse-plan-review-report` preserves `notes[]`",
+      "agent": "codex",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_ops.py -q -k \"parse_plan_review and notes\"",
+      "classification_reason": "Mechanical field add, 3 tests"
+    },
+    {
+      "id": "004",
+      "title": "End-to-end directory-mode plan-review smoke (in-process)",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_ops.py -q -k \"directory_mode_hotfix_smoke\"",
+      "classification_reason": "Multi-subsystem integration, monkey-patching"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001",
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_codex_dispatch_integration.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "004"
+      ],
+      "file_locks": [
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "task_id": "004",
+      "type": "empty-implementation-notes",
+      "severity": "soft",
+      "detail": "Claude-tier task has no Implementation notes: block; AC numbered steps cover intent but spec requires a dedicated block."
+    }
+  ],
+  "risks": [
+    {
+      "type": "shared-file-across-batches",
+      "affected_tasks": [
+        "002",
+        "003",
+        "004"
+      ],
+      "detail": "tests/scripts/test_plan_ops.py is touched across batches 1, 2, 3 \u2014 serial execution makes this safe."
+    },
+    {
+      "type": "shared-file-across-batches",
+      "affected_tasks": [
+        "002",
+        "003"
+      ],
+      "detail": "plugins/plan-executor/scripts/plan_ops.py is touched in batches 1 and 2 \u2014 safe because serial."
+    },
+    {
+      "type": "near-threshold-codex",
+      "affected_tasks": [
+        "003"
+      ],
+      "detail": "Codex-tier task at ~2 files / ~20 lines \u2014 within comfort zone; plan author annotated Agent: claude (advisory, classifier overrides)."
+    }
+  ]
+}

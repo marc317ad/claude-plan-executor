@@ -5221,6 +5221,14 @@ def _normalize_files_entry(raw: str) -> str:
     `normalize_file_path` so the commit guard/gate agree on allowlist keys.
     """
     cleaned = raw.strip()
+    # Prefer leading backtick-quoted path so descriptive prose after
+    # the path (e.g., "`foo.py` (modify) -- description") doesn't
+    # weld to the path and break commit-safe.
+    m_backtick = re.match(r"`([^`]+)`", cleaned)
+    if m_backtick:
+        cleaned = m_backtick.group(1).strip()
+    else:
+        cleaned = re.split(r"\s+[-\u2013\u2014]\s+", cleaned, 1)[0].strip()
     # Strip trailing (create), (modify), (delete), ...
     cleaned = re.sub(r"\s*\([^)]+\)\s*$", "", cleaned)
     cleaned = cleaned.strip()
@@ -5270,6 +5278,7 @@ def _extract_task_files_from_plan(plan_text: str, task_id: str) -> list[str] | N
         )
         if m:
             items: list[str] = []
+            base_indent: int | None = None
             for line in block[m.end():].splitlines():
                 stripped = line.strip()
                 if not stripped:
@@ -5278,11 +5287,15 @@ def _extract_task_files_from_plan(plan_text: str, task_id: str) -> list[str] | N
                     stripped.startswith("-")
                     and (line.startswith(" ") or line.startswith("\t"))
                 )
-                if is_indented_bullet:
-                    raw = stripped[1:].strip()
-                    items.append(_normalize_files_entry(raw))
-                else:
+                if not is_indented_bullet:
                     break
+                indent = len(line) - len(line.lstrip(" \t"))
+                if base_indent is None:
+                    base_indent = indent
+                elif indent > base_indent:
+                    continue
+                raw = stripped[1:].strip()
+                items.append(_normalize_files_entry(raw))
             return items
         # Inline `- **Files:** path[, path, ...]` form. `_extract_inline_field`
         # semantics: value is the text after the `:**` marker on the same line.

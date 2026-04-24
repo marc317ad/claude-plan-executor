@@ -4976,7 +4976,23 @@ def _claude_cli_available() -> bool:
 
 
 def _extract_json_block(text: str) -> dict | None:
-    """Best-effort extraction of a fenced ```json or bare {...} block."""
+    """Best-effort extraction of a fenced ```json or bare {...} block.
+
+    Unwraps the Claude Agent SDK envelope (`--output-format json`) when
+    detected: the outer object carries `type="result"` with the agent's
+    textual output in `result`, so we scan inside that instead of
+    returning the envelope itself.
+    """
+    try:
+        outer = json.loads(text)
+        if (
+            isinstance(outer, dict)
+            and outer.get("type") == "result"
+            and isinstance(outer.get("result"), str)
+        ):
+            text = outer["result"]
+    except json.JSONDecodeError:
+        pass
     m = re.search(r"```json\s*\n(.+?)\n```", text, re.DOTALL)
     if m:
         try:
