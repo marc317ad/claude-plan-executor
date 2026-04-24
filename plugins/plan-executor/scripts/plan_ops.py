@@ -245,7 +245,7 @@ ALLOWED_TASK_FIELDS = {
     "id", "task_id",
     "title", "agent", "priority", "files", "dependencies",
     "test_command", "classification_reason", "acceptance_criteria",
-    "plan_file",
+    "plan_file", "description",
 }
 ALLOWED_BATCH_FIELDS = {"index", "batch_index", "task_ids", "file_locks"}
 # TASK-002: formalize hard-vs-soft gap severity. Hard gaps block execution
@@ -641,13 +641,22 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                         "code": "missing-field",
                         "message": f"tasks[{i}] missing field 'id'",
                     })
-            for key in ("agent", "files"):
-                if key not in t:
-                    errors.append({
-                        "path": f"$.tasks[{i}].{key}",
-                        "code": "missing-field",
-                        "message": f"tasks[{i}] missing field {key!r}",
-                    })
+            # `files` is structural — every task must declare its file
+            # locks for batch-scheduling. `agent` is a transitional field:
+            # the classifier fan-out (TASK-005) fills it in after
+            # `build-tasks` emits the fat manifest, so missing-agent is a
+            # warning (not an error) on unclassified tasks.
+            if "files" not in t:
+                errors.append({
+                    "path": f"$.tasks[{i}].files",
+                    "code": "missing-field",
+                    "message": f"tasks[{i}] missing field 'files'",
+                })
+            if "agent" not in t:
+                warnings.append(
+                    f"tasks[{i}] missing field 'agent' "
+                    "(unclassified; classifier fan-out populates this)"
+                )
             raw_id = t.get("id") if "id" in t else t.get("task_id")
             if raw_id is not None and not CANONICAL_ID_RE.match(str(raw_id)):
                 errors.append({
@@ -1640,6 +1649,7 @@ def _extract_bullet_list(block: str, heading: str) -> list[str]:
         base_indent = len(base_indent_str)
         items: list[str] = []
         child_indent: int | None = None
+        in_nested = False
         for line in block[standalone.end():].splitlines():
             if not line.strip():
                 # Blank lines inside a bullet list are tolerated so long as
@@ -1652,15 +1662,28 @@ def _extract_bullet_list(block: str, heading: str) -> list[str]:
             if indent <= base_indent:
                 break
             is_bullet = stripped.startswith("- ") or stripped == "-"
+            if child_indent is not None and indent > child_indent:
+                # Deeper-indented line under an already-open top-level
+                # child. If it is itself a bullet, treat as a nested
+                # sub-bullet and skip (we only collect top-level children).
+                # If it is plain text, fold it into the current bullet as
+                # a continuation line so wrapped bullets round-trip intact.
+                if is_bullet:
+                    in_nested = True
+                    continue
+                if in_nested:
+                    # Continuation of a nested sub-bullet — skip.
+                    continue
+                if items:
+                    items[-1] = (items[-1] + " " + stripped).strip()
+                continue
             if not is_bullet:
-                # Non-bullet continuation inside the list (rare) ends it.
+                # Non-bullet line at the child-indent level (or before the
+                # first child) ends the list.
                 break
             if child_indent is None:
                 child_indent = indent
-            elif indent > child_indent:
-                # Nested sub-bullet — skip; we only collect the top-level
-                # children of the heading bullet.
-                continue
+            in_nested = False
             raw = stripped[1:].strip() if stripped != "-" else ""
             items.append(raw)
         return items
@@ -2294,6 +2317,376 @@ def cmd_decompose_plan(args: argparse.Namespace) -> None:
     result = _decompose_plan(plan_path, out_dir, force=bool(args.force))
     if not result["ok"]:
         _die(args, {"errors": result["errors"]})
+    _emit(args, result, exit_code=0)
+
+
+def _build_tasks(plans_dir: Path) -> dict:
+    """Roster-driven fat `tasks[]` synthesis for a decomposed-plan directory.
+
+    Reads `00_INDEX.json` + each `chunks[].file` and returns a schedule-
+    shaped result:
+
+        {
+            "ok": bool,
+            "outcome": "valid" | "invalid",
+            "tasks": [...],            # fat shape: description + AC included
+            "batches": [...],          # topo-sorted + file-lock batches
+            "warnings": [...],         # missing description / AC in a child
+            "errors": [...],           # structural (missing roster, missing
+                                       # child, cycle, ...)
+        }
+
+    Uses the shared parsing primitives (`_parse_task_block` with `level=3`,
+    `_extract_metadata_field`, `_extract_bullet_list`) so the child-plan
+    grammar stays single-sourced with `decompose-plan`.
+
+    Missing `**Description:**` or `**Acceptance criteria:**` in an otherwise
+    well-formed child are non-fatal — the task is still emitted with
+    `description: ""` / `acceptance_criteria: []` and a structured warning
+    is recorded so downstream plan-review can flag it.
+    """
+    errors: list[dict] = []
+    warnings: list[dict] = []
+    tasks: list[dict] = []
+    index_path = plans_dir / "00_INDEX.json"
+    if not plans_dir.is_dir():
+        errors.append({
+            "code": "plans-dir-not-found",
+            "message": f"plans directory not found: {plans_dir}",
+        })
+        return {
+            "ok": False, "outcome": "invalid",
+            "tasks": tasks, "batches": [],
+            "warnings": warnings, "errors": errors,
+        }
+    if not index_path.is_file():
+        errors.append({
+            "code": "roster-not-found",
+            "message": f"00_INDEX.json not found in {plans_dir}",
+        })
+        return {
+            "ok": False, "outcome": "invalid",
+            "tasks": tasks, "batches": [],
+            "warnings": warnings, "errors": errors,
+        }
+    try:
+        roster_text = index_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append({
+            "code": "roster-unreadable",
+            "message": f"cannot read {index_path}: {exc}",
+        })
+        return {
+            "ok": False, "outcome": "invalid",
+            "tasks": tasks, "batches": [],
+            "warnings": warnings, "errors": errors,
+        }
+    try:
+        roster_doc = json.loads(roster_text)
+    except json.JSONDecodeError as exc:
+        errors.append({
+            "code": "malformed-roster",
+            "message": f"malformed JSON in {index_path}: {exc}",
+        })
+        return {
+            "ok": False, "outcome": "invalid",
+            "tasks": tasks, "batches": [],
+            "warnings": warnings, "errors": errors,
+        }
+    if not isinstance(roster_doc, dict):
+        errors.append({
+            "code": "malformed-roster",
+            "message": (
+                f"index sidecar must be a JSON object in {index_path}"
+            ),
+        })
+        return {
+            "ok": False, "outcome": "invalid",
+            "tasks": tasks, "batches": [],
+            "warnings": warnings, "errors": errors,
+        }
+    chunks = roster_doc.get("chunks")
+    if not isinstance(chunks, list):
+        errors.append({
+            "code": "malformed-roster",
+            "message": f"chunks[] must be a list in {index_path}",
+        })
+        return {
+            "ok": False, "outcome": "invalid",
+            "tasks": tasks, "batches": [],
+            "warnings": warnings, "errors": errors,
+        }
+    # Collect per-chunk data, surfacing structural errors before trying to
+    # parse individual child task blocks. A single missing child surfaces as
+    # a `child-file-not-found` error and does NOT abort the remainder of
+    # the roster walk — callers want every missing-child error up front.
+    seen_ids: set[str] = set()
+    for i, chunk in enumerate(chunks):
+        chunk_ref = f"chunks[{i}]"
+        if not isinstance(chunk, dict):
+            errors.append({
+                "code": "malformed-roster",
+                "message": f"{chunk_ref} must be an object in {index_path}",
+            })
+            continue
+        raw_task_id = chunk.get("task_id")
+        normalized_id = (
+            _normalize_task_id(raw_task_id)
+            if isinstance(raw_task_id, str) else None
+        )
+        if normalized_id is None:
+            errors.append({
+                "code": "malformed-roster",
+                "message": (
+                    f"{chunk_ref}.task_id={raw_task_id!r} is not a "
+                    "normalized task id"
+                ),
+            })
+            continue
+        if normalized_id in seen_ids:
+            errors.append({
+                "code": "malformed-roster",
+                "message": (
+                    f"duplicate task_id {normalized_id!r} in {index_path}"
+                ),
+            })
+            continue
+        seen_ids.add(normalized_id)
+        child_name = chunk.get("file")
+        if not isinstance(child_name, str) or not child_name.strip():
+            errors.append({
+                "code": "malformed-roster",
+                "message": (
+                    f"{chunk_ref}.file must be a non-empty string"
+                ),
+            })
+            continue
+        child_path = plans_dir / child_name
+        if not child_path.is_file():
+            errors.append({
+                "code": "child-file-not-found",
+                "task_id": normalized_id,
+                "plan_file": child_name,
+                "message": (
+                    f"chunks[].file {child_name!r} not found in {plans_dir}"
+                ),
+            })
+            continue
+        try:
+            child_text = child_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append({
+                "code": "child-file-unreadable",
+                "task_id": normalized_id,
+                "plan_file": child_name,
+                "message": f"cannot read {child_path}: {exc}",
+            })
+            continue
+        # Locate the `### TASK-NNN:` block matching the chunk's task id.
+        # A child file is expected to carry exactly one H3 TASK heading;
+        # when multiple are present, we parse the one matching the roster
+        # id and warn about the extras so they can't silently drift.
+        _, h3_blocks = _split_task_blocks_at_level(child_text, level=3)
+        if not h3_blocks:
+            errors.append({
+                "code": "missing-task-heading",
+                "task_id": normalized_id,
+                "plan_file": child_name,
+                "message": (
+                    f"no `### TASK-NNN:` H3 heading found in {child_name}"
+                ),
+            })
+            continue
+        matched = None
+        for raw_id, title, block_text, source_line in h3_blocks:
+            if _normalize_task_id(raw_id) == normalized_id:
+                matched = (raw_id, title, block_text, source_line)
+                break
+        if matched is None:
+            errors.append({
+                "code": "task-id-mismatch",
+                "task_id": normalized_id,
+                "plan_file": child_name,
+                "message": (
+                    f"{child_name} declares no `### TASK-{normalized_id}:` "
+                    "heading matching the roster task_id"
+                ),
+            })
+            continue
+        if len(h3_blocks) > 1:
+            warnings.append({
+                "code": "extra-task-heading",
+                "task_id": normalized_id,
+                "plan_file": child_name,
+                "message": (
+                    f"{child_name} carries {len(h3_blocks)} `### TASK-NNN:` "
+                    "headings; only the matching one is parsed"
+                ),
+            })
+        raw_id, title, block_text, source_line = matched
+        parsed = _parse_task_block(
+            block_text,
+            level=3,
+            raw_id=raw_id,
+            title=title,
+            source_line=source_line,
+        )
+        # Warn (non-fatal) on missing fat-manifest sections. The task is
+        # still emitted so downstream phases can surface the gap.
+        description = parsed.get("description") or ""
+        description = description.strip()
+        if not description:
+            warnings.append({
+                "code": "missing-description",
+                "task_id": normalized_id,
+                "plan_file": child_name,
+                "message": (
+                    f"TASK-{normalized_id} in {child_name} has no "
+                    "`**Description:**` section"
+                ),
+            })
+        ac_list = list(parsed.get("acceptance_criteria") or [])
+        if not ac_list:
+            warnings.append({
+                "code": "missing-acceptance-criteria",
+                "task_id": normalized_id,
+                "plan_file": child_name,
+                "message": (
+                    f"TASK-{normalized_id} in {child_name} has no "
+                    "`**Acceptance criteria:**` bullets"
+                ),
+            })
+        # Schedule wire format uses `dependencies` (plural), not
+        # `depends_on`. Normalize ids here (already normalized by
+        # `_parse_task_block`, but filter to keep canonical form).
+        deps: list[str] = []
+        for d in parsed.get("depends_on") or []:
+            nd = _normalize_task_id(d)
+            deps.append(nd if nd is not None else str(d))
+        # `plan_file` is consumed downstream (parse-schedule, apply-review,
+        # plan-file routing) as a basename-only field. When a roster entry
+        # points into a subdirectory (e.g. `subdir/TASK-001_a.md`), we still
+        # locate the child on disk via the full `child_name` above, but the
+        # emitted `plan_file` must be the basename so `_is_valid_plan_file_basename`
+        # accepts it.
+        task_entry: dict[str, object] = {
+            "id": normalized_id,
+            "title": parsed.get("title") or title,
+            "files": list(parsed.get("files") or []),
+            "dependencies": deps,
+            "test_command": parsed.get("test_command"),
+            "priority": (parsed.get("priority") or "").strip() or None,
+            "plan_file": Path(child_name).name,
+            "description": description,
+            "acceptance_criteria": ac_list,
+        }
+        # `agent` is emitted iff the child declares `**Agent:**` — the
+        # classifier fan-out (TASK-005) populates it for the remaining
+        # children. Emitting a placeholder here would mask missing-agent
+        # children from that path.
+        agent_raw = parsed.get("agent")
+        if agent_raw:
+            task_entry["agent"] = agent_raw.strip()
+        tasks.append(task_entry)
+    # Cycle detection / topo-sort over the collected tasks. Orphan deps
+    # (dep ids not in the roster) are surfaced here too so the caller
+    # sees a single structured error list.
+    if not errors:
+        task_ids = [str(t["id"]) for t in tasks]
+        deps_map = {
+            str(t["id"]): [str(d) for d in (t.get("dependencies") or [])]
+            for t in tasks
+        }
+        known_ids = set(task_ids)
+        for tid, deps in deps_map.items():
+            for dep in deps:
+                if dep not in known_ids:
+                    errors.append({
+                        "code": "unresolvable-dep",
+                        "task_id": tid,
+                        "dep_id": dep,
+                        "message": (
+                            f"TASK-{tid} depends on TASK-{dep} which is "
+                            "not declared in the roster"
+                        ),
+                    })
+        if not errors:
+            topo_layers, cycle_errors = _compute_decompose_batches(
+                task_ids, deps_map,
+            )
+            if cycle_errors:
+                errors.extend(cycle_errors)
+    batches: list[dict] = []
+    if not errors:
+        # Dependency-aware batching: topo layers first, file-lock
+        # partitioning within each layer. Plain `_compute_schedule_batches`
+        # ignores `dependencies[]` and would place prereq + dependent in the
+        # same batch when their files are disjoint; that would let
+        # `batch-next` dispatch a dependent before its prereq finishes.
+        files_by_id = {
+            str(t["id"]): set(str(p) for p in (t.get("files") or []))
+            for t in tasks
+        }
+        next_batch_index = 1
+        for layer in topo_layers:
+            # Split this topo layer into file-disjoint sub-batches. Tasks
+            # that share any file in the layer end up in separate
+            # sub-batches (later-indexed) to preserve file-lock
+            # disjointness within a parallel batch.
+            sub_batches: list[dict] = []
+            for tid in layer:
+                t_files = files_by_id.get(tid, set())
+                placed = False
+                for sb in sub_batches:
+                    if sb["_files"] & t_files:
+                        continue
+                    sb["task_ids"].append(tid)
+                    sb["_files"].update(t_files)
+                    placed = True
+                    break
+                if not placed:
+                    sub_batches.append({
+                        "task_ids": [tid],
+                        "_files": set(t_files),
+                    })
+            for sb in sub_batches:
+                batches.append({
+                    "index": next_batch_index,
+                    "task_ids": sb["task_ids"],
+                    "file_locks": sorted(sb["_files"]),
+                })
+                next_batch_index += 1
+    outcome = "valid" if not errors else "invalid"
+    return {
+        "ok": not errors,
+        "outcome": outcome,
+        "tasks": tasks,
+        "batches": batches,
+        "warnings": warnings,
+        "errors": errors,
+    }
+
+
+def cmd_build_tasks(args: argparse.Namespace) -> None:
+    """Roster-driven fat `tasks[]` synthesis for a decomposed directory.
+
+    Reads `00_INDEX.json` + each `chunks[].file` in the supplied directory
+    and emits a schedule-shaped JSON document with per-task `description`
+    + `acceptance_criteria` (the "fat" manifest required by schedule-only
+    plan-review). Parsing reuses the shared helpers used by
+    `decompose-plan` at `level=3` so both subcommands track the same
+    child-plan grammar.
+
+    Structural errors (missing roster, malformed JSON, missing child
+    file, unresolvable or cyclic deps) surface as `errors[*]` with a
+    non-zero exit. Missing `**Description:**` or `**Acceptance criteria:**`
+    in an individual child surfaces as `warnings[*]` with the task id and
+    the child basename; the task is still emitted (non-fatal).
+    """
+    plans_dir = Path(args.plans_dir).resolve()
+    result = _build_tasks(plans_dir)
+    if not result["ok"]:
+        _die(args, result)
     _emit(args, result, exit_code=0)
 
 
@@ -7743,6 +8136,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_decomp)
 
+    p_build = sub.add_parser(
+        "build-tasks",
+        help=(
+            "Roster-driven fat `tasks[]` synthesis. Reads `00_INDEX.json` + "
+            "each `chunks[].file` in the supplied decomposed-plan directory "
+            "and emits a schedule-shaped JSON with per-task description + "
+            "acceptance_criteria (H3 `### TASK-NNN:` child-plan grammar)."
+        ),
+    )
+    p_build.add_argument(
+        "--plans-dir", required=True,
+        help="Path to a decomposed-plan directory (contains 00_INDEX.json)",
+    )
+    _add_json(p_build)
+
     p_comp = sub.add_parser("compute-schedule", help="Compute priority order + disjoint batches")
     p_comp.add_argument("--stdin", action="store_true", required=True,
                         help="Read JSON schedule from stdin")
@@ -8219,6 +8627,7 @@ def main(argv: list[str] | None = None) -> None:
         "preflight": cmd_preflight,
         "parse-schedule": cmd_parse_schedule,
         "decompose-plan": cmd_decompose_plan,
+        "build-tasks": cmd_build_tasks,
         "compute-schedule": cmd_compute_schedule,
         "write-schedule": cmd_write_schedule,
         "batch-next": cmd_batch_next,

@@ -139,7 +139,7 @@ The hotfix taught preflight about directories. This task hardens the directory b
 
 ### TASK-004: Roster-driven fat `tasks[]` synthesis
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**

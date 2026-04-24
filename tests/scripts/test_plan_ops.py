@@ -15147,3 +15147,646 @@ class TestSkillAutoPromoteBootstrapInterpreter:
                 f"auto-promote decompose-plan invocation must use the "
                 f"literal `python3` bootstrap interpreter: {cmd!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# TASK-004: Roster-driven fat `tasks[]` synthesis (`build-tasks`).
+# ---------------------------------------------------------------------------
+
+
+DIRECTORY_MODE_FIXTURE_PATH = (
+    REPO_ROOT / "tests" / "fixtures" / "directory_mode_plan"
+)
+
+
+def _schedule_shape(build_tasks_output: dict) -> dict:
+    """Project `build-tasks` output onto the `parse-schedule` wire shape.
+
+    `build-tasks` emits a superset of the schedule shape (adds `ok`,
+    `warnings`, `errors`). `parse-schedule --stdin` is strict about
+    unknown top-level fields, so pipe-throughs strip the extra keys.
+    """
+    return {
+        "outcome": build_tasks_output.get("outcome", "valid"),
+        "tasks": build_tasks_output.get("tasks", []),
+        "batches": build_tasks_output.get("batches", []),
+        "gaps": [],
+        "risks": [],
+    }
+
+
+class TestBuildTasks:
+    """End-to-end coverage for the `build-tasks` subcommand (TASK-004).
+
+    Validates the fat-manifest invariant (`description` + `acceptance_criteria`
+    populated per task), the schedule-shape compatibility (pipes through
+    `parse-schedule --stdin` cleanly), and the structured error paths for
+    roster / child / dependency malformations.
+    """
+
+    def test_directory_mode_fixture_round_trip(self, tmp_path: Path) -> None:
+        """Shipped fixture → `build-tasks` → `parse-schedule` clean pass.
+
+        AC: "passes `parse-schedule --stdin` with `outcome=valid`;
+        `tasks[0].description` is non-empty; `tasks[0].acceptance_criteria`
+        is a non-empty list"
+        """
+        cp = _run(
+            "build-tasks",
+            "--plans-dir", str(DIRECTORY_MODE_FIXTURE_PATH),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        assert res["ok"] is True
+        assert res["outcome"] == "valid"
+        assert res["errors"] == []
+        assert res["warnings"] == []
+        tasks = res["tasks"]
+        assert len(tasks) == 3
+        assert [t["id"] for t in tasks] == ["001", "002", "003"]
+        # Fat-manifest invariant: description + AC populated per task.
+        for t in tasks:
+            assert isinstance(t["description"], str)
+            assert t["description"].strip(), (
+                f"task {t['id']}: description must be non-empty"
+            )
+            assert isinstance(t["acceptance_criteria"], list)
+            assert len(t["acceptance_criteria"]) >= 1, (
+                f"task {t['id']}: acceptance_criteria must be non-empty"
+            )
+            assert t["plan_file"].startswith(f"TASK-{t['id']}_")
+            assert t["plan_file"].endswith(".md")
+        # `tasks[0]` spelled out explicitly (AC literal text).
+        assert tasks[0]["description"].strip(), tasks[0]
+        assert len(tasks[0]["acceptance_criteria"]) >= 1, tasks[0]
+        # Feed the projected schedule shape into `parse-schedule --stdin`.
+        sched_input = json.dumps(_schedule_shape(res))
+        cp2 = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
+            input=sched_input,
+            capture_output=True,
+            text=True,
+        )
+        assert cp2.returncode == 0, cp2.stderr
+        parsed = _parse_json(cp2)
+        assert parsed["outcome"] == "valid", parsed
+        assert parsed["errors"] == [], parsed
+        # Schedule warnings must also be empty (no alias or unknown-field).
+        assert parsed["warnings"] == [], parsed
+
+    def test_directory_mode_fixture_agent_preserved(self) -> None:
+        """Shipped children all declare `**Agent:**`; build-tasks preserves it."""
+        cp = _run(
+            "build-tasks",
+            "--plans-dir", str(DIRECTORY_MODE_FIXTURE_PATH),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        tasks = _parse_json(cp)["tasks"]
+        for t in tasks:
+            assert t.get("agent") == "claude", t
+
+    def test_decompose_to_build_tasks_round_trip(self, tmp_path: Path) -> None:
+        """Canonical decomposer fixture → decompose → build-tasks pipe.
+
+        AC: "output is a valid fat schedule" — every task carries a
+        non-empty `description` and a non-empty `acceptance_criteria`
+        list, AND the projected schedule passes `parse-schedule --stdin`
+        with `outcome=valid`. The canonical fixture omits `**Agent:**`
+        on TASK-002 on purpose (classifier fan-out in TASK-005 populates
+        it), so the `agent` key is absent on that task and
+        `parse-schedule` surfaces it as a warning — not an error.
+        """
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp.returncode == 0, cp.stderr
+        decomp = _parse_json(cp)
+        produced = Path(decomp["produced_dir"])
+        assert produced.is_dir(), produced
+        cp2 = _run("build-tasks", "--plans-dir", str(produced), "--json")
+        assert cp2.returncode == 0, cp2.stderr
+        bt = _parse_json(cp2)
+        assert bt["ok"] is True, bt
+        assert bt["errors"] == [], bt
+        assert bt["warnings"] == [], bt
+        tasks = bt["tasks"]
+        assert [t["id"] for t in tasks] == ["001", "002", "003"], tasks
+        for t in tasks:
+            assert t["description"].strip(), (
+                f"task {t['id']}: description must be non-empty"
+            )
+            assert len(t["acceptance_criteria"]) >= 1, (
+                f"task {t['id']}: acceptance_criteria must be non-empty"
+            )
+        # TASK-002 in canonical.md deliberately omits `**Agent:**` —
+        # build-tasks must NOT synthesize a placeholder.
+        assert "agent" not in tasks[1], tasks[1]
+        # TASK-001 + TASK-003 declare agent; it is preserved verbatim.
+        assert tasks[0]["agent"] == "claude", tasks[0]
+        assert tasks[2]["agent"] == "codex", tasks[2]
+        # Full round-trip contract: the projected schedule shape must pass
+        # `parse-schedule --stdin` with outcome=valid and zero errors.
+        # Missing `agent` on TASK-002 is surfaced as a warning (not an
+        # error) so the unclassified transitional state round-trips
+        # cleanly. TASK-005's classifier fan-out fills it in later.
+        sched_input = json.dumps(_schedule_shape(bt))
+        cp3 = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
+            input=sched_input,
+            capture_output=True,
+            text=True,
+        )
+        assert cp3.returncode == 0, cp3.stderr
+        parsed = _parse_json(cp3)
+        assert parsed["outcome"] == "valid", parsed
+        assert parsed["errors"] == [], parsed
+        missing_agent_warnings = [
+            w for w in parsed.get("warnings") or []
+            if "missing field 'agent'" in w and "tasks[1]" in w
+        ]
+        assert missing_agent_warnings, parsed
+
+    def test_build_tasks_batches_respect_dependencies(self) -> None:
+        """`batches[]` must topologically order dependent tasks.
+
+        Regression: prior `_compute_schedule_batches` only grouped by
+        file-lock disjointness, so TASK-001 → TASK-002 → TASK-003 would
+        land in a single batch when their files were disjoint, and
+        `batch-next` could dispatch a dependent before its prereq
+        finished. The shipped `directory_mode_plan` fixture has
+        TASK-001 as a seeder with TASK-002 and TASK-003 both depending
+        on it; TASK-001 must therefore land in an earlier batch than
+        both dependents.
+        """
+        cp = _run(
+            "build-tasks",
+            "--plans-dir", str(DIRECTORY_MODE_FIXTURE_PATH),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        batches = res["batches"]
+        # Locate the batch index for each task.
+        batch_of: dict[str, int] = {}
+        for b in batches:
+            for tid in b["task_ids"]:
+                batch_of[tid] = b["index"]
+        assert {"001", "002", "003"} <= set(batch_of.keys()), batches
+        assert batch_of["001"] < batch_of["002"], batches
+        assert batch_of["001"] < batch_of["003"], batches
+        # TASK-002 and TASK-003 are file-disjoint siblings that both
+        # depend only on TASK-001; they SHOULD share a batch so
+        # `batch-next` can dispatch them in parallel.
+        assert batch_of["002"] == batch_of["003"], batches
+
+    def test_build_tasks_preserves_wrapped_acceptance_criteria_bullets(
+        self,
+    ) -> None:
+        """Wrapped (continuation-line) AC bullets round-trip intact.
+
+        Regression: prior `_extract_bullet_list` broke on the first
+        non-bullet line, silently truncating bullets whose content
+        wrapped onto a second line. The shipped
+        `TASK-002_write_a.md` fixture has a 2-line wrapped AC bullet
+        ending in "... invariant that\\n    lets TASK-002 and TASK-003
+        batch in parallel)."; the full continuation must be preserved.
+        """
+        cp = _run(
+            "build-tasks",
+            "--plans-dir", str(DIRECTORY_MODE_FIXTURE_PATH),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        tasks = res["tasks"]
+        t2 = next(t for t in tasks if t["id"] == "002")
+        ac = t2["acceptance_criteria"]
+        # Must retain exactly 2 bullets (the wrapped continuation must
+        # NOT split the second bullet into two entries).
+        assert len(ac) == 2, ac
+        # The second bullet must include both halves of the wrapped
+        # text — the "batch in parallel" tail is the load-bearing proof
+        # that continuation lines are folded into the current bullet.
+        assert "batch in parallel" in ac[1], ac[1]
+        assert "file-lock disjointness invariant" in ac[1], ac[1]
+        # Same invariant on TASK-003, whose AC bullet is similarly
+        # wrapped — makes the fix provably symmetric across siblings.
+        t3 = next(t for t in tasks if t["id"] == "003")
+        ac3 = t3["acceptance_criteria"]
+        assert len(ac3) == 2, ac3
+        assert "batch in parallel" in ac3[1], ac3[1]
+
+    def test_missing_roster_structured_error(self, tmp_path: Path) -> None:
+        """Directory exists but `00_INDEX.json` is absent → structured error."""
+        empty_dir = tmp_path / "no_roster"
+        empty_dir.mkdir()
+        cp = _run("build-tasks", "--plans-dir", str(empty_dir), "--json")
+        assert cp.returncode == 1
+        res = _parse_json(cp)
+        assert res["ok"] is False
+        assert res["outcome"] == "invalid"
+        assert any(
+            e["code"] == "roster-not-found" for e in res["errors"]
+        ), res
+
+    def test_missing_child_structured_error(self, tmp_path: Path) -> None:
+        """A `chunks[].file` that does not exist on disk surfaces as an error.
+
+        AC: "a child file named in `chunks[]` that doesn't exist on disk
+        surfaces as structured `errors[*]`"
+        """
+        plans_dir = tmp_path / "decomposed"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001",
+                        "file": "TASK-001_ghost.md",
+                        "depends_on": [],
+                        "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        # Note: no TASK-001_ghost.md actually written.
+        cp = _run("build-tasks", "--plans-dir", str(plans_dir), "--json")
+        assert cp.returncode == 1
+        res = _parse_json(cp)
+        assert res["ok"] is False
+        err = res["errors"]
+        missing = [e for e in err if e["code"] == "child-file-not-found"]
+        assert missing, err
+        assert missing[0]["task_id"] == "001"
+        assert missing[0]["plan_file"] == "TASK-001_ghost.md"
+
+    def test_malformed_roster_structured_error(self, tmp_path: Path) -> None:
+        """Invalid JSON in `00_INDEX.json` surfaces as `malformed-roster`."""
+        plans_dir = tmp_path / "decomposed"
+        plans_dir.mkdir()
+        # Deliberately invalid JSON.
+        (plans_dir / "00_INDEX.json").write_text(
+            "{ this is not valid json ]]", encoding="utf-8",
+        )
+        cp = _run("build-tasks", "--plans-dir", str(plans_dir), "--json")
+        assert cp.returncode == 1
+        res = _parse_json(cp)
+        assert res["ok"] is False
+        err = res["errors"]
+        assert any(e["code"] == "malformed-roster" for e in err), err
+
+    def test_malformed_roster_wrong_shape(self, tmp_path: Path) -> None:
+        """Top-level JSON that is not an object surfaces as malformed-roster."""
+        plans_dir = tmp_path / "decomposed"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text("[]", encoding="utf-8")
+        cp = _run("build-tasks", "--plans-dir", str(plans_dir), "--json")
+        assert cp.returncode == 1
+        res = _parse_json(cp)
+        assert any(
+            e["code"] == "malformed-roster" for e in res["errors"]
+        ), res
+
+    def test_cycle_in_dependencies_structured_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """Dependency cycle A→B→A surfaces as `cyclic-dependency`."""
+        plans_dir = tmp_path / "decomposed"
+        plans_dir.mkdir()
+        # Two children with A→B→A cycle. Roster must pass its own
+        # schema (deps must be normalized), so both entries are valid
+        # on the roster side — the cycle is in the parsed child graph.
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001",
+                        "file": "TASK-001_a.md",
+                        "depends_on": ["002"],
+                        "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        "task_id": "002",
+                        "file": "TASK-002_b.md",
+                        "depends_on": ["001"],
+                        "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        child_a = (
+            "# TASK-001 — A\n\n"
+            "## Goal\n\nA\n\n## Context\n\nctx\n\n"
+            "## Verification\n\n- x\n\n## Tasks\n\n"
+            "### TASK-001: A\n\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - src/a.py\n"
+            "- **Dependencies:** [002]\n"
+            "- **Test command:** `test -f src/a.py`\n"
+            "- **Acceptance criteria:**\n"
+            "  - a exists\n"
+            "- **Reversion guidance:** none\n"
+            "\n**Description:**\nDesc a.\n"
+        )
+        child_b = (
+            "# TASK-002 — B\n\n"
+            "## Goal\n\nB\n\n## Context\n\nctx\n\n"
+            "## Verification\n\n- x\n\n## Tasks\n\n"
+            "### TASK-002: B\n\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - src/b.py\n"
+            "- **Dependencies:** [001]\n"
+            "- **Test command:** `test -f src/b.py`\n"
+            "- **Acceptance criteria:**\n"
+            "  - b exists\n"
+            "- **Reversion guidance:** none\n"
+            "\n**Description:**\nDesc b.\n"
+        )
+        (plans_dir / "TASK-001_a.md").write_text(child_a, encoding="utf-8")
+        (plans_dir / "TASK-002_b.md").write_text(child_b, encoding="utf-8")
+        cp = _run("build-tasks", "--plans-dir", str(plans_dir), "--json")
+        assert cp.returncode == 1
+        res = _parse_json(cp)
+        cycles = [
+            e for e in res["errors"] if e["code"] == "cyclic-dependency"
+        ]
+        assert cycles, res["errors"]
+        assert set(cycles[0]["task_ids"]) == {"001", "002"}, cycles[0]
+
+    def test_missing_description_is_warning_not_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """A well-formed child missing `**Description:**` emits a warning.
+
+        AC: "Missing `**Description:**` or `**Acceptance criteria:**` in a
+        child surfaces as `warnings[*]` with task_id (non-fatal — plan-review
+        will flag downstream)."
+        """
+        plans_dir = tmp_path / "decomposed"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001",
+                        "file": "TASK-001_a.md",
+                        "depends_on": [],
+                        "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        # Child with AC bullets but NO `**Description:**` section.
+        child_no_desc = (
+            "# TASK-001 — A\n\n"
+            "## Goal\n\nA\n\n## Context\n\nctx\n\n"
+            "## Verification\n\n- x\n\n## Tasks\n\n"
+            "### TASK-001: A\n\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - src/a.py\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `test -f src/a.py`\n"
+            "- **Acceptance criteria:**\n"
+            "  - a exists\n"
+            "- **Reversion guidance:** none\n"
+        )
+        (plans_dir / "TASK-001_a.md").write_text(
+            child_no_desc, encoding="utf-8",
+        )
+        cp = _run("build-tasks", "--plans-dir", str(plans_dir), "--json")
+        # Warning, not error — exit code is 0 and task is populated.
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        assert res["ok"] is True, res
+        assert res["errors"] == [], res
+        assert len(res["tasks"]) == 1, res
+        assert res["tasks"][0]["description"] == "", res["tasks"][0]
+        # AC list is populated, so only the missing-description warning fires.
+        warns = [
+            w for w in res["warnings"] if w["code"] == "missing-description"
+        ]
+        assert warns, res["warnings"]
+        assert warns[0]["task_id"] == "001"
+        assert warns[0]["plan_file"] == "TASK-001_a.md"
+
+    def test_missing_acceptance_criteria_is_warning_not_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """A child missing `**Acceptance criteria:**` bullets emits a warning.
+
+        AC coverage: the sibling path to `missing-description`. Both are
+        non-fatal per the plan — plan-review downstream flags them as
+        gaps, not structural errors.
+        """
+        plans_dir = tmp_path / "decomposed"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001",
+                        "file": "TASK-001_a.md",
+                        "depends_on": [],
+                        "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        # Child with description but NO acceptance-criteria bullets.
+        child_no_ac = (
+            "# TASK-001 — A\n\n"
+            "## Goal\n\nA\n\n## Context\n\nctx\n\n"
+            "## Verification\n\n- x\n\n## Tasks\n\n"
+            "### TASK-001: A\n\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - src/a.py\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `test -f src/a.py`\n"
+            "- **Reversion guidance:** none\n"
+            "\n**Description:**\nDesc.\n"
+        )
+        (plans_dir / "TASK-001_a.md").write_text(
+            child_no_ac, encoding="utf-8",
+        )
+        cp = _run("build-tasks", "--plans-dir", str(plans_dir), "--json")
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        assert res["ok"] is True, res
+        assert res["errors"] == [], res
+        assert res["tasks"][0]["acceptance_criteria"] == [], res["tasks"][0]
+        warns = [
+            w for w in res["warnings"]
+            if w["code"] == "missing-acceptance-criteria"
+        ]
+        assert warns, res["warnings"]
+        assert warns[0]["task_id"] == "001"
+
+    def test_unresolvable_dep_structured_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """Dependency id not in the roster surfaces as `unresolvable-dep`."""
+        plans_dir = tmp_path / "decomposed"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001",
+                        "file": "TASK-001_a.md",
+                        "depends_on": [],
+                        "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        child = (
+            "# TASK-001 — A\n\n"
+            "## Goal\n\nA\n\n## Context\n\nctx\n\n"
+            "## Verification\n\n- x\n\n## Tasks\n\n"
+            "### TASK-001: A\n\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - src/a.py\n"
+            "- **Dependencies:** [999]\n"
+            "- **Test command:** `test -f src/a.py`\n"
+            "- **Acceptance criteria:**\n"
+            "  - a exists\n"
+            "- **Reversion guidance:** none\n"
+            "\n**Description:**\nDesc.\n"
+        )
+        (plans_dir / "TASK-001_a.md").write_text(child, encoding="utf-8")
+        cp = _run("build-tasks", "--plans-dir", str(plans_dir), "--json")
+        assert cp.returncode == 1
+        res = _parse_json(cp)
+        unresolved = [
+            e for e in res["errors"] if e["code"] == "unresolvable-dep"
+        ]
+        assert unresolved, res["errors"]
+        assert unresolved[0]["task_id"] == "001"
+        assert unresolved[0]["dep_id"] == "999"
+
+    def test_build_tasks_subdir_prefixed_chunks_emit_basename_plan_file(
+        self, tmp_path: Path,
+    ) -> None:
+        """Subdir-prefixed `chunks[].file` → emitted `plan_file` is basename only.
+
+        Regression: `build-tasks` previously copied `chunks[].file` verbatim
+        into `tasks[].plan_file`. When a roster entry pointed into a
+        subdirectory (e.g. `subdir/TASK-001_a.md`), the child file was
+        still readable via `plans_dir / chunks[].file`, but the emitted
+        `plan_file` retained the `subdir/` prefix. `parse-schedule` then
+        rejected it as `invalid-plan-file` because
+        `_is_valid_plan_file_basename` forbids `/` in the value, and
+        downstream basename-keyed routing also broke.
+
+        Fix: `_build_tasks` stores `Path(child_name).name` in `plan_file`
+        while continuing to locate the child on disk via the full path.
+        """
+        plans_dir = tmp_path / "decomposed"
+        plans_dir.mkdir()
+        subdir = plans_dir / "subdir"
+        subdir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001",
+                        "file": "subdir/TASK-001_a.md",
+                        "depends_on": [],
+                        "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        child = (
+            "# TASK-001 — A\n\n"
+            "## Goal\n\nA\n\n## Context\n\nctx\n\n"
+            "## Verification\n\n- x\n\n## Tasks\n\n"
+            "### TASK-001: A\n\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - src/a.py\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `test -f src/a.py`\n"
+            "- **Acceptance criteria:**\n"
+            "  - a exists\n"
+            "- **Reversion guidance:** none\n"
+            "\n**Description:**\nDesc a.\n"
+        )
+        (subdir / "TASK-001_a.md").write_text(child, encoding="utf-8")
+        cp = _run("build-tasks", "--plans-dir", str(plans_dir), "--json")
+        # Build succeeds — no `child-file-not-found`; the child is
+        # readable at `plans_dir / subdir / TASK-001_a.md`.
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        assert res["ok"] is True, res
+        assert res["errors"] == [], res
+        # Critical invariant: emitted `plan_file` is the basename only
+        # (no `subdir/` prefix), so `_is_valid_plan_file_basename` will
+        # accept it downstream.
+        assert len(res["tasks"]) == 1, res
+        assert res["tasks"][0]["plan_file"] == "TASK-001_a.md", (
+            res["tasks"][0]
+        )
+        # Pipe through `parse-schedule --stdin` — must surface no
+        # `invalid-plan-file` error.
+        sched_input = json.dumps(_schedule_shape(res))
+        cp2 = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
+            input=sched_input,
+            capture_output=True,
+            text=True,
+        )
+        assert cp2.returncode == 0, cp2.stderr
+        parsed = _parse_json(cp2)
+        assert parsed["outcome"] == "valid", parsed
+        invalid_pf = [
+            e for e in parsed.get("errors") or []
+            if isinstance(e, str) and "invalid-plan-file" in e
+        ] + [
+            e for e in parsed.get("errors") or []
+            if isinstance(e, dict) and e.get("code") == "invalid-plan-file"
+        ]
+        assert not invalid_pf, parsed
