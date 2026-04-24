@@ -7021,6 +7021,35 @@ class TestParsePlanReviewReport:
         assert body["findings_count"] == 2
         assert body["findings"] == findings
 
+    def test_parse_plan_review_preserves_populated_notes(self) -> None:
+        env = _plan_review_envelope()
+        env["parsed"]["notes"] = ["n1", "n2"]
+        cp = self._run_parser(env)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["notes"] == ["n1", "n2"]
+
+    def test_parse_plan_review_emits_empty_notes_for_success_envelope(self) -> None:
+        env = _plan_review_envelope()
+        env["parsed"]["notes"] = []
+        cp = self._run_parser(env)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["notes"] == []
+
+    def test_parse_plan_review_terminal_envelope_emits_empty_notes(self) -> None:
+        """Terminal envelopes (no `parsed` body) must still emit
+        `"notes": []` so downstream consumers never see a KeyError.
+        Covers the emitter-side gap in the terminal-outcome branch.
+        """
+        env = _plan_review_envelope(outcome="failure", error="codex not found")
+        env["parsed"] = None
+        cp = self._run_parser(env)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert "notes" in body
+        assert body["notes"] == []
+
     def test_rejects_invalid_verdict(self) -> None:
         cp = self._run_parser(_plan_review_envelope(verdict="clean"))
         assert cp.returncode == 1, cp.stdout
@@ -7207,6 +7236,7 @@ class TestParsePlanReviewReport:
         body = _parse_json(cp)
         assert body["outcome"] == outcome
         assert body["verdict"] is None
+        assert body["notes"] == []
         assert body["envelope_error"] == "codex not found"
 
 

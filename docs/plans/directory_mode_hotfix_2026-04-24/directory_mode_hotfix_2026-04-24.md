@@ -166,7 +166,7 @@ Keep the output envelope schema unchanged; only the input pre-processing differs
 
 ### TASK-003: `parse-plan-review-report` preserves `notes[]`
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** claude
 - **Files:**
