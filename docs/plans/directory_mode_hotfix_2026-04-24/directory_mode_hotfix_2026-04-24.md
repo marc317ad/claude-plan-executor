@@ -1,7 +1,7 @@
 # Directory-mode hotfix — unblock `/implement-plan <dir>` at the protocol layer
 
 **Created:** 2026-04-24
-**Status:** draft
+**Status:** complete
 **Base branch:** main
 
 ## Goal
@@ -237,3 +237,14 @@ Starting SHA: `c92d42097c8a1c154ddca9806280968572cf9b26`  → Ending SHA: `c92d4
 | TASK-002 | claude | (not run) | (not run) | (paused) | Implementation succeeded and tests passed; review not dispatched because TASK-001 paused first in serial per-task review order. |
 | TASK-003 | codex | (not run) | (not run) | (not run) | Batch 2 not started. |
 | TASK-004 | claude | (not run) | (not run) | (not run) | Batch 3 not started (depends on 001,002,003). |
+
+## Execution log — 20260424T103924 (success)
+
+Starting SHA: `c92d42097c8a1c154ddca9806280968572cf9b26`  → Ending SHA: `7c27dc8b7df0867a37bb7f2fdae1e3dea5615657`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-001 | claude | codex | ship-with-fixes [narrow-remediation] [disagreement: 1] | 929fccf | Codex needs-rework (basename + partial-reads); D.5 partial-agreement (load-bearing=0, dismissed=1); narrow-remediation fixed Path(child_name).name; binding re-review re-flagged dismissed-1 + missing-chunk test gap; user kept-as-is with override-rationale. |
+| TASK-002 | claude | codex | clean [remediation] | 391a62d | Codex needs-rework on plan_doc classifier (basename+parent heuristic vs exact path); D.5 needs-rework; bounded remediation switched to repo-relative path set via git rev-parse --show-toplevel; re-review clean. |
+| TASK-003 | claude | codex | clean | 7b06505 | Codex impl scope_violation (absolute-path in files_changed); fallback to Claude adjusted test method names to match plan -k filter; review clean. |
+| TASK-004 | claude | codex | clean [remediation] | 7c27dc8 | Codex needs-rework (conditional run-log assertion vacuous); D.5 needs-rework; remediation pre-seeds empty _run_log.jsonl and drops guard; re-review clean. |
