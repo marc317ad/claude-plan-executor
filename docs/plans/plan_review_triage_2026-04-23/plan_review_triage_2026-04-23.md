@@ -244,7 +244,7 @@ The two insertion points share the triage machinery. Keep the SKILL.md prose DRY
 
 ### TASK-005: Regression harness for the triage contract (both sources)
 
-- **Status:** failed
+- **Status:** done
 - **Priority:** medium
 - **Agent:** codex
 - **Files:**

@@ -6895,6 +6895,7 @@ def _plan_review_envelope(
         "plan_file": plan_file,
         "verdict": verdict,
         "findings": findings if findings is not None else [],
+        "notes": [],
         "schedule_ok": schedule_ok,
         "summary": summary,
     }
@@ -6922,7 +6923,7 @@ class TestPlanReviewSchemaFile:
         required = set(schema["required"])
         assert required == {
             "plan_file", "verdict", "findings",
-            "schedule_ok", "summary",
+            "notes", "schedule_ok", "summary",
         }
 
 
@@ -6980,12 +6981,14 @@ class TestParsePlanReviewReport:
         findings = [
             {
                 "severity": "important",
+                "blocking": True,
                 "section": "TASK-014C Files",
                 "concern": "schema file missing",
                 "suggested_change": "add codex_plan_review_schema.json",
             },
             {
                 "severity": "minor",
+                "blocking": False,
                 "section": "Context",
                 "concern": "typo in §Scoped Context",
                 "suggested_change": "re-read paragraph and fix",
@@ -12441,3 +12444,104 @@ class TestAuditDocReferences:
         assert "audit" in section.lower(), (
             "design doc §14 must reference the audit readiness check"
         )
+
+
+class TestPlanReviewTriageContract:
+    """TASK-005 regression harness — parser-to-routing contract for both sources."""
+
+    def _run(
+        self,
+        payload: dict,
+        *,
+        source: str,
+        findings_count: int,
+    ) -> subprocess.CompletedProcess:
+        report = (
+            "Summary\n\n```json\n" + json.dumps(payload) + "\n```\n"
+        )
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-triage-report", "--stdin",
+                "--source", source,
+                "--findings-count", str(findings_count),
+                "--json",
+            ],
+            input=report,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    @pytest.mark.parametrize("source", ["plan-analyst", "codex-plan-review"])
+    @pytest.mark.parametrize(
+        "verdict", ["ship", "ship-with-fixes", "partial-agreement", "needs-rework"],
+    )
+    def test_plan_review_triage_contract_verdict_roundtrip(
+        self, source: str, verdict: str,
+    ) -> None:
+        payload = {
+            "verdict": verdict,
+            "load_bearing": [0, 2] if verdict == "partial-agreement" else [],
+            "dismissed": [1, 3] if verdict == "partial-agreement" else [],
+            "summary": "triage rationale",
+        }
+        cp = self._run(payload, source=source, findings_count=4)
+        assert cp.returncode == 0, cp.stderr
+        body = json.loads(cp.stdout)
+        assert body["verdict"] == verdict
+        assert body["source"] == source
+        assert body["load_bearing"] == payload["load_bearing"]
+        assert body["dismissed"] == payload["dismissed"]
+        assert body["findings_count"] == 4
+
+    @pytest.mark.parametrize("source", ["plan-analyst", "codex-plan-review"])
+    @pytest.mark.parametrize(
+        ("load_bearing", "dismissed", "code"),
+        [
+            ([], [0, 1], "partial-agreement-invalid-split"),
+            ([0, 1], [], "partial-agreement-invalid-split"),
+            ([0, 0], [1], "partial-agreement-invalid-split"),
+            ([0], [0], "triage-buckets-not-disjoint"),
+        ],
+    )
+    def test_plan_review_triage_contract_partial_agreement_invariants(
+        self,
+        source: str,
+        load_bearing: list[int],
+        dismissed: list[int],
+        code: str,
+    ) -> None:
+        payload = {
+            "verdict": "partial-agreement",
+            "load_bearing": load_bearing,
+            "dismissed": dismissed,
+            "summary": "x",
+        }
+        cp = self._run(payload, source=source, findings_count=2)
+        assert cp.returncode != 0
+        body = json.loads(cp.stdout or cp.stderr)
+        codes = {e["code"] for e in body.get("errors", [])}
+        assert code in codes, (code, body)
+
+    @pytest.mark.parametrize(
+        ("source", "needle"),
+        [
+            ("plan-analyst", "gap index"),
+            ("codex-plan-review", "finding index"),
+        ],
+    )
+    def test_plan_review_triage_contract_source_aware_out_of_range_message(
+        self, source: str, needle: str,
+    ) -> None:
+        payload = {
+            "verdict": "partial-agreement",
+            "load_bearing": [0],
+            "dismissed": [5],
+            "summary": "x",
+        }
+        cp = self._run(payload, source=source, findings_count=2)
+        assert cp.returncode != 0
+        body = json.loads(cp.stdout or cp.stderr)
+        messages = " ".join(e.get("message", "") for e in body.get("errors", []))
+        assert needle in messages, (needle, messages)

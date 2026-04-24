@@ -736,6 +736,7 @@ def _validate_reviewer_finding_item(item: object, *, path: str) -> list[dict]:
 
     required = {
         "severity": str,
+        "confidence": str,
         "file": str,
         "line": int,
         "issue": str,
@@ -766,6 +767,17 @@ def _validate_reviewer_finding_item(item: object, *, path: str) -> list[dict]:
             "path": f"{path}.severity",
             "code": "invalid-reviewer-finding-severity",
             "message": f"reviewer finding severity must be one of ['critical', 'important', 'minor'], got {severity!r}",
+        })
+    confidence = item.get("confidence")
+    if isinstance(confidence, str) and confidence not in {"high", "medium", "low"}:
+        errors.append({
+            "path": f"{path}.confidence",
+            "code": "invalid-reviewer-finding-confidence",
+            "message": (
+                "reviewer finding confidence must be one of "
+                "['high', 'medium', 'low'], "
+                f"got {confidence!r}"
+            ),
         })
     for key in item.keys():
         if key in required or key in OPTIONAL_REVIEWER_FINDING_FIELDS:
@@ -888,6 +900,7 @@ def _validate_review_failure_payload(reviewer_findings: object) -> list[dict]:
         "task_id": str,
         "verdict": str,
         "findings": list,
+        "notes": list,
         "scope_ok": bool,
         "acceptance_met": bool,
         "summary": str,
@@ -1259,6 +1272,26 @@ def _validate_plan_review_triage_payload(
                     "message": (
                         "partial-agreement requires a non-empty "
                         "'dismissed' bucket"
+                    ),
+                })
+
+        for name, bucket in (
+            ("load_bearing", load_bearing),
+            ("dismissed", dismissed),
+        ):
+            seen: set[int] = set()
+            dup: list[int] = []
+            for idx in bucket:
+                if idx in seen and idx not in dup:
+                    dup.append(idx)
+                seen.add(idx)
+            if dup:
+                errors.append({
+                    "path": f"$.{name}",
+                    "code": "partial-agreement-invalid-split",
+                    "message": (
+                        f"triage bucket {name!r} contains duplicate "
+                        f"{noun} indices {dup}; entries must be unique"
                     ),
                 })
 
@@ -2973,6 +3006,7 @@ def _validate_plan_review_finding(item: object, *, path: str) -> list[dict]:
         }]
     required = {
         "severity": str,
+        "blocking": bool,
         "section": str,
         "concern": str,
         "suggested_change": str,
@@ -2986,7 +3020,11 @@ def _validate_plan_review_finding(item: object, *, path: str) -> list[dict]:
             })
             continue
         value = item[key]
-        if not isinstance(value, typ):
+        if typ is bool:
+            ok = isinstance(value, bool)
+        else:
+            ok = isinstance(value, typ)
+        if not ok:
             errors.append({
                 "path": f"{path}.{key}",
                 "code": "invalid-plan-review-finding-field",
@@ -3036,6 +3074,7 @@ def _validate_plan_review_parsed(parsed: object) -> list[dict]:
         "plan_file": str,
         "verdict": str,
         "findings": list,
+        "notes": list,
         "schedule_ok": bool,
         "summary": str,
     }
@@ -5939,7 +5978,7 @@ def _check_schemas() -> dict:
             "implement_blockers_items_type": "string",
             "review_required": [
                 "task_id", "verdict", "findings",
-                "scope_ok", "acceptance_met", "summary",
+                "notes", "scope_ok", "acceptance_met", "summary",
             ],
             "review_verdict_enum": [
                 "clean", "minor-findings", "needs-rework",
@@ -6007,7 +6046,7 @@ def _check_schemas() -> dict:
     }
     canonical_required = {
         "task_id", "verdict", "findings",
-        "scope_ok", "acceptance_met", "summary",
+        "notes", "scope_ok", "acceptance_met", "summary",
     }
     missing_required = sorted(canonical_required - set(review_required))
     if missing_required:
