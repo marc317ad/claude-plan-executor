@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "CLAUDE-ONLY FIX \u2014 Strict no-Codex contract for plan and cross-review",
+  "source_plan_file": "CLAUDE_ONLY_FIX_2026-04-24.md",
+  "created": "2026-04-25",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "parallel_batches": [
+    [
+      "001"
+    ],
+    [
+      "002"
+    ],
+    [
+      "003"
+    ]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_plumbing_claude_only_routing.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_plan_review_claude_path.md",
+      "priority": "high",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_cross_review_claude_path.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
