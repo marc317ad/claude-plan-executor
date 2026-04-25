@@ -275,7 +275,7 @@ Final prose + canonical-contract sweep, plus deletion of the now-unreachable fil
 
 ### TASK-009: End-to-end directory-mode smoke
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**

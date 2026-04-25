@@ -1,0 +1,83 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Seed scratch directory",
+      "files": [
+        "scratch/.gitkeep (create)"
+      ],
+      "dependencies": [],
+      "test_command": "test -d scratch",
+      "priority": "high",
+      "plan_file": "TASK-001_seed.md",
+      "description": "Minimal seeder task for the directory-mode integration fixture. Creates the\nscratch parent directory that TASK-002 and TASK-003 write into. Lives in its\nown child plan file so the integration harness has three distinct `plan_file`\nbasenames to route `commit-task` / `fail-task` / `block-dependents` against.",
+      "acceptance_criteria": [
+        "`scratch/` exists at repo root.",
+        "Directory is committed via `scratch/.gitkeep` so git tracks it."
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "002",
+      "title": "Write scratch/a.txt",
+      "files": [
+        "scratch/a.txt (create)"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "test -f scratch/a.txt",
+      "priority": "high",
+      "plan_file": "TASK-002_write_a.md",
+      "description": "Parallel-batch leaf A in the TASK-004 directory-mode integration fixture.\nDepends on TASK-001 (scratch seeder) but has no dependency on TASK-003, and\nwrites a disjoint leaf file so the orchestrator can run TASK-002 and TASK-003\nconcurrently. Lives in its own child plan file so `commit-task --plan-file\n<this-basename>` flips only this file's Status bullet.",
+      "acceptance_criteria": [
+        "`scratch/a.txt` exists and is a non-empty regular file.",
+        "Does NOT touch `scratch/b.txt` (file-lock disjointness invariant that lets TASK-002 and TASK-003 batch in parallel)."
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "003",
+      "title": "Write scratch/b.txt",
+      "files": [
+        "scratch/b.txt (create)"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "test -f scratch/b.txt",
+      "priority": "high",
+      "plan_file": "TASK-003_write_b.md",
+      "description": "Parallel-batch leaf B in the TASK-004 directory-mode integration fixture.\nSibling to TASK-002; both depend on TASK-001 only and neither depends on the\nother. Their `Files:` lists are disjoint, so the orchestrator batches them\ntogether. Lives in its own child plan file so `block-dependents` in the\ndirectory-mode cascade routes this task's `blocked` flip to this file while\nTASK-002's flip lands in `TASK-002_write_a.md`.",
+      "acceptance_criteria": [
+        "`scratch/b.txt` exists and is a non-empty regular file.",
+        "Does NOT touch `scratch/a.txt` (file-lock disjointness invariant that lets TASK-002 and TASK-003 batch in parallel)."
+      ],
+      "agent": "claude"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "scratch/.gitkeep (create)"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002",
+        "003"
+      ],
+      "file_locks": [
+        "scratch/a.txt (create)",
+        "scratch/b.txt (create)"
+      ]
+    }
+  ],
+  "gaps": []
+}
