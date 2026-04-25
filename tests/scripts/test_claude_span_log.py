@@ -399,6 +399,35 @@ class TestMultiHopChain:
 
 
 # ---------------------------------------------------------------------------
+# Env-var inheritance — production parent metadata path.
+# ---------------------------------------------------------------------------
+
+
+def _env_parent_writer(log_dir: str) -> None:
+    """Append one span after setting parent metadata in the child env."""
+    os.environ["PLAN_EXEC_PARENT_RUN_ID"] = "parent-run-X"
+    os.environ["PLAN_EXEC_PARENT_AGENT"] = "parent-agent-X"
+    env = _envelope(run_id="child-run-X", span_id="child-span-X")
+    span_log.append_span(log_dir, env)
+
+
+class TestEnvVarInheritance:
+    def test_span_captures_env_var_parent_when_no_kwarg(self, tmp_path):
+        ctx = multiprocessing.get_context("spawn")
+        p = ctx.Process(target=_env_parent_writer, args=(str(tmp_path),))
+        p.start()
+        p.join(timeout=15)
+        assert p.exitcode == 0, f"env parent writer failed: exitcode={p.exitcode}"
+
+        log_path = tmp_path / "spans.jsonl"
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["parent_run_id"] == "parent-run-X"
+        assert record["parent_agent"] == "parent-agent-X"
+
+
+# ---------------------------------------------------------------------------
 # Concurrency — N processes appending simultaneously, no torn writes.
 # ---------------------------------------------------------------------------
 

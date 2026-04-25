@@ -22,7 +22,7 @@ Run 20260425T124346 shipped v1 of `_claude_dispatch_envelope.py` and `_claude_sp
 
 ### TASK-005: Docstring consistency + env-var inheritance test
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/scripts/_claude_dispatch_envelope.py` (modify)

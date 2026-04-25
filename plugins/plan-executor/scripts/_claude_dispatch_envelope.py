@@ -452,7 +452,7 @@ def build_depth_exceeded(
     status_reason: Optional[str] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """``status: depth_exceeded`` — ``PLAN_EXEC_DEPTH >= PLAN_EXEC_MAX_DEPTH``."""
+    """``status: depth_exceeded`` — ``PLAN_EXEC_DISPATCH_DEPTH >= PLAN_EXEC_MAX_DEPTH``."""
     return _build_envelope(
         status="depth_exceeded",
         status_reason=status_reason,
