@@ -85,6 +85,7 @@ import _claude_backend as backend  # noqa: E402
 import _claude_dispatch_cleanup as cleanup  # noqa: E402
 import _claude_dispatch_envelope as env_mod  # noqa: E402
 import _claude_guardrails as guardrails  # noqa: E402
+import _claude_span_log as span_log  # noqa: E402
 
 try:
     from jsonschema import Draft7Validator  # noqa: E402
@@ -405,7 +406,7 @@ def _stamp_trace_end(envelope: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Span log (v1 placeholder; TASK-006 replaces with proper helper)
+# Span log (TASK-006: delegates to _claude_span_log.append_span)
 # ---------------------------------------------------------------------------
 
 
@@ -431,24 +432,28 @@ def _append_span(
     repo_root: Optional[str] = None,
     span_log_path: Optional[Path] = None,
 ) -> None:
-    """Append the envelope to ``spans.jsonl`` as a single JSON line.
+    """Append the envelope's reduced span to ``spans.jsonl``.
 
-    v1 placeholder. TASK-006 replaces this with a structured helper.
-    Failures here are non-fatal: the wrapper still emits the envelope on
-    stdout so the caller can act on it. We swallow OSError / PermissionError
-    so a read-only filesystem (e.g. unit-test sandboxes) does not break
-    dispatch.
+    Delegates the atomic-write contract to
+    :func:`_claude_span_log.append_span`. Failures here are non-fatal:
+    the wrapper still emits the envelope on stdout so the caller can act
+    on it. We swallow OSError / PermissionError so a read-only filesystem
+    (e.g. unit-test sandboxes) does not break dispatch.
 
-    The function is exposed here (rather than referenced via a separate
-    module) so tests can monkeypatch it without importing
-    ``_claude_span_log`` (which does not exist yet).
+    The call-site name is unchanged from the TASK-005 placeholder so
+    existing tests / orchestrator paths continue to work; only the body
+    swaps to the structured helper.
     """
-    target = span_log_path if span_log_path is not None else _resolve_span_log_path(repo_root)
+    if span_log_path is not None:
+        # Test-injection: caller specifies the exact file path; helper has
+        # an explicit ``.jsonl`` escape hatch (see ``_claude_span_log``).
+        log_dir_arg: Any = span_log_path
+    else:
+        # Default: pass the directory; the helper composes ``spans.jsonl``.
+        log_dir_arg = _resolve_span_log_path(repo_root).parent
+
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(envelope, default=str) + "\n"
-        with open(target, "a", encoding="utf-8") as fh:
-            fh.write(line)
+        span_log.append_span(log_dir_arg, envelope, repo_root=repo_root)
     except (OSError, PermissionError):
         # Non-fatal — span logging is observability, not a hard requirement.
         return
