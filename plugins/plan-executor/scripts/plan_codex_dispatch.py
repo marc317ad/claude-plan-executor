@@ -243,7 +243,9 @@ def normalize_file_path(raw: str) -> str:
     cleaned = re.sub(r":\d+[-\u2013]\d+$", "", cleaned)
     # Strip single :N reference
     cleaned = re.sub(r":\d+$", "", cleaned)
-    return cleaned.strip()
+    # Strip surrounding backticks (markdown code-spans).
+    cleaned = cleaned.strip().strip("`").strip()
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +434,10 @@ def render_review_prompt(
     prompt_files = review_files if review_files is not None else allowed
     files_str = ", ".join(prompt_files) or "(none declared)"
     ac_bullets = "\n".join(f"- {c}" for c in task["acceptance_criteria"]) or "- (none specified)"
+    # TASK-027A: forward Description + Implementation notes so the reviewer
+    # has the same "why this pattern here" context the implementer received.
+    description = task.get("description") or "(none provided)"
+    impl_notes_text = task.get("implementation_notes") or "(none provided)"
     # TASK-009: pre-read excerpts apply to reviewers too — the reviewer
     # often needs the same windowed context as the implementer to judge
     # whether the diff lands inside the declared symbol/range.
@@ -445,8 +451,10 @@ def render_review_prompt(
         f"{pre_read_prefix}"
         f"Review the implementation of TASK-{task['task_id']} in this repository.\n\n"
         f"Task objective: {task['title']}\n\n"
-        f"Acceptance criteria:\n{ac_bullets}\n\n"
-        f"Files under review: {files_str}\n\n"
+        f"Task requirements:\n{ac_bullets}\n\n"
+        f"Description:\n{description}\n\n"
+        f"Implementation notes:\n{impl_notes_text}\n\n"
+        f"Changed files: {files_str}\n\n"
         f"Review focus: {review_focus}\n\n"
         f"Your job is to identify only concrete, material problems in the "
         f"provided diff.\n\n"
@@ -563,6 +571,87 @@ def git_diff_for_files(repo_root: str, files: list[str]) -> str:
         return r.stdout
     r = _git(["diff", "--"] + files, cwd=repo_root)
     return r.stdout if r.returncode == 0 else ""
+
+
+# TASK-027A: hallucinated-symbol post-check. Negative-lookbehind character
+# class includes `.` so dotted expressions like obj._helper( and obj.method(
+# do NOT match — v1 scope is bare symbols only.
+_SYMBOL_PATTERNS = [
+    re.compile(r"(?<![A-Za-z0-9_.])(_[A-Za-z][A-Za-z0-9_]*)\("),
+    re.compile(r"(?<![A-Za-z0-9_.])(--[a-z][a-z0-9-]+)(?=\b)"),
+    re.compile(r"(?<![A-Za-z0-9_.])([a-z][a-z0-9_]{3,})\([a-zA-Z_]"),
+]
+
+
+def _verify_cited_symbols(parsed: dict, repo_root: str) -> list[dict]:
+    """Best-effort grep of each finding's cited symbols against its cited file.
+
+    Consumes the raw Codex `parsed` object (not the wrapper envelope).
+    Returns a list of {finding_index, cited_symbol, file, status} entries.
+
+    Status semantics:
+      "not-found"  — candidate extracted, absent from the cited file.
+      "unchecked"  — candidate extracted, but file missing, path escapes
+                     repo_root, or read failed.
+      No candidate extractable -> NO entry emitted for that finding.
+    """
+    warnings: list[dict] = []
+    findings = (parsed or {}).get("findings") or []
+    repo_root_resolved = Path(repo_root).resolve()
+    for idx, finding in enumerate(findings):
+        issue_text = finding.get("issue") or ""
+        cited_file = finding.get("file") or ""
+        candidates: set[str] = set()
+        for pat in _SYMBOL_PATTERNS:
+            for m in pat.finditer(issue_text):
+                candidates.add(m.group(1))
+        if not candidates:
+            continue  # prose-only finding -> no entry
+
+        if not cited_file:
+            for sym in sorted(candidates):
+                warnings.append({
+                    "finding_index": idx, "cited_symbol": sym,
+                    "file": "", "status": "unchecked",
+                })
+            continue
+
+        abs_path = (repo_root_resolved / cited_file).resolve()
+        try:
+            abs_path.relative_to(repo_root_resolved)
+        except ValueError:
+            for sym in sorted(candidates):
+                warnings.append({
+                    "finding_index": idx, "cited_symbol": sym,
+                    "file": cited_file, "status": "unchecked",
+                })
+            continue
+
+        if not abs_path.is_file():
+            for sym in sorted(candidates):
+                warnings.append({
+                    "finding_index": idx, "cited_symbol": sym,
+                    "file": cited_file, "status": "unchecked",
+                })
+            continue
+
+        try:
+            file_text = abs_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            for sym in sorted(candidates):
+                warnings.append({
+                    "finding_index": idx, "cited_symbol": sym,
+                    "file": cited_file, "status": "unchecked",
+                })
+            continue
+
+        for sym in sorted(candidates):
+            if sym not in file_text:
+                warnings.append({
+                    "finding_index": idx, "cited_symbol": sym,
+                    "file": cited_file, "status": "not-found",
+                })
+    return warnings
 
 
 def _snapshot_baseline(repo_root: str) -> dict:
@@ -1410,6 +1499,12 @@ def cmd_review(args) -> int:
         }
         if codex["file_changes"]:
             extra["jsonl_file_changes"] = codex["file_changes"]
+
+        # TASK-027A: hallucinated-symbol post-check. Wrapper-envelope
+        # metadata only — does NOT mutate `parsed` (Codex output contract).
+        extra["wrapper_checks"] = {
+            "symbol_warnings": _verify_cited_symbols(parsed, repo_root),
+        }
 
         emit(make_envelope(
             task["task_id"], "review", "success",

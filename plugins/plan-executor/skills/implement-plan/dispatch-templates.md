@@ -463,6 +463,14 @@ Dispatched only when Codex reviewing a Claude-implemented task returns `needs-re
 > <codex_findings_json>
 > ```
 >
+> Wrapper checks (verbatim from `envelope.wrapper_checks`):
+>
+> ```json
+> <wrapper_checks_json>
+> ```
+>
+> The `symbol_warnings` list flags cases where Codex cited a specific function, helper, or flag (e.g., `_some_helper(`, `--some-flag`) that does NOT exist in the cited file — a hallucination signal. An empty list means no hallucinated-symbol warnings are surfaced (either the wrapper ran the check and found none, or this envelope came from a failure/timeout/parse-error path where the check did not run and the orchestrator substituted the empty-list default). A non-empty list is what carries information; an empty list tells you nothing either way. Use a `not-found` warning as a **tiebreaker**, not a decision rule: it is a strong dismissal signal for that individual finding but still requires the dismissal-evidence gate below.
+>
 > Return your verdict (`ship | ship-with-fixes | partial-agreement | needs-rework`) and a brief justification.
 >
 > **Verdict decision rubric — pick the verdict that matches the split, not a stronger one:**

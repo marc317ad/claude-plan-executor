@@ -689,7 +689,7 @@ Minor findings in either direction → commit; record in run summary AND commit 
 #### D.2a — Escalation (§8.4, Codex critical on Claude work)
 
 1. Log `disagreement {task_id, codex_findings[]}`. Pass the Codex findings verbatim via `--findings-json "$(<json-array>)"` so the `disagreement` line carries the full payload under key `findings` — D.5 dispatch happens right after, and audit retrieval of "what did Codex flag that D.5 then adjudicated?" depends on this.
-2. Dispatch the Phase D.5 template: `Agent(subagent_type: "code-reviewer", model: "sonnet", prompt: render(templates.PhaseD5, codex_findings, task_block))`.
+2. Dispatch the Phase D.5 template: `Agent(subagent_type: "code-reviewer", model: "sonnet", prompt: render(templates.PhaseD5, codex_findings, task_block, wrapper_checks))`. `wrapper_checks` is taken from the Codex review envelope's `wrapper_checks` field; if the field is absent (failure/timeout/parse-error envelopes), pass `{"symbol_warnings": []}` as the default so the template's `<wrapper_checks_json>` placeholder always resolves to a valid JSON object.
 3. Parse verdict and route per the table below:
 
 | Codex verdict | D.5 verdict | Route | Rationale |

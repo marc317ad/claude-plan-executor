@@ -131,7 +131,7 @@ Regression test: `tests/scripts/test_codex_review_prompt.py::test_d5_spec_defere
 
 ### TASK-027A: Review prompt context + symbol-verification post-check + D.5 forwarding
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py`
