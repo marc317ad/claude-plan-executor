@@ -34,6 +34,10 @@ Restart Claude Code afterwards. `/implement-plan` should appear in the slash-com
 
 Scripts execute with `cwd = consuming project` and read project-local `.claude/plan-executor.json`. Plugin-internal references resolve through `${CLAUDE_PLUGIN_ROOT}` at runtime.
 
+### Nested Claude dispatch (`plan_claude_dispatch.py`)
+
+Sibling to `plan_codex_dispatch.py`: a structured wrapper around `claude -p` that lets a subagent (which lacks the `Agent` tool) shell out to a fresh top-level Claude session. The wrapper enforces an agent allowlist (`{plan-analyst, plan-implementer, plan-remediator}`), strips parent env down to a deny-by-default surface, applies depth/budget/killswitch guardrails, and runs delta-bounded cleanup so writes outside `result.files_changed` are reverted. This is what enables Claude-tier tasks to parallelize and what lets remediators delegate cross-checks without bouncing back to the orchestrator. See `plugins/plan-executor/scripts/README_claude_dispatch.md` for the input/output JSON shapes, env vars, refusal matrix, and the Probe 2b safety story.
+
 ## Per-project requirements
 
 Each project that uses `/implement-plan` must provide:
