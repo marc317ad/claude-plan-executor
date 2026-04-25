@@ -49,7 +49,7 @@ The matrix is a `bash` script that exercises each row, captures stdout / stderr 
 
 ### TASK-001: Empirical Gemini-CLI verification matrix (precondition)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `scripts/gemini_verification_matrix.sh` (new)
@@ -75,3 +75,11 @@ Run the empirical matrix, commit the report, and pin the assumptions every other
 - Truncation to 2000 chars per stdout/stderr field mirrors `RAW_TRUNCATE_CHARS` in `plan_codex_dispatch.py` — use the same constant to keep the wrapper's eventual error-envelope shapes aligned.
 - The shim test's fake `gemini` is a 30-line Python script invoked via PATH-overlay (`PATH=<test-dir>:$PATH`) — it emits the canonical envelope shape from row 1 plus the documented exit codes for each row's matching prompt. Keeps the test hermetic.
 - Do NOT validate Gemini's actual model output quality in this matrix — that is the wrapper's job once schemas land. The matrix tests CLI-shape contract only.
+
+## Execution log — 20260425T131942 (paused)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | codex | needs-rework [narrow-remediation second pass] |  | awaiting user; D.2a.6 second needs-rework: dismissed finding 0 re-flagged + NEW hardcoded miniconda3 path |
