@@ -18263,3 +18263,35 @@ class TestResolveReadTargets:
         assert "Pre-read excerpts" not in prompt
         # Sanity: the prompt opens with the canonical implement header.
         assert prompt.startswith("Implement TASK-001"), prompt[:80]
+
+
+# ---------------------------------------------------------------------------
+# TASK-006: Phase D.1 review-failure routing documentation in SKILL.md
+# ---------------------------------------------------------------------------
+
+
+class TestSkillRoutingDocumentation:
+    """Documentation smoke test: SKILL.md §Phase D.1 documents the
+    Codex-side wrapper-failure routing reason enum.
+
+    Pins the documented vocabulary so a future SKILL refactor cannot
+    quietly delete the routing rule.
+
+    Class/test names embed the literal substrings ``skill_routing`` and
+    ``routing_documentation`` so the task's ``pytest -k`` filter selects
+    this test verbatim.
+    """
+
+    def test_skill_routing_documentation_lists_codex_review_reasons(self) -> None:
+        skill_path = (
+            Path(__file__).resolve().parents[2]
+            / "plugins"
+            / "plan-executor"
+            / "skills"
+            / "implement-plan"
+            / "SKILL.md"
+        )
+        text = skill_path.read_text(encoding="utf-8")
+        assert "codex_review_timeout" in text
+        assert "codex_review_parse_error" in text
+        assert "codex_review_failure" in text

@@ -654,6 +654,8 @@ Release this task's file locks. Remove the task from `ready`. Peer tasks in the 
 
 **If `--skip-cross-review`:** skip to D.3 immediately. Log `review_skipped`. Final summary shows a loud warning banner.
 
+**Final-summary cross-review banner.** When `review_skipped` events fire (for any reason — `--skip-cross-review`, or the Codex-side wrapper-failure routing in §D.1 below), the run summary MUST carry a loud banner: *"Cross-review skipped on N tasks (codex unavailable)"* listing each affected `task_id` and its `reason`. This complements the `--skip-cross-review` banner clause; both surface the same `review_skipped` event with different `reason` values.
+
 Otherwise, per successful task:
 
 #### D.1 — Dispatch the opposite-side reviewer
@@ -679,6 +681,8 @@ Parse verdict `∈ {ship, ship-with-fixes, needs-rework}`. Verdict vocab is pres
 Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}`. Minor findings persist in `review_notes[task_id]` for the run summary.
 
 When findings are non-empty, also pass `--findings-json "$(<json-array>)"` to the `review_done` `log-event` call so the line carries the full Codex payload verbatim under key `findings`. The audit trail depends on this — count-only `review_done` entries lose the finding text within ~20s.
+
+**Wrapper failure outcomes (Codex side).** Wrapper timeout / parse_error / failure outcomes from `subcommand=review` (Codex review path only — `cmd_review` emits these envelopes today) log `review_skipped {task_id, reviewer:"codex", reason}` where `reason` maps as: `timeout` → `"codex_review_timeout"`, `parse_error` → `"codex_review_parse_error"`, `failure` → `"codex_review_failure"`. Then proceed straight to D.3 commit with `--reviewer none --reviewer-verdict ""` (the existing `commit-task` form documented at §`commit-task` example (e); do not duplicate the bash). The commit body's reviewer line records "review skipped (reason)" preserving the audit trail. This mirrors the parallel Phase 1.5 rule at line 450 — wrapper-side errors degrade to a documented skip rather than blocking execution. The Codex-implemented → Claude-review direction's `Agent`-side failures are NOT covered by this rule; that path falls under the existing `Agent` retry semantics and the D.5 ladder for substantive disagreement.
 
 #### D.2 — Route by verdict
 
@@ -1025,6 +1029,13 @@ $PYTHON plan_ops.py log-event --event implement_start \
 $PYTHON plan_ops.py log-event --event disagreement \
   --fields-json '{"run_id":"<run-id>","task_id":"<task-id>","reviewer":"codex","verdict":"needs-rework","d5_verdict":"ship-with-fixes"}'
 ```
+
+**`review_skipped.reason` enum.** The `review_skipped` event's `reason` field uses a fixed vocabulary:
+
+- `flag` — operator passed `--skip-cross-review` (existing).
+- `codex_review_timeout` — wrapper `subcommand=review` returned `outcome=timeout` (§D.1 routing).
+- `codex_review_parse_error` — wrapper `subcommand=review` returned `outcome=parse_error` (§D.1 routing).
+- `codex_review_failure` — wrapper `subcommand=review` returned `outcome=failure` (§D.1 routing).
 
 ### `commit-task`
 

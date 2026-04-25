@@ -70,7 +70,7 @@ When `subcommand=review` and `outcome ∈ {timeout, parse_error, failure}`:
 
 ### TASK-006: Phase D.1 review-failure routing in SKILL.md
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (edit)
