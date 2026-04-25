@@ -3760,6 +3760,236 @@ def cmd_check_plan_deps(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# index-closure (TASK-001 — narrow_run_filter_ids)
+# ---------------------------------------------------------------------------
+#
+# Pure-roster transitive-prereq closure walker. The malformed
+# `**Dependencies:**` prose problem lives in the per-child markdown body, not
+# in the roster's structured `chunks[].depends_on`. The closure must therefore
+# key on the roster — never on the child body — so it survives malformed
+# siblings entirely.
+
+
+def _load_index_chunks(plans_dir: Path) -> tuple[list[dict] | None, list[dict]]:
+    """Load the raw `chunks[]` array from `00_INDEX.json`.
+
+    Returns `(chunks, errors)`. On fatal parse / shape problems the chunks
+    value is `None` and the errors list carries a `code`-tagged dict; on a
+    well-formed but tolerated-malformed roster (e.g., individual chunks with
+    bad shapes) the chunks list is returned as-is and per-chunk validation
+    is deferred to `_compute_index_closure`.
+
+    Unlike `_parse_index_roster`, this loader does NOT raise on duplicate
+    `task_id` values or non-normalizable ids — those are surfaced as errors
+    by the closure helper so the CLI can keep emitting JSON output instead
+    of crashing.
+    """
+    index_path = plans_dir / "00_INDEX.json"
+    if not index_path.is_file():
+        return None, [{
+            "code": "index-not-found",
+            "path": str(index_path),
+            "message": f"index file not found: {index_path}",
+        }]
+    try:
+        doc = json.loads(index_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        return None, [{
+            "code": "index-malformed-json",
+            "path": str(index_path),
+            "message": f"malformed JSON in {index_path}: {e}",
+        }]
+    if not isinstance(doc, dict):
+        return None, [{
+            "code": "index-shape-invalid",
+            "path": str(index_path),
+            "message": f"index sidecar must be a JSON object in {index_path}",
+        }]
+    chunks = doc.get("chunks")
+    if not isinstance(chunks, list):
+        return None, [{
+            "code": "index-shape-invalid",
+            "path": str(index_path),
+            "message": f"index chunks must be a list in {index_path}",
+        }]
+    return chunks, []
+
+
+def _compute_index_closure(
+    chunks: list[dict],
+    requested_ids: set[str],
+) -> tuple[set[str], list[dict]]:
+    """Compute the transitive-prereq closure of `requested_ids` from chunks.
+
+    Returns `(closure_ids, errors)` where `closure_ids` is the set of
+    canonical-cased task ids reachable from the (normalized) requested
+    seeds via `chunks[].depends_on`, and `errors` is a list of
+    `{code, ...}` dicts surfaced for:
+
+    * `unknown-requested-id` — a requested id that doesn't normalize, or
+      normalizes but doesn't resolve to any chunk.
+    * `closure-malformed-dep` — a `depends_on` entry on a chunk INSIDE
+      the closure that fails to normalize or doesn't resolve to any
+      chunk. The offending chunk's normalized `task_id` is reported as
+      `task_id` and the bad value as `dep_id`.
+    * `duplicate-roster-id` — two chunks share the same normalized
+      `task_id`. The first occurrence wins; subsequent duplicates are
+      surfaced (with their chunk index) and ignored for traversal.
+
+    Errors outside the closure are NEVER surfaced — if a sibling chunk
+    has malformed `depends_on` but isn't reached, the helper doesn't
+    even look at it.
+
+    Errors are emitted in source order: `unknown-requested-id` entries
+    first (sorted by id for determinism since the input is a set),
+    followed by chunk-related errors in chunk-declaration order. Within
+    a single chunk, `closure-malformed-dep` errors are returned in
+    `depends_on` index order.
+    """
+    # Build a `{normalized_id: chunk}` map once. Track duplicates and
+    # surface them in chunk-declaration order. The first occurrence wins
+    # for traversal; subsequent duplicates are recorded as errors but
+    # not re-bound in the lookup map.
+    chunk_by_id: dict[str, dict] = {}
+    chunk_index_by_id: dict[str, int] = {}
+    chunk_errors: list[tuple[int, int, dict]] = []
+    for idx, chunk in enumerate(chunks):
+        if not isinstance(chunk, dict):
+            # Skip non-dict chunks. They cannot contribute to the
+            # closure and there is no `task_id` to key on; the loader
+            # already accepted them so they exist in the source.
+            continue
+        raw_id = chunk.get("task_id")
+        if not isinstance(raw_id, str):
+            continue
+        normalized = _normalize_task_id(raw_id)
+        if normalized is None:
+            continue
+        if normalized in chunk_by_id:
+            chunk_errors.append((idx, -1, {
+                "code": "duplicate-roster-id",
+                "task_id": normalized,
+                "chunk_index": idx,
+                "first_chunk_index": chunk_index_by_id[normalized],
+            }))
+            continue
+        chunk_by_id[normalized] = chunk
+        chunk_index_by_id[normalized] = idx
+
+    # Normalize requested ids. Track the original raw input for each
+    # normalized id so we can surface `unknown-requested-id` entries
+    # with diagnostic context. Un-normalizable entries are surfaced as
+    # `unknown-requested-id` with `task_id: None`.
+    seeds: set[str] = set()
+    unknown_requested: list[dict] = []
+    raw_unnormalizable: list[str] = []
+    for raw in requested_ids:
+        normalized = _normalize_task_id(raw) if isinstance(raw, str) else None
+        if normalized is None:
+            raw_unnormalizable.append(str(raw))
+            continue
+        if normalized not in chunk_by_id:
+            unknown_requested.append({
+                "code": "unknown-requested-id",
+                "task_id": normalized,
+            })
+            continue
+        seeds.add(normalized)
+
+    # BFS the closure. Cycles (including self-cycles) terminate via
+    # the visited-set guard; self-cycles ALSO surface as
+    # closure-malformed-dep below. The frontier is processed in
+    # arbitrary order (the closure set is order-insensitive); errors
+    # are gathered with their source position so they can be sorted.
+    closure: set[str] = set(seeds)
+    frontier: list[str] = list(seeds)
+    while frontier:
+        current = frontier.pop(0)
+        chunk = chunk_by_id.get(current)
+        if chunk is None:
+            # Should not happen — seeds were filtered above.
+            continue
+        deps = chunk.get("depends_on")
+        if not isinstance(deps, list):
+            # A chunk inside the closure with a non-list depends_on is
+            # malformed at the chunk-shape level; surface as a
+            # closure-malformed-dep with `dep_id: None`.
+            chunk_errors.append((chunk_index_by_id[current], 0, {
+                "code": "closure-malformed-dep",
+                "task_id": current,
+                "dep_id": None,
+                "reason": "depends_on is not a list",
+            }))
+            continue
+        for dep_idx, dep in enumerate(deps):
+            normalized_dep = _normalize_task_id(dep) if isinstance(dep, str) else None
+            if normalized_dep is None or normalized_dep not in chunk_by_id:
+                chunk_errors.append((chunk_index_by_id[current], dep_idx, {
+                    "code": "closure-malformed-dep",
+                    "task_id": current,
+                    "dep_id": dep,
+                }))
+                continue
+            # Self-cycle (length 1) — surface as closure-malformed-dep
+            # AND skip enqueue (visited guard would already terminate).
+            if normalized_dep == current:
+                chunk_errors.append((chunk_index_by_id[current], dep_idx, {
+                    "code": "closure-malformed-dep",
+                    "task_id": current,
+                    "dep_id": dep,
+                    "reason": "self-referential depends_on (cycle of length 1)",
+                }))
+                continue
+            if normalized_dep not in closure:
+                closure.add(normalized_dep)
+                frontier.append(normalized_dep)
+
+    # Assemble errors in source order:
+    #   1. unknown-requested-id (sorted by task_id; raw un-normalizable
+    #      first with task_id: None, sorted by raw for determinism).
+    #   2. chunk-related errors (sorted by chunk index, then dep index).
+    errors: list[dict] = []
+    for raw in sorted(raw_unnormalizable):
+        errors.append({"code": "unknown-requested-id", "task_id": None, "raw": raw})
+    for entry in sorted(unknown_requested, key=lambda e: e["task_id"]):
+        errors.append(entry)
+    for _idx, _dep_idx, payload in sorted(chunk_errors, key=lambda t: (t[0], t[1])):
+        errors.append(payload)
+
+    return closure, errors
+
+
+def cmd_index_closure(args: argparse.Namespace) -> None:
+    plans_dir = Path(args.plans_dir)
+    raw_ids = (args.task_ids or "").strip()
+    requested_ids: set[str] = set()
+    if raw_ids:
+        for token in raw_ids.split(","):
+            stripped = token.strip()
+            if stripped:
+                requested_ids.add(stripped)
+
+    chunks, load_errors = _load_index_chunks(plans_dir)
+    if chunks is None:
+        # Fatal load error: cannot compute any closure.
+        _die(args, {
+            "closure": [],
+            "skipped_chunk_count": 0,
+            "errors": load_errors,
+        })
+
+    closure, errors = _compute_index_closure(chunks, requested_ids)
+    payload = {
+        "closure": sorted(closure),
+        "skipped_chunk_count": max(0, len(chunks) - len(closure)),
+        "errors": errors,
+    }
+    if errors:
+        _die(args, payload)
+    _emit(args, payload, exit_code=0)
+
+
+# ---------------------------------------------------------------------------
 # lint-plans (TASK-020A)
 # ---------------------------------------------------------------------------
 
@@ -9608,6 +9838,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_cpd)
 
+    # TASK-001 (narrow_run_filter_ids): pure-roster transitive-prereq closure.
+    # `--json` is the only output mode (no human-readable mode); the
+    # orchestrator is the only consumer.
+    p_ic = sub.add_parser(
+        "index-closure",
+        help=(
+            "Compute the transitive-prereq closure of --task-ids via "
+            "00_INDEX.json's structured chunks[].depends_on (pure-roster; "
+            "never reads any *.md child)."
+        ),
+    )
+    p_ic.add_argument(
+        "--plans-dir", required=True,
+        help="Directory containing 00_INDEX.json",
+    )
+    p_ic.add_argument(
+        "--task-ids", default="",
+        help=(
+            "Comma-separated task ids (any of `9`, `009`, `TASK-009` "
+            "accepted; each is normalized before lookup)."
+        ),
+    )
+    _add_json(p_ic)
+
     p_pi = sub.add_parser(
         "path-info",
         help="Emit configured plan_dir + derived run_log/run_lock/schedule_glob paths",
@@ -9867,6 +10121,7 @@ def main(argv: list[str] | None = None) -> None:
         "release-lock": cmd_release_lock,
         "reconcile-batch": cmd_reconcile_batch,
         "check-plan-deps": cmd_check_plan_deps,
+        "index-closure": cmd_index_closure,
         "path-info": cmd_path_info,
         "lint-plans": cmd_lint_plans,
         "gates": cmd_gates,

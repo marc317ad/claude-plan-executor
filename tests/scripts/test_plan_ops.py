@@ -19039,3 +19039,280 @@ class TestSkillRoutingDocumentation:
         assert "codex_review_timeout" in text
         assert "codex_review_parse_error" in text
         assert "codex_review_failure" in text
+
+
+# ---------------------------------------------------------------------------
+# index-closure (TASK-001 — narrow_run_filter_ids)
+# ---------------------------------------------------------------------------
+
+
+def _write_index(plans_dir: Path, chunks: list[dict]) -> Path:
+    """Write a `00_INDEX.json` shell with the supplied raw `chunks` array.
+
+    Skips `_parse_index_roster` validation entirely — these fixtures
+    deliberately exercise malformed shapes that the strict roster parser
+    rejects up-front. The closure helper consumes the raw `chunks` list.
+    """
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    index_path = plans_dir / "00_INDEX.json"
+    index_path.write_text(
+        json.dumps({"schema_version": 1, "chunks": chunks}, indent=2),
+        encoding="utf-8",
+    )
+    return index_path
+
+
+class TestIndexClosure:
+    """Unit coverage for `_compute_index_closure` + `index-closure` CLI.
+
+    Class/test names embed the literal substrings ``index_closure`` and
+    ``IndexClosure`` so the task's ``pytest -k "index_closure or
+    IndexClosure"`` filter selects this suite verbatim.
+    """
+
+    # ------------------------------------------------------------------
+    # In-process helper coverage (V1, V2, V3, V4, V5, V6 + cycle).
+    # ------------------------------------------------------------------
+
+    def test_index_closure_happy_path_single_seed(self) -> None:
+        """V1 analogue: closure walks roster-side `depends_on` only.
+
+        Mirrors the live `DUAL_AGENT_Plans` shape in miniature: a seed
+        with two transitive prereqs returns the full canonical-cased
+        closure with zero errors.
+        """
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+            {"task_id": "002", "depends_on": ["001"]},
+            {"task_id": "009", "depends_on": ["002"]},
+        ]
+        closure, errors = plan_ops._compute_index_closure(chunks, {"009"})
+        assert closure == {"001", "002", "009"}, closure
+        assert errors == [], errors
+
+    def test_index_closure_transitive_4_deep(self) -> None:
+        """Closure walks at least 4 levels deep without truncation."""
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+            {"task_id": "002", "depends_on": ["001"]},
+            {"task_id": "003", "depends_on": ["002"]},
+            {"task_id": "004", "depends_on": ["003"]},
+            {"task_id": "005", "depends_on": ["004"]},
+        ]
+        closure, errors = plan_ops._compute_index_closure(chunks, {"005"})
+        assert closure == {"001", "002", "003", "004", "005"}, closure
+        assert errors == [], errors
+
+    def test_index_closure_normalizes_requested_id(self) -> None:
+        """Callers can pass `9`, `009`, or `TASK-009` interchangeably.
+
+        The closure set is canonical-cased (`"009"`, not `"9"`).
+        """
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+            {"task_id": "009", "depends_on": ["001"]},
+        ]
+        for raw in ("9", "009", "TASK-009", "task-009"):
+            closure, errors = plan_ops._compute_index_closure(chunks, {raw})
+            assert closure == {"001", "009"}, (raw, closure)
+            assert errors == [], (raw, errors)
+
+    def test_index_closure_unknown_id_single(self) -> None:
+        """V3: unknown id is non-fatal; surfaced as `unknown-requested-id`."""
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+        ]
+        closure, errors = plan_ops._compute_index_closure(chunks, {"999"})
+        assert closure == set(), closure
+        assert errors == [
+            {"code": "unknown-requested-id", "task_id": "999"},
+        ], errors
+
+    def test_index_closure_unknown_id_mixed_with_known(self) -> None:
+        """V3: unknown id surfaces an error AND closure for known is computed."""
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+            {"task_id": "002", "depends_on": ["001"]},
+        ]
+        closure, errors = plan_ops._compute_index_closure(
+            chunks, {"002", "999"},
+        )
+        assert closure == {"001", "002"}, closure
+        assert errors == [
+            {"code": "unknown-requested-id", "task_id": "999"},
+        ], errors
+
+    def test_index_closure_malformed_dep_inside_closure(self) -> None:
+        """V4: in-closure malformed dep surfaces `closure-malformed-dep`."""
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+            # In-closure: malformed dep must be surfaced.
+            {"task_id": "002", "depends_on": ["001", 42]},
+            {"task_id": "003", "depends_on": ["002"]},
+        ]
+        closure, errors = plan_ops._compute_index_closure(chunks, {"003"})
+        assert closure == {"001", "002", "003"}, closure
+        # Exactly one closure-malformed-dep error against TASK-002, dep_id=42.
+        assert errors == [
+            {"code": "closure-malformed-dep", "task_id": "002", "dep_id": 42},
+        ], errors
+
+    def test_index_closure_malformed_dep_outside_closure_silent(self) -> None:
+        """V5: out-of-closure malformed dep is silent (load-bearing).
+
+        TASK-004 is a sibling of TASK-002 not reachable from the seed
+        TASK-003. Its malformed `depends_on` must not be inspected — the
+        helper neither walks it nor surfaces an error against it.
+        """
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+            {"task_id": "002", "depends_on": ["001"]},
+            {"task_id": "003", "depends_on": ["002"]},
+            # Outside the closure of {003}: the malformed dep MUST be silent.
+            {"task_id": "004", "depends_on": [42, "not-a-valid-id", None]},
+        ]
+        closure, errors = plan_ops._compute_index_closure(chunks, {"003"})
+        assert closure == {"001", "002", "003"}, closure
+        assert errors == [], errors
+
+    def test_index_closure_duplicate_task_id(self) -> None:
+        """V6: duplicate `task_id` surfaces `duplicate-roster-id`.
+
+        First occurrence wins for traversal; the duplicate is recorded
+        with its chunk index and the first-occurrence index.
+        """
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+            {"task_id": "002", "depends_on": ["001"]},
+            # Duplicate of TASK-002 with a different dep set: must be
+            # ignored for traversal AND surfaced as an error.
+            {"task_id": "002", "depends_on": ["999"]},
+        ]
+        closure, errors = plan_ops._compute_index_closure(chunks, {"002"})
+        # Closure used the first occurrence's deps (just TASK-001).
+        assert closure == {"001", "002"}, closure
+        assert errors == [
+            {
+                "code": "duplicate-roster-id",
+                "task_id": "002",
+                "chunk_index": 2,
+                "first_chunk_index": 1,
+            },
+        ], errors
+
+    def test_index_closure_empty_requested_ids(self) -> None:
+        """Empty `requested_ids` returns empty closure + empty errors."""
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+            {"task_id": "002", "depends_on": ["001"]},
+        ]
+        closure, errors = plan_ops._compute_index_closure(chunks, set())
+        assert closure == set(), closure
+        assert errors == [], errors
+
+    def test_index_closure_self_referential_cycle(self) -> None:
+        """Self-referential `depends_on` (cycle of length 1) → error.
+
+        BFS terminates via the visited-set guard AND the self-cycle
+        surfaces as `closure-malformed-dep` per the AC.
+        """
+        chunks = [
+            {"task_id": "001", "depends_on": ["001"]},
+        ]
+        closure, errors = plan_ops._compute_index_closure(chunks, {"001"})
+        # Visited-set guard: traversal terminates; closure includes the seed.
+        assert closure == {"001"}, closure
+        # Self-cycle surfaces as a closure-malformed-dep error.
+        assert len(errors) == 1, errors
+        e = errors[0]
+        assert e["code"] == "closure-malformed-dep", e
+        assert e["task_id"] == "001", e
+        assert e["dep_id"] == "001", e
+        assert "self-referential" in e.get("reason", ""), e
+
+    def test_index_closure_error_source_order(self) -> None:
+        """Errors are returned in chunk-declaration order; deps in index order.
+
+        Two in-closure chunks each have two malformed deps. The four
+        errors must come out in (chunk_idx, dep_idx) order.
+        """
+        chunks = [
+            {"task_id": "001", "depends_on": []},
+            # Two malformed deps at indices 1 and 2.
+            {"task_id": "002", "depends_on": ["001", 11, "not-an-id"]},
+            # Two more malformed deps at indices 0 and 1.
+            {"task_id": "003", "depends_on": [22, "still-bad", "002"]},
+        ]
+        _closure, errors = plan_ops._compute_index_closure(chunks, {"003"})
+        # 4 closure-malformed-dep errors in source order.
+        bad_codes = [e["code"] for e in errors]
+        assert bad_codes == ["closure-malformed-dep"] * 4, errors
+        # Chunk 1 (TASK-002) before chunk 2 (TASK-003); within each
+        # chunk, dep index is preserved.
+        assert errors[0]["task_id"] == "002" and errors[0]["dep_id"] == 11
+        assert errors[1]["task_id"] == "002" and errors[1]["dep_id"] == "not-an-id"
+        assert errors[2]["task_id"] == "003" and errors[2]["dep_id"] == 22
+        assert errors[3]["task_id"] == "003" and errors[3]["dep_id"] == "still-bad"
+
+    # ------------------------------------------------------------------
+    # CLI surface coverage (V7).
+    # ------------------------------------------------------------------
+
+    def test_index_closure_cli_v7_happy_path(self, tmp_path: Path) -> None:
+        """V7: CLI emits sorted closure + skipped_chunk_count + empty errors."""
+        plans_dir = tmp_path / "plan"
+        _write_index(plans_dir, [
+            {"task_id": "001", "depends_on": []},
+            {"task_id": "002", "depends_on": ["001"]},
+            {"task_id": "009", "depends_on": ["002"]},
+            {"task_id": "017", "depends_on": ["001"]},
+            # An unrelated sibling outside any closure.
+            {"task_id": "099", "depends_on": []},
+        ])
+        cp = _run(
+            "index-closure",
+            "--plans-dir", str(plans_dir),
+            "--task-ids", "009,017",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        assert res["closure"] == ["001", "002", "009", "017"], res
+        # 5 chunks total - 4 in closure = 1 skipped.
+        assert res["skipped_chunk_count"] == 1, res
+        assert res["errors"] == [], res
+
+    def test_index_closure_cli_exit_1_on_errors(self, tmp_path: Path) -> None:
+        """CLI exits 1 when errors is non-empty (e.g., unknown id)."""
+        plans_dir = tmp_path / "plan"
+        _write_index(plans_dir, [
+            {"task_id": "001", "depends_on": []},
+        ])
+        cp = _run(
+            "index-closure",
+            "--plans-dir", str(plans_dir),
+            "--task-ids", "999",
+            "--json",
+        )
+        assert cp.returncode == 1, (cp.returncode, cp.stdout, cp.stderr)
+        res = _parse_json(cp)
+        assert res["closure"] == [], res
+        assert any(
+            e.get("code") == "unknown-requested-id" for e in res["errors"]
+        ), res
+
+    def test_index_closure_cli_missing_index(self, tmp_path: Path) -> None:
+        """Fatal load error: missing `00_INDEX.json` exits 1 with envelope."""
+        plans_dir = tmp_path / "plan"
+        plans_dir.mkdir(parents=True)
+        cp = _run(
+            "index-closure",
+            "--plans-dir", str(plans_dir),
+            "--task-ids", "001",
+            "--json",
+        )
+        assert cp.returncode == 1, (cp.returncode, cp.stdout, cp.stderr)
+        res = _parse_json(cp)
+        assert res["closure"] == [], res
+        assert res["errors"], res
+        assert res["errors"][0]["code"] == "index-not-found", res

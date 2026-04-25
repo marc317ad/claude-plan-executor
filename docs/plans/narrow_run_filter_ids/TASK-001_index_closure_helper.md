@@ -46,7 +46,7 @@ The malformed `**Dependencies:**` prose problem lives in the per-child markdown 
 
 ### TASK-001: Roster-aware closure helper in `plan_ops.py`
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
