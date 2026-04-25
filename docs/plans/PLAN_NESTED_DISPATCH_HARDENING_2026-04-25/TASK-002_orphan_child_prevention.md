@@ -26,7 +26,7 @@ Signal handlers must be installed only for the duration of `invoke` (try/finally
 
 ### TASK-002: Orphan-child prevention on parent SIGTERM/SIGKILL
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/_claude_backend.py` (modify)

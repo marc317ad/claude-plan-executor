@@ -29,8 +29,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import stat
+import subprocess
 import sys
+import textwrap
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
@@ -629,6 +633,244 @@ def test_payload_instructions_used_when_no_prompt(
     argv = _read_recorded_argv(shim)
     # The prompt is the last positional after all the flag pairs.
     assert argv[-1] == "the instructions"
+
+
+# ---------------------------------------------------------------------------
+# Orphan-child prevention (TASK-002)
+# ---------------------------------------------------------------------------
+
+
+def _make_pid_recording_shim(tmp_path: Path, *, sleep_seconds: float) -> Path:
+    """Shim that writes its own PID to ``<tmp>/child.pid`` then sleeps.
+
+    Used by the SIGTERM/SIGINT/normal-exit tests: the test polls
+    ``/proc/<pid>`` to assert the child has been reaped.
+    """
+    shim = tmp_path / "fake_claude_pidshim.sh"
+    pid_path = tmp_path / "child.pid"
+    body = textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        set -u
+        echo $$ > {json.dumps(str(pid_path))}
+        sleep {sleep_seconds}
+        printf '%s' '{{"result": {{"ok": true}}, "duration_ms": 1, "total_cost_usd": 0.0, "session_id": "s", "usage": {{"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}}}}'
+        exit 0
+        """)
+    shim.write_text(body, encoding="utf-8")
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return shim
+
+
+def _driver_script(shim_path: Path, cwd: Path) -> str:
+    """Render a Python driver that calls ``backend.invoke`` directly.
+
+    The driver is exec'd in a subprocess so the test can SIGTERM/SIGINT
+    its PID and observe whether the nested shim PID is reaped.
+    """
+    return textwrap.dedent(f"""\
+        import sys
+        sys.path.insert(0, {json.dumps(str(SCRIPTS_DIR))})
+        import _claude_backend as backend
+        manifest = {{
+            "name": "plan-implementer",
+            "description": "x",
+            "model": "claude-opus-4-7",
+            "tools": ["Read"],
+            "env_allowlist": [],
+        }}
+        effective = {{"cwd": {json.dumps(str(cwd))}, "timeout_sec": 120}}
+        env = backend.invoke(
+            manifest, effective, {{"prompt": "x"}}, {{"run_id": "r", "span_id": "s", "depth": 1}},
+            backend_binary={json.dumps(str(shim_path))},
+        )
+        print("DONE", env.get("status"))
+        """)
+
+
+def _pid_alive(pid: int) -> bool:
+    return Path(f"/proc/{pid}").exists()
+
+
+def _wait_for_pid_file(pid_path: Path, timeout: float = 10.0) -> int:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pid_path.exists():
+            text = pid_path.read_text(encoding="utf-8").strip()
+            if text:
+                try:
+                    return int(text)
+                except ValueError:
+                    pass
+        time.sleep(0.05)
+    raise AssertionError(f"shim never recorded its PID at {pid_path}")
+
+
+def _wait_until_dead(pid: int, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_alive(pid)
+
+
+@pytest.mark.skipif(
+    not Path("/proc").is_dir(),
+    reason="orphan-child tests require /proc (Linux)",
+)
+def test_sigterm_reaps_nested_child(tmp_path: Path) -> None:
+    """SIGTERM to the wrapper PID must reap the nested shim within 5s."""
+    shim = _make_pid_recording_shim(tmp_path, sleep_seconds=60.0)
+    pid_path = tmp_path / "child.pid"
+    driver = _driver_script(shim, tmp_path)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", driver],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        child_pid = _wait_for_pid_file(pid_path, timeout=10.0)
+        assert _pid_alive(child_pid), "shim should be alive before SIGTERM"
+        proc.send_signal(signal.SIGTERM)
+        assert _wait_until_dead(child_pid, timeout=5.0), (
+            f"nested shim PID {child_pid} survived SIGTERM to wrapper"
+        )
+    finally:
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2.0)
+
+
+@pytest.mark.skipif(
+    not Path("/proc").is_dir(),
+    reason="orphan-child tests require /proc (Linux)",
+)
+def test_sigint_reaps_nested_child(tmp_path: Path) -> None:
+    """SIGINT to the wrapper PID must propagate equally and reap the child."""
+    shim = _make_pid_recording_shim(tmp_path, sleep_seconds=60.0)
+    pid_path = tmp_path / "child.pid"
+    driver = _driver_script(shim, tmp_path)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", driver],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        child_pid = _wait_for_pid_file(pid_path, timeout=10.0)
+        assert _pid_alive(child_pid), "shim should be alive before SIGINT"
+        proc.send_signal(signal.SIGINT)
+        assert _wait_until_dead(child_pid, timeout=5.0), (
+            f"nested shim PID {child_pid} survived SIGINT to wrapper"
+        )
+    finally:
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2.0)
+
+
+@pytest.mark.skipif(
+    not Path("/proc").is_dir(),
+    reason="orphan-child tests require /proc (Linux)",
+)
+def test_normal_exit_reaps_child_no_zombie(tmp_path: Path) -> None:
+    """Shim exits normally → child fully reaped, no zombie left behind."""
+    shim = _make_pid_recording_shim(tmp_path, sleep_seconds=0.1)
+    pid_path = tmp_path / "child.pid"
+    driver = _driver_script(shim, tmp_path)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", driver],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout, stderr = proc.communicate(timeout=30.0)
+    assert proc.returncode == 0, f"driver failed: stderr={stderr!r}"
+    assert "DONE ok" in stdout, f"unexpected stdout: {stdout!r}"
+    # The shim's PID file should exist; the PID must no longer be in /proc
+    # (and specifically not a zombie — /proc/<pid> ceases to exist once
+    # the parent has wait()ed on it, which Popen.communicate() does).
+    child_pid = int(pid_path.read_text(encoding="utf-8").strip())
+    assert not _pid_alive(child_pid), (
+        f"shim PID {child_pid} still in /proc after normal exit (zombie?)"
+    )
+
+
+@pytest.mark.skipif(
+    not Path("/proc").is_dir(),
+    reason="orphan-child tests require /proc (Linux)",
+)
+def test_prior_sigterm_handler_is_invoked(tmp_path: Path) -> None:
+    """A custom prior SIGTERM handler installed before ``invoke`` must
+    fire after the wrapper reaps the child — the wrapper must dispatch
+    to the prior callable, not to ``SIG_DFL``.
+    """
+    shim = _make_pid_recording_shim(tmp_path, sleep_seconds=60.0)
+    pid_path = tmp_path / "child.pid"
+    marker_path = tmp_path / "prior_handler_ran.txt"
+
+    driver = textwrap.dedent(f"""\
+        import signal, sys
+        sys.path.insert(0, {json.dumps(str(SCRIPTS_DIR))})
+        import _claude_backend as backend
+
+        def _prior(signum, frame):
+            with open({json.dumps(str(marker_path))}, "w") as fh:
+                fh.write("ran")
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, _prior)
+
+        manifest = {{
+            "name": "plan-implementer",
+            "description": "x",
+            "model": "claude-opus-4-7",
+            "tools": ["Read"],
+            "env_allowlist": [],
+        }}
+        effective = {{"cwd": {json.dumps(str(tmp_path))}, "timeout_sec": 120}}
+        backend.invoke(
+            manifest, effective, {{"prompt": "x"}},
+            {{"run_id": "r", "span_id": "s", "depth": 1}},
+            backend_binary={json.dumps(str(shim))},
+        )
+        print("DONE")
+        """)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", driver],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        child_pid = _wait_for_pid_file(pid_path, timeout=10.0)
+        assert _pid_alive(child_pid), "shim should be alive before SIGTERM"
+        proc.send_signal(signal.SIGTERM)
+        assert _wait_until_dead(child_pid, timeout=5.0), (
+            f"nested shim PID {child_pid} survived SIGTERM to wrapper"
+        )
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2.0)
+        assert marker_path.exists(), (
+            "prior SIGTERM handler did not run — wrapper bypassed it via SIG_DFL"
+        )
+        assert marker_path.read_text(encoding="utf-8") == "ran"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2.0)
 
 
 # ---------------------------------------------------------------------------

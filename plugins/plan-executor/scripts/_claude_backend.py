@@ -53,7 +53,10 @@ default ``"claude"``.
 
 from __future__ import annotations
 
+import atexit
 import json
+import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -87,6 +90,53 @@ STDERR_TAIL_CHARS = 2_000
 
 #: Tool that is always in ``--disallowedTools`` regardless of manifest.
 DEPTH_LIMIT_DISALLOWED_TOOL = "Agent"
+
+#: Grace period (seconds) between SIGTERM and SIGKILL when reaping the
+#: nested ``claude`` process group on parent termination.
+TERMINATE_GRACE_SEC = 5.0
+
+
+def _killpg_safely(pgid: int, sig: int) -> None:
+    """Best-effort ``os.killpg``; swallows ESRCH/permission errors.
+
+    Used by the orphan-prevention path: when the wrapper is itself being
+    torn down, we never want a secondary OSError to mask the original
+    cause of termination.
+    """
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def _terminate_process_group(proc: "subprocess.Popen[Any]", grace_sec: float = TERMINATE_GRACE_SEC) -> None:
+    """Reap the entire process group rooted at ``proc``.
+
+    Sends SIGTERM to the child's process group, waits up to ``grace_sec``
+    for it to exit, then escalates to SIGKILL. The child was spawned with
+    ``start_new_session=True`` so its PID is also its PGID; killing the
+    group catches any subagents the inner ``claude`` may have spawned.
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        # Child already gone or unreachable — nothing to reap.
+        return
+    _killpg_safely(pgid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace_sec)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _killpg_safely(pgid, signal.SIGKILL)
+    try:
+        proc.wait(timeout=grace_sec)
+    except subprocess.TimeoutExpired:
+        # Genuinely stuck (e.g., uninterruptible kernel state). Caller
+        # gets control back; the orchestrator will surface the timeout.
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -338,54 +388,174 @@ def invoke(
     )
 
     start = time.monotonic()
+    proc: Optional[subprocess.Popen[str]] = None
+    prior_sigterm = None
+    prior_sigint = None
+    handlers_installed = False
+    atexit_registered = False
+    returncode: int = 0
+    stdout_text: str = ""
+    stderr_text: str = ""
+
+    def _atexit_cleanup() -> None:
+        # Defense in depth: if the wrapper exits via uncaught exception
+        # or normal return without explicit cleanup, still reap the
+        # child process group so the nested ``claude`` does not become
+        # an orphan with full repo write access.
+        local_proc = proc
+        if local_proc is not None and local_proc.poll() is None:
+            _terminate_process_group(local_proc)
+
+    def _signal_handler(signum, frame):  # noqa: ANN001 — signal API
+        # Tear down the nested ``claude`` and its subprocess tree, then
+        # dispatch to whatever handler the orchestrator had installed
+        # before we took over for the duration of ``invoke``.
+        local_proc = proc
+        if local_proc is not None:
+            _terminate_process_group(local_proc)
+        # Restore previously installed handlers before dispatching so we
+        # don't recurse, and so the prior handler is the one in effect
+        # when it (or the default disposition) takes over.
+        prior = prior_sigint if signum == signal.SIGINT else prior_sigterm
+        try:
+            if prior_sigterm is not None:
+                signal.signal(signal.SIGTERM, prior_sigterm)
+            if prior_sigint is not None:
+                signal.signal(signal.SIGINT, prior_sigint)
+        except (ValueError, OSError):
+            pass
+        # Dispatch to the prior handler:
+        #   - callable (custom orchestrator handler) → invoke it directly
+        #     so the orchestrator's handling fires;
+        #   - SIG_IGN → preserve ignore semantics (do nothing);
+        #   - SIG_DFL or default Python behavior → emulate the default
+        #     disposition (KeyboardInterrupt for SIGINT, self-signal with
+        #     SIG_DFL for SIGTERM).
+        if callable(prior) and prior not in (signal.SIG_DFL, signal.SIG_IGN):
+            # ``signal.default_int_handler`` is callable and is Python's
+            # default for SIGINT — fall through to the KeyboardInterrupt
+            # branch below so behavior matches an unhandled SIGINT.
+            if not (signum == signal.SIGINT and prior is signal.default_int_handler):
+                prior(signum, frame)
+                return
+        if prior is signal.SIG_IGN:
+            return
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt()
+        # SIGTERM (or anything else routed here) with default disposition:
+        # re-raise via SIG_DFL.
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
     try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            env=dict(env) if env is not None else None,
-        )
-    except subprocess.TimeoutExpired as exc:
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        stderr_text = ""
-        if exc.stderr is not None:
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(env) if env is not None else None,
+                start_new_session=True,
+            )
+        except FileNotFoundError as exc:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            return env_mod.build_backend_error(
+                code="binary_not_found",
+                message=f"backend binary not found: {binary!r} ({exc})",
+                agent=agent_name,
+                model=model_name,
+                duration_ms=elapsed_ms,
+                trace=trace,
+            )
+        except OSError as exc:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            return env_mod.build_backend_error(
+                code="spawn_failed",
+                message=f"failed to spawn backend: {exc}",
+                agent=agent_name,
+                model=model_name,
+                duration_ms=elapsed_ms,
+                trace=trace,
+            )
+
+        # Install signal handlers only for the duration of this call.
+        # ``signal.signal`` raises ValueError off the main thread; in that
+        # case we silently skip (the atexit hook still provides defense
+        # in depth). Capture prior handlers so we can restore them.
+        try:
+            prior_sigterm = signal.signal(signal.SIGTERM, _signal_handler)
+            prior_sigint = signal.signal(signal.SIGINT, _signal_handler)
+            handlers_installed = True
+        except (ValueError, OSError):
+            handlers_installed = False
+
+        atexit.register(_atexit_cleanup)
+        atexit_registered = True
+
+        try:
+            stdout_text, stderr_text = proc.communicate(timeout=timeout_sec)
+            returncode = proc.returncode
+        except subprocess.TimeoutExpired as exc:
+            # Reap the entire group (not just the immediate child) so any
+            # subagents the inner ``claude`` spawned are torn down too.
+            _terminate_process_group(proc)
+            # Drain whatever the child managed to emit before being killed.
             try:
-                stderr_text = exc.stderr.decode("utf-8", errors="replace") \
-                    if isinstance(exc.stderr, (bytes, bytearray)) else str(exc.stderr)
+                stdout_remainder, stderr_remainder = proc.communicate(timeout=1.0)
             except Exception:
-                stderr_text = ""
-        return env_mod.build_timeout(
-            duration_ms=elapsed_ms,
-            agent=agent_name,
-            model=model_name,
-            stderr_tail=_stderr_tail(stderr_text),
-            trace=trace,
-        )
-    except FileNotFoundError as exc:
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        return env_mod.build_backend_error(
-            code="binary_not_found",
-            message=f"backend binary not found: {binary!r} ({exc})",
-            agent=agent_name,
-            model=model_name,
-            duration_ms=elapsed_ms,
-            trace=trace,
-        )
-    except OSError as exc:
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        return env_mod.build_backend_error(
-            code="spawn_failed",
-            message=f"failed to spawn backend: {exc}",
-            agent=agent_name,
-            model=model_name,
-            duration_ms=elapsed_ms,
-            trace=trace,
-        )
+                stdout_remainder, stderr_remainder = "", ""
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            stderr_text_local = ""
+            if exc.stderr is not None:
+                try:
+                    stderr_text_local = (
+                        exc.stderr.decode("utf-8", errors="replace")
+                        if isinstance(exc.stderr, (bytes, bytearray))
+                        else str(exc.stderr)
+                    )
+                except Exception:
+                    stderr_text_local = ""
+            if not stderr_text_local and stderr_remainder:
+                stderr_text_local = (
+                    stderr_remainder
+                    if isinstance(stderr_remainder, str)
+                    else stderr_remainder.decode("utf-8", errors="replace")
+                )
+            return env_mod.build_timeout(
+                duration_ms=elapsed_ms,
+                agent=agent_name,
+                model=model_name,
+                stderr_tail=_stderr_tail(stderr_text_local),
+                trace=trace,
+            )
+    finally:
+        # Restore prior signal handlers so the orchestrator's handling
+        # is not clobbered globally.
+        if handlers_installed:
+            try:
+                if prior_sigterm is not None:
+                    signal.signal(signal.SIGTERM, prior_sigterm)
+                else:
+                    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                if prior_sigint is not None:
+                    signal.signal(signal.SIGINT, prior_sigint)
+                else:
+                    signal.signal(signal.SIGINT, signal.SIG_DFL)
+            except (ValueError, OSError):
+                pass
+        # Defense in depth: if we somehow exit this block with the child
+        # still running (uncaught exception path), reap the group now.
+        if proc is not None and proc.poll() is None:
+            _terminate_process_group(proc)
+        if atexit_registered:
+            try:
+                atexit.unregister(_atexit_cleanup)
+            except Exception:
+                pass
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
-    stdout_text = proc.stdout if isinstance(proc.stdout, str) else ""
-    stderr_text = proc.stderr if isinstance(proc.stderr, str) else ""
+    stdout_text = stdout_text if isinstance(stdout_text, str) else ""
+    stderr_text = stderr_text if isinstance(stderr_text, str) else ""
     raw_truncated = _truncate(stdout_text, RAW_TRUNCATE_CHARS)
     stderr_tail = _stderr_tail(stderr_text)
 
@@ -395,7 +565,7 @@ def invoke(
         return env_mod.build_backend_error(
             code="malformed_output",
             message=(
-                f"backend produced empty stdout (rc={proc.returncode})"
+                f"backend produced empty stdout (rc={returncode})"
             ),
             agent=agent_name,
             model=model_name,
@@ -452,12 +622,12 @@ def invoke(
     # otherwise fall back to wall-clock measurement.
     duration_ms = cli_duration if cli_duration is not None and cli_duration >= 0 else elapsed_ms
 
-    if proc.returncode != 0:
+    if returncode != 0:
         # Non-zero exit but parseable JSON: surface as backend_error.
         return env_mod.build_backend_error(
             code="non_zero_exit",
             message=(
-                f"backend exited with rc={proc.returncode}"
+                f"backend exited with rc={returncode}"
             ),
             agent=agent_name,
             model=model_name,
@@ -492,5 +662,6 @@ __all__ = [
     "DEPTH_LIMIT_DISALLOWED_TOOL",
     "RAW_TRUNCATE_CHARS",
     "STDERR_TAIL_CHARS",
+    "TERMINATE_GRACE_SEC",
     "invoke",
 ]
