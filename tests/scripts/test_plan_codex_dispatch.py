@@ -28,6 +28,7 @@ import argparse
 import importlib.util
 import inspect
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -139,6 +140,200 @@ def _plan_review_args(
         timeout=180,
         allow_gaps=allow_gaps,
     )
+
+
+def _review_git_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@x"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "README.md").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+def _git_stdout(repo: Path, args: list[str]) -> str:
+    cp = subprocess.run(
+        ["git"] + args,
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return cp.stdout
+
+
+def _git_index_snapshot(repo: Path) -> tuple[str, str]:
+    return (
+        _git_stdout(repo, ["status", "--porcelain=v1"]),
+        _git_stdout(repo, ["ls-files", "--others", "--exclude-standard"]),
+    )
+
+
+def _review_plan(path: Path, file_path: str) -> None:
+    path.write_text(
+        "\n".join([
+            "### TASK-005: Review untracked file",
+            "- **Status:** pending",
+            "- **Priority:** P1",
+            "- **Files:**",
+            f"  - {file_path}",
+            "",
+            "**Description:**",
+            "Review the changed file.",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+
+def _cmd_review_args(
+    plan_file: Path,
+    repo: Path,
+    *,
+    files: str | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        plan_file=str(plan_file),
+        repo_root=str(repo),
+        task_id="005",
+        files=files,
+        review_focus="",
+        dry_run=True,
+        timeout=180,
+    )
+
+
+# ---------------------------------------------------------------------------
+# TASK-005: review diffs include untracked files via intent-to-add.
+# ---------------------------------------------------------------------------
+
+
+def test_git_diff_for_files_default_omits_untracked_file(tmp_path):
+    sig = inspect.signature(wrapper.git_diff_for_files)
+    include = sig.parameters["include_untracked"]
+    assert include.kind is inspect.Parameter.KEYWORD_ONLY
+    assert include.default is False
+
+    repo = _review_git_repo(tmp_path)
+    (repo / "new.txt").write_text("new content\n", encoding="utf-8")
+
+    diff = wrapper.git_diff_for_files(str(repo), ["new.txt"])
+
+    assert diff == ""
+
+
+def test_git_diff_for_files_include_untracked_preserves_index(tmp_path):
+    repo = _review_git_repo(tmp_path)
+    (repo / "new.txt").write_text("new content\n", encoding="utf-8")
+    before = _git_index_snapshot(repo)
+
+    diff = wrapper.git_diff_for_files(
+        str(repo), ["new.txt"], include_untracked=True,
+    )
+    after = _git_index_snapshot(repo)
+
+    assert "diff --git a/new.txt b/new.txt" in diff
+    assert "+new content" in diff
+    assert after == before
+
+
+def test_git_diff_for_files_empty_file_list_returns_empty_without_git(
+    monkeypatch,
+):
+    calls = []
+
+    def fake_git(args, cwd, timeout=wrapper.GIT_TIMEOUT):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(wrapper, "_git", fake_git)
+
+    assert wrapper.git_diff_for_files(
+        "/unused", [], include_untracked=True,
+    ) == ""
+    assert calls == []
+
+
+def test_git_diff_for_files_add_failure_does_not_raise_and_resets(
+    monkeypatch,
+):
+    calls = []
+
+    def fake_git(args, cwd, timeout=wrapper.GIT_TIMEOUT):
+        calls.append(args)
+        if args[:2] == ["add", "-N"]:
+            return subprocess.CompletedProcess(args, 1, "", "missing\n")
+        if args[:2] == ["diff", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, "diff body\n", "")
+        if args[:2] == ["reset", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(wrapper, "_git", fake_git)
+
+    diff = wrapper.git_diff_for_files(
+        "/repo", ["missing.txt"], include_untracked=True,
+    )
+
+    assert diff == "diff body\n"
+    assert calls == [
+        ["add", "-N", "--", "missing.txt"],
+        ["diff", "HEAD", "--", "missing.txt"],
+        ["reset", "HEAD", "--", "missing.txt"],
+    ]
+
+
+def test_git_diff_for_files_resets_when_diff_raises(monkeypatch):
+    import pytest as _pytest
+
+    calls = []
+
+    def fake_git(args, cwd, timeout=wrapper.GIT_TIMEOUT):
+        calls.append(args)
+        if args[:2] == ["add", "-N"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:2] == ["diff", "HEAD"]:
+            raise RuntimeError("diff failed")
+        if args[:2] == ["reset", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(wrapper, "_git", fake_git)
+
+    with _pytest.raises(RuntimeError):
+        wrapper.git_diff_for_files(
+            "/repo", ["new.txt"], include_untracked=True,
+        )
+
+    assert calls == [
+        ["add", "-N", "--", "new.txt"],
+        ["diff", "HEAD", "--", "new.txt"],
+        ["reset", "HEAD", "--", "new.txt"],
+    ]
+
+
+def test_cmd_review_dry_run_prompt_includes_untracked_file_diff(
+    tmp_path, capsys,
+):
+    repo = _review_git_repo(tmp_path)
+    (repo / "new.txt").write_text("new content\n", encoding="utf-8")
+    before = _git_index_snapshot(repo)
+    plan = tmp_path / "plan.md"
+    _review_plan(plan, "new.txt")
+
+    rc = wrapper.cmd_review(_cmd_review_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+    after = _git_index_snapshot(repo)
+
+    assert rc == 0, envelope
+    assert envelope["outcome"] == "dry_run"
+    assert envelope["diff_size_bytes"] > 0
+    assert "diff --git a/new.txt b/new.txt" in envelope["prompt_preview"]
+    assert "+new content" in envelope["prompt_preview"]
+    assert after == before
 
 
 # ---------------------------------------------------------------------------

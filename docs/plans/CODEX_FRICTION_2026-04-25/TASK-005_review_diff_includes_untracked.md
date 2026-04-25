@@ -69,7 +69,7 @@ git reset HEAD -- <file1> <file2> ...
 
 ### TASK-005: Wrapper review diff includes untracked `(create)` files
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit)

@@ -559,15 +559,26 @@ def git_changed_files(repo_root: str) -> dict:
     }
 
 
-def git_diff_for_files(repo_root: str, files: list[str]) -> str:
+def git_diff_for_files(
+    repo_root: str,
+    files: list[str],
+    *,
+    include_untracked: bool = False,
+) -> str:
     """Compute the diff for the specified files (vs HEAD, then unstaged fallback)."""
     if not files:
         return ""
-    r = _git(["diff", "HEAD", "--"] + files, cwd=repo_root)
-    if r.returncode == 0 and r.stdout.strip():
-        return r.stdout
-    r = _git(["diff", "--"] + files, cwd=repo_root)
-    return r.stdout if r.returncode == 0 else ""
+    if include_untracked:
+        _git(["add", "-N", "--"] + files, cwd=repo_root)
+    try:
+        r = _git(["diff", "HEAD", "--"] + files, cwd=repo_root)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout
+        r = _git(["diff", "--"] + files, cwd=repo_root)
+        return r.stdout if r.returncode == 0 else ""
+    finally:
+        if include_untracked:
+            _git(["reset", "HEAD", "--"] + files, cwd=repo_root)
 
 
 # TASK-027A: hallucinated-symbol post-check. Negative-lookbehind character
@@ -1376,7 +1387,7 @@ def cmd_review(args) -> int:
     else:
         review_files = [normalize_file_path(f) for f in task["files"]]
 
-    diff = git_diff_for_files(repo_root, review_files)
+    diff = git_diff_for_files(repo_root, review_files, include_untracked=True)
     prompt = render_review_prompt(task, diff, args.review_focus, review_files)
 
     if args.dry_run:
