@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "agent": "plan-analyst",
+  "payload": {
+    "prompt": "You are running an end-to-end smoke test for the nested-claude dispatch wrapper. Reply with exactly one fenced JSON block of the form ```json\n{\"agent\":\"codex\",\"classification_reason\":\"e2e smoke\"}\n``` and nothing else outside the fence."
+  },
+  "output_instructions": {
+    "format": "json",
+    "schema_path": null,
+    "schema_inline": null,
+    "max_bytes": 65536
+  },
+  "overrides": {
+    "model": null,
+    "timeout_sec": 180,
+    "tools_allowed_extra": null,
+    "tools_disallowed_extra": null,
+    "cwd": null
+  },
+  "guardrails": {
+    "max_depth": null,
+    "cost_cap_usd": null,
+    "network": "deny"
+  },
+  "trace": {
+    "run_id": "e2e-smoke-run",
+    "parent_span_id": null,
+    "depth": 0,
+    "call_chain": ["e2e-test"]
+  }
+}
