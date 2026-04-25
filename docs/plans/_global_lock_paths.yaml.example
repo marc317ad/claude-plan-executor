@@ -1,0 +1,26 @@
+# TASK-010 — globally-locked dependency / environment paths override.
+#
+# Copy this file to `docs/plans/_global_lock_paths.yaml` (drop the
+# `.example` suffix) to extend the default set declared in
+# `plugins/plan-executor/scripts/plan_ops.py` (`GLOBAL_LOCK_PATHS` /
+# `GLOBAL_LOCK_GLOBS`). The scheduler honors the override file if it
+# exists and is well-formed; absence or malformed YAML falls back to
+# defaults silently (a noisy override must NOT silently disable the
+# default lock set — see plan_ops._effective_global_lock_set).
+#
+# Each entry under `additional:` may be either:
+#   * a plain repo-relative path (treated as an exact match), or
+#   * an fnmatch-style glob (any of `*`, `?`, `[`).
+#
+# Tasks whose `files` set intersects the effective union (defaults +
+# additions) are batched alone — no parallel siblings, no other
+# global-lock task in the same batch — to prevent silent races on
+# environment-affecting state.
+#
+# Operator guidance: prefer adding paths over removing defaults. A
+# false positive serializes one task; a false negative corrupts an
+# environment.
+additional:
+  # - .env.example
+  # - config/global.toml
+  # - ci/pipelines/*.yml

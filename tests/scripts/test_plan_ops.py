@@ -1749,6 +1749,218 @@ class TestComputeSchedule:
 
 
 # ---------------------------------------------------------------------------
+# TASK-010: globally-locked dependency / environment paths
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalLockPaths:
+    """Scheduler rule: any task whose `files` intersects GLOBAL_LOCK_PATHS
+    (or its globs / YAML override) runs alone in its batch."""
+
+    def _run(self, *args: str, cwd: Path | None = None, stdin: str | None = None) -> subprocess.CompletedProcess:
+        cmd = [str(PY), str(SCRIPT), *args]
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else str(REPO_ROOT),
+            input=stdin,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_global_lock_constant_membership(self) -> None:
+        # V1 surface: default constant declares the canonical set.
+        assert "requirements.txt" in plan_ops.GLOBAL_LOCK_PATHS
+        assert "package.json" in plan_ops.GLOBAL_LOCK_PATHS
+        assert "Dockerfile" in plan_ops.GLOBAL_LOCK_PATHS
+        assert "src/foo.py" not in plan_ops.GLOBAL_LOCK_PATHS
+
+    def test_global_lock_paths_audit_check_passes(self) -> None:
+        # V7: the global_lock_paths self-audit check is registered and
+        # currently passes (constant matches the doc default set).
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "audit",
+             "--check", "global_lock_paths", "--json"],
+            cwd=str(REPO_ROOT),
+            capture_output=True, text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        findings = body["findings"]
+        assert len(findings) == 1
+        assert findings[0]["check"] == "global_lock_paths"
+        assert findings[0]["status"] == "pass", findings[0]
+
+    def test_is_global_lock_path_exact(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert plan_ops._is_global_lock_path("requirements.txt") is True
+        assert plan_ops._is_global_lock_path("pyproject.toml") is True
+        assert plan_ops._is_global_lock_path("src/foo.py") is False
+
+    def test_is_global_lock_path_glob(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert plan_ops._is_global_lock_path(".github/workflows/ci.yml") is True
+        assert plan_ops._is_global_lock_path(".github/workflows/release.yaml") is True
+        assert plan_ops._is_global_lock_path("workflows/ci.yml") is False
+
+    def test_list_global_lock_paths_default(self, tmp_path: Path) -> None:
+        # V1: subcommand emits default set as JSON.
+        cp = self._run("list-global-lock-paths", "--json", cwd=tmp_path)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert "requirements.txt" in body["paths"]
+        assert "Dockerfile" in body["paths"]
+        assert ".github/workflows/*.yml" in body["globs"]
+        assert body["paths"] == sorted(body["paths"])
+
+    def test_list_global_lock_paths_override(self, tmp_path: Path) -> None:
+        # V6: YAML override merges with defaults.
+        plans_dir = tmp_path / "docs" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "_global_lock_paths.yaml").write_text(
+            "additional:\n"
+            "  - .env.example\n"
+            "  - 'config/global.toml'\n"
+            "  - 'ci/pipelines/*.yml'\n",
+            encoding="utf-8",
+        )
+        cp = self._run("list-global-lock-paths", "--json", cwd=tmp_path)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert ".env.example" in body["paths"]
+        assert "config/global.toml" in body["paths"]
+        assert "requirements.txt" in body["paths"]  # defaults preserved
+        assert "ci/pipelines/*.yml" in body["globs"]
+
+    def test_parse_schedule_tags_global_lock(self, tmp_path: Path) -> None:
+        # V2: parse-schedule emits global_lock: bool on every task record.
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "claude", "files": ["src/foo.py"],
+                 "dependencies": [], "plan_file": "p.md"},
+                {"id": "002", "agent": "claude", "files": ["requirements.txt"],
+                 "dependencies": [], "plan_file": "p.md"},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["src/foo.py"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["requirements.txt"]},
+            ],
+            "gaps": [],
+            "risks": [],
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-schedule", "--stdin", "--json"],
+            input=json.dumps(payload),
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        flags = {t["id"]: t["global_lock"] for t in body["tasks"]}
+        assert flags == {"001": False, "002": True}
+
+    def test_compute_schedule_serializes_global_lock_task(self, tmp_path: Path) -> None:
+        # V3: with one global-lock task among 3 ready tasks, that task
+        # batches alone; the others co-batch normally.
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high", "files": ["src/a.py"], "dependencies": []},
+                {"id": "002", "priority": "high", "files": ["requirements.txt"], "dependencies": []},
+                {"id": "003", "priority": "high", "files": ["src/b.py"], "dependencies": []},
+            ]
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "compute-schedule", "--stdin", "--json"],
+            input=json.dumps(payload),
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # The global-lock task must NEVER co-batch with another task.
+        for batch in body["batches"]:
+            if "002" in batch["task_ids"]:
+                assert batch["task_ids"] == ["002"], batch
+        # And tasks must be partitioned across at least 2 batches.
+        all_ids = sorted(tid for b in body["batches"] for tid in b["task_ids"])
+        assert all_ids == ["001", "002", "003"]
+        assert len(body["batches"]) >= 2
+
+    def test_compute_schedule_serializes_two_global_lock_tasks(self, tmp_path: Path) -> None:
+        # V5: two global-lock tasks each get their own batch; no co-batch.
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high", "files": ["requirements.txt"], "dependencies": []},
+                {"id": "002", "priority": "high", "files": ["package.json"], "dependencies": []},
+                {"id": "003", "priority": "high", "files": ["src/x.py"], "dependencies": []},
+            ]
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "compute-schedule", "--stdin", "--json"],
+            input=json.dumps(payload),
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        for batch in body["batches"]:
+            ids = batch["task_ids"]
+            assert not ({"001", "002"} <= set(ids))  # never co-batched
+            if "001" in ids:
+                assert ids == ["001"]
+            if "002" in ids:
+                assert ids == ["002"]
+
+    def test_compute_schedule_global_lock_respects_dependency_ordering(self, tmp_path: Path) -> None:
+        # V4: dep chain with a global-lock step preserves topological order.
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high", "files": ["requirements.txt"], "dependencies": []},
+                {"id": "002", "priority": "high", "files": ["src/foo.py"], "dependencies": ["001"]},
+            ]
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "compute-schedule", "--stdin", "--json"],
+            input=json.dumps(payload),
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["topo"] == ["001", "002"]
+        # 001 is global-lock and alone; 002 is its own batch (after 001).
+        for batch in body["batches"]:
+            if "001" in batch["task_ids"]:
+                assert batch["task_ids"] == ["001"]
+
+    def test_compute_schedule_glob_match_serializes(self, tmp_path: Path) -> None:
+        # Glob default `.github/workflows/*.yml` triggers solitary placement.
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high",
+                 "files": [".github/workflows/ci.yml"], "dependencies": []},
+                {"id": "002", "priority": "high", "files": ["src/x.py"], "dependencies": []},
+            ]
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "compute-schedule", "--stdin", "--json"],
+            input=json.dumps(payload),
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        for batch in body["batches"]:
+            if "001" in batch["task_ids"]:
+                assert batch["task_ids"] == ["001"]
+
+
+# ---------------------------------------------------------------------------
 # Canonical-contract constants regression
 # ---------------------------------------------------------------------------
 

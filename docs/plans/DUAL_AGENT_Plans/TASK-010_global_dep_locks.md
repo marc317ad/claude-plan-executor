@@ -163,7 +163,7 @@ $PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k global_lock
 
 ### TASK-010: Globally-locked dependency / environment paths
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (§9.4 Phase 2 batch execution — scheduler / parallel)

@@ -899,6 +899,39 @@ locked_files  : set = {}
 
 Take the next group of tasks from the schedule. Verify no file overlap with `locked_files`. Add batch files to `locked_files`.
 
+##### Globally-locked paths (TASK-010)
+
+Disjoint `allowed_files` is sufficient for **code** files, but parallel mutation of dependency manifests / lock files / containers / CI config produces silent environment races (e.g., Task A reinstalls a package while Task B imports it at test time). The scheduler enforces an additional rule: any task whose `files` intersects the **globally-locked path set** runs in its own batch, alone — no parallel siblings, no other global-lock task in the same batch. Topological ordering relative to declared `dependencies` is preserved; only the parallel dimension is collapsed.
+
+The default set lives in `plugins/plan-executor/scripts/plan_ops.py` as `GLOBAL_LOCK_PATHS` (exact matches) and `GLOBAL_LOCK_GLOBS` (fnmatch). Default exact-match members (canonical, sorted; drift is enforced by the `global_lock_paths` self-audit check):
+
+`Cargo.lock`, `Cargo.toml`, `Dockerfile`, `Gemfile`, `Gemfile.lock`, `Pipfile`, `Pipfile.lock`, `composer.json`, `composer.lock`, `docker-compose.yaml`, `docker-compose.yml`, `go.mod`, `go.sum`, `package-lock.json`, `package.json`, `pnpm-lock.yaml`, `poetry.lock`, `pyproject.toml`, `requirements-dev.txt`, `requirements.txt`, `setup.cfg`, `setup.py`, `yarn.lock`.
+
+Default globs:
+
+`.github/workflows/*.yml`, `.github/workflows/*.yaml`.
+
+**Override file.** Operators may extend the set without patching the constant by creating `docs/plans/_global_lock_paths.yaml`:
+
+```yaml
+additional:
+  - .env.example
+  - config/global.toml
+  - ci/pipelines/*.yml
+```
+
+Entries with glob metacharacters (`*?[`) route to the globs tuple, plain entries to the exact-match set. The override is honored if present; absent or malformed → defaults only. See `docs/plans/_global_lock_paths.yaml.example` for the documented template.
+
+**Wire-format.** `parse-schedule` / `compute-schedule` tag every task with `global_lock: bool` (recomputed from `files` — operator-supplied values are ignored). The batcher consumes the tag and emits a solitary batch per global-lock task.
+
+**Relation to `State Isolation Contract`.** State isolation (TASK-003 wrapper baseline + reconciliation) protects parallel siblings from per-file races. The global-lock rule prevents the parallel siblings from existing in the first place when the file is environment-affecting, because per-task baseline isolation does not cover *out-of-process* state (the installed Python environment, the running container).
+
+`list-global-lock-paths --json` surfaces the effective set for diagnostics:
+
+```bash
+$PYTHON plugins/plan-executor/scripts/plan_ops.py list-global-lock-paths --json
+```
+
 #### 2b. Dispatch implementations (parallel)
 
 In a SINGLE message, dispatch all batch tasks:

@@ -202,6 +202,79 @@ ALLOWED_LOG_EVENTS = {
 # and the user's next turn decides disposition.
 ALLOWED_RUN_OUTCOMES = {"success", "partial", "failed", "paused"}
 
+# TASK-010: Globally-locked dependency / environment paths. Tasks whose
+# `files` set intersects this default set (or globs, or operator-supplied
+# additions from `docs/plans/_global_lock_paths.yaml`) MUST occupy their
+# own batch alone — the scheduler cannot put them in parallel with any
+# other task, regardless of file overlap. Rationale: parallel mutation of
+# `requirements.txt`, lock files, `Dockerfile`, etc., produces silent
+# environment races (Task A reinstalls a package while Task B imports it
+# at test time). Conservative-by-design: false positives are harmless
+# slowdowns; false negatives are silent corruption. See §9.4.
+GLOBAL_LOCK_PATHS = frozenset({
+    # Python
+    "requirements.txt", "requirements-dev.txt", "pyproject.toml",
+    "poetry.lock", "Pipfile", "Pipfile.lock", "setup.cfg", "setup.py",
+    # Node
+    "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    # Rust
+    "Cargo.toml", "Cargo.lock",
+    # Go
+    "go.mod", "go.sum",
+    # Ruby
+    "Gemfile", "Gemfile.lock",
+    # PHP
+    "composer.json", "composer.lock",
+    # Containers
+    "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+})
+GLOBAL_LOCK_GLOBS: tuple[str, ...] = (
+    ".github/workflows/*.yml",
+    ".github/workflows/*.yaml",
+)
+GLOBAL_LOCK_OVERRIDE_PATH = "docs/plans/_global_lock_paths.yaml"
+
+
+def _effective_global_lock_set() -> tuple[frozenset[str], tuple[str, ...]]:
+    """Return (paths, globs) merging defaults with optional YAML override.
+
+    Override file at ``docs/plans/_global_lock_paths.yaml`` (relative to
+    cwd) is honored if present; absent → defaults only. Entries containing
+    glob metacharacters (``*?[``) are routed to the globs tuple, others to
+    the exact-path set. Malformed YAML or unreadable file is treated as
+    "no override" — a noisy override should not silently disable the
+    default lock set.
+    """
+    base_paths = set(GLOBAL_LOCK_PATHS)
+    base_globs = list(GLOBAL_LOCK_GLOBS)
+    override = Path(GLOBAL_LOCK_OVERRIDE_PATH)
+    if override.is_file():
+        try:
+            import yaml  # available per TASK-013
+            data = yaml.safe_load(override.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        if isinstance(data, dict):
+            additional = data.get("additional") or []
+            if isinstance(additional, list):
+                for entry in additional:
+                    if not isinstance(entry, str) or not entry:
+                        continue
+                    if any(c in entry for c in "*?["):
+                        base_globs.append(entry)
+                    else:
+                        base_paths.add(entry)
+    return frozenset(base_paths), tuple(base_globs)
+
+
+def _is_global_lock_path(path: str) -> bool:
+    """True iff `path` is a globally-locked dependency/environment file."""
+    paths, globs = _effective_global_lock_set()
+    if path in paths:
+        return True
+    return any(fnmatch.fnmatch(path, g) for g in globs)
+
+
 # TASK-007 / TASK-008: Canonical Contract decision table. Self-audit
 # (`cmd_audit`) compares the shipped artifacts against this table and
 # surfaces drift as structured findings. Keep this dict the single source
@@ -267,7 +340,16 @@ CANONICAL_CONTRACT: dict[str, object] = {
         "check-plan-deps",
         "lint-plans",
         "reconcile-batch",
+        # TASK-010: surfaces the effective globally-locked path set
+        # (defaults + optional YAML override). The scheduler reads the
+        # same set when tagging tasks with `global_lock`.
+        "list-global-lock-paths",
     ],
+    # TASK-010: defaults exposed for the self-audit's `global_lock_paths`
+    # check, which compares the constants against the documented set in
+    # `DUAL_AGENT_PLAN_EXECUTOR.md` §9.4 and fails on drift.
+    "global_lock_paths_default": sorted(GLOBAL_LOCK_PATHS),
+    "global_lock_globs_default": list(GLOBAL_LOCK_GLOBS),
 }
 
 ALIAS_WINDOWS: dict[str, list[str]] = {
@@ -289,6 +371,11 @@ ALLOWED_TASK_FIELDS = {
     "title", "agent", "priority", "files", "dependencies",
     "test_command", "classification_reason", "acceptance_criteria",
     "plan_file", "description",
+    # TASK-010: scheduler-tagged flag indicating that any of `files`
+    # intersects `GLOBAL_LOCK_PATHS` (or its overrides). Tagged in
+    # `cmd_parse_schedule`, consumed by the batcher to enforce a
+    # solitary-batch rule. Optional on input; backfilled if absent.
+    "global_lock",
 }
 ALLOWED_BATCH_FIELDS = {"index", "task_ids", "file_locks"}
 # TASK-002: formalize hard-vs-soft gap severity. Hard gaps block execution
@@ -404,11 +491,31 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
         key=lambda task: _task_order_key(task["id"], task["priority"]),
     )
     ordered_task_ids = [task["id"] for task in ordered_tasks]
-    batches: list[dict] = []
+    # Unified ordered batch list. Each entry has either a `_open` flag
+    # (still accepting compatible packing) or `_solitary=True` (a
+    # global-lock task — sealed). Open batches are kept in `open_batches`
+    # for O(N) packing lookup; both lists share entries by reference so
+    # finalization is a single pass over `slots`.
+    slots: list[dict] = []
     next_batch_index = 1
     open_batches: list[dict] = []
+    # TASK-010: tag each task as global-lock or not. Global-lock tasks
+    # MUST occupy their own batch alone (no parallel siblings). They are
+    # placed in source order alongside normal batches and do NOT enter
+    # `open_batches`, so subsequent normal tasks cannot pack into them.
     for task in ordered_tasks:
         task_files = set(task["files"])
+        is_global_lock = any(_is_global_lock_path(f) for f in task["files"])
+        if is_global_lock:
+            slot = {
+                "index": next_batch_index,
+                "task_ids": [task["id"]],
+                "_files": set(task_files),
+                "_solitary": True,
+            }
+            slots.append(slot)
+            next_batch_index += 1
+            continue
         placed = False
         for batch in open_batches:
             if batch["_files"] & task_files:
@@ -418,18 +525,23 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
             placed = True
             break
         if not placed:
-            open_batches.append({
+            slot = {
                 "index": next_batch_index,
                 "task_ids": [task["id"]],
                 "_files": set(task_files),
-            })
+                "_solitary": False,
+            }
+            slots.append(slot)
+            open_batches.append(slot)
             next_batch_index += 1
-    for batch in open_batches:
-        batches.append({
-            "index": batch["index"],
-            "task_ids": batch["task_ids"],
-            "file_locks": sorted(batch["_files"]),
-        })
+    batches: list[dict] = [
+        {
+            "index": s["index"],
+            "task_ids": s["task_ids"],
+            "file_locks": sorted(s["_files"]),
+        }
+        for s in slots
+    ]
 
     return ordered_task_ids, batches, []
 
@@ -3845,9 +3957,29 @@ def cmd_parse_schedule(args: argparse.Namespace) -> None:
                 "classify_gap_severity (unknown types default to 'hard')"
             )
 
+    # TASK-010: tag each task with `global_lock: bool` based on its
+    # `files` set vs the effective globally-locked path set. Computed
+    # post-hoc here (not by the analyst) so the rule has a single code
+    # path. Pre-existing `global_lock` values are recomputed (the rule is
+    # a function of the file list, not operator opinion).
+    out_tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+    tagged_tasks: list = []
+    for t in out_tasks:
+        if isinstance(t, dict):
+            files = t.get("files") or []
+            if isinstance(files, list):
+                gl = any(
+                    _is_global_lock_path(str(f)) for f in files if isinstance(f, str)
+                )
+            else:
+                gl = False
+            tagged_tasks.append({**t, "global_lock": gl})
+        else:
+            tagged_tasks.append(t)
+
     result = {
         "outcome": data.get("outcome"),
-        "tasks": data.get("tasks") if isinstance(data.get("tasks"), list) else [],
+        "tasks": tagged_tasks,
         "batches": data.get("batches") if isinstance(data.get("batches"), list) else [],
         "gaps": backfilled_gaps,
         "risks": data.get("risks", []),
@@ -3885,8 +4017,23 @@ def cmd_compute_schedule(args: argparse.Namespace) -> None:
         }]})
 
     topo, batches, errors = _compute_schedule_batches(tasks)
+    # TASK-010: tag tasks with `global_lock` so downstream consumers see
+    # the same flag the batcher used to enforce solitary-batch placement.
+    tagged_tasks: list = []
+    for t in tasks:
+        if isinstance(t, dict):
+            files = t.get("files") or []
+            if isinstance(files, list):
+                gl = any(
+                    _is_global_lock_path(str(f)) for f in files if isinstance(f, str)
+                )
+            else:
+                gl = False
+            tagged_tasks.append({**t, "global_lock": gl})
+        else:
+            tagged_tasks.append(t)
     result = {
-        "tasks": tasks,
+        "tasks": tagged_tasks,
         "topo": topo,
         "batches": batches,
         "errors": errors,
@@ -8092,6 +8239,123 @@ def _check_design_doc_orphans() -> dict:
     )
 
 
+def _check_global_lock_paths() -> dict:
+    """`GLOBAL_LOCK_PATHS` / `GLOBAL_LOCK_GLOBS` match the documented set.
+
+    The canonical default exact-match set + glob set are documented in
+    `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` §9.4 ("Globally-locked
+    paths") so plan authors can read the contract without grepping the
+    code. Drift either way (constant has an entry the doc lacks, or
+    vice versa) breaks that contract.
+    """
+    canonical_exact = set(GLOBAL_LOCK_PATHS)
+    canonical_globs = set(GLOBAL_LOCK_GLOBS)
+    canonical_payload = {
+        "source": "GLOBAL_LOCK_PATHS + GLOBAL_LOCK_GLOBS",
+        "value": {
+            "exact": sorted(canonical_exact),
+            "globs": sorted(canonical_globs),
+        },
+    }
+    doc_path = _SCRIPT_DIR.parent.parent.parent / "docs" / "plans" / "DUAL_AGENT_PLAN_EXECUTOR.md"
+    owning_path = _audit_relpath(doc_path)
+    try:
+        doc_src = doc_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return _audit_finding(
+            check="global_lock_paths",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": str(doc_path), "value": None},
+            reason=f"design doc unreadable: {e}",
+            locations=[
+                {"path": owning_path, "line": None,
+                 "reason": f"design doc unreadable: {e}"},
+            ],
+        )
+    section_re = re.compile(
+        r"##### Globally-locked paths.*?(?=\n#####|\n####|\Z)",
+        re.DOTALL,
+    )
+    section_match = section_re.search(doc_src)
+    if section_match is None:
+        return _audit_finding(
+            check="global_lock_paths",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": str(doc_path), "value": None},
+            reason="`Globally-locked paths` section not found in design doc",
+            locations=[
+                {"path": owning_path, "line": None,
+                 "reason": "section anchor missing"},
+            ],
+        )
+    section = section_match.group(0)
+    doc_exact = set(re.findall(r"`([^`\s]+)`", section))
+    # Drop entries that look like code identifiers / file paths owning
+    # the constants themselves rather than members of the set.
+    doc_exact -= {
+        "GLOBAL_LOCK_PATHS", "GLOBAL_LOCK_GLOBS",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "global_lock_paths", "global_lock", "files",
+        "allowed_files", "dependencies",
+        "State Isolation Contract",
+        "parse-schedule", "compute-schedule",
+        "list-global-lock-paths --json",
+        "docs/plans/_global_lock_paths.yaml",
+        "docs/plans/_global_lock_paths.yaml.example",
+        "$PYTHON plugins/plan-executor/scripts/plan_ops.py list-global-lock-paths --json",
+        "*?[",
+    }
+    # Drop entries that look like Python identifiers (snake_case,
+    # likely prose mentions of vars/fields) — real default members are
+    # filenames with a dot, a glob char, or are well-known capitalized
+    # bare-name files (Dockerfile, Gemfile, Pipfile).
+    _BARE_FILENAMES = {"Dockerfile", "Gemfile", "Pipfile", "Cargo.lock"}
+    doc_exact = {
+        p for p in doc_exact
+        if any(c in p for c in "./") or any(c in p for c in "*?[")
+        or p in _BARE_FILENAMES
+    }
+    # Globs are entries containing fnmatch metachars.
+    doc_globs = {p for p in doc_exact if any(c in p for c in "*?[")}
+    doc_exact_only = doc_exact - doc_globs
+    actual_payload = {
+        "source": f"{owning_path} §Globally-locked paths",
+        "value": {
+            "exact": sorted(doc_exact_only),
+            "globs": sorted(doc_globs),
+        },
+    }
+    if doc_exact_only == canonical_exact and doc_globs == canonical_globs:
+        return _audit_finding(
+            check="global_lock_paths",
+            status="pass",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=None,
+        )
+    extra_exact = sorted(doc_exact_only - canonical_exact)
+    missing_exact = sorted(canonical_exact - doc_exact_only)
+    extra_globs = sorted(doc_globs - canonical_globs)
+    missing_globs = sorted(canonical_globs - doc_globs)
+    reason = (
+        f"GLOBAL_LOCK_PATHS doc/constant drift: "
+        f"exact_extra={extra_exact}, exact_missing={missing_exact}, "
+        f"globs_extra={extra_globs}, globs_missing={missing_globs}"
+    )
+    return _audit_finding(
+        check="global_lock_paths",
+        status="fail",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=reason,
+        locations=[
+            {"path": owning_path, "line": None, "reason": reason},
+        ],
+    )
+
+
 # Ordered registry. The order is the canonical `--list` output and the
 # row order in the Markdown report. Append new checks to the end so
 # downstream tooling that snapshots `--list` does not drift.
@@ -8104,6 +8368,7 @@ AUDIT_CHECKS: tuple[tuple[str, object, str], ...] = (
     ("portable_tier", _check_portable_tier, "advisory"),
     ("wrapper_isolation", _check_wrapper_isolation, "default"),
     ("design_doc_orphans", _check_design_doc_orphans, "default"),
+    ("global_lock_paths", _check_global_lock_paths, "default"),
 )
 AUDIT_CHECK_NAMES: tuple[str, ...] = tuple(name for name, _, _ in AUDIT_CHECKS)
 AUDIT_CHECK_TIERS: dict[str, str] = {name: tier for name, _, tier in AUDIT_CHECKS}
@@ -8180,6 +8445,19 @@ def _render_audit_markdown(report: dict) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def cmd_list_global_lock_paths(args: argparse.Namespace) -> None:
+    """Emit the effective globally-locked path set + globs (TASK-010).
+
+    Result shape: `{"paths": [...sorted exact-matches...],
+                    "globs": [...fnmatch globs in declared order...]}`.
+    Reads the optional override at `docs/plans/_global_lock_paths.yaml`
+    (relative to cwd) and merges its `additional:` list into the
+    defaults; entries with glob metacharacters land in `globs`.
+    """
+    paths, globs = _effective_global_lock_set()
+    _emit(args, {"paths": sorted(paths), "globs": list(globs)})
 
 
 def cmd_audit(args: argparse.Namespace) -> None:
@@ -9088,6 +9366,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_pi)
 
+    # TASK-010: surface the effective globally-locked path set so operators
+    # can verify their override file resolved as expected before running
+    # the scheduler.
+    p_lglp = sub.add_parser(
+        "list-global-lock-paths",
+        help=(
+            "Emit the effective globally-locked path set "
+            "(defaults + optional YAML override)"
+        ),
+    )
+    _add_json(p_lglp)
+
     # TASK-009: resolve `**Read targets:**` / `**Symbol targets:**` from a
     # task block (or stdin) into a structured JSON payload the dispatchers
     # render into the implementer / reviewer prompt under
@@ -9334,6 +9624,7 @@ def main(argv: list[str] | None = None) -> None:
         "gates": cmd_gates,
         "audit": cmd_audit,
         "resolve-read-targets": cmd_resolve_read_targets,
+        "list-global-lock-paths": cmd_list_global_lock_paths,
     }
     handlers[args.command](args)
 
