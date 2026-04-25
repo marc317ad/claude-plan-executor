@@ -54,5 +54,13 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 6. `SKILL_bash_dispatch_migration` (7 tasks)
 
 ### 2. narrow_run_filter_ids (5 tasks)
+- Status: **PARTIAL → paused at TASK-002 (D.2a.5 awaiting user)**
+- Branch: `plan/narrow-run-filter-ids` (HEAD: `a2a63cb` WIP, parent `15ef5efc` TASK-001 ship)
+- Run id: `20260425T221732`
+- TASK-001 shipped — `15ef5efc` (`_compute_index_closure` helper + `index-closure` CLI; D.5 dismissed Codex frontier-set finding as misread).
+- TASK-002 paused — first-pass needs-rework on 3 important+high findings (msg field omits offending body line; non-dict + un-normalizable task_id chunks silently skipped in scoped mode). D.5 confirmed all 3 load-bearing. D.2a.5 remediation succeeded. Binding re-review surfaced ONE NEW finding: trust-roster fallback applies even when roster `depends_on` is empty list — spec requires fallback only when roster deps resolve to in-closure task. Per D.2a.5 protocol no further remediation. WIP commit on topic branch preserves work for user disposition (hand-fix the empty-roster-deps gate, drop and revert, or override commit).
+- Gemini still blocked: TASK-001's helper alone is insufficient — needs TASK-002's `--filter-ids` plumbing on `build-tasks` to be wired to actually skip Done-but-in-closure chunks (currently the closure helper exists but `_build_tasks` still filters Done before dep validation).
+
+### 3. PLAN_TOPO_RESPECT_FIX_2026-04-25 (6 tasks)
 - Status: **pending start**
-- Branch: `plan/narrow-run-filter-ids`
+- Branch: `plan/topo-respect-fix`
