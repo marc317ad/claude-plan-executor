@@ -45,3 +45,11 @@ The fix is to add a new probe that uses an agent **expected to write** (`plan-im
 **Description:**
 
 Replaces the methodologically weak Probe 2b with a probe that actually distinguishes harness enforcement of `--allowedTools` from model compliance with the agent prompt. The current Probe 2b uses `plan-analyst` whose own spec forbids Write — so Pass A ("no file on disk") could mean either (a) the harness blocked the Write because it's not in `--allowedTools`, OR (b) the model complied with the agent prompt that says "do not modify files." These are different security stories: (a) is a real harness-enforced boundary; (b) is voluntary model compliance that any prompt-injection could override. The v1 README's "acceptEdits ships as default" claim rests on the unfalsifiable Pass A. The new probe uses `plan-implementer` (whose spec PERMITS Write) and runs two invocations — one with Write absent from `--allowedTools` (the test), one with Write present (the control). If the restricted invocation creates the file, the harness is not enforcing the allowlist (ship-blocker; cleanup becomes the sole defense). If only the control creates the file, harness enforcement is proven and the v1 safety story holds. The old Probe 2b is preserved (renamed) as a model-compliance smoke test, explicitly NOT a security guarantee.
+
+## Execution log — 20260425T162934 (success)
+
+Starting SHA: `20573e8b603be576b015552e425092bf8825863e`  → Ending SHA: `a9baa4c81716bbfc7c8d1716ebbe13ee9f553485`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | codex | clean | 88b78551 | codex timed out at 300s; fallback to claude implementer |

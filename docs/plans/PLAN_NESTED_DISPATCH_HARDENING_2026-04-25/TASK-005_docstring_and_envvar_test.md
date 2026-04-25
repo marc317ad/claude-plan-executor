@@ -39,3 +39,11 @@ Run 20260425T124346 shipped v1 of `_claude_dispatch_envelope.py` and `_claude_sp
 **Description:**
 
 Fixes a stale docstring + adds a missing test. The docstring at `_claude_dispatch_envelope.py:455` (the `build_depth_exceeded` constructor) reads `PLAN_EXEC_DEPTH >= PLAN_EXEC_MAX_DEPTH`, but the canonical env var name used throughout the rest of the wrapper is `PLAN_EXEC_DISPATCH_DEPTH` — operators tracing the depth limit by grep would hunt for the wrong name. The grep step in the AC is defense-in-depth in case other stale references hide. The new test closes a coverage gap: the multi-hop chain tests in `test_claude_span_log.py` pass parent state via explicit kwargs, but the production code path (`build_span` lines 161-162) reads `PLAN_EXEC_PARENT_RUN_ID` and `PLAN_EXEC_PARENT_AGENT` from `os.environ`. A regression in that env-var read would silently break the audit trail without any test detecting it. The new test uses `multiprocessing.Process` (spawn context) with the env vars set in the child env and asserts the span captures them — exercising the production path end-to-end.
+
+## Execution log — 20260425T162934 (success)
+
+Starting SHA: `20573e8b603be576b015552e425092bf8825863e`  → Ending SHA: `a9baa4c81716bbfc7c8d1716ebbe13ee9f553485`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | codex | claude | ship | 74b8bd2e | wrapper test_command parsed with literal backticks; manual run shows 30 passed |

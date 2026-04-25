@@ -51,3 +51,11 @@ The current sites:
 **Description:**
 
 Closes the P0 sandbox-escape vulnerability that the v1 wrapper shipped with: cleanup scope was defined by the agent's self-report at `plan_claude_dispatch.py:671-672`, where `declared = _extract_declared_files_changed(envelope)` extracted `result.files_changed` from the agent's output envelope (function at lines 379-392). A malicious or buggy agent could lie in its report and the wrapper would treat the lie as authorization. This task adds a top-level `declared_files_changed` field to `claude_dispatch_input.json` (optional, default `[]`), routes it through `cmd_run` as the trusted cleanup authority, and renames the now-informational helper to `_extract_observed_files_changed`. The agent's `result.files_changed` continues to be parsed for `scope_misreport_detected` diff metadata (declared minus observed) but is no longer the security boundary. Tests demonstrate that (a) agent lies do not authorize, (b) over-writes outside the declared set are reverted, and (c) omitted-field deny-by-default behavior holds for read-only agents.
+
+## Execution log — 20260425T162934 (success)
+
+Starting SHA: `20573e8b603be576b015552e425092bf8825863e`  → Ending SHA: `a9baa4c81716bbfc7c8d1716ebbe13ee9f553485`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | codex | clean | 51949c1a |  |

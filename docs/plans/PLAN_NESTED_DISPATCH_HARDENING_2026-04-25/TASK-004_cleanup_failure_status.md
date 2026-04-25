@@ -51,3 +51,11 @@ This task depends on TASK-001 (which renames `_extract_declared_files_changed` a
 **Description:**
 
 Adds a `cleanup_failure` envelope status to surface silent `OSError` victims during delta-bounded cleanup. The v1 wrapper catches per-file `OSError` in `_claude_dispatch_cleanup.apply_cleanup` and continues, then `cmd_run` emits `status: ok` even when the dangerous file is still on disk because the revert failed (read-only filesystem, permission denied, etc.). This task: (1) extends the envelope status enum in `claude_dispatch_output.json` with `cleanup_failure`, (2) adds a `build_cleanup_failure(failed_paths, **extra)` constructor in `_claude_dispatch_envelope.py` routed through the same `_build_envelope` chokepoint as the other 10 builders, (3) makes `apply_cleanup` return a new `failed_paths: list[str]` field collecting per-file `OSError` victims (the per-file errors are still caught — processing continues — but they are now visible to the caller), and (4) makes `cmd_run` emit `cleanup_failure` (precedence over backend success) when `failed_paths` is non-empty. A failed cleanup is a hard fail because the working tree is in an unknown state. Tests cover the read-only-target case, the mixed (some reverted, some failed) case, and the constructor's schema-validation surface. Depends on TASK-001 (cleanup wiring change in `cmd_run`) and TASK-005 (envelope docstring touch) so that `cmd_run`'s post-cleanup branch and the envelope module's docstring are stable when this work lands.
+
+## Execution log — 20260425T162934 (success)
+
+Starting SHA: `20573e8b603be576b015552e425092bf8825863e`  → Ending SHA: `a9baa4c81716bbfc7c8d1716ebbe13ee9f553485`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | codex | clean [remediation] | a9baa4c8 | D.2a.5 bounded remediation: cleanup_failure precedence + structured failed_paths |

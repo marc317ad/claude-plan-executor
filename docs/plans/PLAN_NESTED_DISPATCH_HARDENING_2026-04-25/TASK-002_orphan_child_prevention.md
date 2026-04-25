@@ -47,3 +47,11 @@ Signal handlers must be installed only for the duration of `invoke` (try/finally
 **Description:**
 
 Replaces `subprocess.run` in `_claude_backend.invoke` with a `Popen`-based pattern that propagates parent termination to the nested `claude` process and its subprocess tree. The current implementation orphans the child on parent SIGTERM/SIGKILL because `subprocess.run` provides no signal-forwarding plumbing; the orphaned child continues to hold full repo write access until it exits naturally. The new implementation: (1) spawns the child with `start_new_session=True` so it occupies its own POSIX process group, (2) wraps the wait in try/finally that registers SIGTERM/SIGINT handlers for the duration of the call, (3) on signal, sends SIGTERM to the child's process group and waits up to 5s, then escalates to SIGKILL, (4) restores the prior signal handlers in the finally block (so the orchestrator's signal handling is not clobbered globally), and (5) registers an `atexit` defense-in-depth hook that reaps any still-running child on parent exit. Three new tests exercise the SIGTERM, SIGINT, and normal-exit paths; existing argv/stdout/timeout/malformed-JSON tests must continue to pass unchanged.
+
+## Execution log — 20260425T162934 (success)
+
+Starting SHA: `20573e8b603be576b015552e425092bf8825863e`  → Ending SHA: `a9baa4c81716bbfc7c8d1716ebbe13ee9f553485`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | claude | codex | clean [remediation] | c4b67f42 | D.2a.5 bounded remediation: SIGTERM/SIGINT prior-handler dispatch fix |
