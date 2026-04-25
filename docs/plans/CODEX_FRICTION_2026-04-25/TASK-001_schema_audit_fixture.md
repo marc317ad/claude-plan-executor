@@ -26,7 +26,7 @@ Prevent the OpenAI structured-output schema regression that fired on the frictio
 
 ### TASK-001: Schema audit + structural fixture
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_plan_codex_dispatch_schema.py` (edit)
