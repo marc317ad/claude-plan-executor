@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "Prohibit Silent Revert of Completed Work \u2014 `/implement-plan` Hardening",
+  "source_plan_file": "prohibit_silent_revert.md",
+  "created": "2026-04-25",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "parallel_batches": [
+    [
+      "001"
+    ],
+    [
+      "002",
+      "003"
+    ],
+    [
+      "004"
+    ],
+    [
+      "005",
+      "006",
+      "007",
+      "008"
+    ],
+    [
+      "009"
+    ]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_cmd_fail_task_requires.md",
+      "priority": "critical",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_first_class_paused_plan.md",
+      "priority": "critical",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_unattended_revert_policy_preflight.md",
+      "priority": "critical",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_completed_work_preservation_principle.md",
+      "priority": "critical",
+      "depends_on": [
+        "001",
+        "002",
+        "003"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_phase_d_4_rescue.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002",
+        "003",
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "TASK-006_phase_c_empty_diff.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002",
+        "003",
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "TASK-007_d_2a_binding_mode.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002",
+        "003",
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "008",
+      "file": "TASK-008_reconcile_batch_out_of.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002",
+        "003",
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "009",
+      "file": "TASK-009_dispatch_templates_reinforcement_plan.md",
+      "priority": "medium",
+      "depends_on": [
+        "001",
+        "002",
+        "003",
+        "004",
+        "005",
+        "006",
+        "007",
+        "008"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

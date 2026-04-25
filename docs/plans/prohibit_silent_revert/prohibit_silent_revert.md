@@ -52,9 +52,7 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 9. `reconcile_batch` out-of-scope: an envelope with `out_of_scope_observed=true` produces a per-task result with `outcome: "out_of_scope_paused"` (not `scope_violation_reconciled`), no `git restore` runs against the out-of-scope paths, the task's `**Status:**` is `paused`, and the orchestrator emits `awaiting_user` with `stage=post_reconcile_out_of_scope`.
 10. `python3 plugins/plan-executor/scripts/plan_ops.py audit --strict --json` passes with no `fail` or `pass_with_alias` findings, including the new `fail_task_authorization_source`, `paused_status_recognized`, and `principle_referenced` checks.
 
-## Tasks
-
-### TASK-001: `cmd_fail_task` requires `--authorization-source` + initial enum + SKILL co-updates
+## TASK-001: `cmd_fail_task` requires `--authorization-source` + initial enum + SKILL co-updates
 
 - **Status:** pending
 - **Priority:** critical
@@ -80,7 +78,7 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 **Description:**
 Foundation task: makes `cmd_fail_task` refuse to run without an explicit authorization-source value. This is the audit gate that closes the regression vector — every future contributor who adds a `fail-task` call must consciously declare the path that authorizes the destruction. The SKILL.md changes are scoped narrowly to the literal invocation lines so this task does not collide with the prose rewrites in TASK-004 / TASK-005 / TASK-006 / TASK-007 / TASK-008. The initial enum has only three values (the current authorized paths plus user-instruction); each subsequent task extends `choices=[...]` when it introduces a new path.
 
-### TASK-002: First-class `paused` plan-status + scheduler / mutator awareness
+## TASK-002: First-class `paused` plan-status + scheduler / mutator awareness
 
 - **Status:** pending
 - **Priority:** critical
@@ -111,7 +109,7 @@ Adds `paused` as a first-class plan-status so the scheduler does not re-pick a p
 
 **Implementation notes.** Locate the constant by `git grep -n '_PLAN_STATUS_VALUES\|_TASK_STATUS_VALUES\|STATUS_VALUES\|status_values' plugins/plan-executor/scripts/plan_ops.py`. The constant may be a frozenset, list, or a tuple — extend in place. If the validation logic is split across multiple functions (e.g., parser + mutator + lint), update each to accept the new value. Do NOT introduce a new state machine module — the existing structure suffices.
 
-### TASK-003: `--unattended-revert-policy` preflight + TTY refuse + orchestrator pin
+## TASK-003: `--unattended-revert-policy` preflight + TTY refuse + orchestrator pin
 
 - **Status:** pending
 - **Priority:** critical
@@ -138,7 +136,7 @@ Adds `paused` as a first-class plan-status so the scheduler does not re-pick a p
 **Description:**
 Adds the per-run policy that controls how the new pause paths behave under unattended execution. Per user decision: refuse-with-error when stdin is not a TTY and no policy is provided — loud failure beats silent destruction in cron/CI contexts. The three values (`pause | fail-fast | preserve-only`) are defined in the design reference §4.1.j; `pause` is the default for interactive runs and the new behavior across G1/G2/G3/G10. `fail-fast` restores the legacy auto-fail-task behavior for unattended runs that prefer fast failure over stalls. `preserve-only` is a compromise (logs the discarded diff to a salvage ref before fail-task). This task only wires up preflight and the SKILL.md pin; consumers (Phase C, D.4, D.2a, reconcile-batch) come online in their respective tasks.
 
-### TASK-004: Completed-Work Preservation Principle text + shared awaiting-user pause subroutine
+## TASK-004: Completed-Work Preservation Principle text + shared awaiting-user pause subroutine
 
 - **Status:** pending
 - **Priority:** critical
@@ -164,7 +162,7 @@ Pure-prose task that establishes the canonical principle text, the shared subrou
 
 **Scope boundary.** This task does NOT modify Phase C (TASK-006), Phase D.4 (TASK-005), D.2a binding-mode (TASK-007), or `reconcile_batch` (TASK-008). It only adds the principle text, the shared subroutine spec, the cross-reference sentences in those phases, and the audit check.
 
-### TASK-005: Phase D.4 rescue + `--d4-rescue-tag` commit + dispatch template + plan-remediator dual input mode
+## TASK-005: Phase D.4 rescue + `--d4-rescue-tag` commit + dispatch template + plan-remediator dual input mode
 
 - **Status:** pending
 - **Priority:** high
@@ -212,7 +210,7 @@ Implements the highest-value behavior change: D.4 stops being a destructive seam
 
 **Scope boundary.** This task does NOT touch Phase C (TASK-006), D.2a binding-mode (TASK-007), or `reconcile_batch` (TASK-008). It does NOT add `--d4-rescue-tag` cross-references in `dispatch-templates.md` outside the new Phase D.4-rescue template subsection.
 
-### TASK-006: Phase C empty-diff probe + non-empty-diff pause
+## TASK-006: Phase C empty-diff probe + non-empty-diff pause
 
 - **Status:** pending
 - **Priority:** high
@@ -249,7 +247,7 @@ Implements the Phase C gap (G1): when an implementer fails but left a non-empty 
 
 **Implementation notes.** The orchestrator-side branching logic is documented in SKILL.md prose (the orchestrator agent is the executor); plan_ops.py contributes only the auth-source enum extension and the new pause-helper test fixtures. There is no new plan_ops.py subcommand needed — the existing `mutate_task_status`, `log-event`, `finalize-execution-log` commands suffice.
 
-### TASK-007: D.2a binding-mode reinterpretation (no escape hatch)
+## TASK-007: D.2a binding-mode reinterpretation (no escape hatch)
 
 - **Status:** pending
 - **Priority:** high
@@ -277,7 +275,7 @@ Reinterprets `--codex-review-binding`: from "auto-fail-task on Codex `needs-rewo
 
 **Migration callout (for the run summary banner).** The first /implement-plan invocation that uses `--codex-review-binding` after this task lands SHOULD log a one-time `binding_mode_contract_changed_notice` event at run_start with a one-line message reminding the operator that binding-mode now pauses by default. Implementer's discretion whether to add this; nice-to-have, not load-bearing.
 
-### TASK-008: `reconcile_batch` out-of-scope pause (G10)
+## TASK-008: `reconcile_batch` out-of-scope pause (G10)
 
 - **Status:** pending
 - **Priority:** high
@@ -317,7 +315,7 @@ Implements G10, the flagship case: when the Codex implementer wrote files outsid
 
 **Implementation notes.** `reconcile_batch` is a Python function that returns a results list; the per-task `mutate_task_status` mutation requires knowing the task's plan_file. The current signature takes `batch_envelopes` and `repo_root`; extend it with `plans_dir` (or per-envelope `plan_file` references) so the mutation can target the right file in directory mode. Inspect the existing code to determine the cleanest extension.
 
-### TASK-009: dispatch-templates reinforcement + plan-implementer clause + design-doc propagation + audit drift check
+## TASK-009: dispatch-templates reinforcement + plan-implementer clause + design-doc propagation + audit drift check
 
 - **Status:** pending
 - **Priority:** medium
