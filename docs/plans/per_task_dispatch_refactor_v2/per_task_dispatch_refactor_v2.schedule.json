@@ -1,0 +1,285 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Heuristic plan-decomposition subcommand + shared parsing helpers",
+      "agent": "claude",
+      "priority": "critical",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py",
+        "tests/fixtures/decomposer_inputs/"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_ops.py -q -k \"decompose_plan or DecomposePlan or parse_task_block\"",
+      "classification_reason": "Critical priority, new module, arch",
+      "plan_file": "per_task_dispatch_refactor_v2.md"
+    },
+    {
+      "id": "002",
+      "title": "SKILL prose consolidation (single-track \"Input shape\")",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ],
+      "test_command": "python3 plugins/plan-executor/scripts/plan_ops.py audit --json",
+      "classification_reason": "Long-form prose refactor, voice",
+      "plan_file": "per_task_dispatch_refactor_v2.md"
+    },
+    {
+      "id": "003",
+      "title": "Preflight directory branch (remove file-branch fallthrough)",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_ops.py -q -k preflight",
+      "classification_reason": "Test fixture plumbing, dirty-tree",
+      "plan_file": "per_task_dispatch_refactor_v2.md"
+    },
+    {
+      "id": "004",
+      "title": "Roster-driven fat tasks[] synthesis",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_ops.py -q -k \"build_tasks or BuildTasks\"",
+      "classification_reason": "New subcommand, fat manifest",
+      "plan_file": "per_task_dispatch_refactor_v2.md"
+    },
+    {
+      "id": "005",
+      "title": "Per-child classifier fan-out",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/agents/plan-analyst.md"
+      ],
+      "test_command": "python3 plugins/plan-executor/scripts/plan_ops.py audit --json",
+      "classification_reason": "Multi-file wiring, agent-spec",
+      "plan_file": "per_task_dispatch_refactor_v2.md"
+    },
+    {
+      "id": "006",
+      "title": "Schedule-only plan-review",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/codex_plan_review_schema.json",
+        "tests/scripts/test_plan_codex_dispatch.py"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_codex_dispatch.py -q -k plan_review",
+      "classification_reason": "Schema + prompt + helper sig",
+      "plan_file": "per_task_dispatch_refactor_v2.md"
+    },
+    {
+      "id": "007",
+      "title": "Triage + author per-child targeting (backward-compatible)",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/codex_plan_review_schema.json",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/agents/plan-author.md",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_ops.py -q -k \"plan_review or triage or author\"",
+      "classification_reason": "7-file cross-cut, schema migration",
+      "plan_file": "per_task_dispatch_refactor_v2.md"
+    },
+    {
+      "id": "008",
+      "title": "SKILL + dispatch-templates cleanup + file-mode removal",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py"
+      ],
+      "test_command": "python3 plugins/plan-executor/scripts/plan_ops.py audit --strict --json",
+      "classification_reason": "Multi-file cleanup, audit-strict gate",
+      "plan_file": "per_task_dispatch_refactor_v2.md"
+    },
+    {
+      "id": "009",
+      "title": "End-to-end directory-mode smoke",
+      "agent": "claude",
+      "priority": "high",
+      "files": [
+        "tests/scripts/test_implement_plan_directory_smoke.py",
+        "tests/fixtures/directory_mode_plan/directory_mode_plan.schedule.json"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_implement_plan_directory_smoke.py -q",
+      "classification_reason": "New integration test, mock wrapper",
+      "plan_file": "per_task_dispatch_refactor_v2.md"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/fixtures/decomposer_inputs/",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": [
+        "004"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 5,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-analyst.md",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md"
+      ]
+    },
+    {
+      "index": 6,
+      "task_ids": [
+        "006"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/codex_plan_review_schema.json",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "tests/scripts/test_plan_codex_dispatch.py"
+      ]
+    },
+    {
+      "index": 7,
+      "task_ids": [
+        "007"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-author.md",
+        "plugins/plan-executor/scripts/codex_plan_review_schema.json",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 8,
+      "task_ids": [
+        "008"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md"
+      ]
+    },
+    {
+      "index": 9,
+      "task_ids": [
+        "009"
+      ],
+      "file_locks": [
+        "tests/fixtures/directory_mode_plan/directory_mode_plan.schedule.json",
+        "tests/scripts/test_implement_plan_directory_smoke.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [
+    {
+      "type": "shared-file-across-batches",
+      "affected_tasks": [
+        "001",
+        "003",
+        "004",
+        "007",
+        "008"
+      ],
+      "detail": "plugins/plan-executor/scripts/plan_ops.py touched by five tasks across five different batches; serial execution is safe, coordination surface is TASK-001's shared parsing helpers consumed by TASK-004 (grammar-drift caught by TASK-004 round-trip test)."
+    },
+    {
+      "type": "shared-file-across-batches",
+      "affected_tasks": [
+        "001",
+        "002",
+        "005",
+        "007",
+        "008"
+      ],
+      "detail": "SKILL.md touched by five tasks across five different batches; TASK-002 consolidates prose, TASK-005/007 rewrite Phase 1/1.5, TASK-008 final cleanup. Serial \u2014 safe."
+    },
+    {
+      "type": "shared-file-across-batches",
+      "affected_tasks": [
+        "005",
+        "007",
+        "008"
+      ],
+      "detail": "dispatch-templates.md touched across three batches; TASK-005 adds Phase A-single, TASK-007 extends triage/author payloads, TASK-008 deletes dual-mode callouts. Serial \u2014 safe."
+    },
+    {
+      "type": "shared-file-across-batches",
+      "affected_tasks": [
+        "006",
+        "007",
+        "008"
+      ],
+      "detail": "plan_codex_dispatch.py touched in batches 6 / 7 / 8; schema ratchet (additive in 6, target_task_id in 7, deprecation-shim removal in 8). Dependency ordering enforces correct sequence."
+    },
+    {
+      "type": "shared-file-across-batches",
+      "affected_tasks": [
+        "006",
+        "007"
+      ],
+      "detail": "codex_plan_review_schema.json schema evolves in TASK-006 (plan_file preserved) then TASK-007 (target_task_id added). Serial \u2014 safe."
+    }
+  ]
+}

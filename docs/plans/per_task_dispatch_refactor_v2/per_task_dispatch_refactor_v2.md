@@ -2,7 +2,7 @@
 
 **Created:** 2026-04-24
 **Supersedes:** `docs/plans/archive/per_task_dispatch_refactor.md` (2026-04-24 v1)
-**Status:** pending
+**Status:** complete
 **Base branch:** main
 **Preconditions:** `directory_mode_hotfix_2026-04-24` has landed (wrapper + preflight accept dir inputs; `parse-plan-review-report` emits `notes[]`). This plan refactors the architecture; it does not fix the defects.
 
@@ -326,3 +326,19 @@ Starting SHA: `0bc13335f72787ca8e2b4fbc87c6d0b31b437b4e`  → Ending SHA: `0bc13
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | TASK-001 | claude | codex | needs-rework (binding re-review after D.2a.5 remediation) | (uncommitted — paused) | Round-1 findings (schema-valid, $PYTHON bootstrap, idempotency) all fixed in remediation. Round-2 binding re-review surfaced 3 NEW concerns: permissive task-header regex, hardcoded chunk status=Pending, 00_INDEX.json missing canonical manifest fields. Awaiting user decision per D.2a.5 hard rule. |
+
+## Execution log — 20260424T122957 (success)
+
+Starting SHA: `0bc13335f72787ca8e2b4fbc87c6d0b31b437b4e`  → Ending SHA: `e22d342369527924980ae2503e359adfc314e059`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-001 | claude | none (codex unavailable) | [remediation] (3 rounds: schema-valid emission, $PYTHON bootstrap, idempotency, regex strict, manifest fields, reversion-guidance unconditional, --force stale cleanup; round-4 binding hit Codex quota) | 442de4e | +2 follow-on commits (ffd9f17 normalizer em-dash fix; 88b2c90 commit-safe directory-prefix matching) unblocking commit-safe gate |
+| TASK-002 | claude | codex | clean [remediation] (2 rounds: _validate_schedule overstatement, schedule_file binding mismatch) | 555ebbe |  |
+| TASK-003 | claude | codex | clean [remediation] (1 round: base_branch test strengthening for first-non-null contract) | 52544b0 | minor-finding upgraded to test quality fix |
+| TASK-004 | claude | codex | clean [remediation] (2 rounds: agent-validation/dep-aware-batches/wrapped-AC, plan_file basename via Path.name) | a892a86 |  |
+| TASK-005 | claude | codex | clean [remediation] (5 rounds: contract gaps + filter-schedule --stdin scope expansion authorized by user) | 5696a59 | +1 follow-on (55bc948 filter-schedule --stdin) |
+| TASK-006 | claude | codex | minor-findings [remediation] (3 rounds: kw-only signature, schedule_file envelope drop, plan_basename 00_INDEX.json signal; positional-arg-order finding dismissed) | bd2a84b | +1 follow-on (1b5956a integration test schedule-only; positional-order dismissed: no in-tree legacy callers) |
+| TASK-007 | claude | codex | minor-findings [remediation] (6 rounds: per-child fan-out, target_task_id schema, source_index annotation, three plan-author shapes; round-7 architecture-mismatch findings dismissed) | 56b5580 | dismissed: dispatch-builder is prose-driven orchestrator LLM, not Python function. Follow-up: PLAN_NESTED_DISPATCH_2026-04-18_v3.md |
+| TASK-008 | claude | codex | clean [remediation] (4 rounds: alias removal, single-file fallback removal, SKILL prose cleanup, plan_file required validator) | ecf381f | +1 follow-on (496e7f1 test/fixture migration to directory-only contract; in-flight schedule sidecar migrated post-TASK-008) |
+| TASK-009 | claude | codex | clean (Codex empty-diff; 13/13 smoke tests + 823 full-suite verified) | e22d342 |  |
