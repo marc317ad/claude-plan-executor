@@ -39,7 +39,7 @@ The OpenAI strict-validator invariant from `CODEX_FRICTION_2026-04-25/TASK-001` 
 
 ### TASK-002: `gemini_*_schema.json` review + plan-review sidecars
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/gemini_review_schema.json` (new)
