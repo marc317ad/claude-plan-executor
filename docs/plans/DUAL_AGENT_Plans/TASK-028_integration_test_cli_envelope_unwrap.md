@@ -154,7 +154,7 @@ Expected: only `tests/scripts/test_plan_ops.py` appears in the diff. No `plan_op
 
 ### TASK-028: Unwrap `claude --output-format json` envelope in two live-CLI roundtrip tests
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** low
 - **Files:**
   - `tests/scripts/test_plan_ops.py`

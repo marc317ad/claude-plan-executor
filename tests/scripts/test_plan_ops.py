@@ -5398,6 +5398,44 @@ def _claude_cli_available() -> bool:
         return False
 
 
+def _classify_cli_envelope(stdout: str) -> tuple[str, object]:
+    """Classify ``claude --output-format json`` stdout into one of three states.
+
+    Returns ``("unwrapped", inner_str)`` when stdout is a JSON object with a
+    string ``result`` field (the documented happy path), ``("unexpected",
+    body)`` when JSON parses but the shape is not what we expected (caller
+    should ``pytest.skip`` with a message naming the observed shape), or
+    ``("non-json", None)`` when stdout is not JSON at all (caller can fall
+    back to the raw stdout).
+    """
+    try:
+        body = json.loads(stdout)
+    except json.JSONDecodeError:
+        return ("non-json", None)
+    if not isinstance(body, dict):
+        return ("unexpected", body)
+    inner = body.get("result")
+    if not isinstance(inner, str):
+        return ("unexpected", body)
+    return ("unwrapped", inner)
+
+
+def _unwrap_cli_envelope(stdout: str) -> str | None:
+    """Back-compat shim over ``_classify_cli_envelope``.
+
+    Returns the inner ``result`` string for the happy path and ``None`` for
+    every other state (non-JSON OR parsed-but-unexpected). Live integration
+    tests SHOULD call ``_classify_cli_envelope`` directly so they can
+    ``pytest.skip`` on parsed-but-unexpected envelopes; this shim is
+    retained for the V1 unit-scope regression test that asserts the
+    ``None`` collapse for the documented bad-shape inputs.
+    """
+    status, value = _classify_cli_envelope(stdout)
+    if status == "unwrapped":
+        return value  # type: ignore[return-value]
+    return None
+
+
 def _extract_json_block(text: str) -> dict | None:
     """Best-effort extraction of a fenced ```json or bare {...} block.
 
@@ -5588,6 +5626,37 @@ class TestReconcileBatch:
         assert "ghost.txt" in results[0]["error"]
 
 
+def test_cli_envelope_unwrap_round_trips_analyst_fenced_json() -> None:
+    """V1 regression: the unwrap-then-extract chain must recover the inner
+    fenced JSON from a ``claude --output-format json`` envelope rather than
+    silently returning the envelope dict itself.
+    """
+    inner_schedule = {
+        "task_id": "001",
+        "tasks": [{"task_id": "001", "route": "codex"}],
+    }
+    fenced = "```json\n" + json.dumps(inner_schedule) + "\n```"
+    envelope = {
+        "type": "result",
+        "subtype": "success",
+        "session_id": "abc",
+        "result": "Some preamble.\n\n" + fenced + "\n\nTrailing notes.",
+        "total_cost_usd": 0.0,
+    }
+    stdout = json.dumps(envelope)
+
+    inner = _unwrap_cli_envelope(stdout)
+    assert isinstance(inner, str)
+    source = inner if inner is not None else stdout
+    recovered = _extract_json_block(source)
+    assert recovered == inner_schedule
+
+    # Non-envelope input must be passed through transparently.
+    assert _unwrap_cli_envelope("not json at all") is None
+    assert _unwrap_cli_envelope(json.dumps({"type": "other"})) is None
+    assert _unwrap_cli_envelope(json.dumps({"result": 123})) is None
+
+
 @pytest.mark.slow
 def test_analyst_to_parse_schedule_roundtrip(tmp_path: Path) -> None:
     """Dispatch the real plan-analyst agent and round-trip into parse-schedule."""
@@ -5616,11 +5685,18 @@ def test_analyst_to_parse_schedule_roundtrip(tmp_path: Path) -> None:
             f"(rc={result.returncode}, stderr={result.stderr[:400]!r})"
         )
 
-    analyst_json = _extract_json_block(result.stdout)
+    status, inner = _classify_cli_envelope(result.stdout)
+    if status == "unexpected":
+        pytest.skip(
+            f"unexpected claude JSON envelope shape: "
+            f"{type(inner).__name__} keys={list(inner.keys()) if isinstance(inner, dict) else 'n/a'}"
+        )
+    source = inner if status == "unwrapped" else result.stdout
+    analyst_json = _extract_json_block(source)  # type: ignore[arg-type]
     if analyst_json is None:
         pytest.skip(
             f"no JSON block recovered from analyst output "
-            f"(stdout[:400]={result.stdout[:400]!r})"
+            f"(source[:400]={source[:400]!r})"
         )
 
     cp = subprocess.run(
@@ -5668,9 +5744,16 @@ def test_implementer_to_parse_implementer_report_roundtrip(tmp_path: Path) -> No
             f"(rc={result.returncode}, stderr={result.stderr[:400]!r})"
         )
 
+    status, inner = _classify_cli_envelope(result.stdout)
+    if status == "unexpected":
+        pytest.skip(
+            f"unexpected claude JSON envelope shape: "
+            f"{type(inner).__name__} keys={list(inner.keys()) if isinstance(inner, dict) else 'n/a'}"
+        )
+    report_stdin = inner if status == "unwrapped" else result.stdout
     cp = subprocess.run(
         [str(PY), str(SCRIPT), "parse-implementer-report", "--stdin", "--json"],
-        input=result.stdout,
+        input=report_stdin,  # type: ignore[arg-type]
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
