@@ -622,6 +622,175 @@ def test_run_cleanup_violation_demotes_ok_to_scope_violation(
 
 
 # ---------------------------------------------------------------------------
+# TASK-001: trusted cleanup-scope source (sandbox-escape fix)
+# ---------------------------------------------------------------------------
+
+
+def test_run_agent_lies_in_files_changed_does_not_authorize_cleanup(
+    tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+):
+    """Agent claims to have touched ``/etc/passwd`` in ``result.files_changed``
+    but actually wrote ``evil.py``. With trusted ``declared_files_changed=[]``
+    from the orchestrator, cleanup MUST revert ``evil.py`` and treat the
+    agent's lie as non-authoritative."""
+    canned = _ok_envelope()
+    # Agent lies: declares /etc/passwd in its self-reported envelope.
+    canned["result"] = dict(canned["result"], files_changed=["/etc/passwd"])
+    _patch_backend_returning(monkeypatch, canned)
+
+    # Spy on apply_cleanup to assert it is invoked with the trusted
+    # declared list (which is [] when the input omits it / passes []),
+    # NOT with the agent-reported ``["/etc/passwd"]``.
+    seen: List[Any] = []
+
+    monkeypatch.setattr(
+        cli.cleanup,
+        "snapshot_baseline",
+        lambda r: {"captured": True, "repo_root": str(r)},
+    )
+
+    def _spy_cleanup(baseline, declared, repo_root):
+        seen.append(list(declared))
+        # Simulate that the agent actually wrote evil.py and cleanup
+        # reverts it because it is out-of-scope vs the trusted []
+        # declared set.
+        return {
+            "scope_violation_detected": True,
+            "scope_misreport_detected": False,
+            "restored": [],
+            "deleted": ["evil.py"],
+            "out_of_scope_paths": ["evil.py"],
+            "misreported_paths": [],
+            "protected_skipped": [],
+            "baseline_captured": True,
+            "cleanup_strategy": "delta_bounded",
+        }
+
+    monkeypatch.setattr(cli.cleanup, "apply_cleanup", _spy_cleanup)
+
+    # Input with declared_files_changed explicitly set to [].
+    payload = dict(good_input_obj)
+    payload["declared_files_changed"] = []
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    code, out, _err = _run_cli(
+        ["run", "--input", str(input_path), "--output", "-",
+         "--repo-root", str(tmp_path)],
+        capsys=capsys,
+    )
+
+    assert code == 1
+    envelope = _parse_envelope(out)
+    assert envelope["status"] == "scope_violation"
+    # The cleanup module saw the trusted [] declared, not the agent lie.
+    assert seen == [[]]
+    assert "/etc/passwd" not in seen[0]
+    # evil.py was reverted (deleted) and surfaces in the scope block.
+    assert "evil.py" in envelope["scope"]["observed_delta_untracked"]
+
+
+def test_run_overwrite_outside_declared_set_is_reverted(
+    tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+):
+    """With ``declared_files_changed=['a.py']``, agent writes both ``a.py``
+    and ``b.py`` → ``b.py`` is reverted and ``scope_violation_detected``
+    flips True."""
+    canned = _ok_envelope()
+    _patch_backend_returning(monkeypatch, canned)
+
+    seen: List[Any] = []
+
+    monkeypatch.setattr(
+        cli.cleanup,
+        "snapshot_baseline",
+        lambda r: {"captured": True, "repo_root": str(r)},
+    )
+
+    def _spy_cleanup(baseline, declared, repo_root):
+        seen.append(list(declared))
+        return {
+            "scope_violation_detected": True,
+            "scope_misreport_detected": False,
+            "restored": [],
+            "deleted": ["b.py"],
+            "out_of_scope_paths": ["b.py"],
+            "misreported_paths": [],
+            "protected_skipped": [],
+            "baseline_captured": True,
+            "cleanup_strategy": "delta_bounded",
+        }
+
+    monkeypatch.setattr(cli.cleanup, "apply_cleanup", _spy_cleanup)
+
+    payload = dict(good_input_obj)
+    payload["declared_files_changed"] = ["a.py"]
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    code, out, _err = _run_cli(
+        ["run", "--input", str(input_path), "--output", "-",
+         "--repo-root", str(tmp_path)],
+        capsys=capsys,
+    )
+
+    assert code == 1
+    envelope = _parse_envelope(out)
+    assert envelope["status"] == "scope_violation"
+    assert envelope["scope"]["scope_violation_detected"] is True
+    # Cleanup was passed the trusted ['a.py'].
+    assert seen == [["a.py"]]
+    assert "b.py" in envelope["scope"]["observed_delta_untracked"]
+
+
+def test_run_omitted_declared_files_changed_defaults_to_empty(
+    tmp_path, good_input_obj, patch_manifest, patch_cleanup_noop, monkeypatch, capsys,
+):
+    """Omitted top-level field → cleanup is invoked with ``[]``
+    (deny-by-default for read-only agents like plan-analyst)."""
+    canned = _ok_envelope()
+    _patch_backend_returning(monkeypatch, canned)
+
+    seen: List[Any] = []
+    real_apply = cli.cleanup.apply_cleanup
+
+    def _spy(baseline, declared, repo_root):
+        seen.append(list(declared))
+        return real_apply(baseline, declared, repo_root)
+
+    monkeypatch.setattr(cli.cleanup, "apply_cleanup", _spy)
+
+    # good_input_obj does NOT carry declared_files_changed.
+    assert "declared_files_changed" not in good_input_obj
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(good_input_obj), encoding="utf-8")
+
+    code, _out, _err = _run_cli(
+        ["run", "--input", str(input_path), "--output", "-",
+         "--repo-root", str(tmp_path)],
+        capsys=capsys,
+    )
+
+    assert code == 0
+    assert seen == [[]]
+
+
+def test_validate_input_accepts_declared_files_changed_field(
+    tmp_path, good_input_obj, capsys,
+):
+    """Backward-compat: payloads with ``declared_files_changed`` set
+    are accepted by the input schema; payloads without it are too."""
+    payload = dict(good_input_obj)
+    payload["declared_files_changed"] = ["foo.py", "bar/baz.py"]
+    p = tmp_path / "in.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    code = cli.main(["validate-input", str(p)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "ok" in out
+
+
+# ---------------------------------------------------------------------------
 # stdin / stdout pipe round-trip
 # ---------------------------------------------------------------------------
 

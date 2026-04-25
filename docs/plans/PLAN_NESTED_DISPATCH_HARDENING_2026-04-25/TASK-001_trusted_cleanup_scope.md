@@ -30,7 +30,7 @@ The current sites:
 
 ### TASK-001: Trusted cleanup-scope source (sandbox-escape fix)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/schemas/claude_dispatch_input.json` (modify)

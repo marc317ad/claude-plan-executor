@@ -1,15 +1,22 @@
 {
   "schema_version": 1,
   "source": "decompose-plan",
-  "plan_title": "PLAN_NESTED_DISPATCH_HARDENING_2026-04-25 — v1.1 hardening pass",
+  "plan_title": "PLAN_NESTED_DISPATCH_HARDENING_2026-04-25 \u2014 v1.1 hardening pass",
   "source_plan_file": "PLAN_NESTED_DISPATCH_HARDENING_2026-04-25.md",
   "created": "2026-04-25",
   "base_branch": "plan/nested-dispatch",
   "depends_on_plans": [],
   "supersedes": [],
   "parallel_batches": [
-    ["001", "002", "003", "005"],
-    ["004"]
+    [
+      "001",
+      "002",
+      "003",
+      "005"
+    ],
+    [
+      "004"
+    ]
   ],
   "chunks": [
     {
@@ -17,7 +24,7 @@
       "file": "TASK-001_trusted_cleanup_scope.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -40,7 +47,10 @@
       "task_id": "004",
       "file": "TASK-004_cleanup_failure_status.md",
       "priority": "medium",
-      "depends_on": ["001", "005"],
+      "depends_on": [
+        "001",
+        "005"
+      ],
       "status": "Pending",
       "superseded_by": []
     },

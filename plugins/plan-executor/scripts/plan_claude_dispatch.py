@@ -376,15 +376,21 @@ def _merge_scope_with_cleanup(
     return envelope
 
 
-def _extract_declared_files_changed(envelope: Mapping[str, Any]) -> List[str]:
+def _extract_observed_files_changed(envelope: Mapping[str, Any]) -> List[str]:
     """Pull ``files_changed`` out of the inner agent ``result`` (best-effort).
+
+    INFORMATIONAL ONLY (TASK-001 sandbox-escape fix). This is what the
+    agent *says* it touched; it is NOT the cleanup-scope authority.
+    Cleanup is gated by the trusted top-level
+    ``input['declared_files_changed']`` populated by the orchestrator.
+    The agent's self-report is parsed here only so the envelope's
+    ``scope_misreport_detected`` diff metadata (declared minus observed)
+    has something to compare against.
 
     The inner result is opaque to the wrapper (PLAN_NESTED_DISPATCH §6:
     ``payload`` is the same), but most agent reports follow the
     ``codex_implement_schema.json`` shape and carry a top-level
-    ``files_changed`` list. We use that as the declared-files signal for
-    cleanup. If absent, cleanup operates with ``[]`` and reverts every
-    out-of-baseline write — which is the safe default.
+    ``files_changed`` list.
     """
     result = envelope.get("result")
     if not isinstance(result, Mapping):
@@ -668,7 +674,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
 
     # ---- Step 9: cleanup ----
-    declared = _extract_declared_files_changed(envelope)
+    # TASK-001 sandbox-escape fix: cleanup scope comes from the trusted
+    # top-level ``declared_files_changed`` (populated by the orchestrator),
+    # NOT from the agent's self-reported ``result.files_changed``. A
+    # malicious or buggy agent could otherwise lie in its envelope to
+    # extend its own authorization. Omitted field defaults to []
+    # (deny-by-default for read-only agents like plan-analyst).
+    declared_raw = input_obj.get("declared_files_changed")
+    if isinstance(declared_raw, list):
+        declared = [s for s in declared_raw if isinstance(s, str)]
+    else:
+        declared = []
+    # Agent's self-reported files_changed is parsed for informational /
+    # diff-metadata purposes only; never used as cleanup authority.
+    _observed = _extract_observed_files_changed(envelope)  # noqa: F841
     cleanup_result = cleanup.apply_cleanup(baseline, declared, repo_root)
 
     # Fold cleanup flags into the envelope's scope.
