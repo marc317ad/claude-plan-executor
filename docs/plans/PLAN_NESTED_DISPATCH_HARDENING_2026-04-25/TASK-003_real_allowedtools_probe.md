@@ -25,7 +25,7 @@ The fix is to add a new probe that uses an agent **expected to write** (`plan-im
 
 ### TASK-003: Real --allowedTools enforcement probe
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_claude_permission_mode_probe.py` (modify)
