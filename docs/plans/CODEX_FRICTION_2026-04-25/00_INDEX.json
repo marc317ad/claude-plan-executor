@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "CODEX FRICTION — Plan-executor friction inventory from run 20260425T023954",
+  "source_plan_file": "CODEX_FRICTION_2026-04-25.md",
+  "created": "2026-04-25",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "parallel_batches": [
+    ["001", "002"],
+    ["003", "005"],
+    ["004"],
+    ["006"]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_schema_audit_fixture.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_files_block_parser_unification.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_reconcile_batch_plan_aware_preservation.md",
+      "priority": "high",
+      "depends_on": ["002"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_codex_wrapper_timeout_scaling.md",
+      "priority": "medium",
+      "depends_on": ["002"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_review_diff_includes_untracked.md",
+      "priority": "medium",
+      "depends_on": ["002"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "TASK-006_phase_d1_review_failure_routing.md",
+      "priority": "medium",
+      "depends_on": ["004"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

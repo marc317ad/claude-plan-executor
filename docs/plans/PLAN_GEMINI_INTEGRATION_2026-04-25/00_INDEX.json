@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "Gemini CLI as adversarial-review fallback for /implement-plan (Codex stays primary)",
+  "source_plan_file": "PLAN_GEMINI_INTEGRATION_2026-04-25.md",
+  "created": "2026-04-25",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "parallel_batches": [
+    ["001"],
+    ["002", "005"],
+    ["003", "008"],
+    ["004"],
+    ["006"],
+    ["007"]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_verification_matrix.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_review_schema_sidecars.md",
+      "priority": "high",
+      "depends_on": ["001"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_wrapper_review_subcommand.md",
+      "priority": "high",
+      "depends_on": ["002"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_wrapper_plan_review_subcommand.md",
+      "priority": "high",
+      "depends_on": ["003"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_preflight_gemini_available.md",
+      "priority": "high",
+      "depends_on": ["001"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "TASK-006_phase_15_fallback.md",
+      "priority": "medium",
+      "depends_on": ["004", "005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "TASK-007_phase_d1_fallback.md",
+      "priority": "medium",
+      "depends_on": ["003", "005", "006"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "008",
+      "file": "TASK-008_schema_audit_extension.md",
+      "priority": "medium",
+      "depends_on": ["002"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
