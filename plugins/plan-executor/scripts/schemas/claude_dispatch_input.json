@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "claude_dispatch_input",
+  "description": "Wire contract for the input payload accepted by plan_claude_dispatch.py (PLAN_NESTED_DISPATCH §6).",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "type": "object",
+      "description": "Opaque to the wrapper; serialized into the user prompt; agent-specific shape."
+    },
+    "output_instructions": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["json"]
+        },
+        "schema_path": {
+          "type": ["string", "null"]
+        },
+        "schema_inline": {
+          "type": ["object", "null"]
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": ["format", "schema_path", "schema_inline", "max_bytes"],
+      "additionalProperties": false
+    },
+    "overrides": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": ["string", "null"]
+        },
+        "timeout_sec": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "tools_allowed_extra": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "tools_disallowed_extra": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": [
+        "model",
+        "timeout_sec",
+        "tools_allowed_extra",
+        "tools_disallowed_extra",
+        "cwd"
+      ],
+      "additionalProperties": false
+    },
+    "guardrails": {
+      "type": "object",
+      "properties": {
+        "max_depth": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "cost_cap_usd": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "network": {
+          "type": ["string", "null"],
+          "enum": ["allow", "deny", null]
+        }
+      },
+      "required": ["max_depth", "cost_cap_usd", "network"],
+      "additionalProperties": false
+    },
+    "trace": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_span_id": {
+          "type": ["string", "null"]
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "call_chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["run_id", "parent_span_id", "depth", "call_chain"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "agent",
+    "payload",
+    "output_instructions",
+    "overrides",
+    "guardrails",
+    "trace"
+  ],
+  "additionalProperties": false
+}
