@@ -119,3 +119,11 @@ Replace the wrapper's three flat timeout constants (`DEFAULT_TIMEOUT_IMPLEMENT =
 - `_snapshot_baseline` already wraps git calls in `try/except (subprocess.SubprocessError, OSError)`. Capture the exception message into a thread-local-style buffer (or return it alongside `captured: bool`) and forward into the envelope from `cmd_implement`.
 - Do NOT change the wrapper's internal `subprocess.run(timeout=timeout_sec)` call site — `invoke_codex` keeps using the resolved value.
 - The Bash-call outer ceiling rule in SKILL.md §timeout idioms is informational; orchestrators reading SKILL.md choose their `Bash` tool `timeout=` value based on the formula. Keep the rule terse — one bullet per timeout class.
+
+## Execution log — 20260425T115138 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `c013da2b5eb3b08d3388bc179a246c0ff159169c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | codex | ship-with-fixes [disagreement] | f8350ad | Codex needs-rework on Phase B-Codex format (claimed bash fence); D.5 verified pre-TASK-004 was already inline backticked — no fence to break; finding dismissed. |

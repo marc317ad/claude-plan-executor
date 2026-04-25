@@ -103,3 +103,11 @@ Document the orchestrator's response to wrapper review failures (`outcome ∈ {t
 - The documentation smoke test reads `SKILL.md` once via `pathlib.Path(__file__).resolve().parents[2] / "plugins" / "plan-executor" / "skills" / "implement-plan" / "SKILL.md"`. Use `read_text(encoding="utf-8")` and three `assert "<string>" in text` lines.
 - Do NOT add a new event name; `review_skipped` is the established event. Only the `reason` field's enum grows.
 - The `commit-task --reviewer none --reviewer-verdict ""` form is already documented at line ~1075. Cite it; do not duplicate the bash example.
+
+## Execution log — 20260425T115138 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `c013da2b5eb3b08d3388bc179a246c0ff159169c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 006 | claude (fallback from codex) | codex | clean | c013da2 | [fallback: codex env/tooling error before execution] |

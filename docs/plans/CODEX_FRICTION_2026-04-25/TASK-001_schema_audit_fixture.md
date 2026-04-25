@@ -54,3 +54,11 @@ Land a structural regression test that fails the build whenever any wrapper sche
 - Recursive walker: at each dict node, if `node.get('type') == 'object'` and `node.get('additionalProperties') is False`, assert `set(node['required']) == set(node['properties'].keys())` with a failure message that includes the JSON pointer path. Recurse into `properties.<k>` and `items` (if present and a dict).
 - The test should clearly print the offending file path AND JSON pointer in the assertion message so a regressing change is one-line obvious to fix.
 - Do NOT add any helper module under `plugins/plan-executor/scripts/`; the validator is test-only.
+
+## Execution log — 20260425T115138 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `c013da2b5eb3b08d3388bc179a246c0ff159169c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude (fallback from codex) | codex | clean | 1568f43 | [fallback: shell-backtick command-substitution in test_command — Issue 4] |

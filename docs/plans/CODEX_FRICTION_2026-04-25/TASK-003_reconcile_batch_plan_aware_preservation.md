@@ -120,3 +120,11 @@ Make `reconcile-batch` plan-aware. The orchestrator passes the persisted schedul
 - The fallback path (no schedule, parse error, missing task) is intentionally permissive: emit a per-envelope `warning` field, keep today's restore behaviour. This preserves direct-CLI usage and protects test scaffolding.
 - The protected-path check (`is_protected_path`) runs BEFORE the plan-aware filter — protected-infrastructure paths must never be touched, declared or not.
 - When forwarding `--schedule-file` from SKILL.md, the orchestrator already has the schedule path bound from Phase 1.5; no new derivation logic is needed.
+
+## Execution log — 20260425T115138 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `c013da2b5eb3b08d3388bc179a246c0ff159169c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | codex | ship-with-fixes [disagreement] | ab86fad | Codex needs-rework on id vs task_id field; D.5 verified schedule contract uses id (TASK-008 deprecated task_id); finding dismissed. |

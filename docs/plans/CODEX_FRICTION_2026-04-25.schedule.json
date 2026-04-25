@@ -1,0 +1,232 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Schema audit + structural fixture",
+      "files": [
+        "`tests/scripts/test_plan_codex_dispatch_schema.py` (edit)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch_schema.py",
+      "priority": "high",
+      "plan_file": "TASK-001_schema_audit_fixture.md",
+      "description": "Land a structural regression test that fails the build whenever any wrapper schema's `properties` set drifts away from its `required` array under `additionalProperties: false`. The OpenAI structured-output validator imposes this invariant per nested object, and a one-line oversight (adding a property without `required`) silently breaks the entire Phase 1.5 review path on the next dispatch. The test reads every `codex_*_schema.json` file by glob so future schemas are auto-covered. No production code paths change in this task \u2014 the four current schemas already satisfy the invariant on HEAD; the test pins the invariant in place.",
+      "acceptance_criteria": [
+        "New test `test_codex_wrapper_schemas_required_matches_properties` (or similarly named) discovers every `codex_*_schema.json` file under `plugins/plan-executor/scripts/` via glob (no hard-coded filename list) and, for every nested object that declares `additionalProperties: false`, asserts `set(node['required']) == set(node['properties'].keys())`.",
+        "The walk handles at least: top-level object, every `items` schema under `properties.<arr>.items`, and any further nested objects under `properties.<obj>.properties`. A recursive helper (e.g. `_walk_schema_objects(node)`) is acceptable.",
+        "The four current schemas pass the new test as committed.",
+        "**Regression-pin assertion:** the implementer demonstrates in their report that the new test FAILS when run against a transiently-broken schema (e.g. `target_task_id` removed from `findings.items.required` in `codex_plan_review_schema.json`); the assertion message includes the offending file path AND JSON pointer (e.g. `properties.findings.items: required={...} != properties keys={..., target_task_id}`). The transient edit is reverted before commit.",
+        "`test_implement_schema_matches_task_001_report_contract` keeps passing unchanged.",
+        "`venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch_schema.py` returns 0."
+      ],
+      "agent": "codex",
+      "classification_reason": "single file edit, concrete test, bounded scope",
+      "global_lock": false
+    },
+    {
+      "id": "002",
+      "title": "Wrapper Files-block parser unification",
+      "files": [
+        "`plugins/plan-executor/scripts/_plan_paths.py` (edit)",
+        "`plugins/plan-executor/scripts/plan_ops.py` (edit)",
+        "`plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit)",
+        "`tests/scripts/test_plan_codex_dispatch_parsing.py` (edit)",
+        "`tests/scripts/test_plan_ops.py` (edit)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch_parsing.py tests/scripts/test_plan_ops.py",
+      "priority": "high",
+      "plan_file": "TASK-002_files_block_parser_unification.md",
+      "description": "Lift the orchestrator's prose-aware `_normalize_files_entry` into `_plan_paths.py` (the existing shared module) as `normalize_files_entry`, then have both call sites (orchestrator's `_normalize_files_entry` and the wrapper's `normalize_file_path`) delegate to it. Add parameterised parsing tests in both `test_plan_codex_dispatch_parsing.py` and `test_plan_ops.py` that pin the prose-laden, backticked, annotated, and line-range forms. The parser drift was the upstream cause of Issue 4 and the trigger for Issue 5; sharing one helper eliminates the surface entirely.",
+      "acceptance_criteria": [
+        "`_plan_paths.normalize_files_entry(raw: str) -> str` is the single canonical implementation. Semantics: strip trailing `(annotation)` parenthetical (em-dash and en-dash tolerant inside the parens); if a leading backticked region exists, capture its contents; otherwise split on space-dash-space (`\\s+[-\u2013\u2014]\\s+`) and take the head; strip wrapping backticks; strip `:N-M` / `:N\u2013M` ranges; strip single `:N` reference; return the stripped result.",
+        "`plan_ops._normalize_files_entry` and `plan_codex_dispatch.normalize_file_path` both delegate to (or alias) the canonical helper. No duplicated regex bodies remain.",
+        "Wrapper `parse_task_block(plan_text, task_id)[\"files\"]` returns the un-normalised raw bullet items (current contract preserved); the THREE call sites (`render_implement_prompt`, `cmd_implement`, `cmd_review`) call the unified helper before consuming the file list. Equivalently, if the implementer chooses to normalise inside `parse_task_block`, all THREE call sites must see normalised paths and existing tests must keep passing.",
+        "New parameterised test cases added to `tests/scripts/test_plan_codex_dispatch_parsing.py` covering bare path, backticked path, em-dash-prose, annotation, and `:N-M` suffix forms (one assertion per case; >= 5 cases total). At least one case asserts `parse_task_block` produces `[\"Makefile\"]` for a backticked-prose-laden bullet.",
+        "Equivalent / extended parameterised tests in `tests/scripts/test_plan_ops.py` exercise `_plan_paths.normalize_files_entry` directly and confirm the existing `_extract_task_files_from_plan` continues to work end-to-end.",
+        "All existing tests in both files pass unchanged.",
+        "`venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch_parsing.py tests/scripts/test_plan_ops.py` returns 0."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, 5 files, cross-module refactor",
+      "global_lock": false
+    },
+    {
+      "id": "003",
+      "title": "`reconcile-batch` plan-aware preservation",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py` (edit)",
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (edit)",
+        "`tests/scripts/test_plan_ops.py` (edit)"
+      ],
+      "dependencies": [
+        "002"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"reconcile\"",
+      "priority": "high",
+      "plan_file": "TASK-003_reconcile_batch_plan_aware_preservation.md",
+      "description": "Make `reconcile-batch` plan-aware. The orchestrator passes the persisted schedule path; for each envelope, the function consults the dispatched task's normalised `Files:` list and PRESERVES any `out_of_scope_tracked` / `out_of_scope_untracked` entry that is in fact declared in scope. This closes the wiping-a-correct-edit failure mode that fired in run `20260425T023954` even when the wrapper's classification is buggy. The new `reconcile_kept_*` fields and the `scope_violation_preserved` outcome label disambiguate \"preserved\" from \"restored\" so the run log records what actually happened.",
+      "acceptance_criteria": [
+        "`reconcile_batch(batch_envelopes, repo_root, *, schedule_file=None)` accepts and uses an optional schedule path. With the path supplied, the function reads `tasks[task_id].files` from the loaded schedule for each envelope, normalises each entry through `_plan_paths.normalize_files_entry`, and partitions the envelope's `out_of_scope_tracked` / `out_of_scope_untracked` into `kept` and `restored` buckets per the rule in \u00a7Scoped Context. Without the path (or when the lookup fails) the function falls back to today's behaviour and emits `warning: \"schedule_lookup_failed\"` in the result entry.",
+        "`cmd_reconcile_batch` exposes `--schedule-file <path>` and forwards it. Absent flag \u2192 today's behaviour.",
+        "Each result dict gains `reconcile_kept_tracked: list[str]` and `reconcile_kept_untracked: list[str]`.",
+        "The `outcome` enum extends with `\"scope_violation_preserved\"` when the partition kept paths and restored nothing.",
+        "`SKILL.md` \u00a7Phase B batch-join-barrier paragraph at line 624 documents the new `--schedule-file <path>` argument and notes that without it the orchestrator may wipe a correct in-scope edit on a stale-wrapper envelope.",
+        "Existing `TestReconcileBatch` cases pass unchanged.",
+        "New test cases added to `tests/scripts/test_plan_ops.py` with these exact (or near-identical) names:",
+        "Each new test sets up a tiny git repo + a tiny `schedule.json` fixture file under `tmp_path`, builds an envelope, invokes `reconcile-batch` via the existing `_run_reconcile` helper (extended with the new flag), and asserts both the result-dict shape and the on-disk state via `git diff HEAD -- <file>` / `Path.exists()`.",
+        "`venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"reconcile\"` returns 0."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, new API surface, complex logic",
+      "global_lock": false
+    },
+    {
+      "id": "004",
+      "title": "Codex wrapper file-count-aware timeout scaling",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit)",
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (edit)",
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit)",
+        "`tests/scripts/test_plan_codex_dispatch.py` (edit)"
+      ],
+      "dependencies": [
+        "002"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py tests/scripts/test_plan_codex_dispatch_parsing.py",
+      "priority": "medium",
+      "plan_file": "TASK-004_codex_wrapper_timeout_scaling.md",
+      "description": "Replace the wrapper's three flat timeout constants (`DEFAULT_TIMEOUT_IMPLEMENT = 300`, `DEFAULT_TIMEOUT_REVIEW = 180`, `DEFAULT_TIMEOUT_PLAN_REVIEW = 180`) with file-count-aware helpers for implement and review, keeping the plan-review default flat. Plumb the change through SKILL.md and dispatch-templates.md so the documented bash invocations no longer hard-code a `--timeout N` value (the wrapper picks the right floor; operators override with `--timeout` when they have a reason). Also surface `effective_timeout` in every envelope so the run-log records the cap used, and capture the underlying `_snapshot_baseline` error in the implement timeout envelope so the orchestrator can route differently when baseline capture itself failed.",
+      "acceptance_criteria": [
+        "`compute_implement_timeout` and `compute_review_timeout` helpers exist in the wrapper module with the formulas above and are exercised by parameterised unit tests.",
+        "`--timeout` defaults to `None` for `implement` and `review` subparsers; `cmd_implement` / `cmd_review` derive the effective default from the file count when the flag is unset, otherwise honour the operator's value.",
+        "The implement, review, and plan-review wrapper envelopes carry `effective_timeout: int` reporting the cap actually used.",
+        "The implement envelope on `outcome: \"timeout\"` carries `baseline_error: str | null` capturing the `_snapshot_baseline` failure message (truncated to 200 chars) when baseline capture failed; `null` when it succeeded.",
+        "`SKILL.md` line ~21 (Bash-call timeout idioms bullet) reads (verbatim or near-verbatim): *\"Bash-call outer timeout MUST cover the wrapper's effective internal timeout plus a small buffer. Implement: `max(300_000ms, 60_000 * len(files))`. Review: `max(180_000ms, 30_000 * len(files))`. Plan-review: `180_000ms` (flat). The wrapper enforces its own internal timeout; pass `--timeout N` only to override.\"*",
+        "`SKILL.md` \u00a7Phase B-Codex (line ~594) bash template REMOVES the literal `--timeout 300` from the multi-line invocation and adds a one-line note immediately above the bash block: *\"Wrapper computes the timeout default from `len(task[\"files\"])` per the formula in \u00a7Bash-call idioms; pass `--timeout N` to override.\"*",
+        "`SKILL.md` \u00a7Phase D.1 (line ~665) bash template REMOVES the literal `--timeout 180` and adds the same one-line note referencing the review formula.",
+        "`SKILL.md` \u00a7Phase 1.5 (line ~419) bash template KEEPS `--timeout 180` (per the rule that plan-review is bounded and does not need scaling).",
+        "`dispatch-templates.md` Phase B-Codex (line ~370) bash template REMOVES the literal `--timeout 300` and references SKILL.md \u00a7Bash-call idioms by name.",
+        "`dispatch-templates.md` Phase 1.5 (line ~50) bash template KEEPS `--timeout 180` (mirrors SKILL.md).",
+        "`dispatch-templates.md` Phase D.1 \u2014 search for any inline `--timeout` literal in the file (currently none expected, but verify with `grep -n \"timeout\" plugins/plan-executor/skills/implement-plan/dispatch-templates.md`); if present, align with the SKILL update.",
+        "New unit tests in `tests/scripts/test_plan_codex_dispatch.py` cover the scaling helpers, the explicit override, and the timeout envelope's new fields. The existing tests (parser scope, JSON envelope shape, normalize_task_id, parse_task_block, etc.) keep passing.",
+        "`venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py tests/scripts/test_plan_codex_dispatch_parsing.py` returns 0."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file wiring, new helpers, doc updates, API surface changes",
+      "global_lock": false
+    },
+    {
+      "id": "005",
+      "title": "Wrapper review diff includes untracked `(create)` files",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit)",
+        "`tests/scripts/test_plan_codex_dispatch.py` (edit)"
+      ],
+      "dependencies": [
+        "002"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py",
+      "priority": "medium",
+      "plan_file": "TASK-005_review_diff_includes_untracked.md",
+      "description": "Make the wrapper's review diff cover untracked files. The fix is a `git add -N <files>` intent-to-add immediately before the existing diff call, plus `git reset HEAD -- <files>` immediately after to leave the index untouched. The `git_diff_for_files` helper grows a keyword-only `include_untracked` parameter (default `False`); `cmd_review` calls it with `True`. No SKILL/dispatch-templates prose changes \u2014 the visible behaviour is \"Codex actually sees the new file's content now.\"",
+      "acceptance_criteria": [
+        "`git_diff_for_files(repo_root, files, *, include_untracked=False)` keyword-only argument added; default preserves today's semantics.",
+        "When `include_untracked=True` AND `files` is non-empty, the function executes `git add -N -- <files>` before the diff and `git reset HEAD -- <files>` immediately after, regardless of diff result.",
+        "`cmd_review` invokes `git_diff_for_files(... include_untracked=True)`.",
+        "Untracked-file path produces a non-empty diff string in the `cmd_review --dry-run` `prompt_preview`.",
+        "The git index is unchanged before vs after the call (verified by snapshotting `git status --porcelain=v1` and `git ls-files --others --exclude-standard` in the test).",
+        "When `git add -N` fails the function does not raise; it best-effort runs the diff and the reset.",
+        "New tests added (\u22654 cases \u2014 see Verification).",
+        "All existing wrapper tests pass unchanged.",
+        "`venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py` returns 0."
+      ],
+      "agent": "codex",
+      "classification_reason": "two files, concrete mechanical fix, explicit test command",
+      "global_lock": false
+    },
+    {
+      "id": "006",
+      "title": "Phase D.1 review-failure routing in SKILL.md",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (edit)",
+        "`tests/scripts/test_plan_ops.py` (edit)"
+      ],
+      "dependencies": [
+        "004"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"skill_routing or routing_documentation\"",
+      "priority": "medium",
+      "plan_file": "TASK-006_phase_d1_review_failure_routing.md",
+      "description": "Document the orchestrator's response to wrapper review failures (`outcome \u2208 {timeout, parse_error, failure}`) in SKILL.md \u00a7Phase D.1, mirroring Phase 1.5's already-documented degraded-reviewer rule. Add the matching reason enum values to the `review_skipped` run-log event documentation and the cross-review-skipped banner clause. Pin the new vocabulary with a small documentation smoke test so a future SKILL refactor cannot quietly delete the routing rule.",
+      "acceptance_criteria": [
+        "SKILL.md \u00a7Phase D.1 documents the new \"Wrapper failure outcomes (Codex side)\" subsection with the three `outcome \u2208 {timeout, parse_error, failure}` reasons and their mapping to `review_skipped {reason: \"codex_review_<reason>\"}` + `commit-task --reviewer none --reviewer-verdict \"\"`.",
+        "The new subsection cites the parallel Phase 1.5 rule at line ~450 to make the symmetry visible.",
+        "SKILL.md \u00a7run-log event list at line ~1001 documents the `review_skipped.reason` enum: `flag`, `codex_review_timeout`, `codex_review_parse_error`, `codex_review_failure`.",
+        "SKILL.md final-summary banner prose documents the *\"Cross-review skipped on N tasks (codex unavailable)\"* banner (with task_id + reason listing) adjacent to the existing `--skip-cross-review` banner clause near line ~654.",
+        "A documentation smoke test in `tests/scripts/test_plan_ops.py` asserts the new strings (`codex_review_timeout`, `codex_review_parse_error`, `codex_review_failure`) are present in `SKILL.md`. The test is small and self-contained (load file once, assert each substring).",
+        "All existing tests pass unchanged.",
+        "`venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"skill_routing or routing_documentation\"` returns 0."
+      ],
+      "agent": "codex",
+      "classification_reason": "two files, doc edits plus small smoke test",
+      "global_lock": false
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001",
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/_plan_paths.py",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_codex_dispatch_parsing.py",
+        "tests/scripts/test_plan_codex_dispatch_schema.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "003",
+        "005"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_codex_dispatch.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "004"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_codex_dispatch.py"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": [
+        "006"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

@@ -104,3 +104,11 @@ Make the wrapper's review diff cover untracked files. The fix is a `git add -N <
 - `git add -N` for a file that does not exist on disk fails with non-zero exit; the function should swallow that failure (we have no `--quiet` for `add -N`, so capture stderr and continue).
 - When `files == []` the function continues to return `""` immediately as today.
 - The test helper that builds a tiny git repo (similar to `_reconcile_git_repo` in `test_plan_ops.py`) can be re-used — copy the pattern; do NOT cross-import test scaffolding between modules.
+
+## Execution log — 20260425T115138 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `c013da2b5eb3b08d3388bc179a246c0ff159169c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | claude (fallback from codex) | codex | ship-with-fixes [disagreement] | ab6070e | [fallback: shell-backtick test_command bug] Codex needs-rework on git reset HEAD unstaging pre-staged tracked files; D.5 verified bug is real but does not fire in /implement-plan flow (no pre-staging at review time); deferred as follow-up. |

@@ -84,3 +84,11 @@ Lift the orchestrator's prose-aware `_normalize_files_entry` into `_plan_paths.p
 - The trailing-parenthetical strip must run BEFORE the dash-split, so a parenthetical containing an em-dash like `(create — canonical)` is removed as a unit and does not get truncated by the dash-split.
 - Do NOT introduce absolute-path normalisation in this task; the analysis flags it as a follow-up. Resist the urge to "while I'm here…" — the test cases for this task assert relative-path inputs only.
 - The `_extract_bullet_list` helpers in both modules already produce raw item strings; this task only changes how those items are normalised after extraction.
+
+## Execution log — 20260425T115138 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `c013da2b5eb3b08d3388bc179a246c0ff159169c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | claude | codex | clean | 612c51e |  |
