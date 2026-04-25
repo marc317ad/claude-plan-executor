@@ -101,7 +101,7 @@
       "priority": "low",
       "issues_absorbed": [],
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Surfaced during TASK-020B run 20260421T031650 D.5 adjudication \u2014 the dismissal-evidence gate's spec-deference label drifted onto an implementer-deviation case; rubric needs a precondition clause distinguishing dismissed (implementer deviated) from spec-deference (implementer followed plan)."
     },

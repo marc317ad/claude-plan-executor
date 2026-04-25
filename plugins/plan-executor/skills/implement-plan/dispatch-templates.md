@@ -485,6 +485,10 @@ Dispatched only when Codex reviewing a Claude-implemented task returns `needs-re
 > 1. **A concrete verification move:** trace the cited control-flow path by hand, run the task's declared test command (`pytest -k <name>`, etc.), read the cited symbol in the repo, or reproduce the failure Codex describes. If the verification refutes the finding, `dismissed` is appropriate.
 > 2. **An explicit spec contradiction:** the plan's acceptance criteria or Implementation Playbook mandates the behavior Codex objects to. In this case, label the disposition `spec-deference` (not `dismissed`) and include a one-line note on why the critique has merit despite the spec conflict. `spec-deference` surfaces the finding for a future plan-review pass rather than silently burying it.
 >
+> `spec-deference` applies only when the implementer followed the plan's literal wording AND Codex is disputing what the plan mandated. If the implementer deviated from the plan's literal wording, even for a verified-correct surrounding-code pattern match, internal-helper substitution, or semantically equivalent alternative, use `dismissed` with concrete verification evidence (or surface it as `minor-findings`) — NOT `spec-deference`.
+>
+> Worked example: Plan names mechanism A; implementer uses mechanism B with identical output because surrounding code already uses B. Codex flags the deviation. With pattern evidence, disposition is `dismissed`, not `spec-deference`. Contrast: plan mandates behavior X, implementer implemented X, and Codex objects to X; disposition is `spec-deference`.
+>
 > "Plan says so" without a `spec-deference` label is a protocol violation — it pretends the spec is unimpeachable. If you cannot verify the finding AND there is no explicit spec conflict, downgrade to a `minor-findings`-style note and let the commit proceed with the finding recorded rather than dismissed.
 >
 > **Hard rules for `partial-agreement`:**

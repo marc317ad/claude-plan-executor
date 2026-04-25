@@ -204,7 +204,7 @@ The plan-implementer spec only triggers adaptation-flagging for "live code diffe
 
 ### TASK-027C: D.5 `spec-deference` rubric disambiguation
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`

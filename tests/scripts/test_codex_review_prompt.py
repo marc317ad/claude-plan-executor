@@ -236,6 +236,24 @@ def test_d5_dispatch_template_and_skill_forward_wrapper_checks():
     assert "wrapper_checks" in skill_text[call_idx:call_end]
 
 
+def test_d5_spec_deference_rubric_scoped():
+    section = _phase_d5_section()
+    gate_start = section.index("Dismissal-evidence gate")
+    gate_end = section.index('"Plan says so"', gate_start)
+    gate = section[gate_start:gate_end]
+    lowered = gate.lower()
+
+    assert "implementer" in lowered
+    assert "followed" in lowered
+    assert "literal wording" in lowered or "literal-wording" in lowered
+
+    example_idx = gate.index("Worked example")
+    example = gate[example_idx:]
+    dismissed_idx = example.index("dismissed")
+    spec_idx = example.index("spec-deference")
+    assert abs(dismissed_idx - spec_idx) <= 200
+
+
 def test_fixture_matches_review_schema():
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     env = json.loads(FIXTURE.read_text(encoding="utf-8"))
