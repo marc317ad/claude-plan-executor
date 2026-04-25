@@ -433,6 +433,101 @@ def _task_order_key(task_id: str, priority: str) -> tuple[int, int, str]:
     )
 
 
+def _create_dependency_aware_batches(
+    tasks: list[dict], task_ids_to_process: list[str],
+) -> tuple[list[dict], list[dict]]:
+    """Dependency-aware + file-lock-aware batching.
+
+    Topo-sorts tasks, then partitions each topo-layer into file-disjoint
+    batches.
+    """
+    errors: list[dict] = []
+    # Cycle detection / topo-sort over the collected tasks.
+    deps_map = {
+        str(t["id"]): [str(d) for d in (t.get("dependencies") or [])]
+        for t in tasks
+    }
+    known_ids = {str(t["id"]) for t in tasks}
+    for tid in task_ids_to_process:
+        for dep in deps_map.get(tid, []):
+            if dep not in known_ids:
+                errors.append({
+                    "code": "unresolvable-dep",
+                    "task_id": tid,
+                    "dep_id": dep,
+                    "message": (
+                        f"TASK-{tid} depends on TASK-{dep} which is "
+                        "not in the schedule"
+                    ),
+                })
+    if errors:
+        return [], errors
+
+    topo_layers, cycle_errors = _compute_decompose_batches(
+        task_ids_to_process, deps_map,
+    )
+    if cycle_errors:
+        errors.extend(cycle_errors)
+        return [], errors
+
+    batches: list[dict] = []
+    files_by_id = {
+        str(t["id"]): set(str(p) for p in (t.get("files") or []))
+        for t in tasks
+    }
+    tasks_by_id = {str(t["id"]): t for t in tasks}
+
+    next_batch_index = 1
+    for layer in topo_layers:
+        sub_batches: list[dict] = []
+        # Sort tasks within a layer by priority to pack higher-priority
+        # items first.
+        sorted_layer_ids = sorted(
+            layer,
+            key=lambda tid: _task_order_key(
+                tid, tasks_by_id[tid].get("priority", "low"),
+            ),
+        )
+
+        for tid in sorted_layer_ids:
+            t_files = files_by_id.get(tid, set())
+            is_global_lock = any(_is_global_lock_path(f) for f in t_files)
+
+            # Global-lock tasks must occupy their own batch.
+            if is_global_lock:
+                sub_batches.append({
+                    "task_ids": [tid],
+                    "_files": set(t_files),
+                    "_solitary": True,
+                })
+                continue
+
+            placed = False
+            for sb in sub_batches:
+                if sb.get("_solitary"):
+                    continue
+                if sb["_files"] & t_files:
+                    continue
+                sb["task_ids"].append(tid)
+                sb["_files"].update(t_files)
+                placed = True
+                break
+            if not placed:
+                sub_batches.append({
+                    "task_ids": [tid],
+                    "_files": set(t_files),
+                    "_solitary": False,
+                })
+        for sb in sub_batches:
+            batches.append({
+                "index": next_batch_index,
+                "task_ids": sb["task_ids"],
+                "file_locks": sorted(sb["_files"]),
+            })
+            next_batch_index += 1
+    return batches, []
+
+
 def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[dict]]:
     errors: list[dict] = []
     normalized_tasks: list[dict] = []
@@ -474,6 +569,15 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
             })
             continue
 
+        raw_deps = task.get("dependencies") or []
+        if not isinstance(raw_deps, list):
+            errors.append({
+                "path": f"$.tasks[{i}].dependencies",
+                "code": "invalid-type",
+                "message": "dependencies must be an array",
+            })
+            continue
+
         priority = str(task.get("priority", "low")).strip().lower() or "low"
         if priority not in PRIORITY_RANKS:
             priority = "low"
@@ -482,6 +586,9 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
             "id": task_id,
             "priority": priority,
             "files": [_normalize_files_entry(str(path)) for path in raw_files],
+            "dependencies": [
+                nd for d in raw_deps if (nd := _normalize_task_id(d))
+            ],
         })
 
     if errors:
@@ -492,57 +599,13 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
         key=lambda task: _task_order_key(task["id"], task["priority"]),
     )
     ordered_task_ids = [task["id"] for task in ordered_tasks]
-    # Unified ordered batch list. Each entry has either a `_open` flag
-    # (still accepting compatible packing) or `_solitary=True` (a
-    # global-lock task — sealed). Open batches are kept in `open_batches`
-    # for O(N) packing lookup; both lists share entries by reference so
-    # finalization is a single pass over `slots`.
-    slots: list[dict] = []
-    next_batch_index = 1
-    open_batches: list[dict] = []
-    # TASK-010: tag each task as global-lock or not. Global-lock tasks
-    # MUST occupy their own batch alone (no parallel siblings). They are
-    # placed in source order alongside normal batches and do NOT enter
-    # `open_batches`, so subsequent normal tasks cannot pack into them.
-    for task in ordered_tasks:
-        task_files = set(task["files"])
-        is_global_lock = any(_is_global_lock_path(f) for f in task["files"])
-        if is_global_lock:
-            slot = {
-                "index": next_batch_index,
-                "task_ids": [task["id"]],
-                "_files": set(task_files),
-                "_solitary": True,
-            }
-            slots.append(slot)
-            next_batch_index += 1
-            continue
-        placed = False
-        for batch in open_batches:
-            if batch["_files"] & task_files:
-                continue
-            batch["task_ids"].append(task["id"])
-            batch["_files"].update(task_files)
-            placed = True
-            break
-        if not placed:
-            slot = {
-                "index": next_batch_index,
-                "task_ids": [task["id"]],
-                "_files": set(task_files),
-                "_solitary": False,
-            }
-            slots.append(slot)
-            open_batches.append(slot)
-            next_batch_index += 1
-    batches: list[dict] = [
-        {
-            "index": s["index"],
-            "task_ids": s["task_ids"],
-            "file_locks": sorted(s["_files"]),
-        }
-        for s in slots
-    ]
+    
+    batches, batch_errors = _create_dependency_aware_batches(
+        normalized_tasks, ordered_task_ids,
+    )
+    if batch_errors:
+        errors.extend(batch_errors)
+        return [], [], errors
 
     return ordered_task_ids, batches, []
 
@@ -2422,7 +2485,7 @@ def _decompose_plan(
         "base_branch": base_branch,
         "depends_on_plans": [],
         "supersedes": [],
-        "parallel_batches": batches,
+
         "chunks": chunks,
     }
     target.mkdir(parents=True, exist_ok=True)
@@ -2454,7 +2517,7 @@ def _decompose_plan(
         "produced_dir": str(target),
         "task_count": len(parsed),
         "children": [c["file"] for c in chunks],
-        "parallel_batches": batches,
+
     }
 
 
@@ -2758,71 +2821,23 @@ def _build_tasks(plans_dir: Path) -> dict:
     # Cycle detection / topo-sort over the collected tasks. Orphan deps
     # (dep ids not in the roster) are surfaced here too so the caller
     # sees a single structured error list.
-    if not errors:
-        task_ids = [str(t["id"]) for t in tasks]
-        deps_map = {
-            str(t["id"]): [str(d) for d in (t.get("dependencies") or [])]
-            for t in tasks
-        }
-        known_ids = set(task_ids)
-        for tid, deps in deps_map.items():
-            for dep in deps:
-                if dep not in known_ids:
-                    errors.append({
-                        "code": "unresolvable-dep",
-                        "task_id": tid,
-                        "dep_id": dep,
-                        "message": (
-                            f"TASK-{tid} depends on TASK-{dep} which is "
-                            "not declared in the roster"
-                        ),
-                    })
-        if not errors:
-            topo_layers, cycle_errors = _compute_decompose_batches(
-                task_ids, deps_map,
-            )
-            if cycle_errors:
-                errors.extend(cycle_errors)
     batches: list[dict] = []
     if not errors:
-        # Dependency-aware batching: topo layers first, file-lock
-        # partitioning within each layer. Plain `_compute_schedule_batches`
-        # ignores `dependencies[]` and would place prereq + dependent in the
-        # same batch when their files are disjoint; that would let
-        # `batch-next` dispatch a dependent before its prereq finishes.
-        files_by_id = {
-            str(t["id"]): set(str(p) for p in (t.get("files") or []))
-            for t in tasks
-        }
-        next_batch_index = 1
-        for layer in topo_layers:
-            # Split this topo layer into file-disjoint sub-batches. Tasks
-            # that share any file in the layer end up in separate
-            # sub-batches (later-indexed) to preserve file-lock
-            # disjointness within a parallel batch.
-            sub_batches: list[dict] = []
-            for tid in layer:
-                t_files = files_by_id.get(tid, set())
-                placed = False
-                for sb in sub_batches:
-                    if sb["_files"] & t_files:
-                        continue
-                    sb["task_ids"].append(tid)
-                    sb["_files"].update(t_files)
-                    placed = True
-                    break
-                if not placed:
-                    sub_batches.append({
-                        "task_ids": [tid],
-                        "_files": set(t_files),
-                    })
-            for sb in sub_batches:
-                batches.append({
-                    "index": next_batch_index,
-                    "task_ids": sb["task_ids"],
-                    "file_locks": sorted(sb["_files"]),
-                })
-                next_batch_index += 1
+        task_ids_to_process = [str(t["id"]) for t in tasks]
+        # Rename unresolvable-dep error message to be specific to the roster context
+        roster_batches, batch_errors = _create_dependency_aware_batches(
+            tasks, task_ids_to_process
+        )
+        for e in batch_errors:
+            if e.get("code") == "unresolvable-dep":
+                e["message"] = (
+                    f"TASK-{e['task_id']} depends on TASK-{e['dep_id']} which is "
+                    "not declared in the roster"
+                )
+        if batch_errors:
+            errors.extend(batch_errors)
+        else:
+            batches = roster_batches
     outcome = "valid" if not errors else "invalid"
     return {
         "ok": not errors,
@@ -3261,6 +3276,8 @@ def _envelope_field(env: dict, key: str, default=None):
 def reconcile_batch(
     batch_envelopes: list[dict],
     repo_root: str,
+    *,
+    schedule_file: str | None = None,
 ) -> list[dict]:
     """Reconcile observed out-of-scope writes after a batch's join barrier.
 
@@ -3269,18 +3286,53 @@ def reconcile_batch(
     running at this point, so it is safe to mutate the working tree.
 
     For each envelope with ``out_of_scope_observed`` true:
-      * Restore tracked paths (staged + worktree)
-      * Unlink untracked paths
       * Skip any path matching the executor-infrastructure protection set
+      * Plan-aware partition (when ``schedule_file`` is provided): split
+        each list into ``kept`` (path is in the dispatched task's
+        normalised ``Files:`` set — wrapper false-positive) and
+        ``restored`` (genuinely out-of-scope) buckets.
+      * Restore tracked paths in ``restored`` (staged + worktree)
+      * Unlink untracked paths in ``restored``
       * Verify the actioned paths no longer appear in `git diff`
 
-    A task whose reconciliation succeeds is marked
-    ``scope_violation_reconciled`` and remains **ineligible for review and
-    commit**. A task where reconciliation fails or leaves residual dirt is
-    marked ``reconciliation_failed`` — the orchestrator must surface a hard
-    error and must not advance to the next batch until operator
-    intervention. Unaffected tasks return ``no_op``.
+    A task whose reconciliation actually restores something is marked
+    ``scope_violation_reconciled``; a task whose entries were all
+    preserved by the plan-aware filter is marked
+    ``scope_violation_preserved``. Both remain **ineligible for review
+    and commit** in v1. A task where reconciliation fails or leaves
+    residual dirt is marked ``reconciliation_failed`` — the orchestrator
+    must surface a hard error and must not advance to the next batch
+    until operator intervention. Unaffected tasks return ``no_op``.
+
+    When ``schedule_file`` is missing, unparseable, or lacks the
+    envelope's task id, the function falls back to today's behaviour
+    (no plan-aware filter, restore everything not protected) and emits
+    ``warning: "schedule_lookup_failed"`` in that envelope's result
+    entry.
     """
+    # Build {canonical_task_id: set(normalised file paths)} once. Empty
+    # dict signals "no plan-aware filter available"; per-envelope
+    # missing-task lookups also degrade to that baseline behaviour.
+    schedule_files_by_task: dict[str, set[str]] = {}
+    schedule_load_failed = False
+    if schedule_file:
+        try:
+            data = json.loads(Path(schedule_file).read_text(encoding="utf-8"))
+            for task in data.get("tasks", []) or []:
+                # Schedule emits the canonical 3-digit id under `id`
+                # (NOT `task_id`).
+                tid = task.get("id")
+                if not isinstance(tid, str):
+                    continue
+                raw_files = task.get("files", []) or []
+                schedule_files_by_task[tid] = {
+                    normalize_files_entry(str(entry))
+                    for entry in raw_files
+                    if isinstance(entry, str)
+                }
+        except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+            schedule_load_failed = True
+
     results: list[dict] = []
     for env in batch_envelopes:
         task_id = env.get("task_id", "")
@@ -3290,6 +3342,8 @@ def reconcile_batch(
                 "outcome": "no_op",
                 "reconciled_tracked": [],
                 "reconciled_untracked": [],
+                "reconcile_kept_tracked": [],
+                "reconcile_kept_untracked": [],
                 "skipped_protected": [],
                 "residual_dirty": [],
                 "error": None,
@@ -3302,18 +3356,53 @@ def reconcile_batch(
         untracked = [p for p in raw_untracked if isinstance(p, str)]
 
         skipped: set[str] = set()
-        actionable_tracked: list[str] = []
-        actionable_untracked: list[str] = []
+        protected_filtered_tracked: list[str] = []
+        protected_filtered_untracked: list[str] = []
         for p in tracked:
             if is_protected_path(p):
                 skipped.add(p)
             else:
-                actionable_tracked.append(p)
+                protected_filtered_tracked.append(p)
         for p in untracked:
             if is_protected_path(p):
                 skipped.add(p)
             else:
-                actionable_untracked.append(p)
+                protected_filtered_untracked.append(p)
+
+        # Plan-aware partition. If we have a schedule entry for this
+        # task id, split each list into kept (declared in scope) vs
+        # actionable (genuinely out-of-scope, restore today's way).
+        # Otherwise fall back: everything actionable, emit warning.
+        warning: str | None = None
+        if schedule_load_failed:
+            warning = "schedule_lookup_failed"
+            allowed: set[str] | None = None
+        elif schedule_file and task_id in schedule_files_by_task:
+            allowed = schedule_files_by_task[task_id]
+        else:
+            if schedule_file:
+                # File loaded fine but this task id isn't there.
+                warning = "schedule_lookup_failed"
+            allowed = None
+
+        kept_tracked: list[str] = []
+        kept_untracked: list[str] = []
+        actionable_tracked: list[str] = []
+        actionable_untracked: list[str] = []
+        if allowed is not None:
+            for p in protected_filtered_tracked:
+                if p in allowed:
+                    kept_tracked.append(p)
+                else:
+                    actionable_tracked.append(p)
+            for p in protected_filtered_untracked:
+                if p in allowed:
+                    kept_untracked.append(p)
+                else:
+                    actionable_untracked.append(p)
+        else:
+            actionable_tracked = list(protected_filtered_tracked)
+            actionable_untracked = list(protected_filtered_untracked)
 
         errors: list[str] = []
         cwd = Path(repo_root)
@@ -3353,28 +3442,41 @@ def reconcile_batch(
             residual = sorted(expected_clean & still_dirty)
 
         if errors or residual:
-            results.append({
-                "task_id": task_id,
-                "outcome": "reconciliation_failed",
-                "reconciled_tracked": actionable_tracked,
-                "reconciled_untracked": actionable_untracked,
-                "skipped_protected": sorted(skipped),
-                "residual_dirty": residual,
-                "error": (
-                    "; ".join(errors) if errors
-                    else f"residual dirty paths: {residual}"
-                ),
-            })
+            outcome = "reconciliation_failed"
+            error_msg: str | None = (
+                "; ".join(errors) if errors
+                else f"residual dirty paths: {residual}"
+            )
         else:
-            results.append({
-                "task_id": task_id,
-                "outcome": "scope_violation_reconciled",
-                "reconciled_tracked": actionable_tracked,
-                "reconciled_untracked": actionable_untracked,
-                "skipped_protected": sorted(skipped),
-                "residual_dirty": [],
-                "error": None,
-            })
+            # Any restoration trumps preserved-only.
+            had_restoration = bool(actionable_tracked or actionable_untracked)
+            had_kept = bool(kept_tracked or kept_untracked)
+            if had_restoration:
+                outcome = "scope_violation_reconciled"
+            elif had_kept:
+                outcome = "scope_violation_preserved"
+            else:
+                # Neither restored nor kept (everything was protected
+                # or the lists were empty). Preserve today's behaviour:
+                # report scope_violation_reconciled with empty lists,
+                # matching the no-restoration-needed semantics.
+                outcome = "scope_violation_reconciled"
+            error_msg = None
+
+        result_entry: dict = {
+            "task_id": task_id,
+            "outcome": outcome,
+            "reconciled_tracked": actionable_tracked,
+            "reconciled_untracked": actionable_untracked,
+            "reconcile_kept_tracked": kept_tracked,
+            "reconcile_kept_untracked": kept_untracked,
+            "skipped_protected": sorted(skipped),
+            "residual_dirty": residual,
+            "error": error_msg,
+        }
+        if warning:
+            result_entry["warning"] = warning
+        results.append(result_entry)
     return results
 
 
@@ -3393,7 +3495,12 @@ def cmd_reconcile_batch(args: argparse.Namespace) -> None:
     if not isinstance(envelopes, list):
         _die(args, {"error": "envelopes payload must be a JSON array"})
 
-    results = reconcile_batch(envelopes, args.repo_root)
+    schedule_file = getattr(args, "schedule_file", None)
+    results = reconcile_batch(
+        envelopes,
+        args.repo_root,
+        schedule_file=schedule_file,
+    )
     any_failed = any(r["outcome"] == "reconciliation_failed" for r in results)
     _emit(
         args,
@@ -9329,6 +9436,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reconcile observed out-of-scope writes from a completed batch",
     )
     p_rec.add_argument("--repo-root", required=True, help="Absolute path to repo root")
+    p_rec.add_argument(
+        "--schedule-file",
+        required=False,
+        default=None,
+        help=(
+            "Optional absolute path to the persisted schedule JSON. When "
+            "supplied, reconciliation consults each dispatched task's "
+            "normalised Files: list and PRESERVES envelope entries that "
+            "are in fact in scope (wrapper false-positives). Without it, "
+            "the function falls back to restore-everything behaviour."
+        ),
+    )
     _add_json(p_rec)
 
     p_cpd = sub.add_parser(

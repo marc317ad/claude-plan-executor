@@ -5495,15 +5495,41 @@ def _reconcile_git_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _run_reconcile(repo: Path, envelopes: list) -> subprocess.CompletedProcess:
+def _run_reconcile(
+    repo: Path,
+    envelopes: list,
+    *,
+    schedule_file: Path | str | None = None,
+) -> subprocess.CompletedProcess:
+    cmd = [str(PY), str(SCRIPT), "reconcile-batch",
+           "--repo-root", str(repo), "--json"]
+    if schedule_file is not None:
+        cmd.extend(["--schedule-file", str(schedule_file)])
     return subprocess.run(
-        [str(PY), str(SCRIPT), "reconcile-batch",
-         "--repo-root", str(repo), "--json"],
+        cmd,
         input=json.dumps(envelopes),
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
     )
+
+
+def _write_reconcile_schedule(
+    tmp_path: Path,
+    *,
+    task_id: str,
+    files: list[str],
+) -> Path:
+    """Write a minimal schedule.json fixture with one task entry.
+
+    The schedule's per-task identifier field is `id` (matching the
+    on-disk `build-tasks` output).
+    """
+    sched = tmp_path / "fixture.schedule.json"
+    sched.write_text(json.dumps({
+        "tasks": [{"id": task_id, "files": list(files)}],
+    }))
+    return sched
 
 
 def _scope_envelope(task_id: str, *, tracked=(), untracked=(), observed=True) -> dict:
@@ -5624,6 +5650,163 @@ class TestReconcileBatch:
         results = body["results"]
         assert results[0]["outcome"] == "reconciliation_failed"
         assert "ghost.txt" in results[0]["error"]
+
+    # ------------------------------------------------------------------
+    # TASK-003: plan-aware preservation
+    # ------------------------------------------------------------------
+
+    def test_preserves_tracked_when_in_dispatched_task_files(
+        self, tmp_path: Path,
+    ) -> None:
+        """A tracked path declared in the task's `Files:` is PRESERVED, not
+        restored, even if the wrapper falsely flagged it as out-of-scope."""
+        repo = _reconcile_git_repo(tmp_path)
+        keeper = repo / "Makefile"
+        keeper.write_text("orig\n")
+        subprocess.run(["git", "add", "Makefile"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add makefile"],
+                       cwd=repo, check=True)
+        keeper.write_text("declared-edit\n")
+
+        sched = _write_reconcile_schedule(
+            tmp_path, task_id="001", files=["`Makefile` (edit)"],
+        )
+        envelope = _scope_envelope("001", tracked=["Makefile"])
+        cp = _run_reconcile(repo, [envelope], schedule_file=sched)
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        results = body["results"]
+        assert results[0]["outcome"] == "scope_violation_preserved"
+        assert results[0]["reconcile_kept_tracked"] == ["Makefile"]
+        assert results[0]["reconciled_tracked"] == []
+        # The wrapper-declared edit must remain on disk.
+        assert keeper.read_text() == "declared-edit\n"
+        # And `git diff HEAD -- Makefile` is non-empty.
+        diff = subprocess.run(
+            ["git", "diff", "HEAD", "--", "Makefile"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        )
+        assert diff.stdout.strip() != ""
+
+    def test_restores_tracked_when_outside_dispatched_task_files(
+        self, tmp_path: Path,
+    ) -> None:
+        """A tracked path NOT in the dispatched task's `Files:` set is
+        restored as today's behaviour."""
+        repo = _reconcile_git_repo(tmp_path)
+        stranger = repo / "other.py"
+        stranger.write_text("v1\n")
+        subprocess.run(["git", "add", "other.py"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add other"],
+                       cwd=repo, check=True)
+        stranger.write_text("codex-touched\n")
+
+        sched = _write_reconcile_schedule(
+            tmp_path, task_id="002", files=["`Makefile` (edit)"],
+        )
+        envelope = _scope_envelope("002", tracked=["other.py"])
+        cp = _run_reconcile(repo, [envelope], schedule_file=sched)
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        results = body["results"]
+        assert results[0]["outcome"] == "scope_violation_reconciled"
+        assert results[0]["reconciled_tracked"] == ["other.py"]
+        assert results[0]["reconcile_kept_tracked"] == []
+        # File restored to baseline.
+        assert stranger.read_text() == "v1\n"
+        diff = subprocess.run(
+            ["git", "diff", "HEAD", "--", "other.py"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        )
+        assert diff.stdout.strip() == ""
+
+    def test_preserves_untracked_create_when_in_dispatched_task_files(
+        self, tmp_path: Path,
+    ) -> None:
+        """A `(create)`-declared untracked path in `out_of_scope_untracked`
+        is preserved on disk; not unlinked."""
+        repo = _reconcile_git_repo(tmp_path)
+        new_file = repo / "new_module.py"
+        new_file.write_text("declared new\n")
+
+        sched = _write_reconcile_schedule(
+            tmp_path, task_id="003", files=["`new_module.py` (create)"],
+        )
+        envelope = _scope_envelope("003", untracked=["new_module.py"])
+        cp = _run_reconcile(repo, [envelope], schedule_file=sched)
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        results = body["results"]
+        assert results[0]["outcome"] == "scope_violation_preserved"
+        assert results[0]["reconcile_kept_untracked"] == ["new_module.py"]
+        assert results[0]["reconciled_untracked"] == []
+        assert new_file.exists()
+        assert new_file.read_text() == "declared new\n"
+
+    def test_mixed_kept_and_restored_in_one_envelope(
+        self, tmp_path: Path,
+    ) -> None:
+        """One envelope with one declared and one undeclared path produces
+        both `reconcile_kept_tracked` AND `reconciled_tracked`; outcome is
+        `scope_violation_reconciled` (any restoration trumps preserved)."""
+        repo = _reconcile_git_repo(tmp_path)
+        keeper = repo / "Makefile"
+        keeper.write_text("orig\n")
+        stranger = repo / "other.py"
+        stranger.write_text("v1\n")
+        subprocess.run(
+            ["git", "add", "Makefile", "other.py"], cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True,
+        )
+        keeper.write_text("declared-edit\n")
+        stranger.write_text("codex-touched\n")
+
+        sched = _write_reconcile_schedule(
+            tmp_path, task_id="004", files=["`Makefile` (edit)"],
+        )
+        envelope = _scope_envelope(
+            "004", tracked=["Makefile", "other.py"],
+        )
+        cp = _run_reconcile(repo, [envelope], schedule_file=sched)
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        results = body["results"]
+        assert results[0]["outcome"] == "scope_violation_reconciled"
+        assert results[0]["reconcile_kept_tracked"] == ["Makefile"]
+        assert results[0]["reconciled_tracked"] == ["other.py"]
+        # Makefile preserved, other.py restored.
+        assert keeper.read_text() == "declared-edit\n"
+        assert stranger.read_text() == "v1\n"
+
+    def test_falls_back_when_schedule_file_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        """`--schedule-file` pointing at a non-existent path emits
+        `warning: "schedule_lookup_failed"` and reverts to today's
+        restore-everything behaviour."""
+        repo = _reconcile_git_repo(tmp_path)
+        stranger = repo / "other.py"
+        stranger.write_text("v1\n")
+        subprocess.run(["git", "add", "other.py"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add other"],
+                       cwd=repo, check=True)
+        stranger.write_text("codex-touched\n")
+
+        # Path that does not exist.
+        bogus = tmp_path / "does_not_exist.schedule.json"
+        envelope = _scope_envelope("999", tracked=["other.py"])
+        cp = _run_reconcile(repo, [envelope], schedule_file=bogus)
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        results = body["results"]
+        assert results[0]["warning"] == "schedule_lookup_failed"
+        # Fallback: restore-everything behaviour preserved.
+        assert results[0]["outcome"] == "scope_violation_reconciled"
+        assert results[0]["reconciled_tracked"] == ["other.py"]
+        assert results[0]["reconcile_kept_tracked"] == []
+        assert stranger.read_text() == "v1\n"
 
 
 def test_cli_envelope_unwrap_round_trips_analyst_fenced_json() -> None:

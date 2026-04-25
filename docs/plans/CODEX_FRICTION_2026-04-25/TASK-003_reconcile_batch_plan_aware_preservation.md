@@ -77,7 +77,7 @@ If the wrapper falsely flags `Makefile` as `out_of_scope_tracked` (because of Is
 
 ### TASK-003: `reconcile-batch` plan-aware preservation
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (edit)
