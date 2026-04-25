@@ -75,11 +75,49 @@ import plan_ops  # noqa: E402
 _is_protected = is_protected_path
 
 RAW_TRUNCATE_CHARS = 2000
+# TASK-004: file-count-aware timeout floors. The named constants are kept
+# as the operator-readable floor so the per-file scaling formulas in
+# ``compute_implement_timeout`` / ``compute_review_timeout`` carry no magic
+# numbers. The plan-review default stays a flat ceiling — the schedule is
+# bounded so per-task scaling does not apply.
 DEFAULT_TIMEOUT_IMPLEMENT = 300
 DEFAULT_TIMEOUT_REVIEW = 180
 DEFAULT_TIMEOUT_PLAN_REVIEW = 180
+# Per-file growth in seconds (added to the floor when len(files) is large
+# enough to push past it).
+IMPLEMENT_TIMEOUT_PER_FILE = 60
+REVIEW_TIMEOUT_PER_FILE = 30
 GIT_TIMEOUT = 30
 TEST_TIMEOUT = 300
+
+
+def compute_implement_timeout(num_files: int) -> int:
+    """File-count-aware default for the ``implement`` subcommand timeout.
+
+    ``max(DEFAULT_TIMEOUT_IMPLEMENT, IMPLEMENT_TIMEOUT_PER_FILE * num_files)``
+    — a 1- to 5-file task gets the 300 s floor; a 6-file task gets 360 s,
+    a 10-file task 600 s. Matches the empirical observation that Codex's
+    planning loop scales roughly linearly with the number of declared
+    files. Operators override via the wrapper's ``--timeout N`` flag.
+    """
+    if num_files < 0:
+        num_files = 0
+    return max(DEFAULT_TIMEOUT_IMPLEMENT, IMPLEMENT_TIMEOUT_PER_FILE * num_files)
+
+
+def compute_review_timeout(num_files: int) -> int:
+    """File-count-aware default for the ``review`` subcommand timeout.
+
+    ``max(DEFAULT_TIMEOUT_REVIEW, REVIEW_TIMEOUT_PER_FILE * num_files)``
+    — a 1- to 6-file diff gets the 180 s floor; a 7-file diff gets 210 s,
+    a 10-file diff 300 s. Mirrors the implement-side scaling but with the
+    smaller per-file budget Codex needs to read a diff vs. plan and write
+    a fresh edit. Operators override via the wrapper's ``--timeout N``
+    flag.
+    """
+    if num_files < 0:
+        num_files = 0
+    return max(DEFAULT_TIMEOUT_REVIEW, REVIEW_TIMEOUT_PER_FILE * num_files)
 
 def _load_plan_config() -> dict:
     """Read `.claude/plan-executor.json` from cwd; return {} if missing.
@@ -665,22 +703,29 @@ def _verify_cited_symbols(parsed: dict, repo_root: str) -> list[dict]:
 def _snapshot_baseline(repo_root: str) -> dict:
     """Pre-dispatch baseline of tracked + untracked diff.
 
-    Returns {'tracked': frozenset, 'untracked': frozenset, 'captured': bool}.
-    On git failure returns captured=False; downstream cleanup paths skip
-    cleanup entirely in that case.
+    Returns ``{'tracked': frozenset, 'untracked': frozenset, 'captured': bool,
+    'error': str | None}``. On git failure ``captured=False`` and ``error``
+    carries the underlying ``SubprocessError`` / ``OSError`` message
+    truncated to 200 chars; downstream cleanup paths skip cleanup entirely
+    in that case (see ``_handle_timeout_cleanup``). ``cmd_implement``
+    forwards ``error`` into the timeout envelope's ``baseline_error``
+    field so the orchestrator can route differently when baseline capture
+    itself failed (TASK-004).
     """
     try:
         pre = git_changed_files(repo_root)
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError) as exc:
         return {
             "tracked": frozenset(),
             "untracked": frozenset(),
             "captured": False,
+            "error": str(exc)[:200],
         }
     return {
         "tracked": frozenset(pre["tracked"]),
         "untracked": frozenset(pre["untracked"]),
         "captured": True,
+        "error": None,
     }
 
 
@@ -1140,6 +1185,17 @@ def cmd_implement(args) -> int:
     tmp_out.close()
     output_path = tmp_out.name
 
+    # TASK-004: file-count-aware default. Operator override via --timeout
+    # short-circuits the scaling — None means "use the wrapper-derived
+    # default for len(allowed_files)". The resolved value flows into both
+    # the subprocess timeout and the envelope's ``effective_timeout``
+    # field (informational; orchestrator does NOT route on it in this
+    # task — TASK-006 wires the timeout-routing rule for review).
+    if args.timeout is None:
+        effective_timeout = compute_implement_timeout(len(task["files"]))
+    else:
+        effective_timeout = args.timeout
+
     try:
         baseline = _snapshot_baseline(repo_root)
         codex = invoke_codex(
@@ -1147,7 +1203,7 @@ def cmd_implement(args) -> int:
             workdir=repo_root,
             schema_path=str(IMPLEMENT_SCHEMA),
             output_path=output_path,
-            timeout_sec=args.timeout,
+            timeout_sec=effective_timeout,
             sandbox=None,
         )
 
@@ -1162,11 +1218,18 @@ def cmd_implement(args) -> int:
                 task["task_id"], "implement", "timeout",
                 exit_code=-1,
                 raw=codex["stdout"] or codex["stderr"],
-                error=f"Codex timed out after {args.timeout}s",
+                error=f"Codex timed out after {effective_timeout}s",
                 extra={
                     "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
                     "cleanup_strategy": cleanup_details["cleanup_strategy"],
                     "baseline_captured": baseline["captured"],
+                    # TASK-004: surface ``_snapshot_baseline``'s error
+                    # (truncated to 200 chars) so the orchestrator can
+                    # route differently when baseline capture itself
+                    # failed and cleanup was therefore skipped. ``None``
+                    # when capture succeeded.
+                    "baseline_error": baseline.get("error"),
                     "cleanup_details": cleanup_details,
                     "out_of_scope_tracked": cleanup_details.get(
                         "out_of_scope_tracked", []),
@@ -1192,7 +1255,10 @@ def cmd_implement(args) -> int:
                 exit_code=codex["exit_code"],
                 raw=codex["stderr"] or codex["stdout"],
                 error="Codex produced no output file",
-                extra={"wall_seconds": codex["wall_seconds"]},
+                extra={
+                    "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
+                },
             ))
             return 1
 
@@ -1205,7 +1271,10 @@ def cmd_implement(args) -> int:
                 exit_code=codex["exit_code"],
                 raw=output_text,
                 error=f"Failed to parse Codex output as JSON: {e}",
-                extra={"wall_seconds": codex["wall_seconds"]},
+                extra={
+                    "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
+                },
             ))
             return 1
 
@@ -1251,6 +1320,7 @@ def cmd_implement(args) -> int:
                     "out_of_scope_untracked": scope["out_of_scope_untracked"],
                     "out_of_scope_observed": True,
                     "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
                 },
             ))
             return 1
@@ -1267,6 +1337,7 @@ def cmd_implement(args) -> int:
                 extra={
                     "scope": scope,
                     "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
                 },
             ))
             return 1
@@ -1303,6 +1374,7 @@ def cmd_implement(args) -> int:
                     },
                     "jsonl_file_changes": codex["file_changes"],
                     "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
                 },
             ))
             return 1
@@ -1330,6 +1402,7 @@ def cmd_implement(args) -> int:
                     "phantom_declarations": phantom,
                     "jsonl_file_changes": codex["file_changes"],
                     "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
                 },
             ))
             return 1
@@ -1346,6 +1419,7 @@ def cmd_implement(args) -> int:
                 "phantom_declarations": phantom,
                 "jsonl_file_changes": codex["file_changes"],
                 "wall_seconds": codex["wall_seconds"],
+                "effective_timeout": effective_timeout,
             },
         ))
         return 0
@@ -1387,6 +1461,14 @@ def cmd_review(args) -> int:
     else:
         review_files = [normalize_file_path(f) for f in task["files"]]
 
+    # TASK-004: file-count-aware default. ``len(review_files)`` after
+    # ``--files`` parsing is the file count Codex must read. Operator
+    # override via ``--timeout`` short-circuits scaling.
+    if args.timeout is None:
+        effective_timeout = compute_review_timeout(len(review_files))
+    else:
+        effective_timeout = args.timeout
+
     diff = git_diff_for_files(repo_root, review_files, include_untracked=True)
     prompt = render_review_prompt(task, diff, args.review_focus, review_files)
 
@@ -1400,6 +1482,7 @@ def cmd_review(args) -> int:
             "diff_size_bytes": len(diff),
             "review_focus": args.review_focus,
             "prompt_preview": prompt,
+            "effective_timeout": effective_timeout,
         })
         return 0
 
@@ -1423,7 +1506,7 @@ def cmd_review(args) -> int:
             workdir=repo_root,
             schema_path=str(REVIEW_SCHEMA),
             output_path=output_path,
-            timeout_sec=args.timeout,
+            timeout_sec=effective_timeout,
             sandbox="read-only",  # Advisory (Appendix D F2)
         )
 
@@ -1435,9 +1518,10 @@ def cmd_review(args) -> int:
                 task["task_id"], "review", "timeout",
                 exit_code=-1,
                 raw=codex["stdout"] or codex["stderr"],
-                error=f"Codex review timed out after {args.timeout}s",
+                error=f"Codex review timed out after {effective_timeout}s",
                 extra={
                     "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
                     "cleanup_strategy": cleanup_details["cleanup_strategy"],
                     "baseline_captured": baseline["captured"],
                     "cleanup_details": cleanup_details,
@@ -1464,7 +1548,10 @@ def cmd_review(args) -> int:
                 exit_code=codex["exit_code"],
                 raw=codex["stderr"] or codex["stdout"],
                 error="Codex produced no output file",
-                extra={"wall_seconds": codex["wall_seconds"]},
+                extra={
+                    "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
+                },
             ))
             return 1
 
@@ -1477,7 +1564,10 @@ def cmd_review(args) -> int:
                 exit_code=codex["exit_code"],
                 raw=output_text,
                 error=f"Failed to parse Codex output as JSON: {e}",
-                extra={"wall_seconds": codex["wall_seconds"]},
+                extra={
+                    "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
+                },
             ))
             return 1
 
@@ -1497,6 +1587,7 @@ def cmd_review(args) -> int:
 
         extra: dict = {
             "wall_seconds": codex["wall_seconds"],
+            "effective_timeout": effective_timeout,
             "scope": scope,
             "sandbox_escape_detected": sandbox_escape_detected,
             "out_of_scope_tracked": scope["out_of_scope_tracked"],
@@ -1630,6 +1721,16 @@ def cmd_plan_review(args) -> int:
         allow_gaps_demotion=allow_gaps_demotion,
     )
 
+    # TASK-004: plan-review keeps a flat default — the schedule is
+    # bounded so per-task scaling does not apply. Operator override via
+    # ``--timeout`` still wins; resolve the value once so it flows into
+    # both the subprocess timeout and ``effective_timeout`` envelope
+    # field.
+    if args.timeout is None:
+        effective_timeout = DEFAULT_TIMEOUT_PLAN_REVIEW
+    else:
+        effective_timeout = args.timeout
+
     if args.dry_run:
         emit({
             "plan_file": plan_basename,
@@ -1637,6 +1738,7 @@ def cmd_plan_review(args) -> int:
             "outcome": "dry_run",
             "dry_run": True,
             "prompt_preview": prompt,
+            "effective_timeout": effective_timeout,
         })
         return 0
 
@@ -1660,7 +1762,7 @@ def cmd_plan_review(args) -> int:
             workdir=repo_root,
             schema_path=str(PLAN_REVIEW_SCHEMA),
             output_path=output_path,
-            timeout_sec=args.timeout,
+            timeout_sec=effective_timeout,
             sandbox="read-only",  # Advisory (Appendix D F2); plan review reads only
         )
 
@@ -1674,9 +1776,10 @@ def cmd_plan_review(args) -> int:
                 "plan", "plan-review", "timeout",
                 exit_code=-1,
                 raw=codex["stdout"] or codex["stderr"],
-                error=f"Codex plan review timed out after {args.timeout}s",
+                error=f"Codex plan review timed out after {effective_timeout}s",
                 extra={
                     "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
                     "cleanup_strategy": cleanup_details["cleanup_strategy"],
                     "baseline_captured": baseline["captured"],
                     "cleanup_details": cleanup_details,
@@ -1703,7 +1806,10 @@ def cmd_plan_review(args) -> int:
                 exit_code=codex["exit_code"],
                 raw=codex["stderr"] or codex["stdout"],
                 error="Codex produced no output file",
-                extra={"wall_seconds": codex["wall_seconds"]},
+                extra={
+                    "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
+                },
             ))
             return 1
 
@@ -1716,7 +1822,10 @@ def cmd_plan_review(args) -> int:
                 exit_code=codex["exit_code"],
                 raw=output_text,
                 error=f"Failed to parse Codex output as JSON: {e}",
-                extra={"wall_seconds": codex["wall_seconds"]},
+                extra={
+                    "wall_seconds": codex["wall_seconds"],
+                    "effective_timeout": effective_timeout,
+                },
             ))
             return 1
 
@@ -1731,6 +1840,7 @@ def cmd_plan_review(args) -> int:
 
         extra: dict = {
             "wall_seconds": codex["wall_seconds"],
+            "effective_timeout": effective_timeout,
             "scope": scope,
             "sandbox_escape_detected": sandbox_escape_detected,
             "out_of_scope_tracked": scope["out_of_scope_tracked"],
@@ -1775,7 +1885,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
-    def add_common(p: argparse.ArgumentParser, default_timeout: int) -> None:
+    def add_common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--plan-file", required=True,
                        help="Absolute path to plan document")
         p.add_argument("--task-id", required=True,
@@ -1787,19 +1897,26 @@ def _build_parser() -> argparse.ArgumentParser:
                              "no-op reserved for future-compat)"))
         p.add_argument("--dry-run", action="store_true",
                        help="Render prompt and metadata; do not invoke Codex")
-        p.add_argument("--timeout", type=int, default=default_timeout,
-                       help=f"Codex execution timeout in seconds "
-                            f"(default: {default_timeout})")
+        # TASK-004: ``--timeout`` defaults to ``None`` so the cmd handler
+        # can derive a file-count-aware default from the task's declared
+        # files when the operator does not override.
+        p.add_argument("--timeout", type=int, default=None,
+                       help=("Codex execution timeout in seconds "
+                             "(default: file-count-aware — "
+                             "max(300, 60 * len(files)) for implement, "
+                             "max(180, 30 * len(files)) for review). "
+                             "Pass an explicit value to override the "
+                             "wrapper-derived default."))
 
     impl = subparsers.add_parser(
         "implement", help="Dispatch an implementation task to Codex",
     )
-    add_common(impl, DEFAULT_TIMEOUT_IMPLEMENT)
+    add_common(impl)
 
     rev = subparsers.add_parser(
         "review", help="Dispatch a review task to Codex",
     )
-    add_common(rev, DEFAULT_TIMEOUT_REVIEW)
+    add_common(rev)
     rev.add_argument("--files", default="",
                      help="Comma-separated list of files to review "
                           "(default: task's Files list)")
@@ -1832,9 +1949,15 @@ def _build_parser() -> argparse.ArgumentParser:
                           "no-op reserved for future-compat)"))
     pr.add_argument("--dry-run", action="store_true",
                     help="Render prompt and metadata; do not invoke Codex")
-    pr.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_PLAN_REVIEW,
-                    help=f"Codex execution timeout in seconds "
-                         f"(default: {DEFAULT_TIMEOUT_PLAN_REVIEW})")
+    # TASK-004: plan-review keeps a flat default (the schedule is
+    # bounded so per-task scaling does not apply). Default is ``None``
+    # for parity with implement/review; ``cmd_plan_review`` resolves
+    # the unset case to ``DEFAULT_TIMEOUT_PLAN_REVIEW``.
+    pr.add_argument("--timeout", type=int, default=None,
+                    help=(f"Codex execution timeout in seconds "
+                          f"(default: {DEFAULT_TIMEOUT_PLAN_REVIEW}, "
+                          f"flat — plan-review is bounded). Pass an "
+                          f"explicit value to override."))
     pr.add_argument("--allow-gaps", action="store_true",
                     help="Forward the operator's --allow-gaps opt-in. When "
                          "set AND the persisted schedule's gaps[] contains "

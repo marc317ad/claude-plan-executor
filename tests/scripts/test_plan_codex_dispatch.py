@@ -639,3 +639,473 @@ def test_render_plan_review_prompt_rejects_legacy_kwargs():
             wrapper.render_plan_review_prompt(
                 schedule_json, **{legacy_kwarg: "stale"},
             )
+
+
+# ---------------------------------------------------------------------------
+# TASK-004: file-count-aware timeout scaling helpers + envelope plumbing.
+# ---------------------------------------------------------------------------
+
+
+import pytest  # noqa: E402  (intentional late import — keeps top of module lean)
+
+
+@pytest.mark.parametrize(
+    "num_files, expected",
+    [
+        (0, 300),
+        (1, 300),
+        (2, 300),
+        (5, 300),
+        (6, 360),
+        (7, 420),
+        (10, 600),
+    ],
+)
+def test_compute_implement_timeout_floor(num_files, expected):
+    """``compute_implement_timeout(N)`` returns ``max(300, 60*N)``.
+    Floor pins single- and small-file tasks at 300 s; per-file growth
+    kicks in at N >= 6."""
+    assert wrapper.compute_implement_timeout(num_files) == expected
+
+
+@pytest.mark.parametrize(
+    "num_files, expected",
+    [
+        (0, 180),
+        (1, 180),
+        (2, 180),
+        (6, 180),
+        (7, 210),
+        (8, 240),
+        (10, 300),
+    ],
+)
+def test_compute_review_timeout_floor(num_files, expected):
+    """``compute_review_timeout(N)`` returns ``max(180, 30*N)``. The
+    friction run's 8-file diff hit 180 s mid-verification; the new
+    scaling yields 240 s."""
+    assert wrapper.compute_review_timeout(num_files) == expected
+
+
+def test_compute_timeouts_clamp_negative_inputs():
+    """Defensive: a negative/garbage ``num_files`` should clamp to 0
+    and return the floor rather than yielding a sub-floor timeout."""
+    assert wrapper.compute_implement_timeout(-3) == 300
+    assert wrapper.compute_review_timeout(-3) == 180
+
+
+def test_add_common_timeout_default_is_none():
+    """``--timeout`` on implement/review parsers defaults to ``None``;
+    the cmd handler derives the effective default from the file count.
+    The plan-review subparser also defaults to ``None`` (resolved to the
+    flat ``DEFAULT_TIMEOUT_PLAN_REVIEW`` inside ``cmd_plan_review``)."""
+    parser = wrapper._build_parser()
+
+    impl_args = parser.parse_args([
+        "implement",
+        "--plan-file", "/tmp/p.md",
+        "--task-id", "001",
+        "--repo-root", "/tmp",
+    ])
+    assert impl_args.timeout is None, (
+        f"--timeout default must be None for cmd_implement to derive "
+        f"file-count-aware default; got {impl_args.timeout!r}"
+    )
+
+    rev_args = parser.parse_args([
+        "review",
+        "--plan-file", "/tmp/p.md",
+        "--task-id", "001",
+        "--repo-root", "/tmp",
+    ])
+    assert rev_args.timeout is None, rev_args.timeout
+
+    pr_args = parser.parse_args([
+        "plan-review",
+        "--schedule-file", "/tmp/s.json",
+        "--repo-root", "/tmp",
+    ])
+    assert pr_args.timeout is None, pr_args.timeout
+
+
+def _impl_plan(plan: Path, task_id: str, files: list[str]) -> None:
+    """Build a minimal plan markdown for cmd_implement to parse. The
+    plan only needs to satisfy ``parse_task_block`` — the test fakes
+    Codex so the fields beyond Files / Test command don't influence
+    the timeout-resolution path under test."""
+    bullets = "\n".join(f"  - {f}" for f in files)
+    plan.write_text(
+        "\n".join([
+            "# Plan",
+            "",
+            "## Context",
+            "",
+            "(unused).",
+            "",
+            "## Tasks",
+            "",
+            f"### TASK-{task_id}: scaling test",
+            "",
+            "- **Status:** pending",
+            "- **Priority:** medium",
+            "- **Files:**",
+            bullets,
+            "- **Test command:** `none`",
+            "- **Acceptance criteria:**",
+            "  - It works.",
+            "",
+            "**Description:**",
+            "Test fixture.",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+
+def _impl_args(
+    plan: Path,
+    repo: Path,
+    task_id: str = "001",
+    *,
+    timeout=None,
+    dry_run: bool = False,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        plan_file=str(plan),
+        task_id=task_id,
+        repo_root=str(repo),
+        json=True,
+        dry_run=dry_run,
+        timeout=timeout,
+    )
+
+
+def _impl_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@x"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "seed.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+def test_implement_envelope_carries_effective_timeout_and_baseline_error(
+    tmp_path, monkeypatch, capsys,
+):
+    """On a Codex timeout, the implement envelope MUST carry both:
+      * ``effective_timeout`` — the file-count-aware cap actually used.
+      * ``baseline_error`` — the truncated ``_snapshot_baseline`` error
+        message when baseline capture failed (synthetic git boom here).
+    """
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    # 7 files → compute_implement_timeout(7) == 420.
+    seven_files = [f"file_{i}.py" for i in range(7)]
+    _impl_plan(plan, "001", seven_files)
+
+    # Synthetic baseline failure: forces _snapshot_baseline to capture
+    # the underlying error message and forward it through the envelope.
+    boom_msg = "git broken: fake snapshot failure"
+
+    def boom(repo_root):
+        raise subprocess.SubprocessError(boom_msg)
+
+    monkeypatch.setattr(wrapper, "git_changed_files", boom)
+
+    # Fake Codex returns timeout immediately; nothing else needs to be
+    # exercised — the envelope shape under test is the timeout branch.
+    def fake_codex(prompt, workdir, schema_path, output_path, timeout_sec,
+                  sandbox=None):
+        return {
+            "status": "timeout",
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "",
+            "file_changes": [],
+            "wall_seconds": 0.5,
+        }
+
+    monkeypatch.setattr(wrapper, "invoke_codex", fake_codex)
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+
+    assert rc == 1, envelope
+    assert envelope["outcome"] == "timeout", envelope
+    # effective_timeout matches compute_implement_timeout(len(files)).
+    assert envelope["effective_timeout"] == wrapper.compute_implement_timeout(
+        len(seven_files)
+    ), envelope
+    assert envelope["effective_timeout"] == 420, envelope
+    # baseline_error carries the truncated message; baseline_captured False.
+    assert envelope["baseline_captured"] is False, envelope
+    assert envelope["baseline_error"] == boom_msg, envelope
+    # Truncation cap: 200 chars max.
+    assert envelope["baseline_error"] is not None
+    assert len(envelope["baseline_error"]) <= 200
+
+
+def test_implement_envelope_baseline_error_truncated_to_200_chars(
+    tmp_path, monkeypatch, capsys,
+):
+    """``baseline_error`` is truncated at 200 chars to keep envelopes
+    bounded even on pathological git error messages."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    _impl_plan(plan, "001", ["a.py"])
+
+    long_msg = "X" * 500
+
+    def boom(repo_root):
+        raise subprocess.SubprocessError(long_msg)
+
+    monkeypatch.setattr(wrapper, "git_changed_files", boom)
+
+    def fake_codex(prompt, workdir, schema_path, output_path, timeout_sec,
+                  sandbox=None):
+        return {
+            "status": "timeout",
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "",
+            "file_changes": [],
+            "wall_seconds": 0.1,
+        }
+
+    monkeypatch.setattr(wrapper, "invoke_codex", fake_codex)
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 1, envelope
+    assert envelope["outcome"] == "timeout", envelope
+    assert envelope["baseline_error"] is not None
+    assert len(envelope["baseline_error"]) == 200, len(envelope["baseline_error"])
+
+
+def test_implement_envelope_baseline_error_null_when_capture_succeeds(
+    tmp_path, monkeypatch, capsys,
+):
+    """When ``_snapshot_baseline`` succeeds, ``baseline_error`` is
+    ``None`` — the field must still be present in the timeout envelope."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    _impl_plan(plan, "001", ["a.py"])
+
+    # Baseline capture succeeds (real git_changed_files runs against a
+    # fresh repo). Codex still times out.
+    def fake_codex(prompt, workdir, schema_path, output_path, timeout_sec,
+                  sandbox=None):
+        return {
+            "status": "timeout",
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "",
+            "file_changes": [],
+            "wall_seconds": 0.1,
+        }
+
+    monkeypatch.setattr(wrapper, "invoke_codex", fake_codex)
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 1, envelope
+    assert envelope["outcome"] == "timeout", envelope
+    assert envelope["baseline_captured"] is True, envelope
+    assert envelope["baseline_error"] is None, envelope
+    # effective_timeout still recorded.
+    assert "effective_timeout" in envelope, envelope
+
+
+def test_explicit_timeout_override_skips_scaling(
+    tmp_path, monkeypatch, capsys,
+):
+    """When the operator passes ``--timeout N``, the scaling is bypassed:
+    ``effective_timeout`` MUST be exactly N regardless of len(files), and
+    the resolved value MUST be the timeout actually passed to
+    ``invoke_codex``."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    # 10 files would scale to 600 s under the default formula; the
+    # operator override of 100 s must win.
+    ten_files = [f"file_{i}.py" for i in range(10)]
+    _impl_plan(plan, "001", ten_files)
+
+    seen = {"timeout_sec": None}
+
+    def fake_codex(prompt, workdir, schema_path, output_path, timeout_sec,
+                  sandbox=None):
+        seen["timeout_sec"] = timeout_sec
+        return {
+            "status": "timeout",
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "",
+            "file_changes": [],
+            "wall_seconds": 0.1,
+        }
+
+    monkeypatch.setattr(wrapper, "invoke_codex", fake_codex)
+
+    rc = wrapper.cmd_implement(
+        _impl_args(plan, repo, timeout=100),
+    )
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 1, envelope
+    assert envelope["effective_timeout"] == 100, envelope
+    # The wrapper-derived default for 10 files would be 600 — assert
+    # the override is genuinely shorter so we know scaling was skipped.
+    assert envelope["effective_timeout"] != wrapper.compute_implement_timeout(10)
+    # And the same value flowed into the subprocess timeout.
+    assert seen["timeout_sec"] == 100
+
+
+def test_implement_default_timeout_derives_from_file_count(
+    tmp_path, monkeypatch, capsys,
+):
+    """When ``--timeout`` is not passed (``args.timeout is None``),
+    ``cmd_implement`` resolves the effective timeout from
+    ``compute_implement_timeout(len(task['files']))`` and forwards that
+    same value into ``invoke_codex``."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    eight_files = [f"file_{i}.py" for i in range(8)]
+    _impl_plan(plan, "001", eight_files)
+
+    seen = {"timeout_sec": None}
+
+    def fake_codex(prompt, workdir, schema_path, output_path, timeout_sec,
+                  sandbox=None):
+        seen["timeout_sec"] = timeout_sec
+        return {
+            "status": "timeout",
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "",
+            "file_changes": [],
+            "wall_seconds": 0.1,
+        }
+
+    monkeypatch.setattr(wrapper, "invoke_codex", fake_codex)
+
+    # No timeout override → wrapper-derived default.
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 1, envelope
+    expected = wrapper.compute_implement_timeout(8)
+    assert expected == 480, expected  # sanity: 60 * 8 = 480 > 300 floor.
+    assert envelope["effective_timeout"] == expected, envelope
+    assert seen["timeout_sec"] == expected
+
+
+def _review_args_for_timeout(
+    plan: Path,
+    repo: Path,
+    *,
+    timeout=None,
+    files: str = "",
+    dry_run: bool = True,
+) -> argparse.Namespace:
+    """Args helper for cmd_review timeout-scaling tests. Defaults to
+    ``dry_run=True`` so the test never hits ``invoke_codex``."""
+    return argparse.Namespace(
+        plan_file=str(plan),
+        repo_root=str(repo),
+        task_id="005",
+        files=files,
+        review_focus="bugs",
+        dry_run=dry_run,
+        timeout=timeout,
+    )
+
+
+def test_review_default_timeout_derives_from_files_count(
+    tmp_path, capsys,
+):
+    """``cmd_review`` derives ``effective_timeout`` from
+    ``len(review_files)`` when ``--timeout`` is unset. The dry-run
+    envelope surfaces the resolved value so the operator can validate
+    the scaling without dispatching Codex."""
+    repo = _review_git_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    _review_plan(plan, "new.txt")
+    # Pass --files with 7 entries → compute_review_timeout(7) == 210.
+    seven = ",".join(f"f{i}.py" for i in range(7))
+
+    rc = wrapper.cmd_review(
+        _review_args_for_timeout(plan, repo, files=seven, dry_run=True),
+    )
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 0, envelope
+    assert envelope["outcome"] == "dry_run", envelope
+    assert envelope["effective_timeout"] == 210, envelope
+
+
+def test_review_explicit_timeout_override_wins(tmp_path, capsys):
+    """Operator override of ``--timeout 50`` short-circuits the
+    file-count scaling for ``cmd_review`` too."""
+    repo = _review_git_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    _review_plan(plan, "new.txt")
+    seven = ",".join(f"f{i}.py" for i in range(7))
+
+    rc = wrapper.cmd_review(
+        _review_args_for_timeout(
+            plan, repo, files=seven, timeout=50, dry_run=True,
+        ),
+    )
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 0, envelope
+    assert envelope["effective_timeout"] == 50, envelope
+
+
+def test_plan_review_dry_run_envelope_carries_effective_timeout(
+    tmp_path, capsys,
+):
+    """``cmd_plan_review`` surfaces ``effective_timeout`` even though
+    plan-review keeps a flat default — the run-log records what cap
+    actually applied. Default is ``DEFAULT_TIMEOUT_PLAN_REVIEW``;
+    operator override still wins."""
+    schedule = tmp_path / "x.schedule.json"
+    schedule.write_text(
+        json.dumps({
+            "outcome": "valid",
+            "tasks": [],
+            "batches": [],
+            "gaps": [],
+        }),
+        encoding="utf-8",
+    )
+
+    # No --timeout override → flat default.
+    args_default = argparse.Namespace(
+        schedule_file=str(schedule),
+        repo_root=str(tmp_path),
+        json=True,
+        dry_run=True,
+        timeout=None,
+        allow_gaps=False,
+    )
+    rc = wrapper.cmd_plan_review(args_default)
+    out = capsys.readouterr().out
+    envelope = json.loads(out)
+    assert rc == 0, envelope
+    assert envelope["effective_timeout"] == wrapper.DEFAULT_TIMEOUT_PLAN_REVIEW
+    assert envelope["effective_timeout"] == 180
+
+    # Explicit --timeout override still wins.
+    args_override = argparse.Namespace(
+        schedule_file=str(schedule),
+        repo_root=str(tmp_path),
+        json=True,
+        dry_run=True,
+        timeout=42,
+        allow_gaps=False,
+    )
+    rc = wrapper.cmd_plan_review(args_override)
+    out = capsys.readouterr().out
+    envelope = json.loads(out)
+    assert rc == 0, envelope
+    assert envelope["effective_timeout"] == 42, envelope

@@ -375,11 +375,10 @@ Bash command template — orchestrator issues this directly, wrapper fully owns 
 {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement \
   --plan-file <absolute plan path> \
   --task-id <NNN> \
-  --repo-root <absolute repo root> \
-  --timeout 300
+  --repo-root <absolute repo root>
 ```
 
-Timeout is **300s** per Appendix D.5. The wrapper captures a pre-dispatch baseline snapshot immediately before invoking Codex and cleans up only the delta against it (plus a protected-path allowlist) — never repo-wide. The wrapper emits a single JSON envelope on stdout with `outcome ∈ {success, failure, timeout, parse_error, scope_violation, dry_run}`; see `scripts/plan_codex_dispatch.py` for the full schema. Orchestrator treats any outcome ≠ `success` as a fallback trigger (fallback = re-dispatch to Claude via the Phase B template above).
+The wrapper derives its internal timeout from `len(task["files"])` per the implement formula in **SKILL.md §Bash-call idioms** (`max(300s, 60 * len(files))`); pass `--timeout N` only when the operator has a concrete reason to override. The wrapper captures a pre-dispatch baseline snapshot immediately before invoking Codex and cleans up only the delta against it (plus a protected-path allowlist) — never repo-wide. The wrapper emits a single JSON envelope on stdout with `outcome ∈ {success, failure, timeout, parse_error, scope_violation, dry_run}`; see `scripts/plan_codex_dispatch.py` for the full schema. The envelope carries `effective_timeout: int` reporting the cap actually used, and on `outcome: "timeout"` it carries `baseline_error: str | null` capturing the `_snapshot_baseline` failure message (truncated to 200 chars) when baseline capture failed. Orchestrator treats any outcome ≠ `success` as a fallback trigger (fallback = re-dispatch to Claude via the Phase B template above).
 
 **Pre-read excerpts (TASK-009).** The Codex wrapper auto-resolves `**Read targets:**` / `**Symbol targets:**` from the task block and embeds the rendered `## Pre-read excerpts` section at the top of Codex's prompt. No orchestrator-side templating is required; the excerpts surface inside the wrapper's prompt construction in `render_implement_prompt`. The same auto-resolution runs for `Phase D-Codex` reviews via `render_review_prompt`.
 
@@ -393,11 +392,10 @@ Bash command template:
   --task-id <NNN> \
   --repo-root <absolute repo root> \
   --files <comma-separated files_changed from implementer> \
-  --review-focus bugs \
-  --timeout 180
+  --review-focus bugs
 ```
 
-Timeout **180s** per Appendix D.5. Wrapper captures a pre-dispatch baseline and performs delta-bounded post-review cleanup against it; any sandbox escape surfaces in `extra.sandbox_escape_detected` without changing outcome. Wrapper embeds the task-scoped diff (`git diff HEAD -- <files>`) — per-batch interleaving keeps that diff scoped exclusively to this task's work.
+The wrapper derives its internal timeout from `len(files)` per the review formula in **SKILL.md §Bash-call idioms** (`max(180s, 30 * len(files))`); pass `--timeout N` only when the operator has a concrete reason to override. The envelope carries `effective_timeout: int` reporting the cap actually used. Wrapper captures a pre-dispatch baseline and performs delta-bounded post-review cleanup against it; any sandbox escape surfaces in `extra.sandbox_escape_detected` without changing outcome. Wrapper embeds the task-scoped diff (`git diff HEAD -- <files>`) — per-batch interleaving keeps that diff scoped exclusively to this task's work.
 
 ### Verdict decision ladder (Codex reviewer calibration)
 

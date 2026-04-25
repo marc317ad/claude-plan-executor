@@ -71,7 +71,7 @@ This task adds an instrumentation-only enhancement: when `_snapshot_baseline` re
 
 ### TASK-004: Codex wrapper file-count-aware timeout scaling
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit)

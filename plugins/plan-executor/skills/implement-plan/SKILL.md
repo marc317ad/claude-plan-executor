@@ -18,7 +18,7 @@ All Python invocations in this skill use `$PYTHON`. The orchestrator resolves `$
 2. **Trust the analyst's schedule.** Batches with disjoint `file_locks` are parallel-safe. Do not add extra safety reasoning.
 3. **Your job is routing only.** Pick tasks from the analyst's schedule, dispatch, interpret reports, commit/revert. No code reading, no diff judgment, no scope inflation.
 4. **Dispatch prompts must be self-contained.** Read `${CLAUDE_PLUGIN_ROOT}/skills/implement-plan/dispatch-templates.md` for the templates. Every Agent prompt includes the full task block verbatim + "You do NOT have the Agent tool."
-5. **Timeouts on Bash calls.** 5000ms for idioms (printf, git status); 180000ms (180s) for `plan_codex_dispatch.py review`; 300000ms (300s) for `plan_codex_dispatch.py implement`. Timeouts are enforced by the wrapper internally — pass `--timeout 180|300` as documented.
+5. **Timeouts on Bash calls.** 5000ms for idioms (printf, git status). Bash-call outer timeout MUST cover the wrapper's effective internal timeout plus a small buffer. Implement: `max(300_000ms, 60_000 * len(files))`. Review: `max(180_000ms, 30_000 * len(files))`. Plan-review: `180_000ms` (flat). The wrapper enforces its own internal timeout; pass `--timeout N` only to override.
 6. **Subagent errors.** If a dispatch returns `[Tool result missing due to internal error]` or no parseable report, treat as failure. Log it, restore partial changes, do NOT retry silently. Claude-implementer `malformed` outcome goes to `fail-task stage=implement reason=malformed_report`.
 7. **Cross-review asymmetry.** Claude implements → Codex reviews; Codex implements → Claude reviews. Escalation path differs by direction — see Phase D.2.
 
@@ -591,7 +591,8 @@ Dispatch all batch tasks in a **single message** — Claude via Agent, Codex via
 
 - Log `implement_start {task_id, agent, model?, batch_index}` per task (chain into the dispatch via `&&` when convenient). Include `plan_file: "<child-basename>"` for the task so the run-log records which child file the implementer's commit will land in.
 - **Claude tasks** → `Agent(subagent_type: "plan-implementer", model: "opus", prompt: render(templates.PhaseB, ...))`.
-- **Codex tasks** → `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement --plan-file <abs> --task-id NNN --repo-root <abs> --timeout 300`.
+- **Codex tasks** → Wrapper computes the timeout default from `len(task["files"])` per the formula in §Bash-call idioms; pass `--timeout N` to override.
+  `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement --plan-file <abs> --task-id NNN --repo-root <abs>`.
 
 Await all. For EVERY task (success or not) append `implement_done {task_id, outcome, files_changed[], test_outcome, wall_seconds}`.
 
@@ -659,10 +660,12 @@ Otherwise, per successful task:
 
 *Claude-implemented → Codex review:*
 
+Wrapper computes the timeout default from `len(files)` per the review formula in §Bash-call idioms; pass `--timeout N` to override.
+
 ```bash
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" review \
   --plan-file <abs> --task-id NNN --repo-root <abs> \
-  --files <files_changed> --review-focus bugs --timeout 180
+  --files <files_changed> --review-focus bugs
 ```
 
 Parse `parsed.verdict ∈ {clean, minor-findings, needs-rework}`.
