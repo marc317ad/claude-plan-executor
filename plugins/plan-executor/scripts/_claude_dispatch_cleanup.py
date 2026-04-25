@@ -513,6 +513,7 @@ def apply_cleanup(
             "scope_misreport_detected": bool,
             "restored":                 sorted list[str],
             "deleted":                  sorted list[str],
+            "failed_paths":             sorted list[str],
             "out_of_scope_paths":       sorted list[str],
             "misreported_paths":        sorted list[str],
             "protected_skipped":        sorted list[str],
@@ -521,6 +522,14 @@ def apply_cleanup(
                                         "skipped_no_baseline" |
                                         "skipped_git_failed",
         }
+
+    ``failed_paths`` collects per-file ``OSError`` victims observed by
+    :func:`_restore_path` (read-only target file, permission denied,
+    parent dir not writable, etc.). Each per-file error is caught — the
+    path is appended to ``failed_paths`` and processing continues — but
+    the failure is now visible to the caller. A non-empty
+    ``failed_paths`` is a hard fail at the wrapper boundary because the
+    working tree is in an unknown state.
 
     Behavior:
 
@@ -566,6 +575,7 @@ def apply_cleanup(
             "scope_misreport_detected": False,
             "restored": [],
             "deleted": [],
+            "failed_paths": [],
             "out_of_scope_paths": [],
             "misreported_paths": [],
             "protected_skipped": [],
@@ -583,6 +593,7 @@ def apply_cleanup(
             "scope_misreport_detected": False,
             "restored": [],
             "deleted": [],
+            "failed_paths": [],
             "out_of_scope_paths": [],
             "misreported_paths": [],
             "protected_skipped": [],
@@ -645,6 +656,7 @@ def apply_cleanup(
     protected_skipped: List[str] = []
     restored: List[str] = []
     deleted: List[str] = []
+    failed: List[str] = []
     out_of_scope: List[str] = []
 
     for rel in sorted(observed_delta):
@@ -660,9 +672,13 @@ def apply_cleanup(
             restored.append(rel)
         elif outcome == "deleted":
             deleted.append(rel)
-        # "failed" → still counts as a violation but neither restored
-        # nor deleted. The wrapper envelope surfaces the violation
-        # flag; the orchestrator decides how to react.
+        elif outcome == "failed":
+            # Per-file OSError caught inside _restore_path. Surface the
+            # path to the caller so the wrapper can emit
+            # ``cleanup_failure`` (TASK-004 hardening). Processing
+            # continues so the remaining out-of-scope paths still get
+            # a best-effort revert; we never silence the failure.
+            failed.append(rel)
 
     # Misreport: declared paths that show no actual change.
     misreported: List[str] = []
@@ -682,6 +698,7 @@ def apply_cleanup(
         "scope_misreport_detected": bool(misreported),
         "restored": sorted(restored),
         "deleted": sorted(deleted),
+        "failed_paths": sorted(failed),
         "out_of_scope_paths": sorted(out_of_scope),
         "misreported_paths": sorted(misreported),
         "protected_skipped": sorted(protected_skipped),

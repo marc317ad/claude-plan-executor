@@ -622,6 +622,216 @@ def test_run_cleanup_violation_demotes_ok_to_scope_violation(
 
 
 # ---------------------------------------------------------------------------
+# TASK-004: cleanup_failure takes precedence over backend success
+# ---------------------------------------------------------------------------
+
+
+def test_run_cleanup_failed_paths_emits_cleanup_failure(
+    tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+):
+    """If ``apply_cleanup`` returns non-empty ``failed_paths``, the wrapper
+    emits ``status: cleanup_failure`` even when the backend produced
+    ``ok``. The working tree is in an unknown state — this is a hard
+    fail."""
+    canned = _ok_envelope()
+    _patch_backend_returning(monkeypatch, canned)
+
+    monkeypatch.setattr(
+        cli.cleanup,
+        "snapshot_baseline",
+        lambda r: {"captured": True, "repo_root": str(r)},
+    )
+    monkeypatch.setattr(
+        cli.cleanup,
+        "apply_cleanup",
+        lambda baseline, declared, repo_root: {
+            "scope_violation_detected": True,
+            "scope_misreport_detected": False,
+            "restored": [],
+            "deleted": [],
+            "failed_paths": ["readonly.txt"],
+            "out_of_scope_paths": ["readonly.txt"],
+            "misreported_paths": [],
+            "protected_skipped": [],
+            "baseline_captured": True,
+            "cleanup_strategy": "delta_bounded",
+        },
+    )
+
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(good_input_obj), encoding="utf-8")
+
+    code, out, _err = _run_cli(
+        ["run", "--input", str(input_path), "--output", "-",
+         "--repo-root", str(tmp_path)],
+        capsys=capsys,
+    )
+
+    assert code == 1
+    envelope = _parse_envelope(out)
+    assert envelope["status"] == "cleanup_failure"
+    assert envelope["error"]["code"] == "cleanup_failure"
+    assert "readonly.txt" in envelope["error"]["message"]
+
+
+def test_run_cleanup_mixed_failed_and_restored_emits_cleanup_failure(
+    tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+):
+    """Mixed outcome (some restored, some failed) → ``cleanup_failure``
+    takes precedence and the envelope's diagnostics still carry both
+    lists in the scope block."""
+    canned = _ok_envelope()
+    _patch_backend_returning(monkeypatch, canned)
+
+    monkeypatch.setattr(
+        cli.cleanup,
+        "snapshot_baseline",
+        lambda r: {"captured": True, "repo_root": str(r)},
+    )
+    monkeypatch.setattr(
+        cli.cleanup,
+        "apply_cleanup",
+        lambda baseline, declared, repo_root: {
+            "scope_violation_detected": True,
+            "scope_misreport_detected": False,
+            "restored": ["was_dirty.py"],
+            "deleted": ["new.txt"],
+            "failed_paths": ["readonly.txt"],
+            "out_of_scope_paths": [
+                "was_dirty.py", "new.txt", "readonly.txt",
+            ],
+            "misreported_paths": [],
+            "protected_skipped": [],
+            "baseline_captured": True,
+            "cleanup_strategy": "delta_bounded",
+        },
+    )
+
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(good_input_obj), encoding="utf-8")
+
+    code, out, _err = _run_cli(
+        ["run", "--input", str(input_path), "--output", "-",
+         "--repo-root", str(tmp_path)],
+        capsys=capsys,
+    )
+
+    assert code == 1
+    envelope = _parse_envelope(out)
+    assert envelope["status"] == "cleanup_failure"
+    # Successful reverts still surface in the scope block; the failed
+    # path is exposed as a STRUCTURED scope field (TASK-004 hardening
+    # remediation: callers must not have to grep ``error.message`` for
+    # diagnostics).
+    assert "was_dirty.py" in envelope["scope"]["observed_delta_tracked"]
+    assert "new.txt" in envelope["scope"]["observed_delta_untracked"]
+    assert envelope["scope"]["failed_paths"] == ["readonly.txt"]
+    # Message keeps the path summary too (human-readable diagnostic).
+    assert "readonly.txt" in envelope["error"]["message"]
+
+
+def test_run_cleanup_failure_takes_precedence_over_scope_violation(
+    tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+):
+    """``cleanup_failure`` outranks ``scope_violation``: even when both
+    a violation was detected and a path failed to revert, the envelope
+    emits ``cleanup_failure`` (the working-tree-unknown signal is the
+    more important one)."""
+    canned = _ok_envelope()
+    _patch_backend_returning(monkeypatch, canned)
+
+    monkeypatch.setattr(
+        cli.cleanup,
+        "snapshot_baseline",
+        lambda r: {"captured": True, "repo_root": str(r)},
+    )
+    monkeypatch.setattr(
+        cli.cleanup,
+        "apply_cleanup",
+        lambda baseline, declared, repo_root: {
+            "scope_violation_detected": True,
+            "scope_misreport_detected": False,
+            "restored": [],
+            "deleted": [],
+            "failed_paths": ["x.txt"],
+            "out_of_scope_paths": ["x.txt"],
+            "misreported_paths": [],
+            "protected_skipped": [],
+            "baseline_captured": True,
+            "cleanup_strategy": "delta_bounded",
+        },
+    )
+
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(good_input_obj), encoding="utf-8")
+
+    code, out, _err = _run_cli(
+        ["run", "--input", str(input_path), "--output", "-",
+         "--repo-root", str(tmp_path)],
+        capsys=capsys,
+    )
+    assert code == 1
+    envelope = _parse_envelope(out)
+    assert envelope["status"] == "cleanup_failure"
+
+
+def test_run_cleanup_failure_overrides_non_ok_backend_status(
+    tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+):
+    """TASK-004 hardening remediation: ``failed_paths`` non-empty must
+    surface as ``cleanup_failure`` regardless of the backend envelope's
+    pre-cleanup status (except for backend-never-produced-result
+    statuses like ``timeout`` / ``backend_error`` / ``schema_invalid``,
+    which are preserved). A backend ``scope_violation`` was previously
+    a hidden cleanup-OSError victim — this regression locks in the new
+    precedence."""
+    canned = env_mod.build_scope_violation(
+        message="agent strayed",
+        scope=env_mod._empty_scope(),
+        agent="plan-implementer",
+        model="claude-opus-4-7",
+    )
+    _patch_backend_returning(monkeypatch, canned)
+
+    monkeypatch.setattr(
+        cli.cleanup,
+        "snapshot_baseline",
+        lambda r: {"captured": True, "repo_root": str(r)},
+    )
+    monkeypatch.setattr(
+        cli.cleanup,
+        "apply_cleanup",
+        lambda baseline, declared, repo_root: {
+            "scope_violation_detected": True,
+            "scope_misreport_detected": False,
+            "restored": [],
+            "deleted": [],
+            "failed_paths": ["readonly.txt"],
+            "out_of_scope_paths": ["readonly.txt"],
+            "misreported_paths": [],
+            "protected_skipped": [],
+            "baseline_captured": True,
+            "cleanup_strategy": "delta_bounded",
+        },
+    )
+
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(good_input_obj), encoding="utf-8")
+
+    code, out, _err = _run_cli(
+        ["run", "--input", str(input_path), "--output", "-",
+         "--repo-root", str(tmp_path)],
+        capsys=capsys,
+    )
+    assert code == 1
+    envelope = _parse_envelope(out)
+    # Backend produced ``scope_violation``; cleanup failure must
+    # override and the structured ``failed_paths`` must surface.
+    assert envelope["status"] == "cleanup_failure"
+    assert envelope["scope"]["failed_paths"] == ["readonly.txt"]
+
+
+# ---------------------------------------------------------------------------
 # TASK-001: trusted cleanup-scope source (sandbox-escape fix)
 # ---------------------------------------------------------------------------
 

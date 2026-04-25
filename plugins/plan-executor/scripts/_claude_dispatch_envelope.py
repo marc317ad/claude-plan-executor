@@ -11,7 +11,7 @@ the dict is ever returned.
 Status vocabulary (PLAN_NESTED_DISPATCH §7):
     ok | schema_invalid | timeout | denied | backend_error |
     budget_exhausted | depth_exceeded | manifest_invalid |
-    input_invalid | scope_violation
+    input_invalid | scope_violation | cleanup_failure
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ STATUS_VOCABULARY = frozenset(
         "manifest_invalid",
         "input_invalid",
         "scope_violation",
+        "cleanup_failure",
     }
 )
 
@@ -74,6 +75,7 @@ def _empty_scope() -> Dict[str, Any]:
         "observed_delta_untracked": [],
         "scope_violation_detected": False,
         "scope_misreport_detected": False,
+        "failed_paths": [],
     }
 
 
@@ -493,6 +495,56 @@ def build_budget_exhausted(
     )
 
 
+def build_cleanup_failure(
+    *,
+    failed_paths: Iterable[str],
+    agent: Optional[str] = None,
+    model: Optional[str] = None,
+    session_id: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    cost_usd: Optional[float] = None,
+    tokens: Optional[Mapping[str, int]] = None,
+    result: Any = None,
+    result_raw_truncated: Optional[str] = None,
+    stderr_tail: Optional[str] = None,
+    permission_denials: Optional[Iterable[Mapping[str, Any]]] = None,
+    scope: Optional[Mapping[str, Any]] = None,
+    trace: Optional[Mapping[str, Any]] = None,
+    status_reason: Optional[str] = None,
+    extra: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """``status: cleanup_failure`` — delta-bounded cleanup could not revert
+    one or more out-of-declaration writes (per-file ``OSError`` on the
+    revert path: read-only target, permission denied, parent dir not
+    writable, etc.). The working tree is in an unknown state — this
+    takes precedence over backend success because the orchestrator must
+    not silently accept a dispatch whose cleanup failed.
+    """
+    paths = sorted({str(p) for p in (failed_paths or []) if isinstance(p, str)})
+    message = (
+        "delta-bounded cleanup could not revert "
+        f"{len(paths)} out-of-declaration path(s): {paths}"
+    )
+    return _build_envelope(
+        status="cleanup_failure",
+        status_reason=status_reason,
+        agent=agent,
+        model=model,
+        session_id=session_id,
+        duration_ms=duration_ms,
+        cost_usd=cost_usd,
+        tokens=tokens,
+        result=result,
+        result_raw_truncated=result_raw_truncated,
+        stderr_tail=stderr_tail,
+        permission_denials=permission_denials,
+        scope=scope,
+        trace=trace,
+        error=_error("cleanup_failure", message, retriable=False),
+        extra=extra,
+    )
+
+
 __all__: List[str] = [
     "SCHEMA_VERSION",
     "STATUS_VOCABULARY",
@@ -507,4 +559,5 @@ __all__: List[str] = [
     "build_manifest_invalid",
     "build_depth_exceeded",
     "build_budget_exhausted",
+    "build_cleanup_failure",
 ]

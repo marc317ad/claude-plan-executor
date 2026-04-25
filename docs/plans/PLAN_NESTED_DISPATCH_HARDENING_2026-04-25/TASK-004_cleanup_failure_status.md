@@ -25,7 +25,7 @@ This task depends on TASK-001 (which renames `_extract_declared_files_changed` a
 
 ### TASK-004: cleanup_failure envelope status
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/_claude_dispatch_envelope.py` (modify)

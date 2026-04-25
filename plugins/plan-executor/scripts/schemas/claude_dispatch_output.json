@@ -20,7 +20,8 @@
         "depth_exceeded",
         "manifest_invalid",
         "input_invalid",
-        "scope_violation"
+        "scope_violation",
+        "cleanup_failure"
       ]
     },
     "status_reason": {
@@ -107,6 +108,13 @@
         },
         "scope_misreport_detected": {
           "type": "boolean"
+        },
+        "failed_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "TASK-004 hardening: paths the wrapper attempted to revert under delta-bounded cleanup but could not (per-file OSError on the revert path). Non-empty implies the working tree is in an unknown state and the envelope status MUST be cleanup_failure."
         }
       },
       "required": [

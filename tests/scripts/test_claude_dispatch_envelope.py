@@ -375,6 +375,7 @@ REQUIRED_BUILDERS = [
     "build_manifest_invalid",
     "build_depth_exceeded",
     "build_budget_exhausted",
+    "build_cleanup_failure",
 ]
 
 
@@ -397,8 +398,41 @@ def test_status_vocabulary_matches_section_7() -> None:
             "manifest_invalid",
             "input_invalid",
             "scope_violation",
+            "cleanup_failure",
         }
     )
+
+
+def test_build_cleanup_failure_status_and_validates(
+    output_schema: dict, trace: dict
+) -> None:
+    envelope = env.build_cleanup_failure(
+        failed_paths=["evil.txt", "subdir/locked.py"],
+        agent="plan-implementer",
+        model="claude-opus-4-7",
+        trace=trace,
+    )
+    assert envelope["status"] == "cleanup_failure"
+    assert envelope["error"]["code"] == "cleanup_failure"
+    assert envelope["error"]["retriable"] is False
+    assert "evil.txt" in envelope["error"]["message"]
+    assert "subdir/locked.py" in envelope["error"]["message"]
+    _validate(envelope, output_schema)
+
+
+def test_build_cleanup_failure_rejects_unknown_extra_key() -> None:
+    with pytest.raises(ValueError, match="unknown top-level keys"):
+        env.build_cleanup_failure(
+            failed_paths=["x"],
+            extra={"sneaky_extra": "nope"},
+        )
+
+
+def test_build_cleanup_failure_in_module_exports() -> None:
+    """The acceptance criterion grows the export list from 10 to 11."""
+    builder_count = sum(1 for n in env.__all__ if n.startswith("build_"))
+    assert builder_count == 11
+    assert "build_cleanup_failure" in env.__all__
 
 
 # ---------------------------------------------------------------------------

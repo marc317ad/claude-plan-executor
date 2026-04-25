@@ -371,6 +371,12 @@ def _merge_scope_with_cleanup(
     scope["observed_delta_untracked"] = observed_untracked
     scope["scope_violation_detected"] = scope_violation_detected
     scope["scope_misreport_detected"] = scope_misreport_detected
+    # TASK-004 hardening: expose ``failed_paths`` as a structured scope
+    # field so callers can diagnose which paths the wrapper could not
+    # revert without parsing ``error.message``.
+    scope["failed_paths"] = sorted(
+        {str(p) for p in (cleanup_result.get("failed_paths") or []) if isinstance(p, str)}
+    )
 
     envelope["scope"] = scope
     return envelope
@@ -698,7 +704,41 @@ def cmd_run(args: argparse.Namespace) -> int:
     # ``scope_violation`` only when cleanup proved a violation; we never
     # promote a non-ok backend status to ``scope_violation`` (the error
     # signal is more important).
-    if envelope["status"] == "ok" and cleanup_result.get("scope_violation_detected"):
+    #
+    # ``cleanup_failure`` (TASK-004 hardening) takes precedence over
+    # backend success AND over ``scope_violation``: a non-empty
+    # ``failed_paths`` means the working tree is in an unknown state
+    # (one or more out-of-declaration writes could not be reverted due
+    # to a per-file ``OSError``), which is a hard fail regardless of
+    # whether the backend itself succeeded.
+    #
+    # Precedence order: ``failed_paths`` non-empty wins over EVERY
+    # backend status except those that already signal a more
+    # fundamental failure than working-tree-unknown — namely the
+    # backend never produced a usable result at all (``timeout``,
+    # ``backend_error``, ``schema_invalid``). Those statuses are
+    # preserved because re-emitting them as ``cleanup_failure`` would
+    # hide the upstream signal the caller actually needs to retry.
+    # For ``ok`` and ``scope_violation``, ``cleanup_failure`` wins.
+    failed_paths = list(cleanup_result.get("failed_paths") or [])
+    _CLEANUP_FAILURE_PRESERVED = {"timeout", "backend_error", "schema_invalid"}
+    if failed_paths and envelope["status"] not in _CLEANUP_FAILURE_PRESERVED:
+        envelope = env_mod.build_cleanup_failure(
+            failed_paths=failed_paths,
+            scope=envelope.get("scope") or env_mod._empty_scope(),  # type: ignore[attr-defined]
+            agent=envelope.get("agent"),
+            model=envelope.get("model"),
+            session_id=envelope.get("session_id"),
+            duration_ms=envelope.get("duration_ms"),
+            cost_usd=envelope.get("cost_usd"),
+            tokens=envelope.get("tokens"),
+            result=envelope.get("result"),
+            result_raw_truncated=envelope.get("result_raw_truncated"),
+            stderr_tail=envelope.get("stderr_tail"),
+            permission_denials=envelope.get("permission_denials") or [],
+            trace=envelope.get("trace") or trace,
+        )
+    elif envelope["status"] == "ok" and cleanup_result.get("scope_violation_detected"):
         envelope = env_mod.build_scope_violation(
             message=(
                 "delta-bounded cleanup detected writes outside declared "

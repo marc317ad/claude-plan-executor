@@ -23,6 +23,7 @@ import importlib.util
 import multiprocessing
 import subprocess
 from pathlib import Path
+from typing import Any, Mapping
 
 import pytest
 
@@ -355,6 +356,105 @@ class TestObservedDeltaSubtraction:
         assert "README.md" in result["restored"]
         # Restored to PRE-DISPATCH state (the dirty version), NOT HEAD.
         assert (repo / "README.md").read_text() == "pre-dirty\n"
+
+
+# ---------------------------------------------------------------------------
+# TASK-004 hardening: failed_paths surfacing
+# ---------------------------------------------------------------------------
+
+
+class TestFailedPathsSurfacing:
+    """Per-file ``OSError`` victims must surface via ``failed_paths``.
+
+    Exercises the TASK-004 hardening: if ``_restore_path`` returns
+    ``"failed"`` for any out-of-scope path (read-only target, permission
+    denied, parent dir not writable, etc.), the path is appended to
+    ``failed_paths`` and processing continues for the rest. The wrapper
+    layer translates a non-empty ``failed_paths`` into a
+    ``cleanup_failure`` envelope (covered in
+    ``test_plan_claude_dispatch_cli.py``).
+    """
+
+    def test_clean_run_has_empty_failed_paths(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "rogue.txt").write_text("nope\n")
+        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        assert result["scope_violation_detected"] is True
+        assert "rogue.txt" in result["deleted"]
+        assert result["failed_paths"] == []
+
+    def test_skipped_no_baseline_returns_empty_failed_paths(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        result = cleanup.apply_cleanup(
+            {"captured": False}, [], str(repo),
+        )
+        assert "failed_paths" in result
+        assert result["failed_paths"] == []
+
+    def test_failed_revert_surfaces_failed_paths(self, tmp_path, monkeypatch):
+        """If ``_restore_path`` returns ``"failed"``, the path must be in
+        ``failed_paths`` and the cleanup loop must keep processing the
+        rest of the delta."""
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "locked.txt").write_text("rogue\n")
+        (repo / "ok.txt").write_text("rogue too\n")
+
+        original = cleanup._restore_path
+
+        def _fake_restore(repo_root: str, rel: str, baseline_arg: Mapping[str, Any]) -> str:
+            if rel == "locked.txt":
+                return "failed"
+            return original(repo_root, rel, baseline_arg)
+
+        monkeypatch.setattr(cleanup, "_restore_path", _fake_restore)
+        result = cleanup.apply_cleanup(baseline, [], str(repo))
+
+        # Both are out of scope.
+        assert result["scope_violation_detected"] is True
+        assert set(result["out_of_scope_paths"]) == {"locked.txt", "ok.txt"}
+        # The OK path was reverted; the failing one is in failed_paths.
+        assert "ok.txt" in result["deleted"]
+        assert "locked.txt" not in result["deleted"]
+        assert "locked.txt" not in result["restored"]
+        assert result["failed_paths"] == ["locked.txt"]
+
+    def test_mixed_some_restored_some_failed(self, tmp_path, monkeypatch):
+        """Mixed outcomes: cleanup result must include both successful
+        (``restored``/``deleted``) and failed (``failed_paths``) lists
+        for diagnostics."""
+        repo = _make_repo(tmp_path)
+        # A second tracked file we will mutate (so cleanup tries to
+        # restore it from baseline bytes).
+        (repo / "keep.py").write_text("orig\n")
+        _git(["add", "keep.py"], cwd=repo)
+        _git(["commit", "-q", "-m", "add keep"], cwd=repo)
+
+        baseline = cleanup.snapshot_baseline(str(repo))
+        # Three out-of-scope writes.
+        (repo / "keep.py").write_text("rogue mutation\n")  # → restore
+        (repo / "new.txt").write_text("rogue create\n")    # → delete
+        (repo / "broken.txt").write_text("oops\n")         # → fail (forced)
+
+        original = cleanup._restore_path
+
+        def _fake_restore(repo_root: str, rel: str, baseline_arg: Mapping[str, Any]) -> str:
+            if rel == "broken.txt":
+                return "failed"
+            return original(repo_root, rel, baseline_arg)
+
+        monkeypatch.setattr(cleanup, "_restore_path", _fake_restore)
+        result = cleanup.apply_cleanup(baseline, [], str(repo))
+
+        assert result["scope_violation_detected"] is True
+        assert "keep.py" in result["restored"]
+        assert "new.txt" in result["deleted"]
+        assert result["failed_paths"] == ["broken.txt"]
+        # All three paths still surface as out-of-scope.
+        assert set(result["out_of_scope_paths"]) == {
+            "keep.py", "new.txt", "broken.txt",
+        }
 
 
 # ---------------------------------------------------------------------------
