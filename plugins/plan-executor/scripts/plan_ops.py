@@ -599,7 +599,7 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
             })
             continue
 
-        raw_deps = task.get("dependencies") or []
+        raw_deps = task["dependencies"] if "dependencies" in task else []
         if not isinstance(raw_deps, list):
             errors.append({
                 "path": f"$.tasks[{i}].dependencies",
@@ -629,8 +629,8 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
         key=lambda task: _task_order_key(task["id"], task["priority"]),
     )
     ordered_task_ids = [task["id"] for task in ordered_tasks]
-    
-    batches, batch_errors = _create_dependency_aware_batches(
+
+    batches, batch_errors = _dependency_aware_batches(
         normalized_tasks, ordered_task_ids,
     )
     if batch_errors:
@@ -4155,6 +4155,33 @@ def cmd_compute_schedule(args: argparse.Namespace) -> None:
         }]})
 
     topo, batches, errors = _compute_schedule_batches(tasks)
+    # PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-002 (rework): normalize helper
+    # errors to the documented CLI envelope shape ``{path, code, message}``.
+    # ``_dependency_aware_batches`` is allowed to emit rich helper-level
+    # errors (with ``task_id`` / ``dep_id`` / ``task_ids`` keys) for direct
+    # helper callers, but the CLI envelope contract — preserved byte-for-byte
+    # across compute-schedule's error codes — only carries path/code/message.
+    normalized_errors: list[dict] = []
+    for err in errors:
+        code = err.get("code")
+        if code == "unresolvable-dep":
+            normalized_errors.append({
+                "path": f"$.tasks[{err.get('task_id', '')}].dependencies",
+                "code": code,
+                "message": err.get("message", ""),
+            })
+        elif code == "cyclic-dependency":
+            normalized_errors.append({
+                "path": "$.tasks",
+                "code": code,
+                "message": err.get("message", ""),
+            })
+        else:
+            # Errors emitted by _compute_schedule_batches itself (e.g.
+            # invalid-type, invalid-task-id, duplicate-task-id) already
+            # carry path/code/message — pass through unchanged.
+            normalized_errors.append(err)
+    errors = normalized_errors
     # TASK-010: tag tasks with `global_lock` so downstream consumers see
     # the same flag the batcher used to enforce solitary-batch placement.
     tagged_tasks: list = []

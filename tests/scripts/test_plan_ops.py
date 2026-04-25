@@ -1647,7 +1647,14 @@ class TestComputeSchedule:
             text=True,
         )
 
-    def test_disjoint_files_single_batch(self) -> None:
+    def test_serial_chain_with_disjoint_files_yields_n_batches(self) -> None:
+        """Renamed from ``test_disjoint_files_single_batch`` (PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-002).
+
+        Old assertion (collapsing 001→002→003 into one file-disjoint batch)
+        was the bug being fixed. Topo layering MUST take precedence over
+        file-disjoint packing: a serial chain with disjoint files yields
+        N batches in topo order, not one.
+        """
         payload = {
             "tasks": [
                 {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
@@ -1660,7 +1667,9 @@ class TestComputeSchedule:
         body = _parse_json(cp)
         assert body["topo"] == ["001", "002", "003"]
         assert body["batches"] == [
-            {"index": 1, "task_ids": ["001", "002", "003"], "file_locks": ["a.py", "b.py", "c.py"]}
+            {"index": 1, "task_ids": ["001"], "file_locks": ["a.py"]},
+            {"index": 2, "task_ids": ["002"], "file_locks": ["b.py"]},
+            {"index": 3, "task_ids": ["003"], "file_locks": ["c.py"]},
         ]
 
     def test_parallel_disjoint_files(self) -> None:
@@ -1746,6 +1755,89 @@ class TestComputeSchedule:
         assert body["batches"] == [
             {"index": 1, "task_ids": ["001"], "file_locks": ["a.py"]}
         ]
+
+    # PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-002: regression-pinning + helper
+    # error-propagation tests at the CLI envelope layer. The helper-level
+    # equivalents live in TestDependencyAwareBatches; these confirm
+    # _compute_schedule_batches forwards helper errors to the third tuple
+    # position and preserves the compute-schedule envelope shape.
+    def test_serial_chain_with_disjoint_files_respects_dependencies(self) -> None:
+        """Regression pin: serial chain ``001 → 002 → 003`` with file-disjoint
+        payloads MUST emit 3 topo-ordered batches via the compute-schedule
+        envelope, not collapse into a single file-disjoint batch.
+
+        Pre-fix bug: ``_compute_schedule_batches`` ran its own file-disjoint
+        packer that ignored ``dependencies[]``. Post-fix it delegates to
+        ``_dependency_aware_batches`` which topo-layers first.
+        """
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+                {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+                {"id": "003", "priority": "high", "files": ["c.py"], "dependencies": ["002"]},
+            ]
+        }
+        cp = self._run_compute(payload)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["topo"] == ["001", "002", "003"]
+        assert [b["task_ids"] for b in body["batches"]] == [["001"], ["002"], ["003"]]
+        assert [b["index"] for b in body["batches"]] == [1, 2, 3]
+        assert [b["file_locks"] for b in body["batches"]] == [["a.py"], ["b.py"], ["c.py"]]
+
+    def test_orphan_dep_returns_unresolvable_dep_error(self) -> None:
+        """A ``dependencies[]`` entry pointing at an id absent from
+        ``tasks[]`` MUST surface as ``unresolvable-dep`` in the envelope's
+        ``errors[]`` (helper error propagated via the third tuple slot).
+
+        Asserts the documented CLI envelope shape only — ``{path, code,
+        message}``. Helper-specific keys (``task_id`` / ``dep_id``) are
+        pinned at the helper layer in
+        ``TestDependencyAwareBatches.test_orphan_dep_returns_unresolvable_dep_error``.
+        """
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["999"]},
+            ]
+        }
+        cp = self._run_compute(payload)
+        assert cp.returncode == 1, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body["batches"] == []
+        assert body["topo"] == []
+        codes = [e.get("code") for e in body["errors"]]
+        assert "unresolvable-dep" in codes
+        orphan = next(e for e in body["errors"] if e.get("code") == "unresolvable-dep")
+        assert orphan["path"] == "$.tasks[001].dependencies"
+        assert orphan["code"] == "unresolvable-dep"
+        assert "999" in orphan["message"]
+
+    def test_cycle_returns_cyclic_dependency_error(self) -> None:
+        """A cycle ``001 → 002 → 001`` MUST surface as ``cyclic-dependency``
+        in the envelope's ``errors[]``.
+
+        Asserts the documented CLI envelope shape only — ``{path, code,
+        message}``. Helper-specific keys (``task_ids``) are pinned at the
+        helper layer in
+        ``TestDependencyAwareBatches.test_cycle_returns_cyclic_dependency_error``.
+        """
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["002"]},
+                {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+            ]
+        }
+        cp = self._run_compute(payload)
+        assert cp.returncode == 1, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body["batches"] == []
+        assert body["topo"] == []
+        codes = [e.get("code") for e in body["errors"]]
+        assert "cyclic-dependency" in codes
+        cycle = next(e for e in body["errors"] if e.get("code") == "cyclic-dependency")
+        assert cycle["path"] == "$.tasks"
+        assert cycle["code"] == "cyclic-dependency"
+        assert "cycle" in cycle["message"].lower()
 
 
 # ---------------------------------------------------------------------------

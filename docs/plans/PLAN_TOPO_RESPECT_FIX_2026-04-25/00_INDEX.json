@@ -25,7 +25,7 @@
       "depends_on": [
         "001"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Load-bearing fix. Replaces _compute_schedule_batches's broken file-disjoint-only packer with a delegation to TASK-001's helper, adds dependencies[] shape validation, and rewrites the test that pins the bug (test_disjoint_files_single_batch). After this task lands, the compute-schedule --stdin CLI returns topo-respecting batches for every caller \u2014 including the orchestrator's Phase 1 step 3 pipe (until TASK-004 deletes that pipe entirely)."
     },

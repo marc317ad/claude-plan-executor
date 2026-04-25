@@ -43,7 +43,7 @@ Stop `_compute_schedule_batches` (`plan_ops.py:436-547`) from clobbering topo-co
 
 ### TASK-002: Route `_compute_schedule_batches` through `_dependency_aware_batches` + add dep validation + rewrite the regression-pinning test
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
