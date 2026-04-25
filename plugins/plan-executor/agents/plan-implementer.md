@@ -35,7 +35,9 @@ Each entry in the task's `Files:` field may carry a trailing annotation. Honor i
 
 Read every file listed in `Files:` in full before editing (do not skim). If the task's recommended approach references symbols, enums, or shapes from files not in the `Files:` list, use Grep or Read to confirm those symbols exist with the exact names and signatures the plan assumes. The plan may be slightly out of date with the live codebase — note such drift for Step 2 or escalate per Step 3 of this list.
 
-If the plan's assumption is contradicted by live code (e.g., an enum member was renamed, a function signature changed, a line number has drifted), adapt the fix to the actual code when the intent is unambiguous and note the adaptation in your report under **Plan adaptations**. If the intent cannot be recovered without guessing, report `plan-incorrect` and stop.
+If the plan's assumption is contradicted by live code (e.g., an enum member was renamed, a function signature changed, a line number has drifted), adapt the fix to the actual code when the intent is unambiguous and note the adaptation in your report under **Plan adaptations**. If the intent cannot be recovered without guessing, report `plan-incorrect` and stop. If the plan names a specific mechanism (a subcommand, a CLI invocation, a helper function, a flag) and you use a different mechanism that produces the same output, flag it under Plan adaptations with a one-line justification — even when the emitted behavior is identical.
+
+Worked example: the plan says to emit a record via `scripts/example_tool.py write-record`, but the surrounding code path consistently uses an internal helper `_write_record(...)` for the same record type. You call `_write_record(...)` to stay consistent with the edited code path; that substitution MUST be flagged under Plan adaptations, even though the emitted record is identical.
 
 While reading, mentally snapshot the prior content of every region you may edit — you will need it for Step 3 self-correction.
 
@@ -96,7 +98,7 @@ Emit the report using the exact shape below.
 - [!] Criterion 2 — <gap explanation>
 
 **Plan adaptations:**
-<Any places where you had to deviate from the plan's recommended change because the live code differed or the analyst annotations required it. "None" if you followed the plan verbatim. Emit as a bulleted list (one `- ` entry per adaptation); `plan_ops.py parse-implementer-report` extracts this as a list of strings. If this section header is omitted, `parse-implementer-report` emits a `missing-plan-adaptations` diagnostic; the orchestrator surfaces this to the reviewer but does not halt. Same for `**Concerns for reviewer:**`.>
+<Any places where you had to deviate from the plan's recommended change because the live code differed or the analyst annotations required it. "None" if you followed the plan verbatim. Emit as a bulleted list (one `- ` entry per adaptation); `plan_ops.py parse-implementer-report` extracts this as a list of strings. If this section header is omitted, `parse-implementer-report` emits a `missing-plan-adaptations` diagnostic; the orchestrator surfaces this to the reviewer but does not halt. Same for `**Concerns for reviewer:**`. This includes literal-wording substitutions where you used an equivalent mechanism (e.g., plan says `foo.py subcommand` but you called an internal helper that produces the same output); such cases MUST be flagged even when the emitted behavior is identical.>
 
 **Concerns for reviewer:**
 <Non-obvious items the reviewer should look at — scope boundaries that were judgment calls, symbols imported that may create cycles, tests that were retested once for flakiness. "None" if nothing. Emit as a bulleted list (one `- ` entry per concern); the canonical label is `**Concerns for reviewer:**` per `DUAL_AGENT_PLAN_EXECUTOR.md` §5 "Canonical Contract (v1)".>

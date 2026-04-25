@@ -90,7 +90,7 @@
       "priority": "medium",
       "issues_absorbed": [],
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Surfaced during TASK-020B run 20260421T031650 \u2014 implementer substituted _append_run_log for the plan's scripts/plan_ops.py log-event form without flagging it under Plan adaptations; current trigger scopes adaptation-flagging narrowly to 'live code differs.'"
     },

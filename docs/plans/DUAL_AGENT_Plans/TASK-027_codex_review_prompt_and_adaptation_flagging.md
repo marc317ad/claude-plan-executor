@@ -174,7 +174,7 @@ The Phase D-Codex review prompt gives Codex the diff plus acceptance bullets —
 
 ### TASK-027B: Plan-implementer adaptation-flagging scope
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/agents/plan-implementer.md`
