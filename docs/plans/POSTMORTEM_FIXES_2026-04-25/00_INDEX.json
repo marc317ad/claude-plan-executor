@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "Post-mortem fixes from run 20260425T041800 (DUAL_AGENT_Plans)",
+  "source_postmortem": "docs/analysis/2026-04-25_run_20260425T041800_postmortem.md",
+  "created": "2026-04-25",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "parallel_batches": [
+    ["001", "010"],
+    ["002", "003"],
+    ["006"],
+    ["004"],
+    ["005"],
+    ["007"],
+    ["008"],
+    ["009"]
+  ],
+  "_batching_rationale": "TASK-001 (test-only) and TASK-010 (doc-only) are fully independent. TASK-002 (plan-implementer.md + dispatch-templates.md) and TASK-003 (plan_ops.py + SKILL.md) touch disjoint file sets. TASK-006 follows 002 because both edit plan-implementer.md + dispatch-templates.md + test_plan_ops.py. TASK-004 follows 003 because both edit plan_ops.py + test_plan_ops.py. TASK-005 follows 004 because both edit plan_ops.py + SKILL.md + test_plan_ops.py. TASK-007 follows 002+006 because all three edit dispatch-templates.md and 007 also edits plan_ops.py (must serialize after 005). TASK-008 follows 001+005+007. TASK-009 follows 008 (plan_codex_dispatch.py + plan_ops.py overlap).",
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_normalize_file_path_backticks.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem Issue 1 — Codex wrapper normalize_file_path did not strip backticks; out_of_scope_observed false positive on TASK-027B. Reframed as a verification/coverage task because CODEX_FRICTION_2026-04-25 TASK-002 (currently running) unifies _normalize_files_entry and normalize_file_path into a shared _plan_paths helper; this task pins the integration-site behavior at the post-mortem's exact bullet shape."
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_coupling_detector_prompt.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem Issue 2 + 9 — _iter_target_bullets sibling regex missed during D.2a.5 remediation; protocol-mandated halt fired on what was effectively a 'you missed one'."
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_commit_task_verdict_mapping_hint.md",
+      "priority": "medium",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem Issue 3 — commit-task reviewer-verdict whitelist mismatch with D.5 verdicts; first commit attempt for TASK-017 failed with uncommittable-reviewer-verdict."
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_fixture_path_canonical.md",
+      "priority": "medium",
+      "depends_on": ["003"],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem Issue 4 — fixture-valid gate hardcodes docs/plans/sample_phase4.md; preflight halted after archival."
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_gates_certify_directory_mode.md",
+      "priority": "medium",
+      "depends_on": ["004"],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem Issue 5 — end-of-run certify reported false-fail on directory-mode --plan-file because schema-valid and commit-safe expected a single file."
+    },
+    {
+      "task_id": "006",
+      "file": "TASK-006_n_state_contract_prompt_reminder.md",
+      "priority": "medium",
+      "depends_on": ["002"],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem Issue 6 — _unwrap_cli_envelope collapsed two distinct failure states; AC named a 3-state contract."
+    },
+    {
+      "task_id": "007",
+      "file": "TASK-007_target_task_id_first_class.md",
+      "priority": "high",
+      "depends_on": ["002", "005", "006"],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem Issue 7 — Phase A-single + Phase B + Phase D-* templates lack target_task_id for shared-file children; TASK-027A/B/C required manual prompt augmentation."
+    },
+    {
+      "task_id": "008",
+      "file": "TASK-008_sandbox_divergence_escape_hatch.md",
+      "priority": "high",
+      "depends_on": ["001", "005", "007"],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem Issue 8 — Codex sandbox tests sometimes fail when target-env tests pass; wrapper failure envelope opaque (no test stdout/stderr surfaced)."
+    },
+    {
+      "task_id": "009",
+      "file": "TASK-009_verdict_allowlist_embed_in_codex_prompt.md",
+      "priority": "low",
+      "depends_on": ["008"],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem cross-cutting observation 1 — three Codex review false positives in this run; one was vocabulary confusion between Codex-reviewer verdicts and D.5 verdicts."
+    },
+    {
+      "task_id": "010",
+      "file": "TASK-010_task_list_runlog_mirror_doc.md",
+      "priority": "low",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": [],
+      "origin_note": "Post-mortem Issue 10 — harness TaskList drifted from _run_log.jsonl; doc-only fix to clarify that run-log is source of truth."
+    }
+  ]
+}
