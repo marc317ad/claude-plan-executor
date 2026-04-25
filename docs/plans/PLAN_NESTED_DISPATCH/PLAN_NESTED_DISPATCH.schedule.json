@@ -1,0 +1,296 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Input / output JSON schemas + envelope builder module",
+      "files": [
+        "`plugins/plan-executor/scripts/schemas/claude_dispatch_input.json` (create)",
+        "`plugins/plan-executor/scripts/schemas/claude_dispatch_output.json` (create)",
+        "`plugins/plan-executor/scripts/_claude_dispatch_envelope.py` (create)",
+        "`tests/scripts/test_claude_dispatch_envelope.py` (create)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_claude_dispatch_envelope.py",
+      "priority": "high",
+      "plan_file": "TASK-001_input_output_json_schemas.md",
+      "description": "Defines the structured input and output JSON schemas for `plan_claude_dispatch.py` plus the Python envelope-builder module that materializes them. The schemas (`schemas/claude_dispatch_input.json`, `schemas/claude_dispatch_output.json`) lock down the wire contract between callers and the wrapper with `additionalProperties: false`. The companion `_claude_dispatch_envelope.py` exposes one constructor per \u00a77 status code (`build_ok`, `build_denied`, `build_timeout`, `build_schema_invalid`, `build_backend_error`, `build_scope_violation`, `build_input_invalid`, `build_manifest_invalid`, `build_depth_exceeded`, `build_budget_exhausted`) so downstream tasks (TASK-003 backend, TASK-005 CLI) emit envelopes through a single typed surface rather than hand-rolled dicts.",
+      "acceptance_criteria": [
+        "Schemas validate the examples in \u00a76 / \u00a77; `additionalProperties: false`.",
+        "`_claude_dispatch_envelope.py` exposes `build_ok()`, `build_denied()`, `build_timeout()`, `build_schema_invalid()`, `build_backend_error()`, `build_scope_violation()`, `build_input_invalid()`, `build_manifest_invalid()`, `build_depth_exceeded()`, `build_budget_exhausted()` matching the \u00a77 status vocabulary.",
+        "Constructor rejects unknown top-level keys."
+      ],
+      "agent": "claude",
+      "classification_reason": "4 new files, new module creation requiring design decisions"
+    },
+    {
+      "id": "002",
+      "title": "Manifest loader + guardrail engine",
+      "files": [
+        "`plugins/plan-executor/scripts/_claude_agent_manifest.py` (create)",
+        "`plugins/plan-executor/scripts/_claude_guardrails.py` (create)",
+        "`tests/scripts/test_claude_agent_manifest.py` (create)",
+        "`tests/scripts/test_claude_guardrails.py` (create)"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_claude_agent_manifest.py tests/scripts/test_claude_guardrails.py",
+      "priority": "high",
+      "plan_file": "TASK-002_manifest_loader_guardrail_engine.md",
+      "description": "Implements the agent-manifest loader and the preflight guardrail engine for nested Claude dispatch. `_claude_agent_manifest.load_agent(name)` reads `plugins/plan-executor/agents/<name>.md` frontmatter and returns the `{tools, model, description}` dict; only `{plan-analyst, plan-implementer, plan-remediator}` are dispatchable in v1, others raise `AgentNotDispatchable`. `_claude_guardrails.evaluate_preflight(manifest, input, env)` walks the \u00a79.2 refusal matrix (depth limit, budget, allowlist, etc.) and returns `(allow, envelope_if_denied)`. `scrub_env(manifest, parent_env)` filters the parent env down to `env_allowlist + PLAN_EXEC_*` and injects per-hop bookkeeping vars so child sessions cannot escape the sandbox via inherited state.",
+      "acceptance_criteria": [
+        "`load_agent(name)` reads existing `plugins/plan-executor/agents/<name>.md` frontmatter, returns dict with `tools` (list[str]), `model` (str), `description` (str).",
+        "Rejects names outside `{plan-analyst, plan-implementer, plan-remediator}` with `AgentNotDispatchable`.",
+        "`evaluate_preflight(manifest, input, env)` returns `(allow: bool, envelope_if_denied: dict | None)` covering every row in \u00a79.2.",
+        "`scrub_env(manifest, parent_env)` keeps `env_allowlist + PLAN_EXEC_*`, injects per-hop vars."
+      ],
+      "agent": "claude",
+      "classification_reason": "four new files, new module creation, design decisions"
+    },
+    {
+      "id": "003",
+      "title": "claude-cli backend adapter",
+      "files": [
+        "`plugins/plan-executor/scripts/_claude_backend.py` (create)",
+        "`tests/scripts/test_claude_backend.py` (create)"
+      ],
+      "dependencies": [
+        "001",
+        "002"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_claude_backend.py",
+      "priority": "high",
+      "plan_file": "TASK-003_claude_cli_backend_adapter.md",
+      "description": "Implements the `claude` CLI backend adapter `_claude_backend.invoke(manifest, effective, payload, trace)` that actually shells out to the nested `claude -p --output-format json` session. Builds the argv per \u00a78.1: `Agent` is always in `--disallowedTools` (depth-limit invariant), `--add-dir` from the effective cwd, `--permission-mode acceptEdits`, allowlist from the manifest. Captures stdout, parses the JSON top-level `result` envelope, and maps `result`/`duration_ms`/`total_cost_usd`/`session_id`/`usage` into the wrapper output envelope. Maps `subprocess.TimeoutExpired` \u2192 `status: timeout` and non-JSON stdout \u2192 `status: backend_error, code: malformed_output`. The `--backend-binary` test seam accepts a tiny shim script for unit tests; the real-CLI path is gated on `PLAN_EXEC_E2E=1`.",
+      "acceptance_criteria": [
+        "`invoke(manifest, effective, payload, trace)` returns an envelope.",
+        "Argv built per \u00a78.1; `Agent` always in `--disallowedTools`; `--add-dir` from effective cwd; `--permission-mode acceptEdits`.",
+        "Captures stdout, parses JSON, maps `result` / `duration_ms` / `total_cost_usd` / `session_id` / `usage` into envelope.",
+        "`TimeoutExpired` \u2192 `status: timeout`; non-JSON stdout \u2192 `status: backend_error, code: malformed_output`.",
+        "`--backend-binary` test seam (tiny shim script); real-CLI path gated on `PLAN_EXEC_E2E=1`."
+      ],
+      "agent": "claude",
+      "classification_reason": "new module creation, API contract design, async subprocess handling"
+    },
+    {
+      "id": "004",
+      "title": "Delta-bounded cleanup",
+      "files": [
+        "`plugins/plan-executor/scripts/_claude_dispatch_cleanup.py` (create)",
+        "`tests/scripts/test_claude_dispatch_cleanup.py` (create)"
+      ],
+      "dependencies": [
+        "003"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_claude_dispatch_cleanup.py",
+      "priority": "high",
+      "plan_file": "TASK-004_delta_bounded_cleanup.md",
+      "description": "Implements delta-bounded cleanup for the Claude dispatch wrapper, mirroring the proven Codex wrapper. `snapshot_baseline(repo_root)` captures the tracked + untracked state via git plumbing before the nested session runs. `apply_cleanup(baseline, declared_files_changed, repo_root)` then computes the post-dispatch delta and restores/deletes any files in `(observed_delta \u2212 declared_files_changed \u2212 protected_paths)` \u2014 the same `_plan_paths.is_protected_path` predicate as the Codex wrapper. Two flags surface for envelope reporting: `scope_violation_detected` flips when the nested session wrote outside its declared `files_changed`; `scope_misreport_detected` flips when declared files were not actually touched. Concurrent dispatches on disjoint file sets must not cross-contaminate baselines (integration test with two wrapper processes). If sharing logic with the Codex wrapper is a \u2264100-line extraction, refactor in this PR; otherwise duplicate and file a follow-up.",
+      "acceptance_criteria": [
+        "`snapshot_baseline(repo_root)` captures tracked + untracked state via git plumbing, mirroring the Codex wrapper.",
+        "`apply_cleanup(baseline, declared_files_changed, repo_root)` restores / deletes files in `(observed_delta \u2212 declared_files_changed \u2212 protected_paths)`. Imports `_plan_paths.is_protected_path`.",
+        "`scope_violation_detected` flips on out-of-declaration writes; `scope_misreport_detected` flips on phantom declarations.",
+        "Concurrent dispatches on disjoint file sets do not cross-contaminate (integration test with two wrapper processes).",
+        "**Factoring rule:** if sharing logic with `plan_codex_dispatch.py` is a \u2264100-line extraction, do it now and update both wrappers in one PR; otherwise duplicate in the Claude wrapper and file a follow-up task."
+      ],
+      "agent": "claude",
+      "classification_reason": "new module creation, concurrent process integration test, design decisions"
+    },
+    {
+      "id": "005",
+      "title": "CLI entrypoint `plan_claude_dispatch.py`",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_claude_dispatch.py` (create)",
+        "`tests/scripts/test_plan_claude_dispatch_cli.py` (create)"
+      ],
+      "dependencies": [
+        "002",
+        "003",
+        "004"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_claude_dispatch_cli.py",
+      "priority": "high",
+      "plan_file": "TASK-005_cli_entrypoint_plan_claude.md",
+      "description": "Implements the `plan_claude_dispatch.py` CLI entrypoint that ties together the schemas (TASK-001), manifest/guardrails (TASK-002), backend adapter (TASK-003), and cleanup (TASK-004). Subcommands per \u00a710. The `run` subcommand wires the full pipeline: preflight \u2192 baseline snapshot \u2192 backend dispatch \u2192 delta-bounded cleanup \u2192 schema-validate the inner result \u2192 emit the wrapper envelope \u2192 append a span entry. Supports `--input -` / `--output -` for stdin/stdout I/O, `--dry-run` (returns a plan-only envelope with `status: ok, dry_run: true` and no spawn), and the \u00a710 exit-code contract. Malformed input fails fast: exit 2 plus a `status: input_invalid` envelope on stdout so callers can distinguish wrapper-level rejection from backend failure.",
+      "acceptance_criteria": [
+        "Subcommands per \u00a710.",
+        "`run` wires: preflight \u2192 baseline \u2192 backend dispatch \u2192 cleanup \u2192 schema-validate inner result \u2192 envelope emit \u2192 span append.",
+        "Stdin/stdout `-` syntax works for `--input` and `--output`.",
+        "Exit codes per \u00a710.",
+        "`--dry-run` returns a plan-only envelope with `status: ok, dry_run: true` and no spawn.",
+        "Malformed input \u2192 exit 2 + `status: input_invalid` envelope on stdout."
+      ],
+      "agent": "claude",
+      "classification_reason": "new module creation, multi-step pipeline wiring"
+    },
+    {
+      "id": "006",
+      "title": "Span log (`spans.jsonl`)",
+      "files": [
+        "`plugins/plan-executor/scripts/_claude_span_log.py` (create)",
+        "`plugins/plan-executor/scripts/plan_claude_dispatch.py` (modify \u2014 add `append_span` call)",
+        "`tests/scripts/test_claude_span_log.py` (create)"
+      ],
+      "dependencies": [
+        "005"
+      ],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_claude_span_log.py",
+      "priority": "medium",
+      "plan_file": "TASK-006_span_log_spans_jsonl.md",
+      "description": "Implements the `_claude_span_log.append_span(log_dir, envelope)` helper that atomically writes one JSON line to `$log_dir/spans.jsonl`, defaulting to `docs/plans/` (sibling of `_run_log.jsonl`). The CLI entrypoint (TASK-005) calls it on every dispatch so a multi-hop chain (wrapper \u2192 nested wrapper \u2192 ...) produces N spans with correct parent-link bookkeeping, providing the audit trail that the Codex wrapper has had via `_run_log.jsonl` from day one. Atomicity is required because parallel wrapper invocations on disjoint file sets share the log file.",
+      "acceptance_criteria": [
+        "`append_span(log_dir, envelope)` atomically writes one JSON line to `$log_dir/spans.jsonl`.",
+        "Default log dir: `docs/plans/` (sibling of `_run_log.jsonl`).",
+        "Multi-hop test (wrapper calling wrapper) produces N spans with correct parent links."
+      ],
+      "agent": "claude",
+      "classification_reason": "new module creation, multi-file, design decisions needed"
+    },
+    {
+      "id": "007",
+      "title": "Probe 2b \u2014 `acceptEdits` allowlist enforcement (build gate)",
+      "files": [
+        "`tests/scripts/test_claude_permission_mode_probe.py` (create)"
+      ],
+      "dependencies": [],
+      "test_command": "PLAN_EXEC_E2E=1 venv/bin/python -m pytest tests/scripts/test_claude_permission_mode_probe.py",
+      "priority": "high",
+      "plan_file": "TASK-007_probe_2b_acceptedits_allowlist.md",
+      "description": "Build-gate probe that empirically determines whether `--permission-mode acceptEdits` plus `--allowedTools` constitutes a real safety boundary, or only an advisory hint to be backstopped by delta-bounded cleanup. Invokes `claude -p --agent plan-executor:plan-analyst --permission-mode acceptEdits --allowedTools Read,Grep,Glob,Bash --output-format json` with a prompt to `Write` a file in a tmp dir (Write is NOT in the allowlist). Pass case A: nested session refuses (`permission_denials` non-empty, no file on disk) \u2192 README ships acceptEdits as the default. Pass case B: file created but TASK-004 cleanup reverts it \u2192 README ships cleanup as primary mechanism, allowlist as advisory. Fail case: file created and not reverted \u2192 ship-blocker; v3 must redesign with strict cwd sandbox + cleanup as sole mechanism. Gated on `PLAN_EXEC_E2E=1` AND `claude` on PATH so CI and local dev runs skip cleanly.",
+      "acceptance_criteria": [
+        "Test is skipped by default; runs only when `PLAN_EXEC_E2E=1` AND `claude` is on PATH.",
+        "Invokes `claude -p --agent plan-executor:plan-analyst --permission-mode acceptEdits --allowedTools Read,Grep,Glob,Bash --output-format json` with a prompt to `Write` a file in a tmp dir.",
+        "**Pass case A:** `permission_denials` non-empty AND no file on disk \u2192 proceed with `acceptEdits` as default permission mode.",
+        "**Pass case B:** file created but delta-bounded cleanup reverts it \u2192 proceed; README elevates cleanup as the primary safety mechanism and notes allowlist is advisory only.",
+        "**Fail case:** file created and not reverted \u2192 ship-blocker; revise v3 to use strict cwd sandbox + cleanup as sole mechanism."
+      ],
+      "agent": "claude",
+      "classification_reason": "new file creation, multi-branch test logic, design decisions needed"
+    },
+    {
+      "id": "008",
+      "title": "End-to-end escape-hatch integration test",
+      "files": [
+        "`tests/scripts/test_claude_dispatch_e2e.py` (create)",
+        "`tests/fixtures/claude_dispatch/minimal_payload.json` (create)"
+      ],
+      "dependencies": [
+        "005",
+        "007"
+      ],
+      "test_command": "PLAN_EXEC_E2E=1 venv/bin/python -m pytest tests/scripts/test_claude_dispatch_e2e.py",
+      "priority": "medium",
+      "plan_file": "TASK-008_end_to_end_escape.md",
+      "description": "End-to-end integration test that exercises the wrapper against a real `claude` binary, validating the escape hatch end to end. Case 1: dispatch `agent: plan-analyst` against a stub plan and assert `status: ok`, valid inner result, and a `spans.jsonl` entry. Case 2: malformed input \u2192 exit 2 + `status: input_invalid` (covers TASK-005 fast-fail path). Case 3: two parallel wrapper invocations on disjoint file sets succeed concurrently with no baseline cross-contamination (TASK-004 invariant). Skipped by default; runs when `PLAN_EXEC_E2E=1` AND `claude` is on PATH.",
+      "acceptance_criteria": [
+        "Skipped by default; runs when `PLAN_EXEC_E2E=1` AND `claude` is on PATH.",
+        "Case 1: `agent: plan-analyst` against a stub plan \u2192 `status: ok`, valid inner result, a `spans.jsonl` entry.",
+        "Case 2: malformed input \u2192 exit 2 + `status: input_invalid`.",
+        "Case 3: two parallel wrapper invocations on disjoint file sets succeed; baselines do not cross-contaminate."
+      ],
+      "agent": "claude",
+      "classification_reason": "new test module creation, multi-case integration, underspecified description"
+    },
+    {
+      "id": "009",
+      "title": "README + security doc",
+      "files": [
+        "`plugins/plan-executor/scripts/README_claude_dispatch.md` (create)",
+        "`README.md` (modify)"
+      ],
+      "dependencies": [
+        "005",
+        "007"
+      ],
+      "test_command": "none (documentation-only task; behavior validated by sibling `TASK-008` E2E suite)",
+      "priority": "medium",
+      "plan_file": "TASK-009_readme_security_doc.md",
+      "description": "Documents the nested Claude dispatch wrapper for callers and operators. `README_claude_dispatch.md` covers the escape-hatch use case (why a subagent with only Bash needs to shell out to `claude -p`), the input / output JSON shapes from TASK-001, every `PLAN_EXEC_*` env var, the \u00a79.2 refusal matrix from TASK-002, the billing model (the inner CLI shares billing with the parent session), the v1 dispatchable-agents allowlist (`{plan-analyst, plan-implementer, plan-remediator}`), and the outcome of Probe 2b (Pass A or Pass B per TASK-007) with what it implies for the safety story. Includes a \u226410-line JSON quickstart payload for `plan-implementer`. The top-level `README.md` gains a one-paragraph pointer to the new wrapper so readers discover it from the project root.",
+      "acceptance_criteria": [
+        "`README_claude_dispatch.md` documents: escape-hatch use case; input / output shape; every `PLAN_EXEC_*` env var; the refusal matrix (\u00a79.2); inner CLI shares billing with parent; the v1 dispatchable-agents set; the outcome of Probe 2b (Pass A or B) and what it means for safety invariants.",
+        "Quickstart example: \u226410-line JSON payload for `plan-implementer`.",
+        "Top-level `README.md` gains a one-paragraph pointer to the new wrapper."
+      ],
+      "agent": "claude",
+      "classification_reason": "documentation task, deferred to TASK-008 E2E suite"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001",
+        "007"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/_claude_dispatch_envelope.py",
+        "plugins/plan-executor/scripts/schemas/claude_dispatch_input.json",
+        "plugins/plan-executor/scripts/schemas/claude_dispatch_output.json",
+        "tests/scripts/test_claude_dispatch_envelope.py",
+        "tests/scripts/test_claude_permission_mode_probe.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/_claude_agent_manifest.py",
+        "plugins/plan-executor/scripts/_claude_guardrails.py",
+        "tests/scripts/test_claude_agent_manifest.py",
+        "tests/scripts/test_claude_guardrails.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/_claude_backend.py",
+        "tests/scripts/test_claude_backend.py"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": [
+        "004"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/_claude_dispatch_cleanup.py",
+        "tests/scripts/test_claude_dispatch_cleanup.py"
+      ]
+    },
+    {
+      "index": 5,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_claude_dispatch.py",
+        "tests/scripts/test_plan_claude_dispatch_cli.py"
+      ]
+    },
+    {
+      "index": 6,
+      "task_ids": [
+        "006",
+        "008",
+        "009"
+      ],
+      "file_locks": [
+        "README.md",
+        "plugins/plan-executor/scripts/README_claude_dispatch.md",
+        "plugins/plan-executor/scripts/_claude_span_log.py",
+        "plugins/plan-executor/scripts/plan_claude_dispatch.py",
+        "tests/fixtures/claude_dispatch/minimal_payload.json",
+        "tests/scripts/test_claude_dispatch_e2e.py",
+        "tests/scripts/test_claude_span_log.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

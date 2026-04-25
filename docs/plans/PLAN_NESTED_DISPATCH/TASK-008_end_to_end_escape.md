@@ -25,7 +25,7 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 
 ### TASK-008: End-to-end escape-hatch integration test
 
-- **Status:** pending
+- **Status:** complete
 - **Priority:** medium
 - **Files:**
   - `tests/scripts/test_claude_dispatch_e2e.py` (create)
@@ -40,3 +40,5 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 - **Reversion guidance:** none
 
 **Description:**
+
+End-to-end integration test that exercises the wrapper against a real `claude` binary, validating the escape hatch end to end. Case 1: dispatch `agent: plan-analyst` against a stub plan and assert `status: ok`, valid inner result, and a `spans.jsonl` entry. Case 2: malformed input → exit 2 + `status: input_invalid` (covers TASK-005 fast-fail path). Case 3: two parallel wrapper invocations on disjoint file sets succeed concurrently with no baseline cross-contamination (TASK-004 invariant). Skipped by default; runs when `PLAN_EXEC_E2E=1` AND `claude` is on PATH.

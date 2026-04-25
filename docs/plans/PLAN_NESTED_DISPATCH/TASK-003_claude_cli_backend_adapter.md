@@ -26,7 +26,7 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 
 ### TASK-003: claude-cli backend adapter
 
-- **Status:** pending
+- **Status:** complete
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/_claude_backend.py` (create)
@@ -42,3 +42,5 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 - **Reversion guidance:** none
 
 **Description:**
+
+Implements the `claude` CLI backend adapter `_claude_backend.invoke(manifest, effective, payload, trace)` that actually shells out to the nested `claude -p --output-format json` session. Builds the argv per §8.1: `Agent` is always in `--disallowedTools` (depth-limit invariant), `--add-dir` from the effective cwd, `--permission-mode acceptEdits`, allowlist from the manifest. Captures stdout, parses the JSON top-level `result` envelope, and maps `result`/`duration_ms`/`total_cost_usd`/`session_id`/`usage` into the wrapper output envelope. Maps `subprocess.TimeoutExpired` → `status: timeout` and non-JSON stdout → `status: backend_error, code: malformed_output`. The `--backend-binary` test seam accepts a tiny shim script for unit tests; the real-CLI path is gated on `PLAN_EXEC_E2E=1`.

@@ -27,7 +27,7 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 
 ### TASK-005: CLI entrypoint `plan_claude_dispatch.py`
 
-- **Status:** pending
+- **Status:** complete
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_claude_dispatch.py` (create)
@@ -44,3 +44,5 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 - **Reversion guidance:** none
 
 **Description:**
+
+Implements the `plan_claude_dispatch.py` CLI entrypoint that ties together the schemas (TASK-001), manifest/guardrails (TASK-002), backend adapter (TASK-003), and cleanup (TASK-004). Subcommands per §10. The `run` subcommand wires the full pipeline: preflight → baseline snapshot → backend dispatch → delta-bounded cleanup → schema-validate the inner result → emit the wrapper envelope → append a span entry. Supports `--input -` / `--output -` for stdin/stdout I/O, `--dry-run` (returns a plan-only envelope with `status: ok, dry_run: true` and no spawn), and the §10 exit-code contract. Malformed input fails fast: exit 2 plus a `status: input_invalid` envelope on stdout so callers can distinguish wrapper-level rejection from backend failure.

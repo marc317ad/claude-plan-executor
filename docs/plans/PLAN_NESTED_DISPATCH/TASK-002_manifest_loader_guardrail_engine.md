@@ -25,7 +25,7 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 
 ### TASK-002: Manifest loader + guardrail engine
 
-- **Status:** pending
+- **Status:** complete
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/_claude_agent_manifest.py` (create)
@@ -42,3 +42,5 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 - **Reversion guidance:** none
 
 **Description:**
+
+Implements the agent-manifest loader and the preflight guardrail engine for nested Claude dispatch. `_claude_agent_manifest.load_agent(name)` reads `plugins/plan-executor/agents/<name>.md` frontmatter and returns the `{tools, model, description}` dict; only `{plan-analyst, plan-implementer, plan-remediator}` are dispatchable in v1, others raise `AgentNotDispatchable`. `_claude_guardrails.evaluate_preflight(manifest, input, env)` walks the §9.2 refusal matrix (depth limit, budget, allowlist, etc.) and returns `(allow, envelope_if_denied)`. `scrub_env(manifest, parent_env)` filters the parent env down to `env_allowlist + PLAN_EXEC_*` and injects per-hop bookkeeping vars so child sessions cannot escape the sandbox via inherited state.
