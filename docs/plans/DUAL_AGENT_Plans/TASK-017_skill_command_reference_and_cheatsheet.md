@@ -79,7 +79,7 @@ Each rule has a one-line **Why:** tagline referencing the error it prevents, mat
 
 ### TASK-017: Skill command reference + CLI cheat sheet + invocation discipline
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`

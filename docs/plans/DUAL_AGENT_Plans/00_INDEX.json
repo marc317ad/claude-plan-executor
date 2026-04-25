@@ -59,7 +59,7 @@
       "priority": "medium",
       "issues_absorbed": [],
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -81,7 +81,7 @@
       "depends_on": [],
       "status": "Pending",
       "superseded_by": [],
-      "origin_note": "Surfaced during TASK-020B run 20260421T031650 Codex review — reviewer hallucinated a helper symbol (_add_git_dir) and was not given description/implementation_notes context; wrapper had no structural check. TASK-027A adds prompt-context forwarding + post-envelope symbol verification."
+      "origin_note": "Surfaced during TASK-020B run 20260421T031650 Codex review \u2014 reviewer hallucinated a helper symbol (_add_git_dir) and was not given description/implementation_notes context; wrapper had no structural check. TASK-027A adds prompt-context forwarding + post-envelope symbol verification."
     },
     {
       "task_id": "027B",
@@ -92,7 +92,7 @@
       "depends_on": [],
       "status": "Pending",
       "superseded_by": [],
-      "origin_note": "Surfaced during TASK-020B run 20260421T031650 — implementer substituted _append_run_log for the plan's scripts/plan_ops.py log-event form without flagging it under Plan adaptations; current trigger scopes adaptation-flagging narrowly to 'live code differs.'"
+      "origin_note": "Surfaced during TASK-020B run 20260421T031650 \u2014 implementer substituted _append_run_log for the plan's scripts/plan_ops.py log-event form without flagging it under Plan adaptations; current trigger scopes adaptation-flagging narrowly to 'live code differs.'"
     },
     {
       "task_id": "027C",
@@ -103,7 +103,7 @@
       "depends_on": [],
       "status": "Pending",
       "superseded_by": [],
-      "origin_note": "Surfaced during TASK-020B run 20260421T031650 D.5 adjudication — the dismissal-evidence gate's spec-deference label drifted onto an implementer-deviation case; rubric needs a precondition clause distinguishing dismissed (implementer deviated) from spec-deference (implementer followed plan)."
+      "origin_note": "Surfaced during TASK-020B run 20260421T031650 D.5 adjudication \u2014 the dismissal-evidence gate's spec-deference label drifted onto an implementer-deviation case; rubric needs a precondition clause distinguishing dismissed (implementer deviated) from spec-deference (implementer followed plan)."
     },
     {
       "task_id": "028",

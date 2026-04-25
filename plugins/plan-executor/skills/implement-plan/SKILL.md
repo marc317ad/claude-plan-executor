@@ -892,6 +892,15 @@ Do NOT auto-push. Do NOT auto-PR.
 - **Never write inline Python for plan ops.** Use `plan_ops.py`. Inline `python3 -c` scripts are a protocol violation.
 - **Dispatch prompts must be self-contained.** Subagents do not see this conversation. Embed the full task block verbatim.
 
+### Pre-invocation checklist
+
+Four process rules that would have prevented every doc-fixable error in run `20260417T214309`. Run these before re-invoking `plan_ops.py` or dispatching a subagent — especially after a context compaction.
+
+1. **Run `--help` on any `plan_ops.py` subcommand before re-invoking it after a context compaction.** The cache is cheap; flag-name drift isn't. **Why:** prevents error 5 (`--payload` vs `--fields-json` flag amnesia on `log-event`).
+2. **Grep `ALLOWED_*` constants in `plan_ops.py` before any `log-event` or `commit-task` call that uses enum-valued flags** (event names, reviewer verdicts, severity values, outcome values). **Why:** prevents error 2 (invented `log-event type=d5_review_done` outside `ALLOWED_LOG_EVENTS`).
+3. **Read the relevant `_validate_*` function in `plan_ops.py` before piping into a `parse-*` subcommand.** The validator checks the envelope shape, not what downstream code consumes. **Why:** prevents error 1 (fed bare `parsed` object to `parse-plan-review-report` instead of the full `{subcommand,outcome,parsed}` envelope).
+4. **Never Agent-dispatch a subagent file created during the current run.** The Claude Code Agent registry **snapshots at session start**; newly-created subagent files become available in the next fresh session, not the one that created them. If you must retry within the current session, fall back to the closest existing subagent with an inlined prompt matching the new subagent's contract. **Why:** prevents error 4 (Agent-registry miss on the same-session-created `plan-remediator`).
+
 ## Cleanup policy (wrapper-enforced, for reference)
 
 The Codex dispatch wrapper operates **delta-bounded cleanup** against a pre-dispatch baseline. It never runs `git checkout -- .` or `git clean -fd`, so disjoint sibling work is not destroyed. Protected paths are never touched by cleanup; they land in `extra.protected_skipped_tracked` / `extra.protected_skipped_untracked` for observability.
@@ -901,3 +910,192 @@ The Codex dispatch wrapper operates **delta-bounded cleanup** against a pre-disp
 - **Delta invariant:** cleanup only touches `(allowed_files ∪ new-delta-violations) − protected`. Files present in the baseline are never deleted or restored.
 - **Scope misreport:** if Codex's `files_changed` disagrees with the post-dispatch delta, the wrapper emits `outcome="failure"` with `extra.reason="scope_misreport"` and `extra.test_result.result="not_run"`; the test command is skipped but delta-only restore still runs.
 - **Review-path:** keeps "log but succeed" semantics by explicit design; a post-dispatch sandbox escape surfaces in `extra.sandbox_escape_detected` without changing outcome.
+
+## Command reference
+
+For a one-page lifecycle-ordered CLI summary (especially after a context compaction), Read `plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md` first — it rehydrates the full subcommand vocabulary in a single tool call. This appendix is the deep reference: full JSON payload shapes, validator pointers, and worked examples for the non-obvious subcommands. Examples were verified against `$PYTHON plan_ops.py <sub> --help` at audit anchor `1456687`. Substitute placeholders (`<plan-file>`, `<task-id>`, `<run-id>`, `<sha>`, file paths) only — flag names and enum values are literal.
+
+### `parse-plan-review-report`
+
+Validates the **full envelope** the Codex plan-review wrapper emits, not the inner `parsed` object. `_validate_plan_review_envelope` requires the top-level keys `{subcommand, outcome, parsed}` — feeding a bare `parsed` payload exits 1 with `unknown-top-level-key` errors. This was error 1 in run `20260417T214309`.
+
+Correct shape:
+
+```bash
+echo '{
+  "subcommand": "plan-review",
+  "outcome": "success",
+  "parsed": {
+    "plan_file": "<plan-file>",
+    "verdict": "approved-with-notes",
+    "findings": [],
+    "schedule_ok": true,
+    "summary": "..."
+  }
+}' | $PYTHON plan_ops.py parse-plan-review-report --stdin --json
+```
+
+Incorrect (rejected):
+
+```bash
+# Bare `parsed` — fails with unknown-top-level-key on every key.
+echo '{"plan_file":"...","verdict":"approved","findings":[]}' \
+  | $PYTHON plan_ops.py parse-plan-review-report --stdin
+```
+
+If unsure about the envelope, grep `_validate_plan_review_envelope` in `plan_ops.py` for the live shape.
+
+### `parse-d5-adjudication`
+
+Stdin payload shape: `{verdict, summary, load_bearing, dismissed}`. `--codex-findings-count N` is **mandatory** — partial-agreement indices are validated against `range(0, N)`. One example per verdict:
+
+```bash
+# ship — load_bearing/dismissed omitted (or empty arrays).
+echo '{"verdict":"ship","summary":"D.5 sides with implementer; Codex findings dismissed."}' \
+  | $PYTHON plan_ops.py parse-d5-adjudication --stdin --codex-findings-count 3 --json
+
+# ship-with-fixes — Codex findings stand; commit with [disagreement] tag.
+echo '{"verdict":"ship-with-fixes","summary":"All Codex findings load-bearing; ship + fix later."}' \
+  | $PYTHON plan_ops.py parse-d5-adjudication --stdin --codex-findings-count 3 --json
+
+# needs-rework — D.5 escalates to D.2a.5 remediation retry.
+echo '{"verdict":"needs-rework","summary":"D.5 confirms blockers; remediation needed."}' \
+  | $PYTHON plan_ops.py parse-d5-adjudication --stdin --codex-findings-count 3 --json
+
+# partial-agreement — disjoint, in-range index splits required; both buckets non-empty.
+echo '{"verdict":"partial-agreement","summary":"Findings 0,2 load-bearing; finding 1 dismissed.","load_bearing":[0,2],"dismissed":[1]}' \
+  | $PYTHON plan_ops.py parse-d5-adjudication --stdin --codex-findings-count 3 --json
+```
+
+Empty-bucket or overlapping-bucket payloads exit with `partial-agreement-invalid-split`; out-of-range indices exit with `partial-agreement-unknown-index`.
+
+### `log-event`
+
+Use `--fields-json '{...}'`, **not `--payload`** (error 5 in run `20260417T214309` was post-compaction flag amnesia). The event name MUST be in `ALLOWED_LOG_EVENTS`; inventing a name (e.g., `d5_review_done`) exits 1 (error 2 in run `20260417T214309`).
+
+`ALLOWED_LOG_EVENTS` (alphabetized — grep this block after compaction; matches `plan_ops.py` exactly):
+
+```
+analyst_done
+analyst_triage_skipped
+awaiting_user
+batch_start
+commit_done
+decompose_auto_promote
+disagreement
+fallback_used
+failed
+implement_done
+implement_start
+narrow_remediation_done
+narrow_remediation_start
+plan_author_done
+plan_author_start
+plan_review_done
+plan_review_skipped
+plan_review_start
+plan_review_triage_done
+plan_review_triage_start
+remediation_start
+review_done
+review_skipped
+review_start
+run_end
+run_start
+schedule_written
+v_check_failed
+v_check_passed
+```
+
+One example per class:
+
+```bash
+# Lifecycle (run-bracket).
+$PYTHON plan_ops.py log-event --event run_start \
+  --fields-json '{"run_id":"<run-id>","plan_file":"<dir-basename>","starting_sha":"<sha>"}'
+
+# Phase (per-task / per-batch checkpoint).
+$PYTHON plan_ops.py log-event --event implement_start \
+  --fields-json '{"run_id":"<run-id>","task_id":"<task-id>","plan_file":"<child-basename>","agent":"claude"}'
+
+# Outcome (commit / fail / disagreement).
+$PYTHON plan_ops.py log-event --event disagreement \
+  --fields-json '{"run_id":"<run-id>","task_id":"<task-id>","reviewer":"codex","verdict":"needs-rework","d5_verdict":"ship-with-fixes"}'
+```
+
+### `commit-task`
+
+`--reviewer-minor-findings` is a JSON **array** of finding objects with required keys `{severity ∈ {critical, important, minor}, confidence ∈ {high, medium, low}, file, line, issue, suggested_fix}`. The severity enum is fixed; `_validate_reviewer_finding` exits 1 on any other value.
+
+(a) Standard `minor-findings` commit (Codex reviewer, ship despite advisory findings):
+
+```bash
+$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
+  --files "a.py,b.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
+  --reviewer codex --reviewer-verdict minor-findings \
+  --reviewer-minor-findings '[{"severity":"minor","confidence":"high","file":"a.py","line":42,"issue":"Magic number","suggested_fix":"Extract constant"}]' \
+  --dry-run
+```
+
+(b) **D.5-disagreement commit (post-§8.4 third opinion).** D.5 is the third-opinion tie-breaker; **D.5's verdict (`ship | ship-with-fixes | partial-agreement`) is passed as `--reviewer-verdict`; Codex's `needs-rework` is NOT** — that was the confusion behind error 3 in run `20260417T214309`. `--disagreement-tag` records that Codex disagreed; the verdict that ships is D.5's:
+
+```bash
+$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
+  --files "a.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
+  --reviewer claude --reviewer-verdict ship-with-fixes \
+  --disagreement-tag --dry-run
+```
+
+The `[disagreement]` bare trailer encodes "Codex flagged needs-rework, D.5 overrode to ship-with-fixes." Do NOT pass `--reviewer-verdict needs-rework` — the commit guard rejects it because needs-rework never auto-commits.
+
+(c) **D.2a.5 remediation retry** — full rework, single retry; `[remediation]` trailer:
+
+```bash
+$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
+  --files "a.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
+  --reviewer codex --reviewer-verdict clean \
+  --remediation-tag --dry-run
+```
+
+(d) **D.2a.6 narrow remediation** — dismissed indices recorded as `[disagreement: I,J,K]` adjacent to `[narrow-remediation]`:
+
+```bash
+$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
+  --files "a.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
+  --reviewer codex --reviewer-verdict minor-findings \
+  --reviewer-minor-findings '[]' \
+  --narrow-remediation-tag --dismissed-finding-ids "0,2" --dry-run
+```
+
+(e) **User-override / post-pause keep-as-is** — no reviewer signal:
+
+```bash
+$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
+  --files "a.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
+  --reviewer none --reviewer-verdict "" \
+  --remediation-tag --dry-run
+```
+
+### `finalize-execution-log`
+
+`--rows-json` is a JSON array; each row carries `{task, agent, reviewer, verdict, commit, notes}` (the keys in `ALLOWED_ROW_FIELDS`). `--outcome` is optional (omitted preserves the legacy unlabelled header) and accepts `{success, partial, failed, paused}`.
+
+`--outcome` semantics:
+
+| value | meaning |
+|---|---|
+| `success` | All tasks committed cleanly (or with reviewer-approved minor-findings / ship-with-fixes). |
+| `partial` | At least one task succeeded, at least one failed/blocked. The §5 table records the mix. |
+| `failed` | No tasks succeeded — preflight or batch 1 halted before any commit landed. |
+| `paused` | D.2a.5 awaiting-user halt — second `needs-rework` after remediation retry. Pending edits remain in the working tree; the user's next conversation turn decides disposition. |
+
+```bash
+$PYTHON plan_ops.py finalize-execution-log --plan-file <plan-file> --run-id <run-id> \
+  --starting-sha <sha-start> --ending-sha <sha-end> \
+  --rows-json '[
+    {"task":"001","agent":"claude","reviewer":"codex","verdict":"clean","commit":"<sha>","notes":""},
+    {"task":"002","agent":"codex","reviewer":"claude","verdict":"ship-with-fixes","commit":"<sha>","notes":"[disagreement]"}
+  ]' \
+  --outcome success
+```
+
