@@ -1,5 +1,7 @@
 # TASK-012 — Define `parse-reviewer-report` Contract and Integration
 
+### TASK-012: Define `parse-reviewer-report` Contract and Integration
+
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md)
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md)
 **Related chunks:** [`TASK-002_runtime_validation.md`](TASK-002_runtime_validation.md), [`TASK-003_state_isolation.md`](TASK-003_state_isolation.md), [`TASK-005_phase_gates.md`](TASK-005_phase_gates.md)

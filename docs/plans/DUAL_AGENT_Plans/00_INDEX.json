@@ -434,20 +434,6 @@
       "superseded_by": []
     },
     {
-      "task_id": "021",
-      "v3_task": "TASK-021",
-      "file": "TASK-021_codex_reviewer_evidence_gate.md",
-      "priority": "low",
-      "issues_absorbed": [],
-      "depends_on": [
-        "015"
-      ],
-      "status": "Superseded",
-      "superseded_by": [
-        "024"
-      ]
-    },
-    {
       "task_id": "022",
       "v3_task": "TASK-022",
       "file": "TASK-022_reviewer_findings_log_and_d5_depth.md",
@@ -482,7 +468,7 @@
       "depends_on": [
         "015"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {

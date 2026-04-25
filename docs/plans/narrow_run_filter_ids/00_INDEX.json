@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "chunks": [
+    {
+      "task_id": "001",
+      "v3_task": "TASK-001",
+      "file": "TASK-001_index_closure_helper.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "v3_task": "TASK-002",
+      "file": "TASK-002_build_tasks_filter_ids.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "v3_task": "TASK-003",
+      "file": "TASK-003_broken_sibling_fixture.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "v3_task": "TASK-004",
+      "file": "TASK-004_orchestrator_narrow_run.md",
+      "priority": "high",
+      "issues_absorbed": [],
+      "depends_on": [
+        "002",
+        "003"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "v3_task": "TASK-005",
+      "file": "TASK-005_audit_body_deps_canonical.md",
+      "priority": "low",
+      "issues_absorbed": [],
+      "depends_on": [
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
