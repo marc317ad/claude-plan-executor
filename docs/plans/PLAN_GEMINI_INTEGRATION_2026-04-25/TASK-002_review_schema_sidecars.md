@@ -39,7 +39,7 @@ The OpenAI strict-validator invariant from `CODEX_FRICTION_2026-04-25/TASK-001` 
 
 ### TASK-002: `gemini_*_schema.json` review + plan-review sidecars
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/gemini_review_schema.json` (new)
@@ -65,3 +65,11 @@ Two new JSON-schema sidecars that mirror the Codex equivalents. The wrapper's st
 - Both schemas use `additionalProperties: false` at the top level AND on nested `findings.items` — the recursive walker in TASK-008 will visit both depths.
 - Do NOT add Gemini-specific fields in v1. Future divergence is a separate task; this one mirrors.
 - The mirror test reads both files via `json.load` and compares `set(top["required"])`, `set(top["properties"].keys())`, `set(top["properties"]["verdict"]["enum"])`, `set(top["properties"]["findings"]["items"]["properties"].keys())`, `set(top["properties"]["findings"]["items"]["required"])`. A single test function per (review, plan-review) pair with `pytest.mark.parametrize` is fine.
+
+## Execution log — 20260425T172244 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `d7bd9dd620561810d897e8e7af051153b8a3ff5e`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | codex->claude (fallback) | codex | clean | cd799fc | Codex wrapper test-cmd env mismatch (no venv/) -> Claude verification fallback; review clean on first pass |

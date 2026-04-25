@@ -47,10 +47,12 @@ The restrictive policy TOML, `GEMINI_CLI_HOME` isolation, missing-API-key short-
 
 ### TASK-004: `plan_gemini_dispatch.py plan-review` subcommand
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_gemini_dispatch.py` (edit — extends TASK-003's module)
+  - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit — switch inline `--allow-gaps` demotion clause to the shared constant; consume the shared `_should_inject_allow_gaps_demotion` helper)
+  - `plugins/plan-executor/scripts/_plan_paths.py` (edit — add `ALLOW_GAPS_DEMOTION_CLAUSE` constant and `_should_inject_allow_gaps_demotion(schedule_dict, allow_gaps_flag) -> bool` helper for both wrappers to import; or, if the implementer prefers a dedicated module, a new `plugins/plan-executor/scripts/_review_prompts.py` may be added in lieu of editing `_plan_paths.py` — pick exactly one home)
   - `tests/scripts/test_plan_gemini_dispatch_plan_review.py` (new)
 - **Dependencies:** [003]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_gemini_dispatch_plan_review.py tests/scripts/test_plan_gemini_dispatch_review.py`
@@ -80,3 +82,11 @@ Add `plan-review` to the Gemini wrapper. The trickiest part is keeping the `--al
 - The "schedule has no structural violations" check is `outcome == "needs-enrichment"` (the schedule validator's contract). Missing or unknown `outcome` suppresses the demotion. Mirror exactly.
 - The Gemini prompt for `plan-review` embeds the schema verbatim, then the schedule's `tasks[]` and `batches[]`, then the `--allow-gaps` clause if applicable, then the verdict-vocabulary block. Reuse `plan_codex_dispatch.py`'s prompt-construction helper if it factors cleanly; otherwise mirror its output.
 - The shim for the new test reads `GEMINI_SHIM_MODE` env var to choose the response. Reuse the shim from TASK-003 if it was placed in `tests/scripts/_gemini_shim.py`; if it was inlined per-test, lift it to a shared fixture in this task.
+
+## Execution log — 20260425T172244 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `d7bd9dd620561810d897e8e7af051153b8a3ff5e`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | codex | clean [remediation] | d7bd9dd | Round-1 prompt-section ordering deviation; user-authorized hand-fix; round-2 clean |
