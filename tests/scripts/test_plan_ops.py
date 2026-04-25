@@ -1749,6 +1749,220 @@ class TestComputeSchedule:
 
 
 # ---------------------------------------------------------------------------
+# PLAN_TOPO_RESPECT_FIX TASK-001: shared dep-aware batching helper
+# ---------------------------------------------------------------------------
+
+
+class TestDependencyAwareBatches:
+    """Direct unit tests for ``_dependency_aware_batches`` —
+    the canonical (topo-layered + file-disjoint + global-lock-solitary)
+    batching helper shared by ``_compute_schedule_batches`` and
+    ``_build_tasks``.
+
+    Regression-pinning suite for
+    ``docs/plans/PLAN_TOPO_RESPECT_FIX_2026-04-25``: a serial chain with
+    disjoint files MUST yield N batches in topo order, not collapse into
+    a single file-disjoint batch.
+    """
+
+    @staticmethod
+    def _ordered_ids(tasks: list[dict]) -> list[str]:
+        """Mimic ``_compute_schedule_batches``'s caller-side priority
+        sort so the helper sees ids in the canonical order."""
+        return [
+            t["id"]
+            for t in sorted(
+                tasks,
+                key=lambda t: plan_ops._task_order_key(
+                    t["id"], t.get("priority", "low"),
+                ),
+            )
+        ]
+
+    def test_single_task_yields_single_batch(self) -> None:
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        assert batches == [
+            {"index": 1, "task_ids": ["001"], "file_locks": ["a.py"]},
+        ]
+
+    def test_independent_disjoint_tasks_pack_into_single_batch(self) -> None:
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": []},
+            {"id": "003", "priority": "high", "files": ["c.py"], "dependencies": []},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        assert batches == [
+            {
+                "index": 1,
+                "task_ids": ["001", "002", "003"],
+                "file_locks": ["a.py", "b.py", "c.py"],
+            },
+        ]
+
+    def test_independent_overlapping_tasks_split_into_multiple_batches(
+        self,
+    ) -> None:
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["shared.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["shared.py"], "dependencies": []},
+            {"id": "003", "priority": "high", "files": ["shared.py"], "dependencies": []},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        # File-disjoint packer cannot share `shared.py` → solitary batches
+        # in priority/id order.
+        assert [b["task_ids"] for b in batches] == [["001"], ["002"], ["003"]]
+        assert [b["index"] for b in batches] == [1, 2, 3]
+
+    def test_serial_chain_disjoint_files_yields_n_batches(self) -> None:
+        """Regression-pinning: serial chain ``001 → 002 → 003`` with
+        file-disjoint payloads MUST produce 3 topo-ordered batches, not
+        collapse into a single file-disjoint batch.
+
+        See ``docs/plans/PLAN_TOPO_RESPECT_FIX_2026-04-25`` for the
+        post-mortem; this is the case the prior file-disjoint-only
+        batcher got wrong.
+        """
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+            {"id": "003", "priority": "high", "files": ["c.py"], "dependencies": ["002"]},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        assert len(batches) == 3
+        assert [b["task_ids"] for b in batches] == [["001"], ["002"], ["003"]]
+        assert [b["index"] for b in batches] == [1, 2, 3]
+        assert [b["file_locks"] for b in batches] == [["a.py"], ["b.py"], ["c.py"]]
+
+    def test_diamond_dependency_yields_three_batches(self) -> None:
+        """Diamond ``A → B,C → D`` with file-disjoint B and C produces
+        3 batches: ``[[A], [B, C], [D]]``."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+            {"id": "003", "priority": "high", "files": ["c.py"], "dependencies": ["001"]},
+            {"id": "004", "priority": "high", "files": ["d.py"], "dependencies": ["002", "003"]},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        assert [b["task_ids"] for b in batches] == [
+            ["001"], ["002", "003"], ["004"],
+        ]
+        assert [b["index"] for b in batches] == [1, 2, 3]
+
+    def test_global_lock_task_forced_into_solitary_batch(self) -> None:
+        """A task whose files intersect ``GLOBAL_LOCK_PATHS`` MUST get
+        its own sub-batch even when file-disjoint with siblings."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["requirements.txt"], "dependencies": []},
+            {"id": "003", "priority": "high", "files": ["b.py"], "dependencies": []},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        # 001 and 003 are file-disjoint with each other; 002 is
+        # global-locked → solitary sub-batch.
+        assert [b["task_ids"] for b in batches] == [
+            ["001", "003"], ["002"],
+        ]
+        assert [b["index"] for b in batches] == [1, 2]
+        # Confirm the global-lock entry is the solitary one.
+        solitary = [b for b in batches if b["task_ids"] == ["002"]][0]
+        assert solitary["file_locks"] == ["requirements.txt"]
+
+    def test_cycle_returns_cyclic_dependency_error(self) -> None:
+        """``A → B → A`` returns ``cyclic-dependency`` and empty batches."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["002"]},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert batches == []
+        assert len(errors) == 1
+        assert errors[0]["code"] == "cyclic-dependency"
+        assert sorted(errors[0]["task_ids"]) == ["001", "002"]
+
+    def test_orphan_dep_returns_unresolvable_dep_error(self) -> None:
+        """A dep id not present in the task set returns
+        ``unresolvable-dep`` and empty batches."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["999"]},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert batches == []
+        assert len(errors) == 1
+        assert errors[0]["code"] == "unresolvable-dep"
+        assert errors[0]["task_id"] == "001"
+        assert errors[0]["dep_id"] == "999"
+
+    def test_mixed_priority_within_layer_packs_higher_priority_first(
+        self,
+    ) -> None:
+        """Within a single topo layer, the greedy packer sees ids in
+        ``_task_order_key`` (priority-then-id) order, so high-priority
+        ids occupy the first sub-batch slot when file conflicts force a
+        split."""
+        # Three independent (no-deps) tasks all touching `shared.py` →
+        # one layer with three solitary sub-batches; the high-priority
+        # task MUST land in batch 1.
+        tasks = [
+            {"id": "001", "priority": "low", "files": ["shared.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["shared.py"], "dependencies": []},
+            {"id": "003", "priority": "medium", "files": ["shared.py"], "dependencies": []},
+        ]
+        ordered = self._ordered_ids(tasks)
+        # Sanity: caller-side sort places high → medium → low.
+        assert ordered == ["002", "003", "001"]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, ordered,
+        )
+        assert errors == []
+        assert [b["task_ids"] for b in batches] == [
+            ["002"], ["003"], ["001"],
+        ]
+        assert [b["index"] for b in batches] == [1, 2, 3]
+
+    def test_helper_does_not_mutate_inputs(self) -> None:
+        """Pure-function contract: neither ``tasks`` nor
+        ``ordered_task_ids`` is mutated by the call."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+        ]
+        ordered = self._ordered_ids(tasks)
+        # Snapshot via deep copy through json round-trip (sufficient for
+        # plain dicts/lists; we don't carry sets at the wire boundary).
+        tasks_before = json.loads(json.dumps(tasks))
+        ordered_before = list(ordered)
+        plan_ops._dependency_aware_batches(tasks, ordered)
+        assert tasks == tasks_before
+        assert ordered == ordered_before
+
+
+# ---------------------------------------------------------------------------
 # TASK-010: globally-locked dependency / environment paths
 # ---------------------------------------------------------------------------
 

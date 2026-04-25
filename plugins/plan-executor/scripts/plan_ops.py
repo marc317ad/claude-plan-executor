@@ -436,10 +436,31 @@ def _task_order_key(task_id: str, priority: str) -> tuple[int, int, str]:
 def _create_dependency_aware_batches(
     tasks: list[dict], task_ids_to_process: list[str],
 ) -> tuple[list[dict], list[dict]]:
-    """Dependency-aware + file-lock-aware batching.
+    """Dependency-aware + file-lock-aware batching (canonical helper).
 
-    Topo-sorts tasks, then partitions each topo-layer into file-disjoint
-    batches.
+    Topo-sorts tasks via ``_compute_decompose_batches`` (Kahn's), then
+    partitions each topo layer into file-disjoint sub-batches using a
+    greedy first-fit packer, with global-lock tasks
+    (``_is_global_lock_path`` over the task's files) forced into their
+    own solitary sub-batches. Sub-batches are flattened across topo
+    layers into the canonical schedule wire shape
+    ``[{index, task_ids, file_locks}, ...]`` with monotonically
+    increasing 1-based ``index``.
+
+    Inputs are not mutated. The function does not call ``_die``, write
+    files, or print — it is a pure (helper-style) function.
+
+    Error codes returned (in ``errors[]``, with ``batches=[]``):
+
+    * ``unresolvable-dep`` — a ``dependencies[]`` entry references an
+      id not present in ``tasks[]``.
+    * ``cyclic-dependency`` — Kahn's cannot drain the graph.
+
+    Regression prevented: ``docs/plans/PLAN_TOPO_RESPECT_FIX_2026-04-25``
+    — without topo layering, a serial chain ``001 → 002 → 003`` whose
+    files are disjoint collapses into a single batch (file-disjoint
+    only), which violates the declared dependency DAG and is correctly
+    flagged by Codex ``plan-review`` as a layering violation.
     """
     errors: list[dict] = []
     # Cycle detection / topo-sort over the collected tasks.
@@ -526,6 +547,15 @@ def _create_dependency_aware_batches(
             })
             next_batch_index += 1
     return batches, []
+
+
+# Spec-named alias for TASK-001 of PLAN_TOPO_RESPECT_FIX_2026-04-25. Both
+# names point at the canonical helper; the alias satisfies the plan's
+# Acceptance criteria which names the symbol exactly as
+# ``_dependency_aware_batches(tasks, ordered_task_ids)``. The original
+# ``_create_dependency_aware_batches`` is preserved so existing call sites
+# (``_compute_schedule_batches``, ``_build_tasks``) keep working unchanged.
+_dependency_aware_batches = _create_dependency_aware_batches
 
 
 def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[dict]]:

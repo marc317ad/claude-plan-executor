@@ -42,7 +42,7 @@ Land a single shared batching helper that performs dependency-aware (topo-layere
 
 ### TASK-001: Add `_dependency_aware_batches(tasks, ordered_task_ids)` helper + direct unit tests
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
