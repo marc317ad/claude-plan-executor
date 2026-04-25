@@ -83,7 +83,7 @@ The wrapper's working-tree cleanup uses `_plan_paths.is_protected_path` (the sam
 
 ### TASK-003: `plan_gemini_dispatch.py` skeleton + `review` subcommand
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_gemini_dispatch.py` (new)
@@ -134,3 +134,13 @@ Build the Gemini wrapper module with the `review` subcommand wired end-to-end. T
 - The fake `gemini` shim used by the test is a tiny Python script (≤80 lines) that reads its own `--shim-mode` flag (set via the test's `GEMINI_SHIM_MODE` env var) and emits one of: a valid envelope, an envelope with malformed JSON in `.response`, or a non-zero exit. The test's pytest fixture overlays the shim onto `PATH`. Keep the shim dependency-free — pure stdlib.
 - Restrictive policy TOML uses `priority = 999` as recommended by Gemini's policy-engine docs (highest precedence so user-level allow rules can't override it during a review). Belt-and-braces: the `--approval-mode plan` flag also makes the session read-only, but the policy is the structural enforcement.
 - Do NOT pass `--yolo` anywhere. Do NOT pass `--accept-raw-output-risk` anywhere. Both would weaken the review's trust posture.
+
+## Execution log — 20260425T162535 (paused)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `cd799fc65a30d8a85e9a09fb11815dbc9ffcd48c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | codex | ship-with-fixes [narrow-remediation, disagreement: 0] | ecb91db | D.5 dismissed mode-100644 false-positive; user authorized hand-fix of hardcoded miniconda3 paths + override commit |
+| 002 | codex->claude (fallback) | codex | clean | cd799fc | Codex wrapper test-cmd env mismatch (no venv/) -> Claude verification fallback; review clean |
+| 003 | claude | codex | needs-rework [post-remediation, awaiting user] |  | D.2a.5 round-2 review surfaced 2 NEW production-contract findings (missing -o json flag, exit-code ignored) |
