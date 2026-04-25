@@ -51,6 +51,7 @@ from _plan_paths import (  # noqa: E402
     canonicalize_file,
     is_commit_always_ignore,
     is_protected_path,
+    normalize_files_entry,
 )
 
 def _load_plan_config() -> dict:
@@ -6907,31 +6908,12 @@ def _normalize_files_entry(raw: str) -> str:
     """Strip backticks, `(create|modify|delete)` annotations, and `:line`
     suffixes from a raw Files: entry. Mirrors the wrapper's
     `normalize_file_path` so the commit guard/gate agree on allowlist keys.
+
+    Thin module-private alias kept for back-compat with ~40 internal call
+    sites; the canonical implementation lives in
+    ``_plan_paths.normalize_files_entry`` (TASK-002 unification).
     """
-    cleaned = raw.strip()
-    # Strip trailing (create), (modify), (delete), (create \u2014 rationale),
-    # ... BEFORE the dash-split below. A parenthetical that itself contains
-    # an em-dash (`(create \u2014 canonical + malformed markdown fixtures)`)
-    # must be removed as a unit, otherwise the dash-split truncates the
-    # entry mid-parenthetical and the trailing-paren strip no longer sees
-    # a closing `)` to anchor on.
-    cleaned = re.sub(r"\s*\([^)]+\)\s*$", "", cleaned).strip()
-    # Prefer leading backtick-quoted path so descriptive prose after
-    # the path (e.g., "`foo.py` -- description") doesn't weld to the
-    # path and break commit-safe.
-    m_backtick = re.match(r"`([^`]+)`", cleaned)
-    if m_backtick:
-        cleaned = m_backtick.group(1).strip()
-    else:
-        cleaned = re.split(r"\s+[-\u2013\u2014]\s+", cleaned, maxsplit=1)[0].strip()
-    cleaned = cleaned.strip()
-    # Strip wrapping backticks; `git show --name-only` never emits them.
-    if cleaned.startswith("`") and cleaned.endswith("`") and len(cleaned) >= 2:
-        cleaned = cleaned[1:-1]
-    # Strip :N-M or :N–M ranges, then a single :N reference.
-    cleaned = re.sub(r":\d+[-\u2013]\d+$", "", cleaned)
-    cleaned = re.sub(r":\d+$", "", cleaned)
-    return cleaned.strip()
+    return normalize_files_entry(raw)
 
 
 def _extract_task_files_from_plan(plan_text: str, task_id: str) -> list[str] | None:

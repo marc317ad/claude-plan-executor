@@ -46,7 +46,7 @@ The wrapper's broken normaliser is invoked in three places: `render_implement_pr
 
 ### TASK-002: Wrapper Files-block parser unification
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/_plan_paths.py` (edit)

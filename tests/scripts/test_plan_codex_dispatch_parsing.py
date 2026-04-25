@@ -149,3 +149,93 @@ class TestWrapperParseTaskBlock:
     def test_wrapper_parse_task_block_missing_suffixed_raises(self) -> None:
         with pytest.raises(ValueError, match=r"TASK-004C not found in plan"):
             plan_codex_dispatch.parse_task_block(PLAN_WITH_SUFFIXED_TASKS, "004C")
+
+
+# ---------------------------------------------------------------------------
+# Files: bullet normalization (TASK-002 parser unification)
+#
+# The orchestrator (`plan_ops._normalize_files_entry`) and the wrapper
+# (`plan_codex_dispatch.normalize_file_path`) have to agree byte-for-byte
+# on what a `Files:` bullet reduces to, otherwise commit-safe scope
+# checks reject commits that the wrapper allowed (or vice versa).
+# Both helpers now delegate to `_plan_paths.normalize_files_entry`; this
+# test class pins the wrapper-side surface.
+# ---------------------------------------------------------------------------
+
+
+_PROSE_LADEN_FILES_PLAN = """# Plan: prose-laden
+
+## Context
+
+Plan with prose-continuation Files: bullets to verify the wrapper's
+unified normaliser drops the prose tail.
+
+## Tasks
+
+### TASK-001: Prose-laden bullets
+
+- **Status:** pending
+- **Priority:** P1
+- **Files:**
+  - `Makefile` -- add `audit` target wired to `plan_ops.py audit`
+- **Dependencies:** []
+- **Test command:** none
+
+**Description:**
+Backticked-prose-laden bullet must reduce to the bare path.
+"""
+
+
+class TestWrapperNormalizeFilePath:
+    """Pin the wrapper's `normalize_file_path` (alias of the canonical
+    `_plan_paths.normalize_files_entry`). >= 5 cases covering bare path,
+    backticked path, em-dash-prose, annotation, and `:N-M` suffix forms.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            # Bare path (no markdown wrapping, no annotation).
+            ("scripts/foo.py", "scripts/foo.py"),
+            # Backticked path with no prose continuation.
+            ("`scripts/foo.py`", "scripts/foo.py"),
+            # Backticked path + em-dash + prose continuation. The leading
+            # backtick capture must win so prose does not weld to the path.
+            (
+                "`Makefile` -- add `audit` target wired to `plan_ops.py audit`",
+                "Makefile",
+            ),
+            # Annotation in trailing parens (single token).
+            ("`scripts/foo.py` (modify)", "scripts/foo.py"),
+            # Annotation in trailing parens with embedded em-dash inside.
+            (
+                "tests/fixtures/decomposer_inputs/ "
+                "(create — canonical + malformed markdown fixtures)",
+                "tests/fixtures/decomposer_inputs/",
+            ),
+            # `:N-M` line range suffix.
+            ("scripts/foo.py:10-20", "scripts/foo.py"),
+            # `:N` single-line reference suffix.
+            ("scripts/foo.py:42", "scripts/foo.py"),
+        ],
+    )
+    def test_wrapper_normalize_file_path_pins_canonical_helper(
+        self, raw: str, expected: str
+    ) -> None:
+        assert plan_codex_dispatch.normalize_file_path(raw) == expected
+
+    def test_wrapper_parse_task_block_prose_laden_bullet_reduces_to_bare_path(
+        self,
+    ) -> None:
+        """`parse_task_block` returns raw bullet items; the call sites in
+        `render_implement_prompt` / `cmd_implement` / `cmd_review` then
+        feed each item through `normalize_file_path`. Asserting the
+        normalised form here pins the wrapper's contract end-to-end for a
+        backticked-prose-laden bullet."""
+        block = plan_codex_dispatch.parse_task_block(
+            _PROSE_LADEN_FILES_PLAN, "001"
+        )
+        normalised = [
+            plan_codex_dispatch.normalize_file_path(f) for f in block["files"]
+        ]
+        assert normalised == ["Makefile"], normalised

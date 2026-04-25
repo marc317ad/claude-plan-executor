@@ -58,6 +58,7 @@ from _plan_paths import (  # noqa: E402
     PROTECTED_PATH_SUFFIXES,
     PROTECTED_PATH_GLOBS,
     is_protected_path,
+    normalize_files_entry as normalize_file_path,
 )
 
 # TASK-009: scale-aware large-file reads. The implementer / reviewer
@@ -234,18 +235,14 @@ def parse_task_block(plan_text: str, task_id_arg: str) -> dict:
     }
 
 
-def normalize_file_path(raw: str) -> str:
-    """Strip :line_range and (operation) annotations from a file path."""
-    cleaned = raw
-    # Strip trailing (create), (modify), (delete), ...
-    cleaned = re.sub(r"\s*\([^)]+\)\s*$", "", cleaned)
-    # Strip :N-M or :N–M ranges
-    cleaned = re.sub(r":\d+[-\u2013]\d+$", "", cleaned)
-    # Strip single :N reference
-    cleaned = re.sub(r":\d+$", "", cleaned)
-    # Strip surrounding backticks (markdown code-spans).
-    cleaned = cleaned.strip().strip("`").strip()
-    return cleaned
+# ``normalize_file_path`` is the wrapper-public alias for
+# ``_plan_paths.normalize_files_entry`` (canonical helper, TASK-002).
+# The local definition that used to live here drifted from the
+# orchestrator's ``_normalize_files_entry`` -- the wrapper missed
+# the leading-backtick capture and the prose-aware dash-split, so
+# bullets like ``- `Makefile` -- add `audit` target...`` welded
+# the prose continuation to the path. Both consumers now share
+# one helper.
 
 
 # ---------------------------------------------------------------------------

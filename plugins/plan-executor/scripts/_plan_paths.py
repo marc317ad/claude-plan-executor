@@ -109,6 +109,59 @@ def is_commit_always_ignore(
     return False
 
 
+def normalize_files_entry(raw: str) -> str:
+    """Strip backticks, ``(create|modify|delete)`` annotations, prose
+    continuations, and ``:line`` suffixes from a raw ``Files:`` bullet entry.
+
+    Single canonical implementation shared by both ``plan_ops.py`` (commit
+    guard / gate) and ``plan_codex_dispatch.py`` (wrapper allowlist /
+    Codex prompt rendering). The two used to drift; consolidating here
+    eliminates the drift surface (TASK-002).
+
+    Semantics (in order):
+
+    1. Strip a trailing ``(annotation)`` parenthetical, em-dash and
+       en-dash tolerant inside the parens (e.g.,
+       ``(create — canonical + malformed markdown fixtures)``).
+       Done BEFORE any dash-split so a parenthetical containing an
+       em-dash is removed as a unit.
+    2. If the cleaned string starts with a backticked region (```path```),
+       capture just the contents of that first backticked region. This
+       prevents prose continuations like
+       ```Makefile` — add `audit` target...`` from welding to the
+       path.
+    3. Otherwise split on space-dash-space (``\\s+[-–—]\\s+``) and take
+       the head.
+    4. Strip wrapping backticks; ``git show --name-only`` never emits them.
+    5. Strip ``:N-M`` / ``:N–M`` ranges, then a single ``:N`` reference.
+    6. Return the stripped result.
+    """
+    cleaned = raw.strip()
+    # Strip trailing (create), (modify), (delete), (create — rationale),
+    # ... BEFORE the dash-split below. A parenthetical that itself contains
+    # an em-dash (`(create — canonical + malformed markdown fixtures)`)
+    # must be removed as a unit, otherwise the dash-split truncates the
+    # entry mid-parenthetical and the trailing-paren strip no longer sees
+    # a closing `)` to anchor on.
+    cleaned = re.sub(r"\s*\([^)]+\)\s*$", "", cleaned).strip()
+    # Prefer leading backtick-quoted path so descriptive prose after
+    # the path (e.g., "`foo.py` -- description") doesn't weld to the
+    # path and break commit-safe.
+    m_backtick = re.match(r"`([^`]+)`", cleaned)
+    if m_backtick:
+        cleaned = m_backtick.group(1).strip()
+    else:
+        cleaned = re.split(r"\s+[-–—]\s+", cleaned, maxsplit=1)[0].strip()
+    cleaned = cleaned.strip()
+    # Strip wrapping backticks; `git show --name-only` never emits them.
+    if cleaned.startswith("`") and cleaned.endswith("`") and len(cleaned) >= 2:
+        cleaned = cleaned[1:-1]
+    # Strip :N-M or :N–M ranges, then a single :N reference.
+    cleaned = re.sub(r":\d+[-–]\d+$", "", cleaned)
+    cleaned = re.sub(r":\d+$", "", cleaned)
+    return cleaned.strip()
+
+
 def is_protected_path(rel_path: str) -> bool:
     """Return True if rel_path (repo-relative, forward-slash, canonicalized)
     must not be touched by fail-task, wrapper cleanup, or reconcile."""

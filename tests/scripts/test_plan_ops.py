@@ -12161,6 +12161,76 @@ class TestExtractTaskFiles:
         ], files
 
 
+class TestPlanPathsNormalizeFilesEntry:
+    """TASK-002 — `_plan_paths.normalize_files_entry` is the canonical
+    helper shared by `plan_ops._normalize_files_entry` and the wrapper's
+    `normalize_file_path`. Both call sites used to carry independent
+    bodies that drifted; this test class pins the canonical behaviour
+    directly so the orchestrator-side surface stays in sync with the
+    wrapper-side surface in `tests/scripts/test_plan_codex_dispatch_parsing.py`.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            # Bare path passes through unchanged.
+            ("scripts/foo.py", "scripts/foo.py"),
+            # Backticked path with no prose.
+            ("`scripts/foo.py`", "scripts/foo.py"),
+            # Backticked path + em-dash + prose continuation. The leading
+            # backtick capture must drop the prose tail (this was the
+            # wrapper's pre-fix bug).
+            (
+                "`Makefile` -- add `audit` target wired to `plan_ops.py audit`",
+                "Makefile",
+            ),
+            # Trailing parenthetical annotation.
+            ("`scripts/foo.py` (modify)", "scripts/foo.py"),
+            # Trailing parenthetical with embedded em-dash inside the parens.
+            (
+                "tests/fixtures/decomposer_inputs/ "
+                "(create — canonical + malformed markdown fixtures)",
+                "tests/fixtures/decomposer_inputs/",
+            ),
+            # `:N-M` line range suffix (ASCII hyphen).
+            ("scripts/foo.py:10-20", "scripts/foo.py"),
+            # `:N–M` line range suffix (en-dash).
+            ("scripts/foo.py:10–20", "scripts/foo.py"),
+            # `:N` single-line reference.
+            ("scripts/foo.py:42", "scripts/foo.py"),
+        ],
+    )
+    def test_normalize_files_entry_canonical(
+        self, raw: str, expected: str
+    ) -> None:
+        from _plan_paths import normalize_files_entry  # noqa: WPS433
+        assert normalize_files_entry(raw) == expected
+
+    def test_plan_ops_thin_alias_delegates(self) -> None:
+        """`plan_ops._normalize_files_entry` is a back-compat shim that
+        must produce byte-for-byte identical output to the canonical
+        helper, otherwise the ~40 internal call sites in `plan_ops.py`
+        would silently desync from the wrapper."""
+        from _plan_paths import normalize_files_entry  # noqa: WPS433
+        cases = [
+            "scripts/foo.py",
+            "`Makefile` -- add `audit` target wired to `plan_ops.py audit`",
+            "tests/fixtures/decomposer_inputs/ "
+            "(create — canonical + malformed markdown fixtures)",
+            "scripts/foo.py:10-20",
+        ]
+        for raw in cases:
+            assert plan_ops._normalize_files_entry(raw) == normalize_files_entry(raw)
+
+    def test_extract_task_files_end_to_end_unchanged(self) -> None:
+        """The unification must not perturb `_extract_task_files_from_plan`
+        — same parser surface, same outputs."""
+        files = plan_ops._extract_task_files_from_plan(
+            _GATES_SYNTHETIC_PLAN, "001",
+        )
+        assert files == ["example/seed.py"], files
+
+
 class TestGateFixtureValidSidecar:
     """`fixture-valid` is the schema+schedule aggregate; sidecar is required."""
 
