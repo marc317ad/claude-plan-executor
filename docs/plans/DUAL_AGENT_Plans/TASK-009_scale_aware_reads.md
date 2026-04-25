@@ -364,3 +364,17 @@ Starting SHA: `2d3e43f3a9a951e6fd4eea8b94603dd0b5370235`  → Ending SHA: `02da5
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 009 | claude | codex | needs-rework | - | paused after D.2a.5 second needs-rework; remediation in WT |
+
+## Execution log — 20260425T041800 (success)
+
+Starting SHA: `2d3e43f3a9a951e6fd4eea8b94603dd0b5370235`  → Ending SHA: `a71147defe11fdcac8e6deccae714f92d0340e27`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 009 | claude | codex+claude(D.5) | needs-rework→needs-rework→ship-with-fixes | 1dc5a25 | D.2a.5 remediation + orchestrator hand-fix [remediation][disagreement] |
+| 010 | claude | codex+claude(D.5) | needs-rework→partial-agreement | 3d4c634 | D.2a.6 narrow-remediation; finding 0 dismissed [narrow-remediation][disagreement: 0] |
+| 017 | claude | codex+claude(D.5) | needs-rework→ship | 02da516 | D.5 disagreed; Codex misread D.5 verdict allowlist [disagreement] |
+| 027A | claude | codex | clean | 0d37217 | clean |
+| 027B | codex | claude | clean | ac623ac | first wrapper run flagged scope; orchestrator infra fix to normalize_file_path strips backticks |
+| 027C | codex | none | - | b84e4bc | Codex sandbox test-run failure; tests passed in target env |
+| 028 | claude (codex fallback) | codex | needs-rework→clean | a71147d | Codex timeout fallback; minor remediation for unexpected envelope shape |

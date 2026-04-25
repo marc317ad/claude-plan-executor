@@ -1,4 +1,5 @@
 {
+  "outcome": "needs-enrichment",
   "tasks": [
     {
       "id": "009",
@@ -24,7 +25,8 @@
         "Absent targets \u2192 dispatch prompt identical to pre-chunk behavior (no regression).",
         "All verification checks V1\u2013V8 pass."
       ],
-      "agent": "claude"
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, new subcommand, API contract changes"
     },
     {
       "id": "010",
@@ -50,7 +52,8 @@
         "Audit check `global_lock_paths` (TASK-007 registry extension) verifies constant-vs-doc alignment.",
         "All verification checks V1\u2013V8 pass."
       ],
-      "agent": "claude"
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, new scheduler logic, design decisions"
     },
     {
       "id": "017",
@@ -75,7 +78,8 @@
         "The D.5-disagreement commit-task example (V1 item c in the bullet list above) explicitly states: \"D.5's verdict (`ship | ship-with-fixes | partial-agreement`) is passed as `--reviewer-verdict`; Codex's `needs-rework` is NOT \u2014 that was the confusion behind error 3 in run `20260417T214309`.\"",
         "`ALLOWED_LOG_EVENTS` in the command reference matches the current set in `plan_ops.py` exactly (grep the constant at author time). Missing or stale entries fail the acceptance bar."
       ],
-      "agent": "claude"
+      "agent": "claude",
+      "classification_reason": "new file creation, multi-section doc, design decisions"
     },
     {
       "id": "027A",
@@ -103,7 +107,8 @@
         "`plugins/plan-executor/skills/implement-plan/SKILL.md` Phase D.5 render call at `SKILL.md:692` (currently `render(templates.PhaseD5, codex_findings, task_block)`) is extended to also pass `wrapper_checks` from the Codex review envelope: `render(templates.PhaseD5, codex_findings, task_block, wrapper_checks)`. When the envelope lacks `wrapper_checks`, pass `{\"symbol_warnings\": []}` as the default. The precise signature/argument naming follows the existing `render()` call convention in the skill; the substantive requirement is that `<wrapper_checks_json>` placeholder in the template resolves from envelope data at dispatch time, not from static template text. (Line number verified at HEAD; verify with `grep -n 'templates.PhaseD5'` before editing.)",
         "Adds these eight new regression tests to `tests/scripts/test_codex_review_prompt.py`, each described by name and assertion: (1) `test_review_prompt_forwards_description_and_impl_notes` \u2014 calls `render_review_prompt` with a synthetic `task` dict carrying sentinel strings in `description` and `implementation_notes`, asserts both `Description:` and `Implementation notes:` headings and their sentinels appear in the rendered prompt; (2) `test_symbol_verification_flags_missing_citation` \u2014 imports `_verify_cited_symbols`, builds `parsed` with a finding citing `_definitely_not_real_xyz(` against `plugins/plan-executor/scripts/plan_codex_dispatch.py`, asserts one entry with `status: \"not-found\"` and `cited_symbol: \"_definitely_not_real_xyz\"`; (3) `test_symbol_verification_passes_real_citation` \u2014 builds `parsed` citing `_append_run_log(` against `plugins/plan-executor/scripts/plan_ops.py`, asserts empty list; (4) `test_symbol_verification_no_candidate_produces_no_entry` \u2014 builds `parsed` with prose-only `issue` text (e.g., \"the cleanup control-flow path is unreachable\"), asserts empty list (NOT an `unchecked` entry); (5) `test_symbol_verification_unchecked_when_file_missing` \u2014 builds `parsed` citing `_some_symbol(` against `tmp/does_not_exist.py`, asserts one entry with `status: \"unchecked\"`; (6) `test_symbol_verification_skips_dotted_identifiers` \u2014 builds `parsed` whose `issue` text contains ONLY dotted expressions (`self.foo(bar)`, `obj.method(arg)`, `obj._helper(arg)`) against a real file that does NOT contain those literals, asserts empty list (locks F4 out-of-scope boundary); (7) `test_review_envelope_includes_wrapper_checks` \u2014 drives `make_envelope` with the computed `extra` dict, asserts the resulting envelope contains `envelope[\"wrapper_checks\"][\"symbol_warnings\"]` as a list at top-level; (8) `test_d5_dispatch_template_forwards_wrapper_checks` \u2014 extracts the Phase D.5 section via new helper `_phase_d5_section()`, asserts the `Wrapper checks` JSON block appears between the Codex findings block and the verdict decision rubric, AND asserts `SKILL.md` Phase D.5 render call text (substring: `render(templates.PhaseD5`) includes `wrapper_checks` in its argument list (closes plumbing gap between template and skill)."
       ],
-      "agent": "claude"
+      "agent": "claude",
+      "classification_reason": "multi-file wiring, new helper, complex AC"
     },
     {
       "id": "027B",
@@ -124,7 +129,8 @@
         "A short worked example is added to Step 1 immediately after the new trigger sentence: a synthetic case describing the `plan_ops.py log-event` vs `_append_run_log` class of substitution (using generic names, not verbatim TASK-020B). Format: one paragraph, \u22643 sentences.",
         "Creates new test file `tests/scripts/test_plan_implementer_spec.py` containing exactly these three tests, each described by name and assertion: (1) `test_literal_wording_substitution_trigger_present` \u2014 reads `plugins/plan-executor/agents/plan-implementer.md`, asserts the Step 1 paragraph contains the new trigger wording (substring match on \"specific mechanism\" AND \"flag it under\") AND the Plan-adaptations report-format paragraph contains the substitution wording (substring match on \"literal-wording substitutions\" OR \"mechanism A\"/\"mechanism B\"-style phrasing); (2) `test_plan_adaptations_worked_example_present` \u2014 asserts the worked example paragraph appears in Step 1 (substring match on \"internal helper\" AND \"identical\"); (3) `test_parse_implementer_report_contract_preserved` \u2014 fixture-based smoke test that constructs a synthetic implementer-report string with `**Plan adaptations:**\\n- None` and feeds it through `plan_ops.py parse-implementer-report --stdin` (or `--report-path <tmp>`), asserts exit 0 and the parsed `plan_adaptations` field equals `[\"None\"]` or `[]` per the existing contract (lock against accidental contract breakage from the spec edits)."
       ],
-      "agent": "claude"
+      "agent": "codex",
+      "classification_reason": "2 files, concrete spec-text edits, explicit test command"
     },
     {
       "id": "027C",
@@ -144,7 +150,8 @@
         "A short worked example is added immediately after the clause: a synthetic case where the plan names mechanism A, implementer used mechanism B that produces identical output, Codex flagged the deviation \u2192 disposition is `dismissed` with verification (pointing to the surrounding-pattern evidence), NOT `spec-deference`. Contrast with: plan mandates behavior X, implementer implemented X, Codex objects to X \u2192 disposition IS `spec-deference`.",
         "Adds new regression test `test_d5_spec_deference_rubric_scoped` to `tests/scripts/test_codex_review_prompt.py` with these specific assertions: (1) loads the `dispatch-templates.md` Phase D.5 section via new helper `_phase_d5_section()` (modeled on existing `_phase_d_codex_section`-style helper; extracts `## Phase D.5` through the next `## ` heading); (2) asserts the dismissal-evidence gate subsection contains the precondition wording \u2014 substring match requiring all three terms `implementer`, `followed`, and `literal wording` (or equivalent phrasing \u2014 `literal-wording` hyphenated also accepted); (3) asserts the contrasting worked example paragraph contains BOTH the strings `dismissed` AND `spec-deference` within 200 characters of each other (locks the contrasting-example structure, not just keyword presence)."
       ],
-      "agent": "claude"
+      "agent": "codex",
+      "classification_reason": "2 files, bounded text edit, explicit test command"
     },
     {
       "id": "028",
@@ -166,7 +173,8 @@
         "The `@pytest.mark.slow` decorator on both tests is preserved.",
         "No change to `plan_ops.py`. No change to the body of `_extract_json_block`. A new small helper adjacent to `_extract_json_block` (e.g., `_unwrap_cli_envelope(stdout: str) -> str | None`) is permitted if the implementer prefers factoring over inline duplication."
       ],
-      "agent": "claude"
+      "agent": "codex",
+      "classification_reason": "single file, mechanical, concrete implementation notes"
     }
   ],
   "batches": [
@@ -219,7 +227,25 @@
       ]
     }
   ],
-  "gaps": [],
-  "risks": [],
-  "outcome": "valid"
+  "gaps": [
+    {
+      "task_id": "027A",
+      "type": "extra-task-heading",
+      "severity": "soft",
+      "detail": "TASK-027_codex_review_prompt_and_adaptation_flagging.md carries 3 `### TASK-NNN:` headings; only the matching one is parsed"
+    },
+    {
+      "task_id": "027B",
+      "type": "extra-task-heading",
+      "severity": "soft",
+      "detail": "TASK-027_codex_review_prompt_and_adaptation_flagging.md carries 3 `### TASK-NNN:` headings; only the matching one is parsed"
+    },
+    {
+      "task_id": "027C",
+      "type": "extra-task-heading",
+      "severity": "soft",
+      "detail": "TASK-027_codex_review_prompt_and_adaptation_flagging.md carries 3 `### TASK-NNN:` headings; only the matching one is parsed"
+    }
+  ],
+  "risks": []
 }

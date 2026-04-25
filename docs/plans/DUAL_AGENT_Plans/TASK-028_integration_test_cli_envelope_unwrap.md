@@ -1,7 +1,7 @@
 # TASK-028 — Unwrap `claude --output-format json` envelope in live-CLI roundtrip tests
 
 **Created:** 2026-04-20
-**Status:** pending
+**Status:** complete
 **Base branch:** `main`
 **Audit anchor commit:** `a65350e` (TASK-006 — the run during which the gap was re-confirmed as V9's failure mode)
 **Chunk dependencies:** none (formerly TASK-002 — now archived/complete). No code-under-test changes — test-only fix.
