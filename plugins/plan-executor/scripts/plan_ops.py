@@ -8359,6 +8359,351 @@ def cmd_gates(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# TASK-009: scale-aware large-file reads (resolve-read-targets)
+# ---------------------------------------------------------------------------
+#
+# Two optional task-schema fields steer the dispatcher's pre-read window:
+#
+#     - **Read targets:**       line-range hints (file:start-end)
+#     - **Symbol targets:**     symbol extraction (file::Class.method)
+#
+# Both are pure read-side; they do not affect scope enforcement, which is
+# still driven by the canonical `Files:` list. Targets may reference files
+# OUTSIDE `Files:` (read-only context). When both are present, line ranges
+# win — `Symbol targets:` is the ergonomic sugar.
+
+# Bullet detection lives within a leading `**Read targets:**` /
+# `**Symbol targets:**` field bullet. We extract lines that look like
+# "  - <path>:<start>-<end>" (read) or "  - <path>::<symbol>" (symbol).
+_READ_TARGETS_HEADER_RE = re.compile(
+    r"^\s*-\s+\*\*Read targets:\*\*(?:[ \t]+[^\n]*)?$", re.MULTILINE,
+)
+_SYMBOL_TARGETS_HEADER_RE = re.compile(
+    r"^\s*-\s+\*\*Symbol targets:\*\*(?:[ \t]+[^\n]*)?$", re.MULTILINE,
+)
+# A nested bullet: "  - foo/bar.py:10-20"
+_TARGET_BULLET_RE = re.compile(r"^\s*-\s+(.+?)\s*$")
+# `path:start-end` (en-dash also tolerated to match normalize_file_path).
+_READ_TARGET_RE = re.compile(
+    r"^(?P<path>[^:\s]\S*?):(?P<start>\d+)[-–](?P<end>\d+)\s*$",
+)
+# `path::Symbol` or `path::Class.method`.
+_SYMBOL_TARGET_RE = re.compile(
+    r"^(?P<path>[^:\s]\S*?)::(?P<symbol>[A-Za-z_][\w\.]*)\s*$",
+)
+
+
+def _iter_target_bullets(text: str, header_re: re.Pattern[str]) -> list[str]:
+    """Yield trimmed bullet entries that follow a header bullet.
+
+    The header bullet looks like `- **Read targets:**` (or symbol). The
+    nested bullets that follow at deeper indentation are the entries.
+    Iteration stops at a blank line, a non-bullet line, or another
+    field-bullet (`- **<Field>:**`).
+    """
+    out: list[str] = []
+    m = header_re.search(text)
+    if not m:
+        return out
+    tail = text[m.end():]
+    seen_bullet = False
+    for raw_line in tail.splitlines():
+        if not raw_line.strip():
+            # Blank line is tolerated BEFORE the first bullet (the
+            # newline immediately after the header bullet shows up as
+            # an empty token from splitlines()). Once the bullet region
+            # has begun, a blank line ends it.
+            if seen_bullet:
+                break
+            continue
+        # A new top-level field bullet (`- **Foo:**`) ends the region.
+        # Trailing parenthetical descriptors (e.g. `(optional, TASK-009)`)
+        # are tolerated to match the header regexes above.
+        if re.match(r"^\s*-\s+\*\*[^*]+:\*\*(?:[ \t]+[^\n]*)?$", raw_line):
+            break
+        bm = _TARGET_BULLET_RE.match(raw_line)
+        if not bm:
+            break
+        seen_bullet = True
+        entry = bm.group(1).strip()
+        # Strip surrounding backticks if the author wrote `path:1-20`.
+        entry = entry.strip("`")
+        if entry:
+            out.append(entry)
+    return out
+
+
+def _read_range(
+    path: str, start: int, end: int, errors: list,
+) -> dict:
+    """Read [start, end] inclusive (1-based) and clamp to file length."""
+    p = Path(path)
+    if not p.is_file():
+        errors.append(f"{path}: file not found")
+        return {
+            "file": path, "start": start, "end": end,
+            "text": "", "missing": True,
+        }
+    try:
+        content = p.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        errors.append(f"{path}: read error ({exc})")
+        return {
+            "file": path, "start": start, "end": end,
+            "text": "", "missing": True,
+        }
+    lines = content.splitlines()
+    if start < 1:
+        start = 1
+    real_end = min(end, len(lines))
+    truncated = real_end != end
+    if start > real_end:
+        # Out-of-range request: emit a clamped empty window with a note.
+        text = ""
+    else:
+        text = "\n".join(lines[start - 1:real_end])
+    result: dict = {
+        "file": path, "start": start, "end": real_end, "text": text,
+    }
+    if truncated:
+        result["truncated_to"] = real_end
+    return result
+
+
+def _find_py_symbol(tree, symbol: str):
+    """Find a Python AST node for `symbol`, supporting `Class.method`.
+
+    Returns the AST node (FunctionDef / AsyncFunctionDef / ClassDef) or
+    None when not found.
+    """
+    import ast
+
+    parts = symbol.split(".")
+
+    def _walk(nodes, parts_left):
+        head, rest = parts_left[0], parts_left[1:]
+        for node in nodes:
+            name = getattr(node, "name", None)
+            if name != head:
+                continue
+            if not rest:
+                return node
+            children = getattr(node, "body", []) or []
+            hit = _walk(children, rest)
+            if hit is not None:
+                return hit
+        return None
+
+    return _walk(tree.body, parts)
+
+
+def _regex_symbol_span(text: str, symbol: str) -> tuple[int | None, int | None]:
+    """Best-effort symbol locator for non-Python languages.
+
+    Heuristic: find the line containing the symbol's declaration token
+    (`def symbol`, `function symbol`, `symbol() {`, `symbol(){`, etc.).
+    Returns (start_line, end_line) where end_line is start + 40 lines or
+    end-of-file (whichever is smaller). The 40-line cap is intentional;
+    regex cannot reliably bracket-match across languages.
+    """
+    lines = text.splitlines()
+    # Token-anchored patterns to keep `compute_score` from matching
+    # `_compute_score_helper` etc.
+    sym_re = re.compile(
+        rf"(^|[^A-Za-z0-9_])(?P<name>{re.escape(symbol)})\s*(\(|=|:|\{{)",
+    )
+    # Keyword-led patterns for shell / bash / ts / go.
+    decl_keywords = (
+        rf"^\s*(?:function\s+|def\s+|fn\s+|func\s+|class\s+|sub\s+)"
+        rf"{re.escape(symbol)}\b"
+    )
+    decl_re = re.compile(decl_keywords)
+    start_idx: int | None = None
+    for idx, line in enumerate(lines):
+        if decl_re.search(line) or (
+            sym_re.search(line) and (
+                "(" in line or "{" in line or "=" in line or ":" in line
+            )
+        ):
+            start_idx = idx
+            break
+    if start_idx is None:
+        return None, None
+    end_idx = min(start_idx + 40, len(lines) - 1)
+    return start_idx + 1, end_idx + 1
+
+
+def _locate_symbol(path: str, symbol: str, errors: list) -> dict | None:
+    """Resolve a `path::symbol` target to a `_read_range` dict.
+
+    Adds a "symbol_match" annotation to the dict: "ast" (Python AST
+    confidence) or "regex" (best-effort fallback). Errors append the
+    "<path>::<symbol> not found" string used by V4.
+    """
+    p = Path(path)
+    if not p.is_file():
+        errors.append(f"{path}: file not found")
+        return None
+    try:
+        text = p.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        errors.append(f"{path}: read error ({exc})")
+        return None
+    match_kind = "regex"
+    if path.endswith(".py"):
+        try:
+            import ast
+            tree = ast.parse(text, filename=str(p))
+        except SyntaxError as exc:
+            errors.append(f"{path}: parse error ({exc})")
+            # Fall through to regex fallback so a malformed Python file
+            # does not entirely silence the symbol target.
+            start, end = _regex_symbol_span(text, symbol)
+        else:
+            target = _find_py_symbol(tree, symbol)
+            if target is None:
+                errors.append(f"{path}::{symbol} not found")
+                return None
+            start = target.lineno
+            end = getattr(target, "end_lineno", start)
+            match_kind = "ast"
+    else:
+        start, end = _regex_symbol_span(text, symbol)
+    if start is None:
+        errors.append(f"{path}::{symbol} not found")
+        return None
+    hit = _read_range(path, start, end, errors)
+    hit["symbol"] = symbol
+    hit["symbol_match"] = match_kind
+    if match_kind == "regex":
+        hit["note"] = (
+            "regex symbol fallback (best-effort; line range approximate)"
+        )
+    return hit
+
+
+def resolve_read_targets(text: str) -> dict:
+    """Parse `Read targets:` / `Symbol targets:` blocks and resolve them.
+
+    `text` is the raw task-block markdown (or any markdown containing the
+    two field bullets). Returns:
+
+        {
+            "reads":   [{"file","start","end","text",...}, ...],
+            "symbols": [{"path","symbol","start","end"}, ...],
+            "errors":  ["<diagnostic>", ...],
+        }
+
+    Missing fields → empty lists. Missing files / missing symbols /
+    out-of-range line numbers all attach an `errors` entry but are
+    non-fatal: the caller (dispatcher) treats the structure as
+    advisory.
+    """
+    reads: list[dict] = []
+    symbols: list[dict] = []
+    errors: list[str] = []
+
+    for entry in _iter_target_bullets(text, _READ_TARGETS_HEADER_RE):
+        m = _READ_TARGET_RE.match(entry)
+        if not m:
+            errors.append(f"unparseable read target: {entry!r}")
+            continue
+        path = m.group("path")
+        start = int(m.group("start"))
+        end = int(m.group("end"))
+        if start > end:
+            errors.append(
+                f"{entry}: start > end (skipped)"
+            )
+            continue
+        reads.append(_read_range(path, start, end, errors))
+
+    for entry in _iter_target_bullets(text, _SYMBOL_TARGETS_HEADER_RE):
+        m = _SYMBOL_TARGET_RE.match(entry)
+        if not m:
+            errors.append(f"unparseable symbol target: {entry!r}")
+            continue
+        path = m.group("path")
+        symbol = m.group("symbol")
+        hit = _locate_symbol(path, symbol, errors)
+        if hit is not None:
+            reads.append(hit)
+            symbols.append({
+                "path": path, "symbol": symbol,
+                "start": hit["start"], "end": hit["end"],
+            })
+
+    return {"reads": reads, "symbols": symbols, "errors": errors}
+
+
+def render_pre_read_excerpts(resolved: dict) -> str:
+    """Render the resolved read-targets dict as a `## Pre-read excerpts`
+    markdown block. Returns an empty string when there is nothing to
+    render (no reads AND no errors), so dispatchers can append the
+    string unconditionally without producing an empty heading.
+    """
+    reads = resolved.get("reads") or []
+    errors = resolved.get("errors") or []
+    if not reads and not errors:
+        return ""
+    out = ["## Pre-read excerpts", ""]
+    for entry in reads:
+        path = entry.get("file", "")
+        start = entry.get("start")
+        end = entry.get("end")
+        note_bits = []
+        if entry.get("truncated_to") is not None:
+            note_bits.append(f"truncated to {entry['truncated_to']}")
+        if entry.get("missing"):
+            note_bits.append("missing")
+        if entry.get("symbol_match") == "regex":
+            note_bits.append("regex fallback")
+        suffix = f" — {', '.join(note_bits)}" if note_bits else ""
+        out.append(f"### {path} (lines {start}-{end}){suffix}")
+        ext = Path(path).suffix.lower()
+        lang = {
+            ".py": "python", ".md": "markdown", ".sh": "bash",
+            ".ts": "typescript", ".tsx": "tsx", ".js": "javascript",
+            ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+            ".go": "go", ".rs": "rust", ".sql": "sql",
+        }.get(ext, "")
+        fence_open = f"```{lang}" if lang else "```"
+        out.append(fence_open)
+        out.append(entry.get("text", ""))
+        out.append("```")
+        out.append("")
+    if errors:
+        out.append("### Read-target diagnostics")
+        out.append("")
+        for e in errors:
+            out.append(f"- {e}")
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def cmd_resolve_read_targets(args: argparse.Namespace) -> None:
+    """CLI handler: read a task block (or stdin) and emit JSON.
+
+    Exit code is 0 even when `errors` is non-empty — missing symbols
+    and missing files are advisory diagnostics, not fatal.
+    """
+    if args.stdin:
+        text = sys.stdin.read()
+    elif args.task_file:
+        text = _load_text(Path(args.task_file))
+    else:
+        _die(args, {
+            "error": "resolve-read-targets requires --stdin or --task-file",
+        })
+        return  # unreachable; _die calls sys.exit
+    resolved = resolve_read_targets(text)
+    # `--json` is the default + only emission for this subcommand.
+    json.dump(resolved, sys.stdout, indent=2, sort_keys=False)
+    sys.stdout.write("\n")
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
@@ -8743,6 +9088,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_pi)
 
+    # TASK-009: resolve `**Read targets:**` / `**Symbol targets:**` from a
+    # task block (or stdin) into a structured JSON payload the dispatchers
+    # render into the implementer / reviewer prompt under
+    # `## Pre-read excerpts`.
+    p_rrt = sub.add_parser(
+        "resolve-read-targets",
+        help=(
+            "Resolve **Read targets:** / **Symbol targets:** from a task "
+            "block (stdin or --task-file) into a structured JSON payload "
+            "the dispatcher embeds under `## Pre-read excerpts`."
+        ),
+    )
+    p_rrt.add_argument(
+        "--stdin", action="store_true",
+        help="Read task-block markdown from stdin",
+    )
+    p_rrt.add_argument(
+        "--task-file", default=None,
+        help="Path to a task-block markdown file (mutually exclusive with --stdin)",
+    )
+    p_rrt.add_argument(
+        "--json", action="store_true",
+        help=(
+            "Reserved for parity; this subcommand always emits JSON "
+            "(missing-file / missing-symbol diagnostics live in the "
+            "structured `errors` array, not on stderr)."
+        ),
+    )
+    p_rrt.set_defaults(func=cmd_resolve_read_targets)
+
     # TASK-020A: read-only lint that cross-references `**Status:** done` /
     # `partial` task markers against the run log's `commit_done` events and
     # the git log's `feat(TASK-NNN):` commits. Hand-edited status markers
@@ -8958,6 +9333,7 @@ def main(argv: list[str] | None = None) -> None:
         "lint-plans": cmd_lint_plans,
         "gates": cmd_gates,
         "audit": cmd_audit,
+        "resolve-read-targets": cmd_resolve_read_targets,
     }
     handlers[args.command](args)
 

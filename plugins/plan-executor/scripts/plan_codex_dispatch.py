@@ -60,6 +60,13 @@ from _plan_paths import (  # noqa: E402
     is_protected_path,
 )
 
+# TASK-009: scale-aware large-file reads. The implementer / reviewer
+# prompt grows a `## Pre-read excerpts` block when the task declares
+# `**Read targets:**` or `**Symbol targets:**`; both helpers live in
+# plan_ops.py to keep the resolver and the dispatcher integration
+# referencing one canonical implementation.
+import plan_ops  # noqa: E402
+
 # Backward-compatibility alias: callers (including
 # tests/scripts/test_plan_codex_dispatch_state_isolation.py) reference
 # ``wrapper._is_protected``. The shared module exposes the helper as
@@ -220,6 +227,10 @@ def parse_task_block(plan_text: str, task_id_arg: str) -> dict:
         "description": _extract_paragraph(block, "Description"),
         "implementation_notes": _extract_paragraph(block, "Implementation notes"),
         "reversion_guidance": _extract_paragraph(block, "Reversion guidance"),
+        # TASK-009: raw block markdown so the dispatcher can resolve
+        # `**Read targets:**` / `**Symbol targets:**` into a
+        # `## Pre-read excerpts` block prepended to the prompt.
+        "raw_block": block,
     }
 
 
@@ -247,7 +258,17 @@ def render_implement_prompt(task: dict, context: str) -> str:
     )
     context_block = context or "(no context provided)"
     ac_bullets = "\n".join(f"- {c}" for c in task["acceptance_criteria"]) or "- (none specified)"
+    # TASK-009: optional pre-read excerpts. Resolved here (not in
+    # cmd_implement) so the prompt-rendering surface remains the single
+    # entry point and dry-run / emit-prompt paths see the same string.
+    raw_block = task.get("raw_block", "") or ""
+    pre_read_block = ""
+    if raw_block:
+        resolved = plan_ops.resolve_read_targets(raw_block)
+        pre_read_block = plan_ops.render_pre_read_excerpts(resolved)
+    pre_read_prefix = f"{pre_read_block}\n" if pre_read_block else ""
     return (
+        f"{pre_read_prefix}"
         f"Implement TASK-{task['task_id']} from the project plan.\n\n"
         f"Objective: {task['title']}\n\n"
         f"Plan context:\n{context_block}\n\n"
@@ -411,7 +432,17 @@ def render_review_prompt(
     prompt_files = review_files if review_files is not None else allowed
     files_str = ", ".join(prompt_files) or "(none declared)"
     ac_bullets = "\n".join(f"- {c}" for c in task["acceptance_criteria"]) or "- (none specified)"
+    # TASK-009: pre-read excerpts apply to reviewers too — the reviewer
+    # often needs the same windowed context as the implementer to judge
+    # whether the diff lands inside the declared symbol/range.
+    raw_block = task.get("raw_block", "") or ""
+    pre_read_block = ""
+    if raw_block:
+        resolved = plan_ops.resolve_read_targets(raw_block)
+        pre_read_block = plan_ops.render_pre_read_excerpts(resolved)
+    pre_read_prefix = f"{pre_read_block}\n" if pre_read_block else ""
     return (
+        f"{pre_read_prefix}"
         f"Review the implementation of TASK-{task['task_id']} in this repository.\n\n"
         f"Task objective: {task['title']}\n\n"
         f"Acceptance criteria:\n{ac_bullets}\n\n"

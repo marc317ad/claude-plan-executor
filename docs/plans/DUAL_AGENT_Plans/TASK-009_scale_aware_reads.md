@@ -165,7 +165,7 @@ A plan with no `Read targets:` or `Symbol targets:` produces a dispatch prompt i
 
 ### TASK-009: Scale-aware large-file reads
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (§5 schema, §8 dispatch contract)
@@ -356,3 +356,11 @@ Full pytest: `$PYTHON -m pytest -q`. All green.
 - **Prompt-size regressions:** reduce the maximum number of targets honored per task, or require operators to split large tasks. Do not silently drop targets — that would make a task appear under-specified.
 - **Symbol extractor bugs:** prefer disabling the Python AST path (fall through to regex fallback with a prominent annotation) over reverting the entire subcommand.
 - **Schema fields:** safe to leave documented even if implementation regresses; they are optional and absent by default. Do not remove from the schema without also cleaning plans that use them.
+
+## Execution log — 20260425T041800 (paused)
+
+Starting SHA: `2d3e43f3a9a951e6fd4eea8b94603dd0b5370235`  → Ending SHA: `02da51682e602a9dbbd23846bba8e140163fa52a`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 009 | claude | codex | needs-rework | - | paused after D.2a.5 second needs-rework; remediation in WT |

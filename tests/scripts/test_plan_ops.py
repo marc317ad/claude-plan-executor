@@ -17325,3 +17325,393 @@ class TestBuildTasks:
             if isinstance(e, dict) and e.get("code") == "invalid-plan-file"
         ]
         assert not invalid_pf, parsed
+
+
+# ---------------------------------------------------------------------------
+# TASK-009: resolve-read-targets / pre-read excerpts
+# ---------------------------------------------------------------------------
+
+
+class TestResolveReadTargets:
+    """Coverage for `**Read targets:**` / `**Symbol targets:**` resolution.
+
+    Exercises the helper's structured output (line-range reads, Python AST
+    symbol extraction, regex fallback for non-Python files, clamping to
+    file length, and clean reporting of missing symbols / files). Also
+    asserts that dispatcher prompt rendering grows a `## Pre-read excerpts`
+    block when targets are present and is a no-op otherwise.
+    """
+
+    def _run_stdin(self, body: str) -> dict:
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "resolve-read-targets", "--stdin"],
+            input=body,
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        return json.loads(cp.stdout)
+
+    def test_read_targets_line_range_basic(self, tmp_path: Path,
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "sample.py"
+        target.write_text(
+            "\n".join(f"line{i:03d}" for i in range(1, 51)) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Read targets:**\n"
+            "  - sample.py:5-8\n"
+        )
+        out = self._run_stdin(body)
+        assert out["errors"] == [], out
+        assert len(out["reads"]) == 1, out
+        r = out["reads"][0]
+        assert r["file"] == "sample.py"
+        assert r["start"] == 5 and r["end"] == 8
+        assert r["text"] == "line005\nline006\nline007\nline008"
+        assert "truncated_to" not in r
+
+    def test_read_targets_clamps_to_file_length(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = tmp_path / "small.py"
+        target.write_text(
+            "\n".join(f"L{i}" for i in range(1, 11)) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Read targets:**\n"
+            "  - small.py:1-9999\n"
+        )
+        out = self._run_stdin(body)
+        r = out["reads"][0]
+        assert r["start"] == 1
+        assert r["end"] == 10
+        assert r.get("truncated_to") == 10
+
+    def test_read_targets_symbol_python_function(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        py = tmp_path / "mod.py"
+        py.write_text(
+            "def alpha():\n"
+            "    return 1\n"
+            "\n"
+            "\n"
+            "def beta(x):\n"
+            "    y = x + 1\n"
+            "    return y\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Symbol targets:**\n"
+            "  - mod.py::beta\n"
+        )
+        out = self._run_stdin(body)
+        assert out["errors"] == [], out
+        assert len(out["symbols"]) == 1, out
+        sym = out["symbols"][0]
+        assert sym == {"path": "mod.py", "symbol": "beta", "start": 5, "end": 7}
+        # The corresponding `reads` entry carries the function body text.
+        r = out["reads"][0]
+        assert "def beta" in r["text"]
+        assert r.get("symbol_match") == "ast"
+
+    def test_read_targets_symbol_class_method(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        py = tmp_path / "cls.py"
+        py.write_text(
+            "class Foo:\n"
+            "    def bar(self):\n"
+            "        return 'hi'\n"
+            "\n"
+            "    def baz(self, n):\n"
+            "        return n * 2\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Symbol targets:**\n"
+            "  - cls.py::Foo.baz\n"
+        )
+        out = self._run_stdin(body)
+        assert out["errors"] == [], out
+        sym = out["symbols"][0]
+        assert sym["symbol"] == "Foo.baz"
+        assert sym["start"] == 5
+        assert sym["end"] == 6
+        # The body must lie inside the class span.
+        assert "def baz" in out["reads"][0]["text"]
+
+    def test_read_targets_symbol_missing_records_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        py = tmp_path / "tiny.py"
+        py.write_text("def real():\n    return 1\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Symbol targets:**\n"
+            "  - tiny.py::does_not_exist\n"
+        )
+        # Exit code is 0 even with errors (advisory).
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "resolve-read-targets", "--stdin"],
+            input=body,
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        out = json.loads(cp.stdout)
+        assert out["reads"] == []
+        assert out["symbols"] == []
+        assert any(
+            "tiny.py::does_not_exist not found" in e for e in out["errors"]
+        ), out
+
+    def test_read_targets_non_python_regex_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sh = tmp_path / "lib.sh"
+        sh.write_text(
+            "#!/bin/bash\n"
+            "\n"
+            "do_thing() {\n"
+            "  echo hello\n"
+            "  echo world\n"
+            "}\n"
+            "\n"
+            "other_fn() {\n"
+            "  echo other\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Symbol targets:**\n"
+            "  - lib.sh::do_thing\n"
+        )
+        out = self._run_stdin(body)
+        assert out["errors"] == [], out
+        sym = out["symbols"][0]
+        assert sym["symbol"] == "do_thing"
+        assert sym["start"] == 3
+        # Regex fallback annotates the read entry.
+        r = out["reads"][0]
+        assert r.get("symbol_match") == "regex"
+        assert "regex" in (r.get("note") or "")
+
+    def test_read_targets_missing_file_records_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Read targets:**\n"
+            "  - does_not_exist.py:1-10\n"
+        )
+        out = self._run_stdin(body)
+        assert any("file not found" in e for e in out["errors"]), out
+        assert out["reads"][0].get("missing") is True
+
+    def test_read_targets_absent_returns_empty_structure(self) -> None:
+        out = self._run_stdin("Some unrelated markdown body.\n")
+        assert out == {"reads": [], "symbols": [], "errors": []}
+
+    def test_read_targets_header_with_trailing_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Header with documented `(optional, TASK-009)` trailing text parses.
+
+        Regression: the bold-field header regex used to require an exact
+        line, which silently dropped reads from the documented template
+        form `- **Read targets:** (optional, TASK-009)`.
+        """
+        target = tmp_path / "sample.py"
+        target.write_text(
+            "\n".join(f"line{i:03d}" for i in range(1, 21)) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Read targets:** (optional, TASK-009)\n"
+            "  - sample.py:2-4\n"
+        )
+        out = self._run_stdin(body)
+        assert out["errors"] == [], out
+        assert len(out["reads"]) == 1, out
+        r = out["reads"][0]
+        assert r["file"] == "sample.py"
+        assert r["start"] == 2 and r["end"] == 4
+        assert r["text"] == "line002\nline003\nline004"
+
+    def test_symbol_targets_header_with_trailing_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Symbol-targets header tolerates documented trailing text."""
+        target = tmp_path / "mod.py"
+        target.write_text(
+            "def alpha():\n"
+            "    return 1\n"
+            "\n"
+            "def beta():\n"
+            "    return 2\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Symbol targets:** (optional, TASK-009)\n"
+            "  - mod.py::beta\n"
+        )
+        out = self._run_stdin(body)
+        assert out["errors"] == [], out
+        assert len(out["symbols"]) == 1, out
+        sym = out["symbols"][0]
+        assert sym["symbol"] == "beta"
+        assert sym["start"] == 4
+        assert sym["end"] == 5
+
+    def test_read_targets_coexist_with_symbol_section_trailing_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Both `Read targets:` and `Symbol targets:` headers can carry the
+        documented `(optional, TASK-009)` trailing parenthetical and the
+        section-boundary detector must stop the read scan at the symbol
+        header rather than swallowing it as an unparseable read entry.
+        """
+        target = tmp_path / "mod.py"
+        target.write_text(
+            "line_a\n"
+            "line_b\n"
+            "line_c\n"
+            "def gamma():\n"
+            "    return 9\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        body = (
+            "- **Read targets:** (optional, TASK-009)\n"
+            "  - mod.py:1-2\n"
+            "- **Symbol targets:** (optional, TASK-009)\n"
+            "  - mod.py::gamma\n"
+        )
+        out = self._run_stdin(body)
+        assert out["errors"] == [], out
+        # Symbol resolution also appends to reads (symbol body is
+        # rendered as a pre-read excerpt), so reads has 2 entries: the
+        # explicit line range + the symbol body.
+        assert len(out["reads"]) == 2, out
+        assert out["reads"][0]["start"] == 1
+        assert out["reads"][0]["end"] == 2
+        assert len(out["symbols"]) == 1, out
+        assert out["symbols"][0]["symbol"] == "gamma"
+
+    def test_render_pre_read_excerpts_empty_when_no_targets(self) -> None:
+        rendered = plan_ops.render_pre_read_excerpts(
+            {"reads": [], "symbols": [], "errors": []}
+        )
+        assert rendered == ""
+
+    def test_render_pre_read_excerpts_includes_block_when_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = tmp_path / "show.py"
+        target.write_text("a=1\nb=2\nc=3\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        resolved = plan_ops.resolve_read_targets(
+            "- **Read targets:**\n  - show.py:1-2\n"
+        )
+        rendered = plan_ops.render_pre_read_excerpts(resolved)
+        assert "## Pre-read excerpts" in rendered
+        assert "show.py (lines 1-2)" in rendered
+        assert "a=1" in rendered
+        assert "```python" in rendered
+
+    def test_dispatch_implement_prompt_includes_pre_read_excerpts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Stand up a minimal plan + target file so the dispatcher's
+        # render_implement_prompt grows the Pre-read excerpts block.
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        import plan_codex_dispatch  # noqa: WPS433
+
+        target = tmp_path / "big.py"
+        target.write_text(
+            "\n".join(f"line{i:03d}" for i in range(1, 21)) + "\n",
+            encoding="utf-8",
+        )
+        plan = tmp_path / "plan.md"
+        plan.write_text(
+            "# Plan: t\n"
+            "\n"
+            "## Context\n"
+            "ctx body.\n"
+            "\n"
+            "## Tasks\n"
+            "\n"
+            "### TASK-001: Sample\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** medium\n"
+            "- **Files:**\n"
+            "  - big.py\n"
+            "- **Test command:** none\n"
+            "- **Acceptance criteria:**\n"
+            "  - works\n"
+            "- **Read targets:**\n"
+            "  - big.py:3-5\n"
+            "\n"
+            "**Description:**\n"
+            "Do the thing.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        plan_text = plan.read_text(encoding="utf-8")
+        task = plan_codex_dispatch.parse_task_block(plan_text, "001")
+        prompt = plan_codex_dispatch.render_implement_prompt(task, "ctx body.")
+        assert "## Pre-read excerpts" in prompt
+        assert "big.py (lines 3-5)" in prompt
+        assert "line003" in prompt
+        # The legacy prompt body is still present.
+        assert "Implement TASK-001" in prompt
+
+    def test_dispatch_implement_prompt_unchanged_without_targets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        import plan_codex_dispatch  # noqa: WPS433
+
+        plan = tmp_path / "plan.md"
+        plan.write_text(
+            "# Plan: t\n"
+            "\n"
+            "## Context\n"
+            "ctx.\n"
+            "\n"
+            "## Tasks\n"
+            "\n"
+            "### TASK-001: NoTargets\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** medium\n"
+            "- **Files:**\n"
+            "  - foo.py\n"
+            "- **Test command:** none\n"
+            "- **Acceptance criteria:**\n"
+            "  - works\n"
+            "\n"
+            "**Description:**\n"
+            "Do.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        plan_text = plan.read_text(encoding="utf-8")
+        task = plan_codex_dispatch.parse_task_block(plan_text, "001")
+        prompt = plan_codex_dispatch.render_implement_prompt(task, "ctx.")
+        # No targets => no Pre-read excerpts block.
+        assert "Pre-read excerpts" not in prompt
+        # Sanity: the prompt opens with the canonical implement header.
+        assert prompt.startswith("Implement TASK-001"), prompt[:80]
