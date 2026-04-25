@@ -2,10 +2,9 @@
 """Gemini CLI dispatch wrapper for the dual-agent plan executor.
 
 Mirror of plan_codex_dispatch.py for the Gemini fallback path. Three
-subcommands: implement (stub for TASK-007), review (this task), and
-plan-review (stub for TASK-004). The argspec, envelope shape, and
-wrapper-side scope/cleanup semantics mirror the Codex wrapper, with two
-non-trivial differences:
+subcommands: implement (stub for TASK-007), review, and plan-review.
+The argspec, envelope shape, and wrapper-side scope/cleanup semantics
+mirror the Codex wrapper, with two non-trivial differences:
 
 (1) Headless OAuth contract — refuse to run when neither
     ``GEMINI_API_KEY`` nor ``GOOGLE_APPLICATION_CREDENTIALS`` is set
@@ -63,10 +62,12 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from _plan_paths import (  # noqa: E402
+    ALLOW_GAPS_DEMOTION_CLAUSE,
     PROTECTED_EXACT_PATHS,
     PROTECTED_PATH_PREFIXES,
     PROTECTED_PATH_SUFFIXES,
     PROTECTED_PATH_GLOBS,
+    _should_inject_allow_gaps_demotion,
     is_protected_path,
 )
 
@@ -92,6 +93,7 @@ _is_protected = is_protected_path
 
 RAW_TRUNCATE_CHARS = 2000
 DEFAULT_TIMEOUT_REVIEW = 180
+DEFAULT_TIMEOUT_PLAN_REVIEW = 180
 SCHEMA_RETRY_MAX_ATTEMPTS = 3
 
 # Restrictive policy TOML written to <GEMINI_CLI_HOME>/.gemini/policies/
@@ -198,6 +200,145 @@ def _load_review_schema() -> dict:
     module-level constant once read; the wrapper runs once per dispatch
     so a per-call read is fine and keeps the test surface obvious."""
     return json.loads(REVIEW_SCHEMA.read_text(encoding="utf-8"))
+
+
+def _load_plan_review_schema() -> dict:
+    """Load and parse the plan-review JSON Schema. Same per-call-read
+    rationale as ``_load_review_schema``."""
+    return json.loads(PLAN_REVIEW_SCHEMA.read_text(encoding="utf-8"))
+
+
+def render_plan_review_prompt(
+    schedule_json: str,
+    plan_basename: str | None = None,
+    *,
+    schema: dict | None = None,
+    allow_gaps_demotion: bool = False,
+    retry_suffix: str = "",
+) -> str:
+    """Build the Gemini plan-review prompt.
+
+    Mirror of ``plan_codex_dispatch.render_plan_review_prompt`` with the
+    schema embedded in the prompt body (Gemini has no
+    ``--output-schema`` equivalent). Schedule-only — the plan markdown
+    is never rendered into the prompt.
+
+    The ``--allow-gaps`` demotion clause text is sourced from the
+    shared ``ALLOW_GAPS_DEMOTION_CLAUSE`` constant in ``_plan_paths.py``
+    so the Codex and Gemini reviewers receive byte-identical prose.
+
+    When ``retry_suffix`` is non-empty it is appended to the bottom of
+    the prompt; the suffix is the bounded retry escalation and
+    intentionally does NOT include the previous attempt's response
+    (avoids self-reinforcement of malformed output).
+    """
+    plan_label = (
+        plan_basename if plan_basename else "(schedule-only; no plan file)"
+    )
+    demotion_clause = ALLOW_GAPS_DEMOTION_CLAUSE if allow_gaps_demotion else ""
+
+    schema_obj = schema if schema is not None else _load_plan_review_schema()
+    schema_str = json.dumps(schema_obj, indent=2)
+
+    body = (
+        f"Review the persisted schedule for this plan. The plan was authored "
+        f"by a peer analyst and decomposed into a fat manifest by "
+        f"`plan_ops.py build-tasks`; you are an independent pre-dispatch "
+        f"reviewer working from the schedule JSON alone.\n\n"
+        f"Plan file: {plan_label}\n\n"
+        f"Cross-plan dependency resolution has already been verified by the "
+        f"orchestrator in Phase 0 preflight. Do not check or report on "
+        f"cross-plan dependencies. Focus only on schedule structure, task "
+        f"intent, and coordination risk expressed within the supplied "
+        f"schedule.\n\n"
+        f"Your job is to determine whether this plan is workable to execute, "
+        f"not whether it is perfect.\n\n"
+        f"Review standard:\n"
+        f"1. Report only concrete, text-supported issues visible in the "
+        f"supplied schedule (including per-task `description` and "
+        f"`acceptance_criteria`).\n"
+        f"2. Before recording a finding, inspect the specific alleged gap, "
+        f"contradiction, or risk in the schedule. Do not render an "
+        f"uninformed verdict.\n"
+        f"3. A finding is blocking only if it would likely cause execution "
+        f"failure, invalid scheduling, ambiguous ownership, unbounded scope, "
+        f"or acceptance criteria that cannot be executed or evaluated.\n"
+        f"4. Minor omissions, polish improvements, or low-confidence concerns "
+        f"are not blocking. Those belong in `approved-with-notes` at most.\n"
+        f"5. If an issue is not explicit in the persisted schedule, do not "
+        f"infer it into a blocking finding.\n\n"
+        f"Output discipline:\n"
+        f"- Put concrete execution-impact issues in `findings`.\n"
+        f"- Put low-signal concerns, small polish suggestions, and "
+        f"non-blocking observations in `notes` instead of `findings`.\n"
+        f"- Each finding must include `blocking: true` only for issues that "
+        f"justify `needs-replan`; otherwise use `blocking: false`.\n"
+        f"- Section references in findings should use `tasks[i]` paths "
+        f"(e.g. `tasks[002].test_command`, `tasks[000].description`, "
+        f"`batches[1]`) rather than plan-markdown line numbers. The "
+        f"schedule JSON is the single source of truth.\n"
+        f"- Each finding must include `target_task_id: string | null` — the "
+        f"task id this finding is about (e.g., \"002\" when the finding "
+        f"concerns `tasks[002]`), or `null` for schedule-level findings "
+        f"(batch ordering, roster completeness, cross-cutting issues with no "
+        f"single task owner). The downstream triage + plan-author "
+        f"dispatchers route per-child based on this field, so accuracy "
+        f"matters: if the concern lives inside one task, name that task; "
+        f"otherwise use `null`.\n\n"
+        f"Check specifically:\n"
+        f"1. DAG shape: does every `tasks[i].dependencies` entry resolve to "
+        f"another task id in the schedule? Are there cycles? Is the "
+        f"`batches[]` order a valid topological sort of the DAG?\n"
+        f"2. File disjointness within a batch: do any two tasks scheduled in "
+        f"the same batch share a path in their `files[]` lists? Concurrent "
+        f"writers must be disjoint.\n"
+        f"3. Classification sanity: does every task carry an `agent` field "
+        f"matching the task's nature (Codex for large mechanical edits, "
+        f"Claude for schema/prose/judgment work)? Flag obvious misfits, but "
+        f"only when the mismatch is visible from the description + files + "
+        f"test_command.\n"
+        f"4. Test-command reachability: does `tasks[i].test_command` point "
+        f"at a runnable invocation or an accepted deferred-testing signal? "
+        f"Accepted deferred-testing signals — do NOT flag these:\n"
+        f"   - Canonical: `deferred (TASK-NNN[A-Z]?)` with optional trailing "
+        f"note, OR\n"
+        f"   - Back-compat: `none` with a parenthetical that references a "
+        f"sibling task in this schedule, e.g. `none (pure agent spec; "
+        f"end-to-end exercise lands in TASK-NNN[A-Z]?)`.\n"
+        f"   The referenced `TASK-NNN[A-Z]?` must resolve to a task declared "
+        f"in this schedule. Treat these as deferred-testing notes, not "
+        f"blocking gaps. Flag only bare `none` with no valid sibling-task "
+        f"deferral.\n"
+        f"5. AC-vs-files alignment: for each task, are the listed `files[]` "
+        f"plausibly sufficient to satisfy `acceptance_criteria[]`? Flag "
+        f"obvious mismatches (AC references a file absent from `files[]`; "
+        f"AC describes behaviour the `files[]` list cannot plausibly reach).\n"
+        f"6. Intent completeness: is `tasks[i].description` non-empty and "
+        f"non-trivial? Is `tasks[i].acceptance_criteria[]` non-empty? A task "
+        f"missing either field is a likely-blocking gap (implementer cannot "
+        f"work without knowing what to build or how to know they are "
+        f"done).\n\n"
+        f"Output schema (JSON):\n"
+        f"```json\n{schema_str}\n```\n\n"
+        f"Persisted schedule JSON:\n\n"
+        f"```json\n{schedule_json}\n```\n\n"
+        f"{demotion_clause}"
+        f"Verdict vocabulary (pick exactly one):\n"
+        f"- `approved` — the schedule is workable as written and no "
+        f"substantiated blocking issue is present.\n"
+        f"- `approved-with-notes` — the schedule is workable but has "
+        f"non-blocking issues, minor gaps, or operator-accepted soft gaps.\n"
+        f"- `needs-replan` — the schedule has a concrete blocking defect "
+        f"that should be fixed before dispatch.\n"
+        f"Do not use `needs-replan` for nits, preferences, or weak "
+        f"inferences.\n"
+        f"If there are no non-blocking observations, return `notes: []`.\n\n"
+        f"Return JSON conforming to the schema above, no markdown fences, "
+        f"no trailing commentary. `plan_file` must be \"{plan_label}\".\n"
+    )
+    if retry_suffix:
+        body = body + "\n" + retry_suffix.rstrip() + "\n"
+    return body
 
 
 def render_review_prompt(
@@ -455,6 +596,95 @@ def _validate_against_schema(
     return None
 
 
+def _validate_or_retry(
+    *,
+    schema: dict,
+    workdir: str,
+    timeout_sec: int,
+    gemini_home: str,
+    build_prompt,
+) -> dict:
+    """Schema-validation retry loop shared by cmd_review and cmd_plan_review.
+
+    Invokes Gemini up to ``SCHEMA_RETRY_MAX_ATTEMPTS`` times. On each
+    iteration the caller-supplied ``build_prompt(attempt, retry_suffix)``
+    callable renders the prompt: attempt 1 receives an empty
+    ``retry_suffix``, subsequent attempts receive the bounded escalation
+    suffix from ``_retry_suffix_for_attempt``.
+
+    Returns a dict carrying the loop's terminal state. The wrapper-level
+    ``cmd_*`` paths interpret it and emit the envelope; the helper does
+    not call ``emit`` itself so the per-subcommand envelope shape stays
+    in the caller.
+
+    Result schema (always present unless noted):
+      ``status``: one of
+        - ``"ok"``                 — Gemini ran, output parsed + validated.
+        - ``"timeout"``           — Gemini timed out on the last attempt.
+        - ``"gemini_not_found"``   — gemini binary missing on PATH.
+        - ``"parse_error"``        — all attempts failed parse + validation.
+      ``attempts``: int (the highest attempt number reached).
+      ``gemini``: the most recent ``invoke_gemini`` result dict.
+      ``parsed``: dict | None (only for ``status == "ok"``).
+      ``last_validation_error``: str (only for ``status == "parse_error"``).
+    """
+    last_validation_error = ""
+    last_gemini: dict = {}
+    attempts = 0
+    for attempt in range(1, SCHEMA_RETRY_MAX_ATTEMPTS + 1):
+        attempts = attempt
+        retry_suffix = (
+            "" if attempt == 1
+            else _retry_suffix_for_attempt(attempt, schema)
+        )
+        prompt = build_prompt(attempt, retry_suffix)
+
+        gemini = invoke_gemini(
+            prompt=prompt,
+            workdir=workdir,
+            timeout_sec=timeout_sec,
+            gemini_home=gemini_home,
+        )
+        last_gemini = gemini
+
+        if gemini["status"] == "timeout":
+            return {
+                "status": "timeout",
+                "attempts": attempt,
+                "gemini": gemini,
+            }
+        if gemini["status"] == "gemini_not_found":
+            return {
+                "status": "gemini_not_found",
+                "attempts": attempt,
+                "gemini": gemini,
+            }
+
+        parsed_obj, parse_err = _extract_response_json(gemini["stdout"])
+        if parsed_obj is None:
+            last_validation_error = parse_err or "JSON parse error"
+            continue
+
+        schema_err = _validate_against_schema(parsed_obj, schema)
+        if schema_err is not None:
+            last_validation_error = schema_err
+            continue
+
+        return {
+            "status": "ok",
+            "attempts": attempt,
+            "gemini": gemini,
+            "parsed": parsed_obj,
+        }
+
+    return {
+        "status": "parse_error",
+        "attempts": attempts,
+        "gemini": last_gemini,
+        "last_validation_error": last_validation_error,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Envelope
 # ---------------------------------------------------------------------------
@@ -507,17 +737,261 @@ def cmd_implement(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Subcommand: plan-review (stub for TASK-004)
+# Subcommand: plan-review
 # ---------------------------------------------------------------------------
 
 
 def cmd_plan_review(args) -> int:
-    """Stub. The plan-review subcommand lands in TASK-004."""
-    sys.stderr.write(
-        "plan_gemini_dispatch: plan-review subcommand not yet "
-        "implemented; see TASK-004.\n"
+    """Phase 1.5 — Gemini independently reviews the persisted schedule.
+
+    Schedule-only contract (mirrors plan_codex_dispatch.cmd_plan_review):
+    the plan markdown is never read or rendered into the prompt. The
+    persisted schedule's fat manifest carries every per-task
+    ``description`` + ``acceptance_criteria`` the reviewer needs.
+
+    Verdict vocabulary: approved | approved-with-notes | needs-replan.
+    Wrapper owns the sandbox baseline + cleanup, matching review.
+
+    The ``--allow-gaps`` demotion clause is gated by the shared helper
+    ``_should_inject_allow_gaps_demotion`` and the prose comes from the
+    shared ``ALLOW_GAPS_DEMOTION_CLAUSE`` constant; the Codex and
+    Gemini reviewers must never drift on either.
+    """
+    schedule_path = Path(args.schedule_file).resolve()
+    repo_root = str(Path(args.repo_root).resolve())
+
+    if not schedule_path.exists():
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=f"Schedule file not found: {schedule_path}",
+        ))
+        return 1
+
+    # `plan_basename` populates envelope.plan_file. Mirror the Codex
+    # wrapper's derivation rules (TASK-006/008 schedule-only contract):
+    # prefer the parent directory's basename when the sidecar lives
+    # alongside `00_INDEX.json`; otherwise fall back to the schedule's
+    # own stem (peeling the full ``.schedule.json`` suffix).
+    parent_dir = schedule_path.parent
+    if (parent_dir / "00_INDEX.json").is_file() and parent_dir.name:
+        plan_basename = parent_dir.name
+    elif schedule_path.name.endswith(".schedule.json"):
+        plan_basename = schedule_path.name[: -len(".schedule.json")]
+    else:
+        plan_basename = schedule_path.stem
+
+    try:
+        schedule_text = schedule_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=f"Cannot read schedule file: {exc}",
+        ))
+        return 1
+
+    # Parse the schedule up-front: we surface a clean malformed-JSON
+    # error before consulting gaps[]. This mirrors the Codex wrapper.
+    try:
+        schedule_obj = json.loads(schedule_text)
+    except json.JSONDecodeError:
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error="malformed schedule JSON",
+        ))
+        return 1
+
+    allow_gaps_demotion = _should_inject_allow_gaps_demotion(
+        schedule_obj, bool(getattr(args, "allow_gaps", False)),
     )
-    return 2
+
+    if not PLAN_REVIEW_SCHEMA.exists():
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=f"Schema file missing: {PLAN_REVIEW_SCHEMA}",
+        ))
+        return 1
+
+    schema = _load_plan_review_schema()
+    base_prompt = render_plan_review_prompt(
+        schedule_text,
+        plan_basename,
+        schema=schema,
+        allow_gaps_demotion=allow_gaps_demotion,
+    )
+
+    # Optional debug breadcrumb: when GEMINI_DISPATCH_DEBUG=1, write the
+    # rendered prompt to a temp file for tests/operators to inspect.
+    if os.environ.get("GEMINI_DISPATCH_DEBUG") == "1":
+        try:
+            debug_dir = Path(tempfile.gettempdir()) / "plan_gemini_dispatch_debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            (debug_dir / f"plan_review_{os.getpid()}.txt").write_text(
+                base_prompt, encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    if args.dry_run:
+        emit({
+            "plan_file": plan_basename,
+            "subcommand": "plan-review",
+            "reviewer": "gemini",
+            "outcome": "dry_run",
+            "dry_run": True,
+            "prompt_preview": base_prompt,
+        })
+        return 0
+
+    # Pre-spawn API-key short-circuit. Runs BEFORE tempfile.mkdtemp so a
+    # misconfigured invocation does not litter /tmp.
+    api_key_err = _check_api_key_env()
+    if api_key_err is not None:
+        emit(make_envelope(
+            "plan", "plan-review", "failure",
+            error=api_key_err,
+        ))
+        return 1
+
+    gemini_home = _make_ephemeral_gemini_home()
+    baseline = _snapshot_baseline(repo_root)
+    try:
+        def build_prompt(attempt: int, retry_suffix: str) -> str:
+            if attempt == 1:
+                return base_prompt
+            return render_plan_review_prompt(
+                schedule_text,
+                plan_basename,
+                schema=schema,
+                allow_gaps_demotion=allow_gaps_demotion,
+                retry_suffix=retry_suffix,
+            )
+
+        result = _validate_or_retry(
+            schema=schema,
+            workdir=repo_root,
+            timeout_sec=args.timeout,
+            gemini_home=gemini_home,
+            build_prompt=build_prompt,
+        )
+        gemini = result.get("gemini") or {}
+
+        if result["status"] == "timeout":
+            cleanup_details = _handle_timeout_cleanup(
+                repo_root, [], baseline,
+            )
+            envelope = make_envelope(
+                "plan", "plan-review", "timeout",
+                exit_code=-1,
+                raw=gemini.get("stdout") or gemini.get("stderr"),
+                error=f"Gemini plan review timed out after {args.timeout}s",
+                extra={
+                    "wall_seconds": gemini.get("wall_seconds"),
+                    "attempts": result["attempts"],
+                    "cleanup_strategy": cleanup_details["cleanup_strategy"],
+                    "baseline_captured": baseline["captured"],
+                    "cleanup_details": cleanup_details,
+                    "out_of_scope_tracked": cleanup_details.get(
+                        "out_of_scope_tracked", []),
+                    "out_of_scope_untracked": cleanup_details.get(
+                        "out_of_scope_untracked", []),
+                    "out_of_scope_observed": cleanup_details.get(
+                        "out_of_scope_observed", False),
+                },
+            )
+            envelope["plan_file"] = plan_basename
+            emit(envelope)
+            return 1
+
+        if result["status"] == "gemini_not_found":
+            envelope = make_envelope(
+                "plan", "plan-review", "failure",
+                error="gemini binary not found on PATH",
+                extra={"attempts": result["attempts"]},
+            )
+            envelope["plan_file"] = plan_basename
+            emit(envelope)
+            return 1
+
+        if result["status"] == "parse_error":
+            envelope = make_envelope(
+                "plan", "plan-review", "parse_error",
+                exit_code=gemini.get("exit_code", 0),
+                raw=gemini.get("stdout", ""),
+                error=(
+                    f"Gemini output failed schema validation after "
+                    f"{SCHEMA_RETRY_MAX_ATTEMPTS} attempts"
+                ),
+                extra={
+                    "attempts": SCHEMA_RETRY_MAX_ATTEMPTS,
+                    "last_validation_error": result["last_validation_error"],
+                },
+            )
+            envelope["plan_file"] = plan_basename
+            emit(envelope)
+            return 1
+
+        # status == "ok": parsed + validated, but exit code may still be non-zero.
+        parsed_obj = result["parsed"]
+        if gemini["exit_code"] != 0:
+            cleanup_details = _handle_timeout_cleanup(
+                repo_root, [], baseline,
+            )
+            envelope = make_envelope(
+                "plan", "plan-review", "failure",
+                exit_code=gemini["exit_code"],
+                raw=gemini["stdout"],
+                error=(
+                    f"gemini exited {gemini['exit_code']} despite "
+                    f"parseable JSON output"
+                ),
+                extra={
+                    "wall_seconds": gemini["wall_seconds"],
+                    "attempts": result["attempts"],
+                    "cleanup_strategy": cleanup_details["cleanup_strategy"],
+                    "baseline_captured": baseline["captured"],
+                    "cleanup_details": cleanup_details,
+                },
+            )
+            envelope["plan_file"] = plan_basename
+            emit(envelope)
+            return 1
+
+        # Observe-only post-dispatch scope: Gemini should not have
+        # written anything during plan-review. Pass empty allowed set;
+        # any new delta becomes out-of-scope.
+        scope = validate_scope(repo_root, [], baseline)
+        sandbox_escape_detected = bool(
+            scope["out_of_scope_observed"]
+            or scope["protected_skipped_tracked"]
+            or scope["protected_skipped_untracked"]
+        )
+
+        extra: dict = {
+            "wall_seconds": gemini["wall_seconds"],
+            "attempts": result["attempts"],
+            "scope": scope,
+            "sandbox_escape_detected": sandbox_escape_detected,
+            "out_of_scope_tracked": scope["out_of_scope_tracked"],
+            "out_of_scope_untracked": scope["out_of_scope_untracked"],
+            "out_of_scope_observed": scope["out_of_scope_observed"],
+            "cleanup_strategy": scope["cleanup_strategy"],
+            "baseline_captured": baseline["captured"],
+        }
+
+        envelope = make_envelope(
+            "plan", "plan-review", "success",
+            exit_code=gemini["exit_code"],
+            raw=gemini["stdout"],
+            parsed=parsed_obj,
+            extra=extra,
+        )
+        # Mirror plan_codex_dispatch: plan-review envelopes carry plan_file
+        # alongside the canonical task_id="plan" identifier.
+        envelope["plan_file"] = plan_basename
+        emit(envelope)
+        return 0
+    finally:
+        _teardown_gemini_home(gemini_home)
 
 
 # ---------------------------------------------------------------------------
@@ -591,130 +1065,117 @@ def cmd_review(args) -> int:
         return 0
 
     gemini_home = _make_ephemeral_gemini_home()
-    last_exit_code = 0
-    last_validation_error = ""
-    last_raw = ""
     baseline = _snapshot_baseline(repo_root)
     try:
-        for attempt in range(1, SCHEMA_RETRY_MAX_ATTEMPTS + 1):
+        def build_prompt(attempt: int, retry_suffix: str) -> str:
             if attempt == 1:
-                prompt = base_prompt
-            else:
-                prompt = render_review_prompt(
-                    task, diff, args.review_focus, review_files,
-                    schema=schema,
-                    retry_suffix=_retry_suffix_for_attempt(attempt, schema),
-                )
-
-            gemini = invoke_gemini(
-                prompt=prompt,
-                workdir=repo_root,
-                timeout_sec=args.timeout,
-                gemini_home=gemini_home,
+                return base_prompt
+            return render_review_prompt(
+                task, diff, args.review_focus, review_files,
+                schema=schema,
+                retry_suffix=retry_suffix,
             )
 
-            if gemini["status"] == "timeout":
-                cleanup_details = _handle_timeout_cleanup(
-                    repo_root, review_files, baseline,
-                )
-                emit(make_envelope(
-                    task["task_id"], "review", "timeout",
-                    exit_code=-1,
-                    raw=gemini["stdout"] or gemini["stderr"],
-                    error=f"Gemini review timed out after {args.timeout}s",
-                    extra={
-                        "wall_seconds": gemini["wall_seconds"],
-                        "attempts": attempt,
-                        "cleanup_strategy": cleanup_details["cleanup_strategy"],
-                        "baseline_captured": baseline["captured"],
-                        "cleanup_details": cleanup_details,
-                    },
-                ))
-                return 1
+        result = _validate_or_retry(
+            schema=schema,
+            workdir=repo_root,
+            timeout_sec=args.timeout,
+            gemini_home=gemini_home,
+            build_prompt=build_prompt,
+        )
+        gemini = result.get("gemini") or {}
 
-            if gemini["status"] == "gemini_not_found":
-                emit(make_envelope(
-                    task["task_id"], "review", "failure",
-                    error="gemini binary not found on PATH",
-                    extra={"attempts": attempt},
-                ))
-                return 1
-
-            last_exit_code = gemini["exit_code"]
-            last_raw = gemini["stdout"] or ""
-
-            parsed_obj, parse_err = _extract_response_json(gemini["stdout"])
-            if parsed_obj is None:
-                last_validation_error = parse_err or "JSON parse error"
-                continue
-
-            schema_err = _validate_against_schema(parsed_obj, schema)
-            if schema_err is not None:
-                last_validation_error = schema_err
-                continue
-
-            if gemini["exit_code"] != 0:
-                cleanup_details = _handle_timeout_cleanup(
-                    repo_root, review_files, baseline,
-                )
-                emit(make_envelope(
-                    task["task_id"], "review", "failure",
-                    exit_code=gemini["exit_code"],
-                    raw=gemini["stdout"],
-                    error=f"gemini exited {gemini['exit_code']} despite parseable JSON output",
-                    extra={
-                        "wall_seconds": gemini["wall_seconds"],
-                        "attempts": attempt,
-                        "cleanup_strategy": cleanup_details["cleanup_strategy"],
-                        "baseline_captured": baseline["captured"],
-                        "cleanup_details": cleanup_details,
-                    },
-                ))
-                return 1
-
-            scope = validate_scope(repo_root, review_files, baseline)
-            sandbox_escape_detected = bool(
-                scope["out_of_scope_observed"]
-                or scope["protected_skipped_tracked"]
-                or scope["protected_skipped_untracked"]
+        if result["status"] == "timeout":
+            cleanup_details = _handle_timeout_cleanup(
+                repo_root, review_files, baseline,
             )
-
-            extra: dict = {
-                "wall_seconds": gemini["wall_seconds"],
-                "attempts": attempt,
-                "scope": scope,
-                "sandbox_escape_detected": sandbox_escape_detected,
-                "out_of_scope_tracked": scope["out_of_scope_tracked"],
-                "out_of_scope_untracked": scope["out_of_scope_untracked"],
-                "out_of_scope_observed": scope["out_of_scope_observed"],
-                "cleanup_strategy": scope["cleanup_strategy"],
-                "baseline_captured": baseline["captured"],
-            }
-
             emit(make_envelope(
-                task["task_id"], "review", "success",
+                task["task_id"], "review", "timeout",
+                exit_code=-1,
+                raw=gemini.get("stdout") or gemini.get("stderr"),
+                error=f"Gemini review timed out after {args.timeout}s",
+                extra={
+                    "wall_seconds": gemini.get("wall_seconds"),
+                    "attempts": result["attempts"],
+                    "cleanup_strategy": cleanup_details["cleanup_strategy"],
+                    "baseline_captured": baseline["captured"],
+                    "cleanup_details": cleanup_details,
+                },
+            ))
+            return 1
+
+        if result["status"] == "gemini_not_found":
+            emit(make_envelope(
+                task["task_id"], "review", "failure",
+                error="gemini binary not found on PATH",
+                extra={"attempts": result["attempts"]},
+            ))
+            return 1
+
+        if result["status"] == "parse_error":
+            emit(make_envelope(
+                task["task_id"], "review", "parse_error",
+                exit_code=gemini.get("exit_code", 0),
+                raw=gemini.get("stdout", ""),
+                error=(
+                    f"Gemini output failed schema validation after "
+                    f"{SCHEMA_RETRY_MAX_ATTEMPTS} attempts"
+                ),
+                extra={
+                    "attempts": SCHEMA_RETRY_MAX_ATTEMPTS,
+                    "last_validation_error": result["last_validation_error"],
+                },
+            ))
+            return 1
+
+        # status == "ok": parsed + validated, but exit code may still be non-zero.
+        parsed_obj = result["parsed"]
+        if gemini["exit_code"] != 0:
+            cleanup_details = _handle_timeout_cleanup(
+                repo_root, review_files, baseline,
+            )
+            emit(make_envelope(
+                task["task_id"], "review", "failure",
                 exit_code=gemini["exit_code"],
                 raw=gemini["stdout"],
-                parsed=parsed_obj,
-                extra=extra,
+                error=f"gemini exited {gemini['exit_code']} despite parseable JSON output",
+                extra={
+                    "wall_seconds": gemini["wall_seconds"],
+                    "attempts": result["attempts"],
+                    "cleanup_strategy": cleanup_details["cleanup_strategy"],
+                    "baseline_captured": baseline["captured"],
+                    "cleanup_details": cleanup_details,
+                },
             ))
-            return 0
+            return 1
 
-        # Retries exhausted -> parse_error envelope.
+        scope = validate_scope(repo_root, review_files, baseline)
+        sandbox_escape_detected = bool(
+            scope["out_of_scope_observed"]
+            or scope["protected_skipped_tracked"]
+            or scope["protected_skipped_untracked"]
+        )
+
+        extra: dict = {
+            "wall_seconds": gemini["wall_seconds"],
+            "attempts": result["attempts"],
+            "scope": scope,
+            "sandbox_escape_detected": sandbox_escape_detected,
+            "out_of_scope_tracked": scope["out_of_scope_tracked"],
+            "out_of_scope_untracked": scope["out_of_scope_untracked"],
+            "out_of_scope_observed": scope["out_of_scope_observed"],
+            "cleanup_strategy": scope["cleanup_strategy"],
+            "baseline_captured": baseline["captured"],
+        }
+
         emit(make_envelope(
-            task["task_id"], "review", "parse_error",
-            exit_code=last_exit_code,
-            raw=last_raw,
-            error=(
-                f"Gemini output failed schema validation after "
-                f"{SCHEMA_RETRY_MAX_ATTEMPTS} attempts"
-            ),
-            extra={
-                "attempts": SCHEMA_RETRY_MAX_ATTEMPTS,
-                "last_validation_error": last_validation_error,
-            },
+            task["task_id"], "review", "success",
+            exit_code=gemini["exit_code"],
+            raw=gemini["stdout"],
+            parsed=parsed_obj,
+            extra=extra,
         ))
-        return 1
+        return 0
     finally:
         _teardown_gemini_home(gemini_home)
 
@@ -728,7 +1189,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Gemini CLI dispatch wrapper for the dual-agent plan executor. "
-            "Subcommands: implement (stub), review, plan-review (stub)."
+            "Subcommands: implement (stub), review, plan-review."
         ),
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
@@ -768,16 +1229,33 @@ def _build_parser() -> argparse.ArgumentParser:
 
     pr = subparsers.add_parser(
         "plan-review",
-        help="(stub) Plan-level review -- lands in TASK-004",
+        help="Dispatch a plan-level review to Gemini (Phase 1.5, schedule-only)",
     )
-    pr.add_argument("--schedule-file", required=False, default="",
-                    help="(stub) Persisted schedule JSON path")
-    pr.add_argument("--repo-root", required=False, default="",
-                    help="(stub) Repo root")
-    pr.add_argument("--json", action="store_true")
-    pr.add_argument("--dry-run", action="store_true")
-    pr.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_REVIEW)
-    pr.add_argument("--allow-gaps", action="store_true")
+    pr.add_argument("--schedule-file", required=True,
+                    help="Absolute path to persisted schedule JSON. Sole "
+                         "required input — schedule carries the fat manifest "
+                         "(per-task description + acceptance_criteria).")
+    pr.add_argument("--repo-root", required=True,
+                    help="Absolute path to the repo root (used as Gemini "
+                         "subprocess cwd and for sandbox baseline/cleanup).")
+    pr.add_argument("--json", action="store_true",
+                    help=("Output structured JSON (always on; flag is a "
+                          "no-op reserved for future-compat)"))
+    pr.add_argument("--dry-run", action="store_true",
+                    help="Render prompt and metadata; do not invoke Gemini")
+    pr.add_argument("--timeout", type=int,
+                    default=DEFAULT_TIMEOUT_PLAN_REVIEW,
+                    help=f"Gemini execution timeout in seconds "
+                         f"(default: {DEFAULT_TIMEOUT_PLAN_REVIEW})")
+    pr.add_argument("--allow-gaps", action="store_true",
+                    help="Forward the operator's --allow-gaps opt-in. When "
+                         "set AND the persisted schedule's gaps[] contains "
+                         "only soft-severity entries (and no structural "
+                         "violations), the rendered prompt instructs the "
+                         "reviewer to demote what would have been "
+                         "`needs-replan` into `approved-with-notes`. Hard "
+                         "gaps still trigger the standard needs-replan "
+                         "route (plan-author auto-revise).")
 
     return parser
 

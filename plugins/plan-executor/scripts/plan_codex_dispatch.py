@@ -53,10 +53,12 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from _plan_paths import (  # noqa: E402
+    ALLOW_GAPS_DEMOTION_CLAUSE,
     PROTECTED_EXACT_PATHS,
     PROTECTED_PATH_PREFIXES,
     PROTECTED_PATH_SUFFIXES,
     PROTECTED_PATH_GLOBS,
+    _should_inject_allow_gaps_demotion,
     is_protected_path,
 )
 
@@ -317,17 +319,7 @@ def render_plan_review_prompt(
     flag; this function is a pure prompt renderer.
     """
     plan_label = plan_basename if plan_basename else "(schedule-only; no plan file)"
-    demotion_clause = (
-        "\nOperator override (--allow-gaps): the user explicitly opted "
-        "in to soft gaps. The persisted schedule's gaps[] contains only "
-        "soft-severity entries and no structural violations. If "
-        "schedule_ok would otherwise be false for this reason alone, "
-        "demote the verdict from `needs-replan` to `approved-with-notes` "
-        "and mention that demotion in the `summary`. Hard gaps or "
-        "structural violations are not covered by this override.\n\n"
-        if allow_gaps_demotion
-        else ""
-    )
+    demotion_clause = ALLOW_GAPS_DEMOTION_CLAUSE if allow_gaps_demotion else ""
     return (
         f"Review the persisted schedule for this plan. The plan was authored "
         f"by a peer analyst and decomposed into a fat manifest by "
@@ -1593,28 +1585,14 @@ def cmd_plan_review(args) -> int:
         ))
         return 1
 
-    # TASK-003: severity-aware demotion under --allow-gaps. Demote iff
-    # (a) operator passed --allow-gaps, (b) schedule.gaps[] is non-empty
-    # and every entry carries severity == "soft", (c) no structural
-    # schedule violations. The schedule contract requires that a non-empty
-    # gaps[] appear only with outcome == "needs-enrichment" — outcome
-    # "valid" mandates gaps[]==[], so the combination (valid, non-empty
-    # gaps) is itself a contract violation and must NOT be demoted. A
-    # missing/unknown outcome also suppresses demotion. We do NOT mutate
-    # the persisted schedule; the signal flows into the prompt only.
-    allow_gaps_demotion = False
-    if getattr(args, "allow_gaps", False):
-        gaps = schedule_obj.get("gaps") if isinstance(schedule_obj, dict) else None
-        outcome = schedule_obj.get("outcome") if isinstance(schedule_obj, dict) else None
-        if (
-            isinstance(gaps, list)
-            and gaps
-            and outcome == "needs-enrichment"
-        ):
-            allow_gaps_demotion = all(
-                isinstance(g, dict) and g.get("severity") == "soft"
-                for g in gaps
-            )
+    # TASK-003: severity-aware demotion under --allow-gaps. The gating
+    # predicate now lives in `_plan_paths._should_inject_allow_gaps_demotion`
+    # so this wrapper and `plan_gemini_dispatch.py` cannot drift on the
+    # injection condition. We do NOT mutate the persisted schedule; the
+    # signal flows into the prompt only.
+    allow_gaps_demotion = _should_inject_allow_gaps_demotion(
+        schedule_obj, bool(getattr(args, "allow_gaps", False)),
+    )
 
     prompt = render_plan_review_prompt(
         schedule_text,

@@ -2,10 +2,18 @@
 /implement-plan executor. Imported by:
 
   - plugins/plan-executor/scripts/plan_codex_dispatch.py (wrapper delta-cleanup)
+  - plugins/plan-executor/scripts/plan_gemini_dispatch.py (wrapper delta-cleanup)
   - plugins/plan-executor/scripts/plan_ops.py (reconcile-batch AND fail-task)
 
 Duplicating any of these in the two consumers is forbidden -- the three
 historical copies drifted and the drift caused real regressions.
+
+Also home to the shared ``--allow-gaps`` plan-review prompt clause and
+the gating predicate that decides when to inject it. Both
+``plan_codex_dispatch.py`` and ``plan_gemini_dispatch.py`` import the
+constant + helper from here so the two wrappers cannot diverge in either
+the prose handed to the reviewer or the condition under which the prose
+appears.
 """
 from __future__ import annotations
 
@@ -13,7 +21,7 @@ import fnmatch
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 PROTECTED_EXACT_PATHS = frozenset({
     "_run_lock.json",
@@ -186,3 +194,72 @@ def canonicalize_file(raw: str, repo_root: Path) -> Optional[str]:
     except ValueError:
         return None
     return rel.as_posix()
+
+
+# ---------------------------------------------------------------------------
+# Shared plan-review prompt fragment + gating predicate
+#
+# Both wrappers (``plan_codex_dispatch.cmd_plan_review`` and
+# ``plan_gemini_dispatch.cmd_plan_review``) inject the same demotion
+# clause when ``--allow-gaps`` is set AND the persisted schedule is
+# soft-gap-only. The clause text MUST be byte-identical across the two
+# reviewers, so it lives here as a single module-level constant.
+#
+# Gating semantics (from PLAN_GEMINI_INTEGRATION_2026-04-25 / TASK-003 of
+# the dual-agent run that introduced --allow-gaps):
+#   - operator passed --allow-gaps, AND
+#   - schedule.gaps[] is non-empty, AND
+#   - schedule.outcome == "needs-enrichment" (the schedule contract
+#     requires a non-empty gaps[] only with this outcome; outcome
+#     "valid" mandates gaps[]==[], so the combination (valid, non-empty
+#     gaps) is itself a contract violation and must NOT be demoted), AND
+#   - every gap entry carries severity == "soft".
+# A missing/unknown outcome suppresses the demotion. The wrapper never
+# mutates the persisted schedule; the signal flows into the prompt only.
+# ---------------------------------------------------------------------------
+
+ALLOW_GAPS_DEMOTION_CLAUSE = (
+    "\nOperator override (--allow-gaps): the user explicitly opted "
+    "in to soft gaps. The persisted schedule's gaps[] contains only "
+    "soft-severity entries and no structural violations. If "
+    "schedule_ok would otherwise be false for this reason alone, "
+    "demote the verdict from `needs-replan` to `approved-with-notes` "
+    "and mention that demotion in the `summary`. Hard gaps or "
+    "structural violations are not covered by this override.\n\n"
+)
+
+
+def _should_inject_allow_gaps_demotion(
+    schedule_dict: Any,
+    allow_gaps_flag: bool,
+) -> bool:
+    """Decide whether the plan-review prompt should carry the demotion clause.
+
+    Parameters
+    ----------
+    schedule_dict:
+        The parsed persisted schedule. Anything that is not a ``dict``
+        (None, list, scalar) suppresses the demotion — the schedule
+        contract requires a top-level object, and a malformed schedule
+        cannot satisfy the soft-only invariant.
+    allow_gaps_flag:
+        ``True`` if the operator passed ``--allow-gaps`` to the wrapper.
+
+    Returns
+    -------
+    bool
+        ``True`` iff the gating semantics described in the module header
+        are all satisfied, otherwise ``False``.
+    """
+    if not allow_gaps_flag:
+        return False
+    if not isinstance(schedule_dict, dict):
+        return False
+    gaps = schedule_dict.get("gaps")
+    outcome = schedule_dict.get("outcome")
+    if not (isinstance(gaps, list) and gaps and outcome == "needs-enrichment"):
+        return False
+    return all(
+        isinstance(g, dict) and g.get("severity") == "soft"
+        for g in gaps
+    )
