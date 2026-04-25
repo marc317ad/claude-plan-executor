@@ -4336,8 +4336,30 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
     })
 
 
+_LOG_BLOCK_RE = re.compile(
+    r"<<<LOG-BLOCK\s+([0-9a-fA-F]{4,32})>>>.*?<<<END LOG-BLOCK\s+\1>>>",
+    re.DOTALL,
+)
+
+
+def _strip_log_blocks(text: str) -> str:
+    """Replace ``<<<LOG-BLOCK {uuid}>>>...<<<END LOG-BLOCK {uuid}>>>`` fences
+    (as emitted by ``scripts/log_capture.py``) with a placeholder.
+
+    Uses a back-reference on the UUID so a forged ``<<<END LOG-BLOCK X>>>``
+    embedded in captured command output cannot close the real block.
+    Only log-content inside matching fences is elided; prose outside is
+    preserved verbatim.
+    """
+    return _LOG_BLOCK_RE.sub("[log block elided]", text)
+
+
 def cmd_parse_implementer_report(args: argparse.Namespace) -> None:
-    raw = sys.stdin.read()
+    raw_input = sys.stdin.read()
+    # TASK-011: strip log-capture fences before searching for report
+    # labels so test output that happens to contain `**Concerns for
+    # reviewer:**` / `## Commit` cannot inject report fields.
+    raw = _strip_log_blocks(raw_input)
     warnings: list[str] = []
     diagnostics: list[dict] = []
 
@@ -4415,6 +4437,11 @@ def cmd_parse_implementer_report(args: argparse.Namespace) -> None:
         "plan_adaptations": plan_adaptations,
         "warnings": warnings,
         "diagnostics": diagnostics,
+        # TASK-011: preserve the original input (log blocks intact) so
+        # the reviewer dispatch can embed the bounded summary verbatim.
+        # Report-field extraction above was run against the log-stripped
+        # copy; `raw` is the unstripped original.
+        "raw": raw_input,
     }
     if reversion:
         result["reversion_guidance"] = reversion
