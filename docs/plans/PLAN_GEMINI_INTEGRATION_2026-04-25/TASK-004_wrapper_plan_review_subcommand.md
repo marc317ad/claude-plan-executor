@@ -82,3 +82,11 @@ Add `plan-review` to the Gemini wrapper. The trickiest part is keeping the `--al
 - The "schedule has no structural violations" check is `outcome == "needs-enrichment"` (the schedule validator's contract). Missing or unknown `outcome` suppresses the demotion. Mirror exactly.
 - The Gemini prompt for `plan-review` embeds the schema verbatim, then the schedule's `tasks[]` and `batches[]`, then the `--allow-gaps` clause if applicable, then the verdict-vocabulary block. Reuse `plan_codex_dispatch.py`'s prompt-construction helper if it factors cleanly; otherwise mirror its output.
 - The shim for the new test reads `GEMINI_SHIM_MODE` env var to choose the response. Reuse the shim from TASK-003 if it was placed in `tests/scripts/_gemini_shim.py`; if it was inlined per-test, lift it to a shared fixture in this task.
+
+## Execution log — 20260425T172244 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `d7bd9dd620561810d897e8e7af051153b8a3ff5e`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | codex | clean [remediation] | d7bd9dd | Round-1 prompt-section ordering deviation; user-authorized hand-fix; round-2 clean |

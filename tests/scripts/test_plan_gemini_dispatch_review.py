@@ -485,11 +485,16 @@ def test_implement_subcommand_rejected(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 6. plan-review subcommand stub
+# 6. plan-review subcommand argparse contract
+#
+# TASK-004 implemented the plan-review subcommand and removed the
+# TASK-003 stub. The subcommand now requires --schedule-file; calling
+# `plan-review` without it should be a clean argparse failure rather
+# than the retired "not yet implemented" stub message.
 # ---------------------------------------------------------------------------
 
 
-def test_plan_review_subcommand_stub(tmp_path):
+def test_plan_review_requires_schedule_file(tmp_path):
     repo = _make_repo(tmp_path)
 
     env = os.environ.copy()
@@ -505,9 +510,13 @@ def test_plan_review_subcommand_stub(tmp_path):
         timeout=30,
     )
     assert proc.returncode != 0, proc.stdout
+    # argparse surfaces missing-required-arg errors on stderr.
+    assert "--schedule-file" in proc.stderr, proc.stderr
+    # The retired TASK-003 stub error must NOT appear; the subcommand
+    # is now implemented.
     assert (
-        "plan-review subcommand not yet implemented; see TASK-004"
-        in proc.stderr
+        "not yet implemented" not in proc.stderr
+        and "see TASK-004" not in proc.stderr
     ), proc.stderr
 
 

@@ -144,3 +144,11 @@ Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `cd799
 | 001 | claude | codex | ship-with-fixes [narrow-remediation, disagreement: 0] | ecb91db | D.5 dismissed mode-100644 false-positive; user authorized hand-fix of hardcoded miniconda3 paths + override commit |
 | 002 | codex->claude (fallback) | codex | clean | cd799fc | Codex wrapper test-cmd env mismatch (no venv/) -> Claude verification fallback; review clean |
 | 003 | claude | codex | needs-rework [post-remediation, awaiting user] |  | D.2a.5 round-2 review surfaced 2 NEW production-contract findings (missing -o json flag, exit-code ignored) |
+
+## Execution log — 20260425T172244 (success)
+
+Starting SHA: `8a62fc279f1b70368fa5050b2de7938c0aa888ac`  → Ending SHA: `d7bd9dd620561810d897e8e7af051153b8a3ff5e`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | codex | clean [remediation] | 837d941 | D.2a.5 envelope-unwrap remediation + 2 user-authorized hand-fixes (-o json + --approval-mode plan + non-zero-exit-as-failure); round-4 clean |
