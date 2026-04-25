@@ -2,7 +2,7 @@
 
 **Base branch:** `main`
 **Audit anchor commit:** `f60d808`
-**Chunk dependencies:** TASK-015 (verdict ladder), TASK-024 (evidence gate) — this task adds *inputs* the existing ladder/gate can reason over.
+**Chunk dependencies:** none (formerly TASK-015, TASK-024 — now archived/complete).
 **Issues absorbed:** none (new follow-up).
 **Motivating run:** `20260421T031650` — Codex review of TASK-020B returned `needs-rework` with 3 findings; D.5 adjudicated 1 as dismissed (hallucinated `_add_git_dir(p_commit)` — symbol does not exist), 1 as spec-deference (loosely applied), 1 as a genuine minor test-coverage gap. Root-cause review exposed four prompt/spec gaps, all fixable by this chunk.
 
@@ -138,7 +138,7 @@ Regression test: `tests/scripts/test_codex_review_prompt.py::test_d5_spec_defere
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (D.5 dispatch prompt — adds `Wrapper checks` block; distinct from TASK-027C's dismissal-evidence gate edit in the same file)
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (Phase D.5 render call at `SKILL.md:424` — must pass `wrapper_checks` from the Codex review envelope into the template substitution alongside `codex_findings` and `task_block`)
   - `tests/scripts/test_codex_review_prompt.py`
-- **Dependencies:** none (additive to TASK-024).
+- **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_codex_review_prompt.py`
 - **Acceptance criteria:**
   - V1, V2, V3 pass.
@@ -191,7 +191,7 @@ The Phase D-Codex review prompt gives Codex the diff plus acceptance bullets —
 - **Files:**
   - `plugins/plan-executor/agents/plan-implementer.md`
   - `tests/scripts/test_plan_implementer_spec.py` (new)
-- **Dependencies:** none.
+- **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_implementer_spec.py`
 - **Acceptance criteria:**
   - V4 passes.
@@ -224,7 +224,7 @@ The plan-implementer spec only triggers adaptation-flagging for "live code diffe
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`
   - `tests/scripts/test_codex_review_prompt.py`
-- **Dependencies:** none.
+- **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_codex_review_prompt.py`
 - **Acceptance criteria:**
   - V5 passes.

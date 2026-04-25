@@ -2,7 +2,7 @@
 
 **Base branch:** `main`
 **Audit anchor commit:** `1456687`
-**Chunk dependencies:** TASK-001 (canonical contracts — this plan documents current CLI shapes, so the TASK-001 contract lock is the foundational dependency).
+**Chunk dependencies:** none (formerly TASK-001 — now archived/complete).
 **Motivating run:** `20260417T214309` — executing TASK-016 produced five distinct CLI / runtime errors: (1) `parse-plan-review-report` fed bare `parsed` object instead of the full envelope; (2) invented `log-event` type `d5_review_done` not in the allowlist; (3) `commit-task` rejected on `--reviewer codex --reviewer-verdict needs-rework` + wrong `minor-findings` schema; (4) Agent-registry miss on the newly-created `plan-remediator` subagent (same-session create-then-invoke); (5) post-compaction flag amnesia (`--payload` vs `--fields-json` on `log-event`). Full post-mortem in `docs/analysis/2026-04-17_TASK-016C_binding_review_override.md` and in the TASK-016 execution log.
 
 ---
@@ -84,7 +84,7 @@ Each rule has a one-line **Why:** tagline referencing the error it prevents, mat
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
   - `plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md` (create)
-- **Dependencies:** TASK-001
+- **Dependencies:** none
 - **Test command:** `none` (pure docs; each example is hand-verified at author time against the current `plan_ops.py --help` output and the run-log of `20260417T214309`. No Python dispatch tests — static string assertions would add brittle coupling for trivial upside.)
 - **Acceptance criteria:**
   - V1–V4 pass.

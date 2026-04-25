@@ -2,7 +2,7 @@
 
 **Base branch:** `main`
 **Audit anchor commit:** `4b96f89`
-**Chunk dependencies:** TASK-019 (establishes the TASK-002 V3/V4 backfill that motivates this; no code-level dependency, only conceptual).
+**Chunk dependencies:** none (formerly TASK-019 — now archived/complete; conceptual link only).
 **Motivating incident:** TASK-002 shipped with `**Status:** done` while acceptance-criteria V3 (cycle rejection in `parse-schedule`) and V4 (orphan-dep rejection) were empirically unmet. Root cause: (a) the status line was hand-edited rather than set by `plan_ops.py commit-task`, bypassing the reviewer gate entirely; (b) nothing re-runs a plan's own V-check snippets at commit time, so the implementer's self-report ("all V checks pass") was trusted without independent verification. TASK-020 closes both gaps.
 
 ---
@@ -228,7 +228,7 @@ Add a read-only `lint-plans` subcommand that flags any `**Status:** done` (or `p
   - `plugins/plan-executor/scripts/plan_ops.py`
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
   - `tests/scripts/test_plan_ops.py`
-- **Dependencies:** TASK-020A (land first so the lint can observe the new `v_check_passed` / `v_check_failed` event kinds if needed; not a hard dependency).
+- **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
 - **Acceptance criteria:**
   - V7-V13 pass.

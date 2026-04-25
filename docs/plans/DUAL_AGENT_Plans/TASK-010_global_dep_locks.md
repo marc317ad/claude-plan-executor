@@ -5,7 +5,7 @@
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9.2 scheduler, §9.4 parallel execution
 **Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
-**Chunk dependencies:** TASK-004 (scheduler — this chunk extends the batcher), TASK-003 (scope enforcement — this chunk reuses `allowed_files`), TASK-007 (audit can verify the lock list is in sync with canonical contract).
+**Chunk dependencies:** none (formerly TASK-004, TASK-003, TASK-007 — now archived/complete).
 **Issues absorbed:** none (new executor capability; surfaced by Phase 5 scenario catalog's gap between parallel-sibling isolation and global-state mutation risk).
 
 ---
@@ -170,7 +170,7 @@ $PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k global_lock
   - `plugins/plan-executor/scripts/plan_ops.py` (constant + override loader + subcommand + batch rule)
   - `tests/scripts/test_plan_ops.py`
   - `docs/plans/_global_lock_paths.yaml.example` (documented override template)
-- **Dependencies:** TASK-004 (scheduler), TASK-003 (scope enforcement reuse), TASK-007 (optional audit check — can be registered in a follow-up if TASK-007 already landed).
+- **Dependencies:** none
 - **Test command:** `$PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k global_lock`
 - **Acceptance criteria:**
   - `GLOBAL_LOCK_PATHS` constant declared in one place in `plugins/plan-executor/scripts/plan_ops.py` with the default set.

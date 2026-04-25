@@ -3,7 +3,7 @@
 **Design contract:** [`TASK-013_plan_review_and_remediation.md`](TASK-013_plan_review_and_remediation.md)
 **Base branch:** `main`
 **Audit anchor commit:** `8a317a9`
-**Chunk dependencies:** TASK-001 (canonical contracts), TASK-002 (runtime validation helpers).
+**Chunk dependencies:** none (formerly TASK-001, TASK-002 — now archived/complete).
 **Motivating run:** `20260417T153553` (TASK-004A) — Codex flagged 4 findings, third-opinion confirmed only 1 as load-bearing (`SKILL.md:147`, a one-line doc fix), but the strict D.2a path reverted all 138 semantic lines of valid implementation. This plan removes that failure mode.
 
 ---
@@ -140,7 +140,7 @@ Safe to revert; remove Phase D.2a.5 section from SKILL.md, drop the `--remediati
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
   - `tests/scripts/test_plan_ops.py`
-- **Dependencies:** TASK-001 (roster schema already validated by `_parse_index_roster`)
+- **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
 - **Acceptance criteria:**
   - V5–V7 pass.
@@ -171,7 +171,7 @@ Safe to revert; remove the `00_INDEX.json` mutation from `commit-task`. Roster d
   - `plugins/plan-executor/scripts/plan_ops.py` (new subcommand: `parse-plan-review-report`)
   - `plugins/plan-executor/scripts/codex_plan_review_schema.json` (create) — new schema file, mirror `codex_review_schema.json`
   - `tests/scripts/test_plan_ops.py`
-- **Dependencies:** TASK-014A (prompt-template conventions), TASK-001 (canonical error shape)
+- **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
 - **Acceptance criteria:**
   - V8–V11 pass.

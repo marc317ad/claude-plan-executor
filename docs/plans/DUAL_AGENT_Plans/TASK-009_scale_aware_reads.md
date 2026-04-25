@@ -5,7 +5,7 @@
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §8 (dispatch contract), §10 (implementer report)
 **Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
-**Chunk dependencies:** TASK-001 (canonical plan schema — this chunk adds optional task fields; schema must be stable first), TASK-007 (audit can check new field is documented).
+**Chunk dependencies:** none (formerly TASK-001, TASK-007 — now archived/complete).
 **Issues absorbed:** none (new executor capability; raised by postmortem as a scaling constraint).
 
 ---
@@ -173,7 +173,7 @@ A plan with no `Read targets:` or `Symbol targets:` produces a dispatch prompt i
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (dispatch prompt template integration)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (Claude-side templates)
   - `tests/scripts/test_plan_ops.py`
-- **Dependencies:** TASK-001 (schema) and TASK-007 (audit can then verify new fields are documented, not required).
+- **Dependencies:** none
 - **Test command:** `$PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k read_targets`
 - **Acceptance criteria:**
   - Two optional schema fields documented: `**Read targets:**` (line-range hints), `**Symbol targets:**` (symbol extraction).

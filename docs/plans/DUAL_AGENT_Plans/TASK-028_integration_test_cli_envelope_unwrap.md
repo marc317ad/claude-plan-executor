@@ -4,7 +4,7 @@
 **Status:** pending
 **Base branch:** `main`
 **Audit anchor commit:** `a65350e` (TASK-006 — the run during which the gap was re-confirmed as V9's failure mode)
-**Chunk dependencies:** TASK-002 (owns the `tests/scripts/test_plan_ops.py` test file). No code-under-test changes — test-only fix.
+**Chunk dependencies:** none (formerly TASK-002 — now archived/complete). No code-under-test changes — test-only fix.
 **Motivating run:** `20260420T235312` and follow-up `20260421T002455` (TASK-006 execution). After TASK-006 landed the canonical `sample_phase4.md` fixture, V9 of TASK-006 — a clean full-file run of `test_plan_ops.py` — left exactly **one** residual failing test, `test_analyst_to_parse_schedule_roundtrip`. The failure is pre-existing, first flagged as out-of-scope by TASK-019 (line 394 of that plan: *"may continue to fail if the environment's `claude` binary returns diagnostic JSON; that is out of scope"*), and treated as an accepted residual by TASK-023's Regression sweep section. This chunk closes that residual.
 
 ---
@@ -154,7 +154,7 @@ Expected: only `tests/scripts/test_plan_ops.py` appears in the diff. No `plan_op
 - **Priority:** low
 - **Files:**
   - `tests/scripts/test_plan_ops.py`
-- **Dependencies:** TASK-002
+- **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
 - **Acceptance criteria:**
   - V1-V5 pass.

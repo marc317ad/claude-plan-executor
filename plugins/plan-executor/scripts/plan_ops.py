@@ -2862,9 +2862,20 @@ def _parse_index_roster(path: Path) -> dict[str, dict]:
 
 
 def _update_index_status(
-    index_path: Path, plan_basename: str, new_status: str
+    index_path: Path,
+    plan_basename: str,
+    new_status: str,
+    task_id: str | None = None,
 ) -> tuple[str, dict | None]:
-    """Flip the `status` of the chunk whose `file` matches `plan_basename`.
+    """Flip the `status` of the chunk matching `plan_basename` (+ `task_id`).
+
+    When multiple chunks share a plan file (e.g., TASK-014 holding 14B and
+    14C, TASK-027 holding 27A/27B/27C), matching by basename alone flips
+    whichever chunk the iteration visits first and leaves siblings stuck at
+    their prior status. Passing `task_id` disambiguates: the matcher then
+    requires `chunk.file == plan_basename AND str(chunk.task_id) == task_id`,
+    so each per-task `commit-task` invocation flips exactly its own chunk.
+    `task_id=None` preserves legacy file-only matching for back-compat.
 
     TASK-014B: written atomically via `tempfile.NamedTemporaryFile(dir=parent)
     + os.replace(tmp, index_path)` so a mid-write interrupt leaves the prior
@@ -2916,17 +2927,21 @@ def _update_index_status(
 
     target_idx = None
     for i, chunk in enumerate(doc["chunks"]):
-        if isinstance(chunk, dict) and chunk.get("file") == plan_basename:
-            target_idx = i
-            break
+        if not isinstance(chunk, dict) or chunk.get("file") != plan_basename:
+            continue
+        if task_id is not None and str(chunk.get("task_id")) != task_id:
+            continue
+        target_idx = i
+        break
 
     if target_idx is None:
+        detail = f"plan basename {plan_basename!r}"
+        if task_id is not None:
+            detail += f" + task_id {task_id!r}"
         return "missing-entry", {
             "path": f"$.<file:{index_path}>.chunks",
             "code": "task-not-in-index",
-            "message": (
-                f"no chunk in 00_INDEX.json matches plan basename {plan_basename!r}"
-            ),
+            "message": f"no chunk in 00_INDEX.json matches {detail}",
         }
 
     current_status = doc["chunks"][target_idx].get("status")
@@ -5145,7 +5160,7 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
     except FileNotFoundError:
         original_index_bytes = None
 
-    outcome, err = _update_index_status(index_path, plan.name, "Done")
+    outcome, err = _update_index_status(index_path, plan.name, "Done", task_id=tid)
     if outcome in ("invalid-index", "missing-entry"):
         assert err is not None
         _write_text(plan, original_plan)

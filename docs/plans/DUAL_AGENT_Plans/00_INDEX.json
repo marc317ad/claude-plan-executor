@@ -3,228 +3,12 @@
   "source": "manual-sidecar",
   "chunks": [
     {
-      "task_id": "001",
-      "v3_task": "TASK-001",
-      "file": "TASK-001_canonical_contracts.md",
-      "priority": "critical",
-      "issues_absorbed": [
-        "001",
-        "009",
-        "013",
-        "014",
-        "016",
-        "022",
-        "024",
-        "025",
-        "026"
-      ],
-      "depends_on": [],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "002",
-      "v3_task": "TASK-002",
-      "file": "TASK-002_runtime_validation.md",
-      "priority": "critical",
-      "issues_absorbed": [
-        "001",
-        "014",
-        "016",
-        "019",
-        "020"
-      ],
-      "depends_on": [
-        "001"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "003",
-      "v3_task": "TASK-003",
-      "file": "TASK-003_state_isolation.md",
-      "priority": "critical",
-      "issues_absorbed": [
-        "003",
-        "004",
-        "005",
-        "015",
-        "017",
-        "021"
-      ],
-      "depends_on": [
-        "001"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "004",
-      "v3_task": "TASK-004",
-      "file": "TASK-004_scheduler_semantics.md",
-      "priority": "high",
-      "issues_absorbed": [
-        "006",
-        "010",
-        "011",
-        "012",
-        "018",
-        "019",
-        "020"
-      ],
-      "depends_on": [
-        "001",
-        "002"
-      ],
-      "status": "Superseded",
-      "superseded_by": [
-        "004A",
-        "004B",
-        "004C",
-        "004D",
-        "004E"
-      ]
-    },
-    {
-      "task_id": "004A",
-      "v3_task": "TASK-004A",
-      "file": "TASK-004A_filter_schedule.md",
-      "priority": "high",
-      "issues_absorbed": [
-        "006",
-        "019",
-        "020"
-      ],
-      "depends_on": [
-        "001",
-        "002",
-        "003"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "004B",
-      "v3_task": "TASK-004B",
-      "file": "TASK-004B_batch_next.md",
-      "priority": "high",
-      "issues_absorbed": [
-        "010",
-        "019"
-      ],
-      "depends_on": [
-        "004A"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "004C",
-      "v3_task": "TASK-004C",
-      "file": "TASK-004C_fail_task_cleanup.md",
-      "priority": "high",
-      "issues_absorbed": [
-        "011",
-        "015",
-        "017",
-        "021"
-      ],
-      "depends_on": [
-        "004B"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "004D",
-      "v3_task": "TASK-004D",
-      "file": "TASK-004D_block_dependents_mutation.md",
-      "priority": "high",
-      "issues_absorbed": [
-        "012",
-        "018"
-      ],
-      "depends_on": [
-        "004C"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "004E",
-      "v3_task": "TASK-004E",
-      "file": "TASK-004E_acquire_lock_strict.md",
-      "priority": "medium",
-      "issues_absorbed": [],
-      "depends_on": [
-        "004D"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "005",
-      "v3_task": "TASK-005",
-      "file": "TASK-005_phase_gates.md",
-      "priority": "high",
-      "issues_absorbed": [],
-      "depends_on": [
-        "004"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "006",
-      "v3_task": "TASK-006",
-      "file": "TASK-006_conformance_fixture.md",
-      "priority": "high",
-      "issues_absorbed": [
-        "002"
-      ],
-      "depends_on": [
-        "005"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "007",
-      "v3_task": "TASK-007",
-      "file": "TASK-007_self_audit.md",
-      "priority": "medium",
-      "issues_absorbed": [],
-      "depends_on": [
-        "005"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "008",
-      "v3_task": "TASK-008",
-      "file": "TASK-008_portability_preflight.md",
-      "priority": "medium",
-      "issues_absorbed": [
-        "007",
-        "008"
-      ],
-      "depends_on": [
-        "005"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
       "task_id": "009",
       "v3_task": "TASK-009",
       "file": "TASK-009_scale_aware_reads.md",
       "priority": "medium",
       "issues_absorbed": [],
-      "depends_on": [
-        "002"
-      ],
+      "depends_on": [],
       "status": "Pending",
       "superseded_by": []
     },
@@ -234,9 +18,7 @@
       "file": "TASK-010_global_dep_locks.md",
       "priority": "medium",
       "issues_absorbed": [],
-      "depends_on": [
-        "005"
-      ],
+      "depends_on": [],
       "status": "Pending",
       "superseded_by": []
     },
@@ -246,55 +28,8 @@
       "file": "TASK-011_bounded_log_handling.md",
       "priority": "medium",
       "issues_absorbed": [],
-      "depends_on": [
-        "002",
-        "003"
-      ],
+      "depends_on": [],
       "status": "Pending",
-      "superseded_by": []
-    },
-    {
-      "task_id": "012",
-      "v3_task": "TASK-012",
-      "file": "TASK-012_reviewer_parser_spec.md",
-      "priority": "low",
-      "issues_absorbed": [],
-      "depends_on": [
-        "002",
-        "003",
-        "005"
-      ],
-      "status": "Pending",
-      "superseded_by": []
-    },
-    {
-      "task_id": "013",
-      "v3_task": "TASK-013",
-      "file": "TASK-013_plan_review_and_remediation.md",
-      "priority": "low",
-      "issues_absorbed": [],
-      "depends_on": [
-        "002",
-        "005",
-        "012"
-      ],
-      "status": "Superseded",
-      "superseded_by": [
-        "014A",
-        "025"
-      ]
-    },
-    {
-      "task_id": "014A",
-      "v3_task": "TASK-014A",
-      "file": "TASK-014_remediation_and_plan_review.md",
-      "priority": "high",
-      "issues_absorbed": [],
-      "depends_on": [
-        "001",
-        "002"
-      ],
-      "status": "Done",
       "superseded_by": []
     },
     {
@@ -303,9 +38,7 @@
       "file": "TASK-014_remediation_and_plan_review.md",
       "priority": "medium",
       "issues_absorbed": [],
-      "depends_on": [
-        "001"
-      ],
+      "depends_on": [],
       "status": "Pending",
       "superseded_by": []
     },
@@ -315,61 +48,8 @@
       "file": "TASK-014_remediation_and_plan_review.md",
       "priority": "medium",
       "issues_absorbed": [],
-      "depends_on": [
-        "014A",
-        "001"
-      ],
-      "status": "Pending",
-      "superseded_by": []
-    },
-    {
-      "task_id": "015",
-      "v3_task": "TASK-015",
-      "file": "TASK-015_codex_reviewer_prompt_tuning.md",
-      "priority": "low",
-      "issues_absorbed": [],
       "depends_on": [],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "016A",
-      "v3_task": "TASK-016A",
-      "file": "TASK-016_partial_agreement_and_narrow_remediation.md",
-      "priority": "high",
-      "issues_absorbed": [],
-      "depends_on": [
-        "001",
-        "002",
-        "014A"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "016B",
-      "v3_task": "TASK-016B",
-      "file": "TASK-016_partial_agreement_and_narrow_remediation.md",
-      "priority": "high",
-      "issues_absorbed": [],
-      "depends_on": [
-        "001"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "016C",
-      "v3_task": "TASK-016C",
-      "file": "TASK-016_partial_agreement_and_narrow_remediation.md",
-      "priority": "high",
-      "issues_absorbed": [],
-      "depends_on": [
-        "016A",
-        "016B",
-        "014A"
-      ],
-      "status": "Done",
+      "status": "Pending",
       "superseded_by": []
     },
     {
@@ -378,47 +58,8 @@
       "file": "TASK-017_skill_command_reference_and_cheatsheet.md",
       "priority": "medium",
       "issues_absorbed": [],
-      "depends_on": [
-        "001"
-      ],
+      "depends_on": [],
       "status": "Pending",
-      "superseded_by": []
-    },
-    {
-      "task_id": "018",
-      "v3_task": "TASK-018",
-      "file": "TASK-018_acquire_lock_nonempty_runid.md",
-      "priority": "low",
-      "issues_absorbed": [],
-      "depends_on": [
-        "004E"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "019",
-      "v3_task": "TASK-019",
-      "file": "TASK-019_task002_backfill_and_orchestrator_polish.md",
-      "priority": "medium",
-      "issues_absorbed": [],
-      "depends_on": [
-        "002",
-        "004E"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "020A",
-      "v3_task": "TASK-020A",
-      "file": "TASK-020_plan_status_integrity.md",
-      "priority": "medium",
-      "issues_absorbed": [],
-      "depends_on": [
-        "004B"
-      ],
-      "status": "Done",
       "superseded_by": []
     },
     {
@@ -427,75 +68,9 @@
       "file": "TASK-020_plan_status_integrity.md",
       "priority": "medium",
       "issues_absorbed": [],
-      "depends_on": [
-        "019"
-      ],
+      "depends_on": [],
       "status": "Pending",
       "superseded_by": []
-    },
-    {
-      "task_id": "022",
-      "v3_task": "TASK-022",
-      "file": "TASK-022_reviewer_findings_log_and_d5_depth.md",
-      "priority": "medium",
-      "issues_absorbed": [],
-      "depends_on": [
-        "019",
-        "021"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "023",
-      "v3_task": "TASK-023",
-      "file": "TASK-023_parse_plan_review_envelope_clarity.md",
-      "priority": "low",
-      "issues_absorbed": [],
-      "depends_on": [
-        "014A",
-        "022"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "024",
-      "v3_task": "TASK-024",
-      "file": "TASK-024_codex_reviewer_evidence_gate.md",
-      "priority": "medium",
-      "issues_absorbed": [],
-      "depends_on": [
-        "015"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "025",
-      "v3_task": "TASK-025",
-      "file": "TASK-025_plan_author_subagent.md",
-      "priority": "medium",
-      "issues_absorbed": [],
-      "depends_on": [
-        "014A",
-        "022"
-      ],
-      "status": "Done",
-      "superseded_by": []
-    },
-    {
-      "task_id": "026",
-      "v3_task": "TASK-026",
-      "file": "TASK-026_phase_gate_review_drift_followup.md",
-      "priority": "medium",
-      "issues_absorbed": [],
-      "depends_on": [
-        "005"
-      ],
-      "status": "Done",
-      "superseded_by": [],
-      "origin_note": "Surfaced during TASK-005 run 20260420T220109 Codex review pass-4 (post-narrow-remediation-2); user elected option A (commit TASK-005 + follow-up chunk) over a fourth hand-fix round."
     },
     {
       "task_id": "027A",
@@ -531,17 +106,14 @@
       "origin_note": "Surfaced during TASK-020B run 20260421T031650 D.5 adjudication \u2014 the dismissal-evidence gate's spec-deference label drifted onto an implementer-deviation case; rubric needs a precondition clause distinguishing dismissed (implementer deviated) from spec-deference (implementer followed plan)."
     },
     {
-      "task_id": "007A",
-      "v3_task": "TASK-007A",
-      "file": "TASK-007A_self_audit_followups.md",
+      "task_id": "028",
+      "v3_task": "TASK-028",
+      "file": "TASK-028_integration_test_cli_envelope_unwrap.md",
       "priority": "low",
       "issues_absorbed": [],
-      "depends_on": [
-        "007"
-      ],
-      "status": "Done",
-      "superseded_by": [],
-      "origin_note": "Surfaced during TASK-007 run 20260423T015255 binding Codex pass-2 review; user override at awaiting_user pause dismissed 5 findings (1 critical was factually wrong; 1 important was beyond contract; 1 important was a spec-deference upgrade), and 3 legitimate quality gaps (default text render, strict-mode test isolation, schema enum order-sensitivity) were deferred to this chunk."
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
     }
   ]
 }

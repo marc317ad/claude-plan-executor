@@ -5,7 +5,7 @@
 **Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §8 dispatch contract, §10 implementer report
 **Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
-**Chunk dependencies:** TASK-003 (wrapper already executes the task test command — this chunk wraps its output), TASK-001 (canonical contract — this chunk adds canonical delimiter strings).
+**Chunk dependencies:** none (formerly TASK-003, TASK-001 — now archived/complete).
 **Issues absorbed:** none (new executor capability; Phase 5 scenarios worked around this manually).
 
 ---
@@ -175,7 +175,7 @@ $PYTHON -m pytest -q tests/scripts/ -k "log_capture or bounded_log"
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (reviewer prompt references the summary shape)
   - `tests/scripts/test_log_capture.py` (new)
   - `tests/scripts/test_plan_ops.py` (parser respects delimiters)
-- **Dependencies:** TASK-003 (log capture sits at the wrapper's test-run seam), TASK-001 (delimiter convention and report-field canonicalization).
+- **Dependencies:** none
 - **Test command:** `$PYTHON -m pytest -q tests/scripts/ -k "log_capture or bounded_log"`
 - **Acceptance criteria:**
   - `log_capture.py` runs a subprocess, captures combined stdout+stderr, emits a bounded summary with UUID-delimited fencing, writes the full log to the `_run_logs/` side file.
