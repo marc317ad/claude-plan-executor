@@ -1,0 +1,83 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Create rename helper",
+      "agent": "codex",
+      "priority": "medium",
+      "files": [
+        "docs/plans/sample_phase4_scratch/rename_helper.py"
+      ],
+      "dependencies": [],
+      "test_command": "none",
+      "classification_reason": "Mechanical create with fixed body",
+      "plan_file": "sample_phase4.md"
+    },
+    {
+      "id": "002",
+      "title": "Wire rename helper into scratch settings",
+      "agent": "claude",
+      "priority": "medium",
+      "files": [
+        "docs/plans/sample_phase4_scratch/settings.py"
+      ],
+      "dependencies": ["001"],
+      "test_command": "venv/bin/python -c \"import ast; ast.parse(open('docs/plans/sample_phase4_scratch/settings.py').read())\"",
+      "classification_reason": "Naming + structural judgment over a new helper",
+      "plan_file": "sample_phase4.md"
+    },
+    {
+      "id": "003",
+      "title": "Create scratch constants module",
+      "agent": "codex",
+      "priority": "medium",
+      "files": [
+        "docs/plans/sample_phase4_scratch/constants.py"
+      ],
+      "dependencies": [],
+      "test_command": "none",
+      "classification_reason": "Mechanical create with fixed body",
+      "plan_file": "sample_phase4.md"
+    },
+    {
+      "id": "004",
+      "title": "Seed failure — wire constants into settings (contradictory)",
+      "agent": "codex",
+      "priority": "medium",
+      "files": [
+        "docs/plans/sample_phase4_scratch/settings.py"
+      ],
+      "dependencies": ["002", "003"],
+      "test_command": "none",
+      "classification_reason": "Seeded failure; internally contradictory acceptance criteria",
+      "plan_file": "sample_phase4.md"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": ["001", "003"],
+      "file_locks": [
+        "docs/plans/sample_phase4_scratch/constants.py",
+        "docs/plans/sample_phase4_scratch/rename_helper.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": ["002"],
+      "file_locks": [
+        "docs/plans/sample_phase4_scratch/settings.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": ["004"],
+      "file_locks": [
+        "docs/plans/sample_phase4_scratch/settings.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}
