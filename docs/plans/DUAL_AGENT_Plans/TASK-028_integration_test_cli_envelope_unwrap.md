@@ -13,8 +13,8 @@
 
 Fix two pre-existing live-CLI integration tests in `tests/scripts/test_plan_ops.py` so they pass against the current `claude` CLI (v2.1.118) when it is available:
 
-1. `test_analyst_to_parse_schedule_roundtrip` (line 4346) — dispatches the `plan-analyst` subagent, extracts the schedule JSON from its output, and pipes that JSON into `plan_ops.py parse-schedule --stdin`.
-2. `test_implementer_to_parse_implementer_report_roundtrip` (line 4392) — dispatches the `plan-implementer` subagent and pipes the raw output into `plan_ops.py parse-implementer-report --stdin`.
+1. `test_analyst_to_parse_schedule_roundtrip` (line 5380) — dispatches the `plan-analyst` subagent, extracts the schedule JSON from its output, and pipes that JSON into `plan_ops.py parse-schedule --stdin`.
+2. `test_implementer_to_parse_implementer_report_roundtrip` (line 5427) — dispatches the `plan-implementer` subagent and pipes the raw output into `plan_ops.py parse-implementer-report --stdin`.
 
 Both tests call `claude ... --output-format json ...`, which wraps the subagent's real output inside a top-level CLI envelope of roughly shape:
 
@@ -33,11 +33,13 @@ Both tests call `claude ... --output-format json ...`, which wraps the subagent'
 }
 ```
 
-The analyst test then calls `_extract_json_block(result.stdout)` (line 4373). That helper (line 4171) searches for a fenced ` ```json ` block first, then falls back to the first balanced `{...}` block. When `--output-format json` is on, the *entire* stdout IS the envelope object at the top level — so the balanced-braces fallback returns the envelope verbatim, with no `task_id` / `tasks` / schedule shape. `parse-schedule --stdin` then rejects it as schema-invalid.
+The analyst test then calls `_extract_json_block(result.stdout)` (line 5407). That helper (line 5189) searches for a fenced ` ```json ` block first, then falls back to the first balanced `{...}` block. When `--output-format json` is on, the *entire* stdout IS the envelope object at the top level — so the balanced-braces fallback returns the envelope verbatim, with no `task_id` / `tasks` / schedule shape. `parse-schedule --stdin` then rejects it as schema-invalid.
 
-The implementer test has the same `--output-format json` pattern (line 4409) and pipes `result.stdout` straight into `parse-implementer-report --stdin` (line 4427) — which expects the subagent's markdown report, not an envelope JSON object.
+The implementer test has the same `--output-format json` pattern (line 5446) and pipes `result.stdout` straight into `parse-implementer-report --stdin` (line 5461) — which expects the subagent's markdown report, not an envelope JSON object.
 
-**Fix approach (decided in-plan, not left to the implementer):** keep `--output-format json` for both tests (it is deterministic and machine-readable — dropping it would mean parsing the CLI's streaming TTY-friendly default format, which is fragile). Unwrap `body["result"]` (the string field containing the subagent's real stdout) in both tests before handing it to `_extract_json_block` or to `parse-implementer-report`.
+**Fix approach (decided in-plan, not left to the implementer):** keep `--output-format json` for both tests (it is deterministic and machine-readable — dropping it would mean parsing the CLI's streaming TTY-friendly default format, which is fragile). Unwrap `body["result"]` (the string field containing the subagent's real stdout) before handing it to `parse-implementer-report` in the implementer test. The analyst test already works against current HEAD because `_extract_json_block` was *already extended in a prior pass to unwrap the `type=result` envelope inline* (see `tests/scripts/test_plan_ops.py:5189-5206`); leave that helper as-is and only patch the implementer test, which still pipes `result.stdout` raw into `parse-implementer-report --stdin` and therefore still fails when the CLI is in `--output-format json` mode.
+
+**Reconciliation with current HEAD (added 2026-04-25 during plan-review re-run):** The earlier "do not generalize `_extract_json_block`" Non-goal in this plan was overtaken by an in-place edit to that helper. The remaining surface this task must patch is solely `test_implementer_to_parse_implementer_report_roundtrip` at `tests/scripts/test_plan_ops.py:5427` — the implementer-side unwrap before `subprocess.run([... "parse-implementer-report", "--stdin", ...], input=<unwrapped>, ...)`. Acceptance criteria V1 (helper) and V2 (analyst-test patch) below were partially achieved by the in-place `_extract_json_block` edit; treat them as already-met for the analyst path and focus implementation on V3 (implementer-test patch) and V4/V5 (regression / no-regression).
 
 No change to `plan_ops.py`, no change to any subagent, no change to any non-test plumbing.
 
@@ -53,9 +55,11 @@ Two alternatives were considered:
 
 **(B) Keep `--output-format json`, unwrap `body["result"]` before content extraction. CHOSEN.** The CLI envelope is documented and stable; `result` is a string field by contract. Unwrapping is two lines, localized to each test, and has no surface impact anywhere else. The existing `_extract_json_block` helper continues to do the right thing once it is fed the inner payload instead of the outer envelope.
 
-### Why not generalize `_extract_json_block` to recognize the envelope
+### Why not generalize `_extract_json_block` to recognize the envelope (HISTORICAL — superseded by in-place edit)
 
-Tempting, but rejected:
+This subsection was the original v1 design rationale. It has since been overtaken by reality: `_extract_json_block` at `tests/scripts/test_plan_ops.py:5189-5206` was extended in a prior pass to detect and unwrap `{type:"result", result:"..."}` envelopes inline. The historical rationale below is preserved for context only; it does NOT bind the implementer of TASK-028. The implementer should leave `_extract_json_block` as-is and patch only the implementer-test path, which does not flow through `_extract_json_block`.
+
+Original v1 rationale (NO LONGER LOAD-BEARING):
 
 1. `_extract_json_block` has exactly two callers today — the two tests this chunk fixes. Baking envelope-awareness into a helper named "extract JSON block" overloads its contract.
 2. The envelope comes from a specific CLI flag (`--output-format json`). Making the generic helper detect a CLI-specific shape is a layering violation.
@@ -114,7 +118,7 @@ The implementer MAY implement `_unwrap_and_extract` as a small private helper al
 venv/bin/pytest -q tests/scripts/test_plan_ops.py::test_analyst_to_parse_schedule_roundtrip
 ```
 
-Expected: exit 0. Either the test passes (CLI available, subagent dispatch succeeds, schedule parses clean with `errors == []`) or it *skips* for one of the existing gates (`_claude_cli_available() is False`, dispatch timeout, non-zero rc from the CLI). A silent skip in a CLI-less CI environment is the correct outcome for this test there; the change being verified is that in an environment where the CLI IS present AND the subagent DOES dispatch successfully, the roundtrip now succeeds instead of failing on the `assert cp.returncode == 0` line (line 4387).
+Expected: exit 0. Either the test passes (CLI available, subagent dispatch succeeds, schedule parses clean with `errors == []`) or it *skips* for one of the existing gates (`_claude_cli_available() is False`, dispatch timeout, non-zero rc from the CLI). A silent skip in a CLI-less CI environment is the correct outcome for this test there; the change being verified is that in an environment where the CLI IS present AND the subagent DOES dispatch successfully, the roundtrip now succeeds instead of failing on the `assert cp.returncode == 0` line (line 5421).
 
 **V3 — `test_implementer_to_parse_implementer_report_roundtrip` passes against the real CLI.**
 
@@ -158,11 +162,11 @@ Expected: only `tests/scripts/test_plan_ops.py` appears in the diff. No `plan_op
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py`
 - **Acceptance criteria:**
   - V1-V5 pass.
-  - `test_analyst_to_parse_schedule_roundtrip` (around line 4346) unwraps the `claude --output-format json` envelope before feeding the subagent output to `_extract_json_block`. The unwrap logic must:
+  - `test_analyst_to_parse_schedule_roundtrip` (around line 5380) unwraps the `claude --output-format json` envelope before feeding the subagent output to `_extract_json_block`. The unwrap logic must:
     - Parse `result.stdout` as JSON; if that parse fails, fall through to the pre-TASK-028 `_extract_json_block(result.stdout)` path (a defensive no-regression path for CLI builds that don't wrap).
     - If the parse succeeds and the parsed object has a string `result` field, pass that string to `_extract_json_block` instead of `result.stdout`.
     - If the parse succeeds but there is no string `result` field (unexpected envelope shape), treat it as a skip-worthy environment issue and call `pytest.skip(...)` with a message naming the observed shape. Do NOT assert-fail — the test must be robust against CLI changes.
-  - `test_implementer_to_parse_implementer_report_roundtrip` (around line 4392) applies the analogous unwrap before piping to `parse-implementer-report --stdin` (line 4427). The input to `subprocess.run([... "parse-implementer-report", "--stdin", ...], input=<unwrapped>, ...)` must be the inner `result` string, not the outer envelope JSON.
+  - `test_implementer_to_parse_implementer_report_roundtrip` (around line 5427) applies the analogous unwrap before piping to `parse-implementer-report --stdin` (line 5461). The input to `subprocess.run([... "parse-implementer-report", "--stdin", ...], input=<unwrapped>, ...)` must be the inner `result` string, not the outer envelope JSON.
   - The `--output-format json` flag is retained in both `subprocess.run` argv lists. Do NOT drop it.
   - Existing skip paths (`_claude_cli_available() is False`, `FileNotFoundError`, `TimeoutExpired`, non-zero CLI rc) are preserved verbatim.
   - The `@pytest.mark.slow` decorator on both tests is preserved.
@@ -200,9 +204,9 @@ Tests V2 and V3 are live-CLI integration checks that have been failing since the
       return inner
   ```
 
-  Place adjacent to `_extract_json_block` (around line 4171).
+  Place adjacent to `_extract_json_block` (around line 5189).
 
-- **Analyst test patch (line 4373 region):**
+- **Analyst test patch (line 5407 region):**
 
   ```python
   inner = _unwrap_cli_envelope(result.stdout)
@@ -217,7 +221,7 @@ Tests V2 and V3 are live-CLI integration checks that have been failing since the
 
   Note the `source` variable — the `pytest.skip` message anchors on *that* (whichever was actually searched), not on `result.stdout`, so the skip message stays informative.
 
-- **Implementer test patch (line 4425 region):**
+- **Implementer test patch (line 5459 region):**
 
   ```python
   inner = _unwrap_cli_envelope(result.stdout)
@@ -233,7 +237,7 @@ Tests V2 and V3 are live-CLI integration checks that have been failing since the
 
 - **V1 placement:** adjacent to `_extract_json_block` and `_unwrap_cli_envelope`, before the live-CLI roundtrip tests. V1 does NOT require the `claude` CLI, so it MUST NOT be marked `@pytest.mark.slow` and MUST NOT be gated on `_claude_cli_available()`.
 
-- **Envelope-shape oddities to skip (not fail):** if `_unwrap_cli_envelope` returns None but the downstream `_extract_json_block` on `result.stdout` also returns None (the existing fallback), the pre-TASK-028 `pytest.skip` still fires at line 4374. That behavior is preserved — no change needed beyond the `source` rename in the skip message.
+- **Envelope-shape oddities to skip (not fail):** if `_unwrap_cli_envelope` returns None but the downstream `_extract_json_block` on `result.stdout` also returns None (the existing fallback), the pre-TASK-028 `pytest.skip` still fires at line 5408. That behavior is preserved — no change needed beyond the `source` rename in the skip message.
 
 **Reversion guidance:**
 
@@ -247,7 +251,7 @@ Tests V2 and V3 are live-CLI integration checks that have been failing since the
 
 ### Step 1 — Add `_unwrap_cli_envelope` helper
 
-Insert the helper body above `_extract_json_block` (around line 4170) or immediately below it. Either position is fine; keep them co-located so future maintainers see the pair together.
+Insert the helper body above `_extract_json_block` (around line 5188) or immediately below it. Either position is fine; keep them co-located so future maintainers see the pair together.
 
 ### Step 2 — Patch `test_analyst_to_parse_schedule_roundtrip`
 

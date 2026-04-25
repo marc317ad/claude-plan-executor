@@ -1,0 +1,225 @@
+{
+  "tasks": [
+    {
+      "id": "009",
+      "title": "Scale-aware large-file reads",
+      "files": [
+        "`docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (\u00a75 schema, \u00a78 dispatch contract)",
+        "`plugins/plan-executor/scripts/plan_ops.py` (new `resolve-read-targets` subcommand + helpers)",
+        "`plugins/plan-executor/scripts/plan_codex_dispatch.py` (dispatch prompt template integration)",
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (Claude-side templates)",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [],
+      "test_command": "$PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k read_targets",
+      "priority": "medium",
+      "plan_file": "TASK-009_scale_aware_reads.md",
+      "description": "Plans routinely describe work on large files. Without targeted reads, the implementer wastes context on irrelevant lines or misses the relevant ones. Declaring line ranges or symbol names in the plan lets the dispatcher pre-compute useful reads and embed them in the prompt.",
+      "acceptance_criteria": [
+        "Two optional schema fields documented: `**Read targets:**` (line-range hints), `**Symbol targets:**` (symbol extraction).",
+        "`resolve-read-targets` helper reads a task block (or stdin) and emits structured JSON with `reads`, `symbols`, `errors`.",
+        "Python symbol extraction uses AST; best-effort regex fallback for other languages with a clear annotation.",
+        "Line-range requests are clamped to file length with a `truncated_to` note.",
+        "Dispatcher integration: both Codex and Claude implementer/reviewer prompts include a `## Pre-read excerpts` section when the task has targets.",
+        "Absent targets \u2192 dispatch prompt identical to pre-chunk behavior (no regression).",
+        "All verification checks V1\u2013V8 pass."
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "010",
+      "title": "Globally-locked dependency / environment paths",
+      "files": [
+        "`docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (\u00a79.4 Phase 2 batch execution \u2014 scheduler / parallel)",
+        "`plugins/plan-executor/scripts/plan_ops.py` (constant + override loader + subcommand + batch rule)",
+        "`tests/scripts/test_plan_ops.py`",
+        "`docs/plans/_global_lock_paths.yaml.example` (documented override template)"
+      ],
+      "dependencies": [],
+      "test_command": "$PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k global_lock",
+      "priority": "medium",
+      "plan_file": "TASK-010_global_dep_locks.md",
+      "description": "Declare globally-locked paths and serialize any task touching them. Prevents parallel tasks from racing on shared environment state.",
+      "acceptance_criteria": [
+        "`GLOBAL_LOCK_PATHS` constant declared in one place in `plugins/plan-executor/scripts/plan_ops.py` with the default set.",
+        "`list-global-lock-paths` subcommand emits the effective set (default + override).",
+        "`parse-schedule` / `write-schedule` tags each task with `global_lock: bool`.",
+        "Batcher rule: any task with `global_lock: true` occupies its own batch alone.",
+        "Override file `docs/plans/_global_lock_paths.yaml` is honored if present; default if absent.",
+        "`DUAL_AGENT_PLAN_EXECUTOR.md` \u00a79.4 documents the rule and lists the default set.",
+        "Audit check `global_lock_paths` (TASK-007 registry extension) verifies constant-vs-doc alignment.",
+        "All verification checks V1\u2013V8 pass."
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "017",
+      "title": "Skill command reference + CLI cheat sheet + invocation discipline",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md` (create)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/python -c \"from pathlib import Path; cs=Path('plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md'); sk=Path('plugins/plan-executor/skills/implement-plan/SKILL.md').read_text(); assert cs.exists(), 'cheatsheet missing'; assert len(cs.read_text().splitlines())<=150, 'cheatsheet >150 lines'; assert '## Command reference' in sk, 'Command reference section missing'; assert 'Pre-invocation checklist' in sk, 'Pre-invocation checklist missing'; assert 'plan_ops_cheatsheet.md' in sk, 'cross-link to cheatsheet missing'\"",
+      "priority": "medium",
+      "plan_file": "TASK-017_skill_command_reference_and_cheatsheet.md",
+      "description": "Append-only documentation work. All additions live at the end of `SKILL.md` (new `## Command reference` appendix) or under existing `## Rules` (new `### Pre-invocation checklist` sub-block); a new sibling file `plan_ops_cheatsheet.md` is created next to `dispatch-templates.md`. No runtime behavior changes. The command reference exists to make three recurring CLI-shape errors zero-shot-resolvable; the cheat sheet exists as a compaction-resilient single-Read lookup; the checklist codifies the four process rules.",
+      "acceptance_criteria": [
+        "V1\u2013V4 pass.",
+        "No edits to `plan_ops.py`, `dispatch-templates.md`, agent specs, `codex_*_schema.json`, or any schema JSON.",
+        "Cheat sheet file \u2264150 lines total.",
+        "Command reference section growth in SKILL.md \u2264250 lines.",
+        "Every code-block example uses real subcommand names and real flag names verified against `venv/bin/python plugins/plan-executor/scripts/plan_ops.py <sub> --help` at author time. Placeholder substitution is allowed only for task IDs, run IDs, SHAs, and file paths.",
+        "Pre-invocation checklist lives under the existing `## Rules` section, not as a new top-level section. Rules 1\u20134 each carry a one-line **Why:** tagline referencing the error number from run `20260417T214309` (1\u20135 as numbered in the Motivating-run paragraph above).",
+        "Rule 4 (subagent-dispatch rule) explicitly names the Agent registry snapshot behavior so future orchestrators understand the cause, not just the rule.",
+        "The D.5-disagreement commit-task example (V1 item c in the bullet list above) explicitly states: \"D.5's verdict (`ship | ship-with-fixes | partial-agreement`) is passed as `--reviewer-verdict`; Codex's `needs-rework` is NOT \u2014 that was the confusion behind error 3 in run `20260417T214309`.\"",
+        "`ALLOWED_LOG_EVENTS` in the command reference matches the current set in `plan_ops.py` exactly (grep the constant at author time). Missing or stale entries fail the acceptance bar."
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "027A",
+      "title": "Review prompt context + symbol-verification post-check + D.5 forwarding",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_codex_dispatch.py`",
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (D.5 dispatch prompt \u2014 adds `Wrapper checks` block; distinct from TASK-027C's dismissal-evidence gate edit in the same file)",
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (Phase D.5 render call at `SKILL.md:692` \u2014 must pass `wrapper_checks` from the Codex review envelope into the template substitution alongside `codex_findings` and `task_block`)",
+        "`tests/scripts/test_codex_review_prompt.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_codex_review_prompt.py",
+      "priority": "medium",
+      "plan_file": "TASK-027_codex_review_prompt_and_adaptation_flagging.md",
+      "description": "The Phase D-Codex review prompt gives Codex the diff plus acceptance bullets \u2014 not the plan's Description or Implementation notes, even though both are already parsed. Forward them. Additionally, in run `20260421T031650` Codex confabulated `_add_git_dir(p_commit)` \u2014 a helper that does not exist \u2014 and the wrapper had no structural check to catch it. Add a post-parse grep pass that flags cited symbols missing from their cited file, attach the result as wrapper-envelope metadata via `extra`, and extend the D.5 dispatch template so the third-opinion reviewer sees the annotations alongside the Codex findings. Annotate, do not block.\n\n- **Implementation notes:**\n  - Extract the post-check into a module-level helper `_verify_cited_symbols(parsed: dict, repo_root: str) -> list[dict]` so tests can call it directly without spinning up Codex. The helper consumes the raw Codex `parsed` object (the dict returned from JSON-parsing Codex's output), NOT the wrapper envelope.\n  - Place the new prompt sections AFTER `Task requirements:` and BEFORE `Changed files:` so the reviewer sees \"what the task is\" \u2192 \"why/how the task is\" \u2192 \"what changed.\"\n  - In `cmd_review`, compute `warnings = _verify_cited_symbols(parsed, repo_root)` after `parsed` is extracted, then attach to the existing `extra` dict that is passed to `make_envelope` (see `plan_codex_dispatch.py:1311 (success-path extra construction; passed via extra=extra to make_envelope at 1388)` for the existing `extra` construction pattern). `make_envelope` merges `extra` into the top-level envelope alongside `parsed` via `envelope.update(extra)` at `plan_codex_dispatch.py:952`. Do NOT place `wrapper_checks` inside `parsed`.\n  - Success path only: attach `extra[\"wrapper_checks\"]` in the success-path `extra` dict (the one currently being built around `plan_codex_dispatch.py:1270-1279`). Timeout/failure/parse-error branches are NOT modified; D.5 dispatch treats missing `wrapper_checks` as \"check not run\" and substitutes `{\"symbol_warnings\": []}` in the prompt.\n  - The D.5 template edit is the smaller of two distinct edits to `dispatch-templates.md` in this chunk (TASK-027C makes the other). The 027A edit targets the Phase D.5 dispatch prompt's findings-rendering block (around line 230); the 027C edit targets the dismissal-evidence gate (around line 245). Sequence the two edits so they do not collide on the same lines \u2014 easiest by applying 027A first (insertion after line 234) then 027C (insertion inside the gate subsection around line 248).\n  - `SKILL.md:692` currently reads `render(templates.PhaseD5, codex_findings, task_block)`. Extend it to `render(templates.PhaseD5, codex_findings, task_block, wrapper_checks)` so the `<wrapper_checks_json>` placeholder the template now references actually receives a value at dispatch time. If the envelope's `wrapper_checks` key is absent (failure/timeout/parse-error path), pass `{\"symbol_warnings\": []}` as the default. Without this edit, the template-only change is plumbing that dead-ends. (Line number verified at HEAD; verify with `grep -n 'templates.PhaseD5'` before editing.)\n- **Reversion guidance:**\n  Safe to revert. Removing the new prompt sections restores the pre-027A `render_review_prompt`. Removing the post-check helper and the `extra[\"wrapper_checks\"]` assignment in `cmd_review` restores the envelope shape; existing envelopes that lack the field remain valid because no schema change was made. Removing the `Wrapper checks` block from `dispatch-templates.md` and reverting `SKILL.md:692` to the two-arg `render(templates.PhaseD5, codex_findings, task_block)` form restores the pre-027A D.5 dispatch surface.",
+      "acceptance_criteria": [
+        "V1, V2, V3 pass.",
+        "`render_review_prompt` at `plan_codex_dispatch.py:404` is extended to emit two new prompt sections, inserted between the `Task requirements:` bullets and the `Changed files:` line: `Description:\\n<description or \"(none provided)\">` and `Implementation notes:\\n<implementation_notes or \"(none provided)\">`. Both fields are already parsed into the `task` dict by `parse_task_block` (`plan_codex_dispatch.py:221` extracts `implementation_notes`; `description` is already on the task dict); this task wires them through. (Line numbers verified at audit anchor commit; verify with `grep -n` before editing if HEAD has drifted.)",
+        "A module-level helper `_verify_cited_symbols(parsed: dict, repo_root: str) -> list[dict]` is added to `plan_codex_dispatch.py` near the other helpers (e.g., after `git_diff_for_files` at `plan_codex_dispatch.py:526`). It iterates `parsed.get(\"findings\") or []` (the raw Codex output, NOT the wrapper envelope), extracts candidate symbol citations from each finding's `issue` text using the three regex patterns in Design constraints, and greps the finding's cited `file` for each candidate. Returns a list of `{finding_index, cited_symbol, file, status}` entries. (Line number verified at HEAD; verify with `grep -n '^def git_diff_for_files'` before editing if HEAD has drifted.)",
+        "Helper enforces these four status semantics: (a) `\"not-found\"` \u2014 a candidate was extracted and is absent from the cited file; (b) `\"unchecked\"` \u2014 a candidate was extracted BUT verification could not run (file missing, cited path escapes `repo_root`, read error); (c) no candidate extractable \u2192 no entry emitted (abstract/prose findings produce zero entries); (d) dotted expressions (`obj.method(`, `obj._helper(`) produce no entry \u2014 excluded by the `.` in each regex's negative lookbehind, dotted calls are explicitly out of v1 scope.",
+        "`cmd_review` at `plan_codex_dispatch.py:1236` calls `_verify_cited_symbols(parsed, repo_root)` after `parsed` is extracted and attaches the result to the wrapper envelope via the existing `extra` dict (success-path `extra` construction begins around `plan_codex_dispatch.py:1311` and is passed via `extra=extra` to `make_envelope` at `plan_codex_dispatch.py:1388`): `extra[\"wrapper_checks\"] = {\"symbol_warnings\": warnings}`. This is attached **only on the success path**; timeout/failure/parse-error branches omit the field and D.5 dispatch treats absence by substituting `{\"symbol_warnings\": []}`. No enumeration of every early-return branch is required. (Line numbers verified at HEAD; verify with `grep -n` before editing.)",
+        "The raw `parsed` object is NOT mutated. Finding text, severity, line number, suggested_fix are preserved verbatim.",
+        "`plugins/plan-executor/scripts/codex_review_schema.json` is NOT modified. `wrapper_checks` is wrapper-envelope metadata only and must not appear inside `parsed` (where `_validate_review_failure_payload` at `plan_ops.py:960` would reject it).",
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` Phase D.5 section gains a new `Wrapper checks (verbatim from envelope.wrapper_checks):` JSON block positioned immediately after the existing `Codex findings (verbatim from parsed.findings of the wrapper envelope):` block (currently at `dispatch-templates.md:445`). The orchestrator substitutes `<wrapper_checks_json>` from the envelope at dispatch time.",
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md` Phase D.5 render call at `SKILL.md:692` (currently `render(templates.PhaseD5, codex_findings, task_block)`) is extended to also pass `wrapper_checks` from the Codex review envelope: `render(templates.PhaseD5, codex_findings, task_block, wrapper_checks)`. When the envelope lacks `wrapper_checks`, pass `{\"symbol_warnings\": []}` as the default. The precise signature/argument naming follows the existing `render()` call convention in the skill; the substantive requirement is that `<wrapper_checks_json>` placeholder in the template resolves from envelope data at dispatch time, not from static template text. (Line number verified at HEAD; verify with `grep -n 'templates.PhaseD5'` before editing.)",
+        "Adds these eight new regression tests to `tests/scripts/test_codex_review_prompt.py`, each described by name and assertion: (1) `test_review_prompt_forwards_description_and_impl_notes` \u2014 calls `render_review_prompt` with a synthetic `task` dict carrying sentinel strings in `description` and `implementation_notes`, asserts both `Description:` and `Implementation notes:` headings and their sentinels appear in the rendered prompt; (2) `test_symbol_verification_flags_missing_citation` \u2014 imports `_verify_cited_symbols`, builds `parsed` with a finding citing `_definitely_not_real_xyz(` against `plugins/plan-executor/scripts/plan_codex_dispatch.py`, asserts one entry with `status: \"not-found\"` and `cited_symbol: \"_definitely_not_real_xyz\"`; (3) `test_symbol_verification_passes_real_citation` \u2014 builds `parsed` citing `_append_run_log(` against `plugins/plan-executor/scripts/plan_ops.py`, asserts empty list; (4) `test_symbol_verification_no_candidate_produces_no_entry` \u2014 builds `parsed` with prose-only `issue` text (e.g., \"the cleanup control-flow path is unreachable\"), asserts empty list (NOT an `unchecked` entry); (5) `test_symbol_verification_unchecked_when_file_missing` \u2014 builds `parsed` citing `_some_symbol(` against `tmp/does_not_exist.py`, asserts one entry with `status: \"unchecked\"`; (6) `test_symbol_verification_skips_dotted_identifiers` \u2014 builds `parsed` whose `issue` text contains ONLY dotted expressions (`self.foo(bar)`, `obj.method(arg)`, `obj._helper(arg)`) against a real file that does NOT contain those literals, asserts empty list (locks F4 out-of-scope boundary); (7) `test_review_envelope_includes_wrapper_checks` \u2014 drives `make_envelope` with the computed `extra` dict, asserts the resulting envelope contains `envelope[\"wrapper_checks\"][\"symbol_warnings\"]` as a list at top-level; (8) `test_d5_dispatch_template_forwards_wrapper_checks` \u2014 extracts the Phase D.5 section via new helper `_phase_d5_section()`, asserts the `Wrapper checks` JSON block appears between the Codex findings block and the verdict decision rubric, AND asserts `SKILL.md` Phase D.5 render call text (substring: `render(templates.PhaseD5`) includes `wrapper_checks` in its argument list (closes plumbing gap between template and skill)."
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "027B",
+      "title": "Plan-implementer adaptation-flagging scope",
+      "files": [
+        "`plugins/plan-executor/agents/plan-implementer.md`",
+        "`tests/scripts/test_plan_implementer_spec.py` (new)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_implementer_spec.py",
+      "priority": "medium",
+      "plan_file": "TASK-027_codex_review_prompt_and_adaptation_flagging.md",
+      "description": "The plan-implementer spec only triggers adaptation-flagging for \"live code differs\" cases. Run `20260421T031650` showed a legitimate spec deviation (CLI subcommand substituted with internal helper) go unflagged because the emitted output was identical to the plan's spec. Broaden the trigger to require flagging literal-wording substitutions.\n\n- **Implementation notes:**\n  - Keep the Step 1 edit additive \u2014 append the new trigger sentence rather than replacing the existing \"live code differs\" language.\n  - The worked example should be generic (not name `plan_ops.py` or `_append_run_log`) so it reads as guidance rather than a post-hoc justification for TASK-020B.\n  - The new test file should live at `tests/scripts/test_plan_implementer_spec.py` alongside the existing `test_codex_review_prompt.py` \u2014 same testing pattern (substring assertions on the spec text).\n- **Reversion guidance:**\n  Safe to revert. Removing the new sentences restores the pre-027B spec. Removing the test file clears the regression lock. Existing parse-implementer-report behavior is not touched.",
+      "acceptance_criteria": [
+        "V4 passes.",
+        "`agents/plan-implementer.md` Step 1 paragraph (currently at line 36-38) is extended to explicitly state: \"If the plan names a specific mechanism (a subcommand, a CLI invocation, a helper function, a flag) and you use a different mechanism that produces the same output, flag it under Plan adaptations with a one-line justification \u2014 even when the emitted behavior is identical.\" The new sentence sits alongside the existing \"live code differs\" trigger; the existing trigger is not removed or weakened.",
+        "The **Plan adaptations:** section of the report-format block (currently at line 98-99) gains a trailing sentence: \"This includes literal-wording substitutions where you used an equivalent mechanism (e.g., plan says `foo.py subcommand` but you called an internal helper that produces the same output); such cases MUST be flagged even when the emitted behavior is identical.\"",
+        "A short worked example is added to Step 1 immediately after the new trigger sentence: a synthetic case describing the `plan_ops.py log-event` vs `_append_run_log` class of substitution (using generic names, not verbatim TASK-020B). Format: one paragraph, \u22643 sentences.",
+        "Creates new test file `tests/scripts/test_plan_implementer_spec.py` containing exactly these three tests, each described by name and assertion: (1) `test_literal_wording_substitution_trigger_present` \u2014 reads `plugins/plan-executor/agents/plan-implementer.md`, asserts the Step 1 paragraph contains the new trigger wording (substring match on \"specific mechanism\" AND \"flag it under\") AND the Plan-adaptations report-format paragraph contains the substitution wording (substring match on \"literal-wording substitutions\" OR \"mechanism A\"/\"mechanism B\"-style phrasing); (2) `test_plan_adaptations_worked_example_present` \u2014 asserts the worked example paragraph appears in Step 1 (substring match on \"internal helper\" AND \"identical\"); (3) `test_parse_implementer_report_contract_preserved` \u2014 fixture-based smoke test that constructs a synthetic implementer-report string with `**Plan adaptations:**\\n- None` and feeds it through `plan_ops.py parse-implementer-report --stdin` (or `--report-path <tmp>`), asserts exit 0 and the parsed `plan_adaptations` field equals `[\"None\"]` or `[]` per the existing contract (lock against accidental contract breakage from the spec edits)."
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "027C",
+      "title": "D.5 `spec-deference` rubric disambiguation",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md`",
+        "`tests/scripts/test_codex_review_prompt.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_codex_review_prompt.py",
+      "priority": "low",
+      "plan_file": "TASK-027_codex_review_prompt_and_adaptation_flagging.md",
+      "description": "The D.5 rubric defines `spec-deference` as \"plan mandates X, Codex disputes X,\" but the worked-example wording permits the label to drift onto cases where the implementer deviated from the plan's literal wording citing a surrounding pattern. Disambiguate the boundary: `spec-deference` = implementer followed plan; `dismissed` = implementer deviated for a verified-correct reason.\n\n- **Implementation notes:**\n  - The clause goes INSIDE the existing dismissal-evidence gate section, between the numbered list (items 1 and 2) and the \"Plan says so without a spec-deference label\" paragraph. Do not split the section into a new heading.\n  - The worked example should be terse (\u226480 words) and explicit about the two contrasting cases.\n  - Test helper `_phase_d5_section()` mirrors the existing `_phase_d_codex_section()` pattern \u2014 scan for `## Phase D.5` header and the next `## ` heading.\n- **Reversion guidance:**\n  Safe to revert. Removing the new clause and example restores the prior rubric. Orchestrator routing is unchanged; the clarification is prompt-level guidance only.\n\n---\n\n## Out of Scope\n\n- Editing TASK-020B's plan text to resolve the `plan_ops.py log-event` vs `_append_run_log` wording ambiguity. A retroactive edit to a shipped plan is not this chunk's job. A future plan-review pass can flag the plan-authoring convention.\n- Updating `00_INDEX.json` TASK-020B status from `Pending` to `Done` (it shipped as `bc9ea17` + `489995d`). Separate housekeeping concern; do not bundle with this chunk.\n- Adding a runtime linter that parses Codex envelopes and demotes verdicts based on hallucinated-symbol count. Annotation is enough for v1; automated demotion is a TASK-028-class follow-up if this chunk's annotation doesn't meaningfully improve D.5 speed.\n- Tuning the Phase D-Claude (code-reviewer) prompt. TASK-020B did not expose a Claude-reviewer failure; do not pre-emptively edit a working surface.\n- Adding wrapper-side context (surrounding code snippets, git blame, previous commit messages) to the review prompt. Codex has Read access to the repo inside its sandbox; inflating the prompt with pre-fetched context has diminishing returns and hits token budgets. Description + implementation_notes are the minimum-useful addition.\n\n---\n\n## Reversion guidance\n\n- TASK-027A is additive: revert restores the diff-only review prompt, removes the wrapper-envelope `wrapper_checks` field, and removes the `Wrapper checks` block from the D.5 dispatch template. No schema change was made, so existing envelopes remain valid post-revert without additional work.\n- TASK-027B is additive: revert restores the narrower adaptation trigger. The new test file and its imports are isolated to one file.\n- TASK-027C is additive: revert restores the prior dismissal-evidence gate wording. D.5 continues to emit the same verdict vocabulary.\n- None of the three tasks change runtime routing, verdict vocabulary, or the Codex output schema that downstream validators depend on. Revert is always safe; the cost is re-exposure to the specific failure modes observed in run `20260421T031650`.\n\n---\n\n## Implementation Playbook\n\n### Step 1 (TASK-027A) \u2014 Forward description + implementation_notes\n\nEdit `render_review_prompt` at `plan_codex_dispatch.py:404`:\n\n```python\ndef render_review_prompt(task: dict, diff: str, review_focus: str) -> str:\n    allowed = [normalize_file_path(f) for f in task[\"files\"]]\n    files_str = \", \".join(allowed) or \"(none declared)\"\n    ac_bullets = \"\\n\".join(f\"- {c}\" for c in task[\"acceptance_criteria\"]) or \"- (none specified)\"\n    description = task.get(\"description\") or \"(none provided)\"\n    impl_notes = task.get(\"implementation_notes\") or \"(none provided)\"\n    return (\n        f\"Review the implementation of TASK-{task['task_id']} in this repository.\\n\\n\"\n        f\"Task objective: {task['title']}\\n\\n\"\n        f\"Task requirements:\\n{ac_bullets}\\n\\n\"\n        f\"Description:\\n{description}\\n\\n\"\n        f\"Implementation notes:\\n{impl_notes}\\n\\n\"\n        f\"Changed files: {files_str}\\n\\n\"\n        f\"Review focus: {review_focus}\\n\\n\"\n        # ... rest unchanged\n    )\n```\n\n### Step 2 (TASK-027A) \u2014 Add `_verify_cited_symbols` helper\n\nNew module-level function near the other helpers (e.g. after `git_diff_for_files` at line 426). The helper consumes the raw Codex `parsed` dict, NOT the wrapper envelope:\n\n```python\n_SYMBOL_PATTERNS = [\n    # Negative-lookbehind character class includes `.` so dotted expressions\n    # like obj._helper( and obj.method( do NOT match \u2014 v1 scope is bare\n    # symbols only; dotted identifiers are explicitly out of scope.\n    re.compile(r\"(?<![A-Za-z0-9_.])(_[A-Za-z][A-Za-z0-9_]*)\\(\"),\n    re.compile(r\"(?<![A-Za-z0-9_.])(--[a-z][a-z0-9-]+)(?=\\b)\"),\n    re.compile(r\"(?<![A-Za-z0-9_.])([a-z][a-z0-9_]{3,})\\([a-zA-Z_]\"),\n]\n\ndef _verify_cited_symbols(parsed: dict, repo_root: str) -> list[dict]:\n    \"\"\"Best-effort grep of each finding's cited symbols against its cited file.\n\n    Consumes the raw Codex `parsed` object (not the wrapper envelope).\n    Returns a list of {finding_index, cited_symbol, file, status} entries.\n\n    Status semantics:\n      \"not-found\"  \u2014 candidate extracted, absent from the cited file.\n      \"unchecked\"  \u2014 candidate extracted, but file missing, path escapes\n                     repo_root, or read failed.\n      No candidate extractable \u2192 NO entry emitted for that finding.\n    \"\"\"\n    warnings: list[dict] = []\n    findings = (parsed or {}).get(\"findings\") or []\n    repo_root_resolved = Path(repo_root).resolve()\n    for idx, finding in enumerate(findings):\n        issue_text = finding.get(\"issue\") or \"\"\n        cited_file = finding.get(\"file\") or \"\"\n        candidates: set[str] = set()\n        for pat in _SYMBOL_PATTERNS:\n            for m in pat.finditer(issue_text):\n                candidates.add(m.group(1))\n        if not candidates:\n            continue  # prose-only finding \u2192 no entry\n\n        if not cited_file:\n            for sym in candidates:\n                warnings.append({\n                    \"finding_index\": idx, \"cited_symbol\": sym,\n                    \"file\": \"\", \"status\": \"unchecked\",\n                })\n            continue\n\n        abs_path = (repo_root_resolved / cited_file).resolve()\n        try:\n            abs_path.relative_to(repo_root_resolved)\n        except ValueError:\n            for sym in candidates:\n                warnings.append({\n                    \"finding_index\": idx, \"cited_symbol\": sym,\n                    \"file\": cited_file, \"status\": \"unchecked\",\n                })\n            continue\n\n        if not abs_path.is_file():\n            for sym in candidates:\n                warnings.append({\n                    \"finding_index\": idx, \"cited_symbol\": sym,\n                    \"file\": cited_file, \"status\": \"unchecked\",\n                })\n            continue\n\n        try:\n            file_text = abs_path.read_text(encoding=\"utf-8\", errors=\"replace\")\n        except OSError:\n            for sym in candidates:\n                warnings.append({\n                    \"finding_index\": idx, \"cited_symbol\": sym,\n                    \"file\": cited_file, \"status\": \"unchecked\",\n                })\n            continue\n\n        for sym in candidates:\n            if sym not in file_text:\n                warnings.append({\n                    \"finding_index\": idx, \"cited_symbol\": sym,\n                    \"file\": cited_file, \"status\": \"not-found\",\n                })\n    return warnings\n```\n\n### Step 3 (TASK-027A) \u2014 Wire post-check into `cmd_review` via `extra` (success path only)\n\n`wrapper_checks` is wrapper-envelope metadata \u2014 attach via the existing `extra` dict that `cmd_review` already builds before the success-path `make_envelope` call (see `plan_codex_dispatch.py:1311 (success-path extra construction; passed via extra=extra to make_envelope at 1388)`). After `parsed` is populated and before the `make_envelope(..., extra=extra)` call, add:\n\n```python\nextra[\"wrapper_checks\"] = {\n    \"symbol_warnings\": _verify_cited_symbols(parsed, repo_root),\n}\n```\n\n**Only the success path is modified.** Timeout, failure, and parse-error branches are NOT touched \u2014 they emit envelopes without a `wrapper_checks` field, and D.5 dispatch treats absence as \"check not run\" by substituting `{\"symbol_warnings\": []}` at render time (handled in Step 4.5). This keeps the `cmd_review` change to a single insertion and avoids enumerating every early-return site.\n\nDo NOT mutate `envelope[\"wrapper_checks\"]` directly. Do NOT place the field inside `parsed`. `make_envelope` merges `extra` into the top-level envelope via `envelope.update(extra)` at `plan_codex_dispatch.py:952`, so `extra[\"wrapper_checks\"]` surfaces as `envelope[\"wrapper_checks\"]` automatically.\n\n### Step 4 (TASK-027A) \u2014 D.5 dispatch template forwarding\n\nEdit `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` Phase D.5 section. Immediately AFTER the existing block (currently at `dispatch-templates.md:445`):\n\n```\n> Codex findings (verbatim from `parsed.findings` of the wrapper envelope):\n>\n> ```json\n> <codex_findings_json>\n> ```\n```\n\ninsert a new block:\n\n```\n>\n> Wrapper checks (verbatim from `envelope.wrapper_checks`):\n>\n> ```json\n> <wrapper_checks_json>\n> ```\n>\n> The `symbol_warnings` list flags cases where Codex cited a specific function, helper, or flag (e.g., `_some_helper(`, `--some-flag`) that does NOT exist in the cited file \u2014 a hallucination signal. An empty list means no hallucinated-symbol warnings are surfaced (either the wrapper ran the check and found none, or this envelope came from a failure/timeout/parse-error path where the check did not run and the orchestrator substituted the empty-list default). A non-empty list is what carries information; an empty list tells you nothing either way. Use a `not-found` warning as a **tiebreaker**, not a decision rule: it is a strong dismissal signal for that individual finding but still requires the dismissal-evidence gate below.\n```\n\n`<wrapper_checks_json>` is a placeholder the orchestrator substitutes at dispatch time from `envelope[\"wrapper_checks\"]` (or `{\"symbol_warnings\": []}` if the envelope lacks the key \u2014 see Step 4.5). `codex_review_schema.json` is NOT touched.",
+      "acceptance_criteria": [
+        "V5 passes.",
+        "`dispatch-templates.md` Phase D.5 dismissal-evidence gate section (currently at line 460) gains a precondition clause explicitly stating: `spec-deference` applies **only** when the implementer's implementation followed the plan's literal wording AND Codex is disputing what the plan mandated. If the implementer deviated from the plan's literal wording (even defensibly \u2014 surrounding-code pattern match, internal-helper substitution, semantically-equivalent alternative), the disposition is `dismissed` (with concrete-verification evidence showing the deviation is correct) OR surfaced at `minor-findings` \u2014 NOT `spec-deference`.",
+        "A short worked example is added immediately after the clause: a synthetic case where the plan names mechanism A, implementer used mechanism B that produces identical output, Codex flagged the deviation \u2192 disposition is `dismissed` with verification (pointing to the surrounding-pattern evidence), NOT `spec-deference`. Contrast with: plan mandates behavior X, implementer implemented X, Codex objects to X \u2192 disposition IS `spec-deference`.",
+        "Adds new regression test `test_d5_spec_deference_rubric_scoped` to `tests/scripts/test_codex_review_prompt.py` with these specific assertions: (1) loads the `dispatch-templates.md` Phase D.5 section via new helper `_phase_d5_section()` (modeled on existing `_phase_d_codex_section`-style helper; extracts `## Phase D.5` through the next `## ` heading); (2) asserts the dismissal-evidence gate subsection contains the precondition wording \u2014 substring match requiring all three terms `implementer`, `followed`, and `literal wording` (or equivalent phrasing \u2014 `literal-wording` hyphenated also accepted); (3) asserts the contrasting worked example paragraph contains BOTH the strings `dismissed` AND `spec-deference` within 200 characters of each other (locks the contrasting-example structure, not just keyword presence)."
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "028",
+      "title": "Unwrap `claude --output-format json` envelope in two live-CLI roundtrip tests",
+      "files": [
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "priority": "low",
+      "plan_file": "TASK-028_integration_test_cli_envelope_unwrap.md",
+      "description": "Tests V2 and V3 are live-CLI integration checks that have been failing since they were ported from the algorithmic-trading-system repo (commit `f7aa069`). The root cause is mechanical: both tests pass `--output-format json` to the `claude` CLI, which wraps the subagent's real stdout (a fenced JSON block for the analyst, a markdown report for the implementer) inside a top-level envelope object with a `result` string field. The tests then hand `result.stdout` \u2014 the whole envelope \u2014 straight to downstream parsers, which correctly reject it. The fix is to parse the envelope, extract `result`, and hand *that* to the downstream parsers. Two lines per test, plus a unit-scope regression test (V1) that guards the unwrap logic against future CLI-envelope drift.",
+      "acceptance_criteria": [
+        "V1-V5 pass.",
+        "`test_analyst_to_parse_schedule_roundtrip` (around line 5380) unwraps the `claude --output-format json` envelope before feeding the subagent output to `_extract_json_block`. The unwrap logic must:",
+        "`test_implementer_to_parse_implementer_report_roundtrip` (around line 5427) applies the analogous unwrap before piping to `parse-implementer-report --stdin` (line 5461). The input to `subprocess.run([... \"parse-implementer-report\", \"--stdin\", ...], input=<unwrapped>, ...)` must be the inner `result` string, not the outer envelope JSON.",
+        "The `--output-format json` flag is retained in both `subprocess.run` argv lists. Do NOT drop it.",
+        "Existing skip paths (`_claude_cli_available() is False`, `FileNotFoundError`, `TimeoutExpired`, non-zero CLI rc) are preserved verbatim.",
+        "The `@pytest.mark.slow` decorator on both tests is preserved.",
+        "No change to `plan_ops.py`. No change to the body of `_extract_json_block`. A new small helper adjacent to `_extract_json_block` (e.g., `_unwrap_cli_envelope(stdout: str) -> str | None`) is permitted if the implementer prefers factoring over inline duplication."
+      ],
+      "agent": "claude"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "009",
+        "017",
+        "027B"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "plugins/plan-executor/agents/plan-implementer.md",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md",
+        "tests/scripts/test_plan_implementer_spec.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "010",
+        "027A"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "docs/plans/_global_lock_paths.yaml.example",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_codex_review_prompt.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "027C",
+        "028"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_codex_review_prompt.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": [],
+  "outcome": "valid"
+}

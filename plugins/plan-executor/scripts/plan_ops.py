@@ -393,7 +393,7 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
         normalized_tasks.append({
             "id": task_id,
             "priority": priority,
-            "files": [str(path) for path in raw_files],
+            "files": [_normalize_files_entry(str(path)) for path in raw_files],
         })
 
     if errors:
@@ -2500,6 +2500,12 @@ def _build_tasks(plans_dir: Path) -> dict:
             })
             continue
         seen_ids.add(normalized_id)
+        # Skip already-completed chunks: status=Done means the work was
+        # shipped in a prior run. Including Done tasks would re-dispatch
+        # them to implementer agents and produce no-op or conflicting commits.
+        chunk_status = chunk.get("status")
+        if isinstance(chunk_status, str) and chunk_status.strip() == "Done":
+            continue
         child_name = chunk.get("file")
         if not isinstance(child_name, str) or not child_name.strip():
             errors.append({

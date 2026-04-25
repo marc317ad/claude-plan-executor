@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "Plan: Nested Subagent Dispatch (`plan_claude_dispatch.py`) \u2014 v3",
+  "source_plan_file": "PLAN_NESTED_DISPATCH.md",
+  "created": "2026-04-25",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "parallel_batches": [
+    [
+      "001",
+      "007"
+    ],
+    [
+      "002"
+    ],
+    [
+      "003"
+    ],
+    [
+      "004"
+    ],
+    [
+      "005"
+    ],
+    [
+      "006",
+      "008",
+      "009"
+    ]
+  ],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_input_output_json_schemas.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_manifest_loader_guardrail_engine.md",
+      "priority": "high",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_claude_cli_backend_adapter.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_delta_bounded_cleanup.md",
+      "priority": "high",
+      "depends_on": [
+        "003"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_cli_entrypoint_plan_claude.md",
+      "priority": "high",
+      "depends_on": [
+        "002",
+        "003",
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "TASK-006_span_log_spans_jsonl.md",
+      "priority": "medium",
+      "depends_on": [
+        "005"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "TASK-007_probe_2b_acceptedits_allowlist.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "008",
+      "file": "TASK-008_end_to_end_escape.md",
+      "priority": "medium",
+      "depends_on": [
+        "005",
+        "007"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "009",
+      "file": "TASK-009_readme_security_doc.md",
+      "priority": "medium",
+      "depends_on": [
+        "005",
+        "007"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

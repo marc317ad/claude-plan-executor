@@ -80,7 +80,7 @@ All eight probes are empirically solid and directly applicable to the future loc
 
 Build `plugins/plan-executor/scripts/plan_claude_dispatch.py` — a Bash-callable chokepoint that lets a subagent (running in a tool-restricted context that lacks the `Agent` tool) spawn a fully-featured nested Claude agent via `claude -p --agent plan-executor:<name>`. The wrapper provides: a structured input contract, a schema-validated output envelope, delta-bounded cleanup, guardrails (depth, cost cap, tool allowlist, cwd sandbox, network gating, recursion killswitch), and observability (a per-dispatch span log). It is the one sanctioned chokepoint for subagent escape-hatch dispatch; every hop traverses its guardrails and its contract.
 
-## 2. Context — why
+## Context
 
 (Preserved from v2 §2.)
 
@@ -393,7 +393,7 @@ The plan is complete when all of the following are true:
 
 ## 14. Tasks
 
-### TASK-001: Input / output JSON schemas + envelope builder module
+## TASK-001: Input / output JSON schemas + envelope builder module
 
 - **Status:** pending
 - **Priority:** high
@@ -409,7 +409,7 @@ The plan is complete when all of the following are true:
   - `_claude_dispatch_envelope.py` exposes `build_ok()`, `build_denied()`, `build_timeout()`, `build_schema_invalid()`, `build_backend_error()`, `build_scope_violation()`, `build_input_invalid()`, `build_manifest_invalid()`, `build_depth_exceeded()`, `build_budget_exhausted()` matching the §7 status vocabulary.
   - Constructor rejects unknown top-level keys.
 
-### TASK-002: Manifest loader + guardrail engine
+## TASK-002: Manifest loader + guardrail engine
 
 - **Status:** pending
 - **Priority:** high
@@ -426,7 +426,7 @@ The plan is complete when all of the following are true:
   - `evaluate_preflight(manifest, input, env)` returns `(allow: bool, envelope_if_denied: dict | None)` covering every row in §9.2.
   - `scrub_env(manifest, parent_env)` keeps `env_allowlist + PLAN_EXEC_*`, injects per-hop vars.
 
-### TASK-003: claude-cli backend adapter
+## TASK-003: claude-cli backend adapter
 
 - **Status:** pending
 - **Priority:** high
@@ -442,7 +442,7 @@ The plan is complete when all of the following are true:
   - `TimeoutExpired` → `status: timeout`; non-JSON stdout → `status: backend_error, code: malformed_output`.
   - `--backend-binary` test seam (tiny shim script); real-CLI path gated on `PLAN_EXEC_E2E=1`.
 
-### TASK-004: Delta-bounded cleanup
+## TASK-004: Delta-bounded cleanup
 
 - **Status:** pending
 - **Priority:** high
@@ -458,7 +458,7 @@ The plan is complete when all of the following are true:
   - Concurrent dispatches on disjoint file sets do not cross-contaminate (integration test with two wrapper processes).
   - **Factoring rule:** if sharing logic with `plan_codex_dispatch.py` is a ≤100-line extraction, do it now and update both wrappers in one PR; otherwise duplicate in the Claude wrapper and file a follow-up task.
 
-### TASK-005: CLI entrypoint `plan_claude_dispatch.py`
+## TASK-005: CLI entrypoint `plan_claude_dispatch.py`
 
 - **Status:** pending
 - **Priority:** high
@@ -475,7 +475,7 @@ The plan is complete when all of the following are true:
   - `--dry-run` returns a plan-only envelope with `status: ok, dry_run: true` and no spawn.
   - Malformed input → exit 2 + `status: input_invalid` envelope on stdout.
 
-### TASK-006: Span log (`spans.jsonl`)
+## TASK-006: Span log (`spans.jsonl`)
 
 - **Status:** pending
 - **Priority:** medium
@@ -490,7 +490,7 @@ The plan is complete when all of the following are true:
   - Default log dir: `docs/plans/` (sibling of `_run_log.jsonl`).
   - Multi-hop test (wrapper calling wrapper) produces N spans with correct parent links.
 
-### TASK-007: Probe 2b — `acceptEdits` allowlist enforcement (build gate)
+## TASK-007: Probe 2b — `acceptEdits` allowlist enforcement (build gate)
 
 - **Status:** pending (blocks TASK-003 final sign-off)
 - **Priority:** high
@@ -505,7 +505,7 @@ The plan is complete when all of the following are true:
   - **Pass case B:** file created but delta-bounded cleanup reverts it → proceed; README elevates cleanup as the primary safety mechanism and notes allowlist is advisory only.
   - **Fail case:** file created and not reverted → ship-blocker; revise v3 to use strict cwd sandbox + cleanup as sole mechanism.
 
-### TASK-008: End-to-end escape-hatch integration test
+## TASK-008: End-to-end escape-hatch integration test
 
 - **Status:** pending
 - **Priority:** medium
@@ -520,7 +520,7 @@ The plan is complete when all of the following are true:
   - Case 2: malformed input → exit 2 + `status: input_invalid`.
   - Case 3: two parallel wrapper invocations on disjoint file sets succeed; baselines do not cross-contaminate.
 
-### TASK-009: README + security doc
+## TASK-009: README + security doc
 
 - **Status:** pending
 - **Priority:** medium

@@ -85,7 +85,7 @@ Each rule has a one-line **Why:** tagline referencing the error it prevents, mat
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
   - `plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md` (create)
 - **Dependencies:** none
-- **Test command:** `none` (pure docs; each example is hand-verified at author time against the current `plan_ops.py --help` output and the run-log of `20260417T214309`. No Python dispatch tests — static string assertions would add brittle coupling for trivial upside.)
+- **Test command:** `venv/bin/python -c "from pathlib import Path; cs=Path('plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md'); sk=Path('plugins/plan-executor/skills/implement-plan/SKILL.md').read_text(); assert cs.exists(), 'cheatsheet missing'; assert len(cs.read_text().splitlines())<=150, 'cheatsheet >150 lines'; assert '## Command reference' in sk, 'Command reference section missing'; assert 'Pre-invocation checklist' in sk, 'Pre-invocation checklist missing'; assert 'plan_ops_cheatsheet.md' in sk, 'cross-link to cheatsheet missing'"`
 - **Acceptance criteria:**
   - V1–V4 pass.
   - No edits to `plan_ops.py`, `dispatch-templates.md`, agent specs, `codex_*_schema.json`, or any schema JSON.

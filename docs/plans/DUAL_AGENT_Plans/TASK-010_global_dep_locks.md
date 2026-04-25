@@ -2,7 +2,7 @@
 
 **Parent plan:** [`../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md`](../DUAL_AGENT_EXECUTOR_HARDENING_PLAN_2026-04-14_v3.md) § TASK-010
 **Consolidated remediation:** [`../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md`](../../analysis/DUAL_AGENT_EXECUTOR_Consolidated_Remediation_Plan_2026-04-14.md)
-**Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9.2 scheduler, §9.4 parallel execution
+**Design contract:** [`../DUAL_AGENT_PLAN_EXECUTOR.md`](../DUAL_AGENT_PLAN_EXECUTOR.md) §9.4 scheduler, §9.4 parallel execution
 **Base branch:** `main`
 **Audit anchor commit:** `d0f9740`
 **Chunk dependencies:** none (formerly TASK-004, TASK-003, TASK-007 — now archived/complete).
@@ -51,7 +51,7 @@ GLOBAL_LOCK_PATHS = {
 }
 ```
 
-Globs are supported. The set is declared in one place (`plugins/plan-executor/scripts/plan_ops.py`) and documented in `DUAL_AGENT_PLAN_EXECUTOR.md` §9.2.
+Globs are supported. The set is declared in one place (`plugins/plan-executor/scripts/plan_ops.py`) and documented in `DUAL_AGENT_PLAN_EXECUTOR.md` §9.4.
 
 ### Scheduler rule
 
@@ -149,7 +149,7 @@ Re-run `list-global-lock-paths`. Output includes both plus the default set. Re-r
 $PYTHON plugins/plan-executor/scripts/plan_ops.py audit --check global_lock_paths --json
 ```
 
-(TASK-007 audit has a new check added by this chunk; passes iff the constant matches the documented set in §9.2 of the design doc.)
+(TASK-007 audit has a new check added by this chunk; passes iff the constant matches the documented set in §9.4 of the design doc.)
 
 **V8 — Tests green.**
 
@@ -166,7 +166,7 @@ $PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k global_lock
 - **Status:** pending
 - **Priority:** medium
 - **Files:**
-  - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (§9.2 scheduler, §9.4 parallel)
+  - `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (§9.4 Phase 2 batch execution — scheduler / parallel)
   - `plugins/plan-executor/scripts/plan_ops.py` (constant + override loader + subcommand + batch rule)
   - `tests/scripts/test_plan_ops.py`
   - `docs/plans/_global_lock_paths.yaml.example` (documented override template)
@@ -178,7 +178,7 @@ $PYTHON -m pytest -q tests/scripts/test_plan_ops.py -k global_lock
   - `parse-schedule` / `write-schedule` tags each task with `global_lock: bool`.
   - Batcher rule: any task with `global_lock: true` occupies its own batch alone.
   - Override file `docs/plans/_global_lock_paths.yaml` is honored if present; default if absent.
-  - `DUAL_AGENT_PLAN_EXECUTOR.md` §9.2 documents the rule and lists the default set.
+  - `DUAL_AGENT_PLAN_EXECUTOR.md` §9.4 documents the rule and lists the default set.
   - Audit check `global_lock_paths` (TASK-007 registry extension) verifies constant-vs-doc alignment.
   - All verification checks V1–V8 pass.
 
@@ -262,7 +262,7 @@ In the schedule builder (produced by `parse-schedule` / `write-schedule` in TASK
 task["global_lock"] = any(_is_global_lock_path(f) for f in task["files"])
 ```
 
-Schema note: document `global_lock: bool` as a required output field on every task record in `DUAL_AGENT_PLAN_EXECUTOR.md` §9.2.
+Schema note: document `global_lock: bool` as a required output field on every task record in `DUAL_AGENT_PLAN_EXECUTOR.md` §9.4.
 
 ### Step 4 — batcher rule
 
@@ -298,7 +298,7 @@ Do *not* create `docs/plans/_global_lock_paths.yaml` itself; that is operator-cr
 
 ### Step 6 — design doc updates
 
-`docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` §9.2 scheduler:
+`docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` §9.4 scheduler:
 
 - Add a subsection "Globally-locked paths" listing the default set and globs.
 - Document the override file (`docs/plans/_global_lock_paths.yaml`).
@@ -306,7 +306,7 @@ Do *not* create `docs/plans/_global_lock_paths.yaml` itself; that is operator-cr
 
 §9.4 parallel execution:
 
-- Cross-reference §9.2; note that parallel-sibling isolation (TASK-003's state snapshots) remains the mechanism for non-global-lock tasks; the global-lock rule prevents parallel siblings from existing in the first place.
+- Cross-reference §9.4; note that parallel-sibling isolation (TASK-003's state snapshots) remains the mechanism for non-global-lock tasks; the global-lock rule prevents parallel siblings from existing in the first place.
 
 ### Step 7 — TASK-007 audit check extension (if already landed)
 
@@ -318,7 +318,7 @@ Add to TASK-007's `CANONICAL_CONTRACT`:
 ```
 
 Add a check `_check_global_lock_paths`:
-- Greps `DUAL_AGENT_PLAN_EXECUTOR.md` §9.2 for the listed set; fails if docs drift from the constant.
+- Greps `DUAL_AGENT_PLAN_EXECUTOR.md` §9.4 for the listed set; fails if docs drift from the constant.
 
 If TASK-007 has not landed yet, this step is deferred to the TASK-007 implementation; no blocker.
 
