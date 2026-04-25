@@ -51,7 +51,7 @@
       "depends_on": [
         "001"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -61,7 +61,7 @@
       "depends_on": [
         "002"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -71,7 +71,7 @@
       "depends_on": [
         "003"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -81,7 +81,7 @@
       "depends_on": [
         "004"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -92,7 +92,7 @@
         "004",
         "005"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -102,7 +102,7 @@
       "depends_on": [
         "006"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -117,7 +117,7 @@
         "006",
         "007"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -127,7 +127,7 @@
       "depends_on": [
         "008"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     }
   ]
