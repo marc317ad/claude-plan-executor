@@ -26,7 +26,7 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 
 ### TASK-007: Probe 2b — `acceptEdits` allowlist enforcement (build gate)
 
-- **Status:** pending (blocks TASK-003 final sign-off)
+- **Status:** complete
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_claude_permission_mode_probe.py` (create)
@@ -41,3 +41,5 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 - **Reversion guidance:** none
 
 **Description:**
+
+Build-gate probe that empirically determines whether `--permission-mode acceptEdits` plus `--allowedTools` constitutes a real safety boundary, or only an advisory hint to be backstopped by delta-bounded cleanup. Invokes `claude -p --agent plan-executor:plan-analyst --permission-mode acceptEdits --allowedTools Read,Grep,Glob,Bash --output-format json` with a prompt to `Write` a file in a tmp dir (Write is NOT in the allowlist). Pass case A: nested session refuses (`permission_denials` non-empty, no file on disk) → README ships acceptEdits as the default. Pass case B: file created but TASK-004 cleanup reverts it → README ships cleanup as primary mechanism, allowlist as advisory. Fail case: file created and not reverted → ship-blocker; v3 must redesign with strict cwd sandbox + cleanup as sole mechanism. Gated on `PLAN_EXEC_E2E=1` AND `claude` on PATH so CI and local dev runs skip cleanly.

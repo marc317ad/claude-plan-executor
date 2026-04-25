@@ -24,13 +24,13 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 
 ### TASK-009: README + security doc
 
-- **Status:** pending
+- **Status:** complete
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/README_claude_dispatch.md` (create)
   - `README.md` (modify)
 - **Dependencies:** [005, 007]
-- **Test command:** none
+- **Test command:** none (documentation-only task; behavior validated by sibling `TASK-008` E2E suite)
 - **Acceptance criteria:**
   - `README_claude_dispatch.md` documents: escape-hatch use case; input / output shape; every `PLAN_EXEC_*` env var; the refusal matrix (§9.2); inner CLI shares billing with parent; the v1 dispatchable-agents set; the outcome of Probe 2b (Pass A or B) and what it means for safety invariants.
   - Quickstart example: ≤10-line JSON payload for `plan-implementer`.
@@ -38,3 +38,5 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 - **Reversion guidance:** none
 
 **Description:**
+
+Documents the nested Claude dispatch wrapper for callers and operators. `README_claude_dispatch.md` covers the escape-hatch use case (why a subagent with only Bash needs to shell out to `claude -p`), the input / output JSON shapes from TASK-001, every `PLAN_EXEC_*` env var, the §9.2 refusal matrix from TASK-002, the billing model (the inner CLI shares billing with the parent session), the v1 dispatchable-agents allowlist (`{plan-analyst, plan-implementer, plan-remediator}`), and the outcome of Probe 2b (Pass A or Pass B per TASK-007) with what it implies for the safety story. Includes a ≤10-line JSON quickstart payload for `plan-implementer`. The top-level `README.md` gains a one-paragraph pointer to the new wrapper so readers discover it from the project root.

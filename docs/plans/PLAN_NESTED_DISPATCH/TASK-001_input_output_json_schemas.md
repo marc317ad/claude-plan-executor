@@ -24,7 +24,7 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 
 ### TASK-001: Input / output JSON schemas + envelope builder module
 
-- **Status:** pending
+- **Status:** complete
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/schemas/claude_dispatch_input.json` (create)
@@ -40,3 +40,5 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 - **Reversion guidance:** none
 
 **Description:**
+
+Defines the structured input and output JSON schemas for `plan_claude_dispatch.py` plus the Python envelope-builder module that materializes them. The schemas (`schemas/claude_dispatch_input.json`, `schemas/claude_dispatch_output.json`) lock down the wire contract between callers and the wrapper with `additionalProperties: false`. The companion `_claude_dispatch_envelope.py` exposes one constructor per §7 status code (`build_ok`, `build_denied`, `build_timeout`, `build_schema_invalid`, `build_backend_error`, `build_scope_violation`, `build_input_invalid`, `build_manifest_invalid`, `build_depth_exceeded`, `build_budget_exhausted`) so downstream tasks (TASK-003 backend, TASK-005 CLI) emit envelopes through a single typed surface rather than hand-rolled dicts.

@@ -24,7 +24,7 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 
 ### TASK-006: Span log (`spans.jsonl`)
 
-- **Status:** pending
+- **Status:** complete
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/_claude_span_log.py` (create)
@@ -39,3 +39,5 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 - **Reversion guidance:** none
 
 **Description:**
+
+Implements the `_claude_span_log.append_span(log_dir, envelope)` helper that atomically writes one JSON line to `$log_dir/spans.jsonl`, defaulting to `docs/plans/` (sibling of `_run_log.jsonl`). The CLI entrypoint (TASK-005) calls it on every dispatch so a multi-hop chain (wrapper → nested wrapper → ...) produces N spans with correct parent-link bookkeeping, providing the audit trail that the Codex wrapper has had via `_run_log.jsonl` from day one. Atomicity is required because parallel wrapper invocations on disjoint file sets share the log file.

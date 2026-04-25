@@ -26,7 +26,7 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 
 ### TASK-004: Delta-bounded cleanup
 
-- **Status:** pending
+- **Status:** complete
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/_claude_dispatch_cleanup.py` (create)
@@ -42,3 +42,5 @@ The escape hatch is real but raw. Unwrapped use would (a) duplicate prompt and s
 - **Reversion guidance:** none
 
 **Description:**
+
+Implements delta-bounded cleanup for the Claude dispatch wrapper, mirroring the proven Codex wrapper. `snapshot_baseline(repo_root)` captures the tracked + untracked state via git plumbing before the nested session runs. `apply_cleanup(baseline, declared_files_changed, repo_root)` then computes the post-dispatch delta and restores/deletes any files in `(observed_delta − declared_files_changed − protected_paths)` — the same `_plan_paths.is_protected_path` predicate as the Codex wrapper. Two flags surface for envelope reporting: `scope_violation_detected` flips when the nested session wrote outside its declared `files_changed`; `scope_misreport_detected` flips when declared files were not actually touched. Concurrent dispatches on disjoint file sets must not cross-contaminate baselines (integration test with two wrapper processes). If sharing logic with the Codex wrapper is a ≤100-line extraction, refactor in this PR; otherwise duplicate and file a follow-up.
