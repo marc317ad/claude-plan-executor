@@ -57,7 +57,7 @@
       "file": "TASK-005_remove_dead_parallel_batches_field.md",
       "priority": "medium",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Removes the write-only parallel_batches field from _decompose_plan emission and from all live (non-archive) 00_INDEX.json rosters + fixtures + tests. Adds a back-compat parse test pinning that old rosters carrying the field continue to parse. Independent of the topo fix proper; bundled here as adjacent cleanup that reduces operator confusion between roster parallel_batches and schedule batches[]."
     },

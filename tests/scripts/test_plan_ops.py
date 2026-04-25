@@ -16664,7 +16664,6 @@ class TestDecomposePlan:
         res = _parse_json(cp)
         assert res["ok"] is True
         assert res["task_count"] == 3
-        assert res["parallel_batches"] == [["001"], ["002", "003"]]
         produced = Path(res["produced_dir"])
         assert produced.is_dir()
         # Canonical manifest shape.
@@ -16925,25 +16924,118 @@ class TestDecomposePlan:
         assert manifest["base_branch"] == "main"
         assert manifest["depends_on_plans"] == []
         assert manifest["supersedes"] == []
-        assert isinstance(manifest["parallel_batches"], list)
         assert isinstance(manifest["chunks"], list)
         # Compare the emitted top-level key set against the canonical
         # manual-sidecar manifest. The decomposer may add additional
         # provenance keys (e.g. `source_plan_file`) but must emit at
-        # least every canonical top-level field.
+        # least every canonical top-level field. The canonical reference
+        # was archived under `docs/plans/archive/` and still carries the
+        # legacy `parallel_batches` field — that field is intentionally
+        # no longer emitted by `_decompose_plan`, so it is excluded from
+        # the comparison set.
         canonical_path = (
             REPO_ROOT
-            / "docs" / "plans"
+            / "docs" / "plans" / "archive"
             / "per_task_dispatch_refactor_v2" / "00_INDEX.json"
         )
         canonical = json.loads(
             canonical_path.read_text(encoding="utf-8"),
         )
-        missing = set(canonical.keys()) - set(manifest.keys())
+        canonical_keys = set(canonical.keys()) - {"parallel_batches"}
+        missing = canonical_keys - set(manifest.keys())
         assert not missing, (
             f"decomposed manifest missing canonical top-level keys: "
             f"{sorted(missing)}"
         )
+
+    def test_decompose_manifest_omits_parallel_batches(
+        self, tmp_path: Path,
+    ) -> None:
+        """Negative pin: emitted manifest must NOT carry `parallel_batches`.
+
+        TASK-005 of PLAN_TOPO_RESPECT_FIX_2026-04-25 deleted the dead
+        `parallel_batches` field from `_decompose_plan`. This test pins
+        the absence so a future re-introduction (whether intentional or
+        accidental) breaks loudly. The schedule's `batches[]` is the
+        single batch source-of-truth; the roster is no longer expected
+        to carry batch metadata.
+        """
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(
+            src, tmp_path / "out", force=True,
+        )
+        assert res["ok"] is True, res
+        # The function's return dict must not carry it.
+        assert "parallel_batches" not in res, res
+        # The persisted manifest must not carry it.
+        manifest = json.loads(
+            (Path(res["produced_dir"]) / "00_INDEX.json").read_text(
+                encoding="utf-8",
+            ),
+        )
+        assert "parallel_batches" not in manifest, manifest
+
+    def test_decompose_roster_back_compat_parses_legacy_parallel_batches(
+        self, tmp_path: Path,
+    ) -> None:
+        """Back-compat: `_parse_index_roster` tolerates rosters in the
+        wild that still carry the legacy `parallel_batches` field.
+
+        Pre-existing 00_INDEX.json files written before TASK-005 of
+        PLAN_TOPO_RESPECT_FIX_2026-04-25 may still ship with
+        `parallel_batches`. The parser must ignore the extra key so
+        operators do not need to rewrite every historical roster to
+        adopt the cleanup.
+        """
+        legacy = {
+            "schema_version": 1,
+            "source": "manual-sidecar",
+            "plan_title": "Legacy back-compat roster",
+            "created": "2026-04-25",
+            "base_branch": "main",
+            "depends_on_plans": [],
+            "supersedes": [],
+            "parallel_batches": [["001"], ["002", "003"]],
+            "chunks": [
+                {
+                    "task_id": "001",
+                    "file": "TASK-001_a.md",
+                    "depends_on": [],
+                    "status": "Pending",
+                    "superseded_by": [],
+                },
+                {
+                    "task_id": "002",
+                    "file": "TASK-002_b.md",
+                    "depends_on": ["001"],
+                    "status": "Pending",
+                    "superseded_by": [],
+                },
+                {
+                    "task_id": "003",
+                    "file": "TASK-003_c.md",
+                    "depends_on": ["001"],
+                    "status": "Pending",
+                    "superseded_by": [],
+                },
+            ],
+        }
+        path = tmp_path / "00_INDEX.json"
+        path.write_text(json.dumps(legacy, indent=2), encoding="utf-8")
+        roster = plan_ops._parse_index_roster(path)
+        assert set(roster.keys()) == {"001", "002", "003"}
+        assert roster["001"]["depends_on"] == []
+        assert roster["002"]["depends_on"] == ["001"]
+        assert roster["003"]["depends_on"] == ["001"]
+        for tid in ("001", "002", "003"):
+            assert roster[tid]["status"] == "Pending"
+            assert roster[tid]["file"].startswith(f"TASK-{tid}_")
 
     def test_decompose_plan_timing_budget(self, tmp_path: Path) -> None:
         """Decomposition for a 10-task plan completes under 100 ms wall.

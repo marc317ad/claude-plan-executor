@@ -7,17 +7,6 @@
   "base_branch": "main",
   "depends_on_plans": [],
   "supersedes": [],
-  "parallel_batches": [
-    [
-      "001"
-    ],
-    [
-      "002"
-    ],
-    [
-      "003"
-    ]
-  ],
   "chunks": [
     {
       "task_id": "001",

@@ -52,7 +52,7 @@ Option (b) is correct. The field has no consumer; preserving it for "human-reada
 
 ### TASK-005: Remove `parallel_batches` from `_decompose_plan` (manifest + return), update live rosters + fixtures + tests, add back-compat parse test
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`

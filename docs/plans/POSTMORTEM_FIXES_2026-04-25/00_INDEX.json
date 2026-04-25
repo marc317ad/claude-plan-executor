@@ -7,16 +7,6 @@
   "base_branch": "main",
   "depends_on_plans": [],
   "supersedes": [],
-  "parallel_batches": [
-    ["001", "010"],
-    ["002", "003"],
-    ["006"],
-    ["004"],
-    ["005"],
-    ["007"],
-    ["008"],
-    ["009"]
-  ],
   "_batching_rationale": "TASK-001 (test-only) and TASK-010 (doc-only) are fully independent. TASK-002 (plan-implementer.md + dispatch-templates.md) and TASK-003 (plan_ops.py + SKILL.md) touch disjoint file sets. TASK-006 follows 002 because both edit plan-implementer.md + dispatch-templates.md + test_plan_ops.py. TASK-004 follows 003 because both edit plan_ops.py + test_plan_ops.py. TASK-005 follows 004 because both edit plan_ops.py + SKILL.md + test_plan_ops.py. TASK-007 follows 002+006 because all three edit dispatch-templates.md and 007 also edits plan_ops.py (must serialize after 005). TASK-008 follows 001+005+007. TASK-009 follows 008 (plan_codex_dispatch.py + plan_ops.py overlap).",
   "chunks": [
     {
