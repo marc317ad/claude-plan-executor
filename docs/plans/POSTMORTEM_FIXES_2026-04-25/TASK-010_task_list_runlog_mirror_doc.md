@@ -30,7 +30,7 @@ Capture the lesson from the post-mortem's Issue 10 (the harness `TaskList` drift
 
 ### TASK-010: Document run-log as source of truth
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (edit — new subsection + end-of-run summary documentation update)

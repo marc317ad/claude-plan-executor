@@ -111,7 +111,7 @@
       "file": "TASK-010_task_list_runlog_mirror_doc.md",
       "priority": "low",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Post-mortem Issue 10 \u2014 harness TaskList drifted from _run_log.jsonl; doc-only fix to clarify that run-log is source of truth."
     }

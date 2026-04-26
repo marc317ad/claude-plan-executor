@@ -150,6 +150,13 @@ Mutual exclusions: `--codex-only` + `--claude-only` → error. `--codex-review-b
 
 ## Pre-flight (Phase 0)
 
+**Run-state source of truth.** `_run_log.jsonl` is authoritative for run state.
+The harness `TaskList` is only a visibility mirror for the operator.
+On phase transitions, the orchestrator MUST mirror the run-log state into `TaskList`
+so visible progress follows the actual run.
+If that mirror update fails or drifts, keep progressing from `_run_log.jsonl`;
+mirror failure does not block the run.
+
 **Auto-promote single-file input to directory mode (TASK-001).** Before any other Phase 0 step, if `pathlib.Path(plan_path).is_file()` — i.e. the user passed a single markdown plan, not a decomposed directory — invoke the heuristic decomposer so every downstream phase can assume directory mode. This call runs **before** `$PYTHON` is bound (`$PYTHON` is pinned from the `preflight --json` output that runs later in this phase), so it uses the literal bootstrap interpreter `python3` on `$PATH`:
 
 ```bash
@@ -911,6 +918,7 @@ Release this task's file locks. Loop to Phase A.
 2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. `--rows-json` row schema: each row is an object with exactly these six required string keys — `task`, `agent`, `reviewer`, `verdict`, `commit`, `notes` (no extras; values must all be strings). Verdict cells should include any `[disagreement]` / `[remediation]` / `[narrow-remediation]` markers in prose. Missing or unknown keys exit 1 with the full allowed-field list in the error message. Use `--outcome paused` when exiting via the D.2a.5 OR D.2a.6 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting. Partition rows by `plan_file` (same basenames as step 1) and call `finalize-execution-log --plan-file <plans_dir>/<child-basename> --rows-json '<child-scoped rows>'` once per distinct child. No run-level aggregate table — design boundary.
 3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5 or D.2a.6). Include `plan_file: "<dir-basename>"` in the event's `fields` (same value as the `run_start` pair).
 4. Print summary: counts `{done, failed}`, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
+   - `TaskList mirror state: {synced | drifted}`. Compare run-log `commit_done` / `task_failed` counts against the `TaskList` completed-task counts; any mismatch is `drifted` and includes the count delta.
 
    **`claude_only=true` loud banner contract (TASK-003).** When the run had `claude_only=true` for any reason (operator opt-in `--claude-only` OR preflight `codex_available=false` — the OR-binding from §Pre-flight (Phase 0)), the final run summary MUST carry a loud banner: *"Claude-only mode: Phase 1.5 plan review and Phase D cross-review ran via the `code-reviewer`/`plan-reviewer` Agents (Sonnet); no Codex shell-out fired this run."* Include the discriminator `(--claude-only flag)` or `(codex_available=false)` so the operator can tell which input flipped the binding. The banner is parallel to the `--skip-plan-review` and `--skip-cross-review` summary banners and complements the `run_start.fields.claude_only: <bool>` field — both surface the same routing decision in different audit channels.
 5. Housekeeping commit (skip if `done == 0 AND failed == 0`):
