@@ -44,7 +44,7 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 
 ### TASK-006: Phase C empty-diff probe + non-empty-diff pause
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**

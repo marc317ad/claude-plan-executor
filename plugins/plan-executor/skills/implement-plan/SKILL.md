@@ -684,21 +684,35 @@ The `[sandbox-divergence]` tag is informational. It does NOT relax the reviewer-
 
 End-of-run summary: `plan_ops.py run-summary --section sandbox-divergences --run-id <id>` emits the "Sandbox divergences" subsection listing every task that hit the auto-validate branch under the run id.
 
-For each non-success task:
+For each non-success task, the orchestrator FIRST runs the empty-diff probe to decide whether the failure left preservable work in the working tree. The probe is the gate between auto-revert (cheap and correct when the diff is empty) and halt-with-pause (mandatory when the diff is non-empty — see **Completed-Work Preservation Principle** in §Rules).
+
+```bash
+git diff HEAD --quiet -- <touched files>
+```
+
+`<touched files>` is the union of the implementer-report `files_changed` and the task's declared `Files:` list. Exit code `0` → empty diff (no preservable work); exit code `1` → non-empty diff (preservable work present).
+
+**Empty-diff branch (`git diff HEAD --quiet` exits 0).** Nothing to lose; auto fail-task is correct.
 
 ```bash
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
   --plan-file <abs> --task-id NNN --run-id <id> \
   --files <touched files> --stage implement --reason "<short>" \
-  --authorization-source phase-c-impl-failure \
+  --authorization-source phase-c-empty-diff \
   [--reversion-guidance "<from implementer report>"] --json
 ```
 
 `<abs>` here is the current task's child file resolved per the rule in §Per-task `<plan-file>` resolution.
 
-This: (1) `git restore <files>` (Claude-side recovery; Codex-side restore was done inside the wrapper), (2) plan-status flip to `failed`, (3) run-log `failed {stage=implement, ...}` append.
+This: (1) `git restore <files>` (Claude-side recovery; Codex-side restore was done inside the wrapper — typically a no-op on the empty-diff branch but kept for idempotency), (2) plan-status flip to `failed`, (3) run-log `failed {stage=implement, ...}` append.
 
-Then cascade `blocked` onto the failed task's transitive dependents (source-of-truth invariant: the plan file, not just the run-log):
+**Non-empty-diff branch (`git diff HEAD --quiet` exits 1).** Preservable work is in the working tree. The orchestrator MUST NOT call `fail-task` on the implicit `phase-c-empty-diff` authorization (which would silently destroy the diff). Routing is decided by the pinned `$UNATTENDED_REVERT_POLICY` (set at preflight per TASK-003):
+
+- **`$UNATTENDED_REVERT_POLICY = pause`** (the interactive default) → invoke the **Awaiting-user pause** subroutine (see §Awaiting-user pause). Per the call-site table, this Phase C site uses `stage:"post_implement_failure"` and the payload fields `implementer_outcome`, `diagnostics`, `reversion_guidance`, `nonempty_diff_files[]`. Halt-with-pause: do NOT call `fail-task`; do NOT `git restore`; do NOT mutate plan-status to `failed`. Return control to the user with the diff still in the working tree.
+- **`$UNATTENDED_REVERT_POLICY = fail-fast`** → emit a structured failure record and halt the run instead of pausing. Operationally this is the same `fail-task` invocation as the empty-diff branch (`--authorization-source phase-c-empty-diff`, since the operator pinned fail-fast they have explicitly authorized destruction in the unattended environment), then halt the run with `run_end outcome=failed reason=phase_c_unattended_fail_fast`. The diff is destroyed; the structured failure record names the policy pin so the run history makes the decision auditable.
+- **`$UNATTENDED_REVERT_POLICY = preserve-only`** → salvage-then-fail. Stash/log the diff to a salvage ref (per the salvage helper introduced alongside TASK-003), then run the same `fail-task --authorization-source phase-c-empty-diff` invocation as the empty-diff branch. The salvage ref preserves the diff for later inspection while the working tree returns to a clean state for downstream batches.
+
+After fail-task lands (empty-diff branch OR fail-fast / preserve-only sub-branches of the non-empty-diff branch — but NOT the pause sub-branch, which exits via the awaiting-user subroutine), cascade `blocked` onto the failed task's transitive dependents (source-of-truth invariant: the plan file, not just the run-log):
 
 ```bash
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
@@ -709,7 +723,7 @@ Pass the **failed task's** child file as `--plan-file` (same resolution rule). `
 
 Release this task's file locks. Remove the task from `ready`. Peer tasks in the same and later batches proceed independently. Do NOT proceed to Phase D for this task.
 
-See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
+See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn. The non-empty-diff `pause` sub-branch is the canonical Phase C application of that principle; `fail-fast` and `preserve-only` are operator-pinned overrides authorized only in unattended contexts.
 
 ### Phase D — Review + commit (serial per task, analyst batch order)
 

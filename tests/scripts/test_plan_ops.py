@@ -3207,7 +3207,7 @@ class TestFailTask:
             "--files", "src/foo.py",
             "--stage", "implement",
             "--reason", "malformed_report",
-            "--authorization-source", "phase-c-impl-failure",
+            "--authorization-source", "phase-c-empty-diff",
             "--json",
             cwd=tmp_git_repo,
         )
@@ -3247,9 +3247,11 @@ class TestFailTask:
         assert "authorization-source-required" in codes
         # Helpful message enumerates the allowed values.
         msg = body["errors"][0]["message"]
-        assert "phase-c-impl-failure" in msg
+        assert "phase-c-empty-diff" in msg
         assert "phase-d4-review-failure" in msg
         assert "user-instruction" in msg
+        # TASK-006: the placeholder enum value from TASK-001 is GONE.
+        assert "phase-c-impl-failure" not in msg
 
     def test_fail_task_authorization_source_round_trips_in_event(
         self, tmp_git_repo: Path
@@ -8367,7 +8369,7 @@ class TestRosterAutoUpdate:
             "--files", "src/foo.py",
             "--stage", "implement",
             "--reason", "malformed_report",
-            "--authorization-source", "phase-c-impl-failure",
+            "--authorization-source", "phase-c-empty-diff",
             "--json",
             cwd=tmp_git_repo,
         )
@@ -11287,8 +11289,11 @@ class TestD4RescueAuthorizationSource:
 
     def test_allowed_authorization_sources_includes_d4_rescue_failed(self) -> None:
         assert "phase-d4-rescue-failed" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
-        # Coexists with the TASK-001 initial set.
-        assert "phase-c-impl-failure" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+        # TASK-006: the TASK-001 placeholder `phase-c-impl-failure` was
+        # REMOVED and replaced by `phase-c-empty-diff`. Coexists with the
+        # rest of the post-TASK-001 set.
+        assert "phase-c-empty-diff" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+        assert "phase-c-impl-failure" not in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
         assert "phase-d4-review-failure" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
         assert "user-instruction" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
 
@@ -11312,6 +11317,89 @@ class TestD4RescueAuthorizationSource:
         assert cp.returncode == 0, cp.stderr
         body = _parse_json(cp)
         assert body["status_updated"] is True
+
+
+class TestPhaseCEmptyDiffAuthorizationSource:
+    """TASK-006 — Phase C empty-diff probe + non-empty-diff pause.
+
+    The TASK-001 placeholder enum value `phase-c-impl-failure` is REMOVED
+    and replaced by the more precise `phase-c-empty-diff`. After TASK-006
+    the empty-diff branch is the only authorized Phase C destruction path;
+    the non-empty-diff branch routes through the awaiting-user pause
+    subroutine (or operator-pinned fail-fast / preserve-only overrides).
+    """
+
+    def test_allowed_authorization_sources_includes_phase_c_empty_diff(self) -> None:
+        assert (
+            "phase-c-empty-diff" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+        )
+
+    def test_allowed_authorization_sources_excludes_legacy_phase_c_impl_failure(
+        self,
+    ) -> None:
+        """The TASK-001 placeholder value is no longer accepted."""
+        assert (
+            "phase-c-impl-failure"
+            not in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+        )
+
+    def test_fail_task_accepts_phase_c_empty_diff(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("BROKEN\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "fail-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--stage", "implement",
+            "--reason", "empty-diff phase-c auto-fail",
+            "--authorization-source", "phase-c-empty-diff",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["status_updated"] is True
+        # Round-trips into the run log under the canonical key.
+        run_log = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        events = [
+            json.loads(line)
+            for line in run_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        failed_events = [e for e in events if e.get("event") == "failed"]
+        assert failed_events, f"no failed event in run log: {events!r}"
+        assert (
+            failed_events[-1].get("authorization_source") == "phase-c-empty-diff"
+        )
+
+    def test_fail_task_rejects_legacy_phase_c_impl_failure(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """The placeholder value from TASK-001 is no longer in argparse's
+        ``choices``; the invocation MUST exit non-zero (argparse rejects
+        the unknown value before ``cmd_fail_task`` runs).
+        """
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "fail-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--stage", "implement",
+            "--reason", "should-be-rejected",
+            "--authorization-source", "phase-c-impl-failure",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode != 0
+        # argparse renders the rejection on stderr; stdout is empty (no
+        # structured envelope is emitted on argparse-level errors).
+        assert "phase-c-impl-failure" in cp.stderr or "invalid choice" in cp.stderr
 
 
 class TestCommitTaskD4RescueTag:

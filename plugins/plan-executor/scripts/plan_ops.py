@@ -132,9 +132,17 @@ ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 # authorized paths are introduced. Adding a value here is a load-bearing
 # audit decision: it sanctions a new place where completed work may be
 # destroyed. Each value authorizes:
-#   - "phase-c-impl-failure": Phase C implementer-failure path (the
-#     orchestrator detected an implementer outcome != success and is
-#     reverting touched files before halting/blocking dependents).
+#   - "phase-c-empty-diff": Phase C implementer-failure path, EMPTY-DIFF
+#     branch only (TASK-006). The orchestrator detected an implementer
+#     outcome != success AND `git diff HEAD --quiet` reported no working-
+#     tree changes. With nothing to lose, auto fail-task is the right move.
+#     The non-empty-diff branch is NOT authorized here — it routes through
+#     the awaiting-user pause subroutine (or, under
+#     `--unattended-revert-policy fail-fast`/`preserve-only`, through the
+#     fail-fast/salvage-then-fail variants documented in SKILL.md Phase C).
+#     The TASK-001 placeholder "phase-c-impl-failure" was REMOVED here
+#     because after TASK-006 the empty-diff branch is the only authorized
+#     destruction path within Phase C.
 #   - "phase-d4-review-failure": Phase D.4 review-stage failure path
 #     (reviewer verdict requires a halt; the implementation succeeded but
 #     review found the work unshippable).
@@ -148,7 +156,7 @@ ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 #     run explicitly instructed the orchestrator to revert (the only
 #     sanctioned post-pause revert path).
 ALLOWED_FAIL_AUTHORIZATION_SOURCES = {
-    "phase-c-impl-failure",
+    "phase-c-empty-diff",
     "phase-d4-review-failure",
     "phase-d4-rescue-failed",
     "user-instruction",
