@@ -21,14 +21,17 @@
       "file": "PLAN_SKILL_bash_dispatch_migration.md",
       "priority": "critical",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
       "task_id": "003",
       "file": "PLAN_SKILL_bash_dispatch_migration.md",
       "priority": "high",
-      "depends_on": ["001", "002"],
+      "depends_on": [
+        "001",
+        "002"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -36,7 +39,10 @@
       "task_id": "004",
       "file": "PLAN_SKILL_bash_dispatch_migration.md",
       "priority": "high",
-      "depends_on": ["001", "002"],
+      "depends_on": [
+        "001",
+        "002"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -44,7 +50,10 @@
       "task_id": "005",
       "file": "PLAN_SKILL_bash_dispatch_migration.md",
       "priority": "high",
-      "depends_on": ["001", "002"],
+      "depends_on": [
+        "001",
+        "002"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -52,7 +61,11 @@
       "task_id": "006",
       "file": "PLAN_SKILL_bash_dispatch_migration.md",
       "priority": "medium",
-      "depends_on": ["003", "004", "005"],
+      "depends_on": [
+        "003",
+        "004",
+        "005"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -60,7 +73,9 @@
       "task_id": "007",
       "file": "PLAN_SKILL_bash_dispatch_migration.md",
       "priority": "high",
-      "depends_on": ["006"],
+      "depends_on": [
+        "006"
+      ],
       "status": "Pending",
       "superseded_by": []
     }

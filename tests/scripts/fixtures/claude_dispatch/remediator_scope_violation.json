@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "status": "scope_violation",
+  "status_reason": "delta-bounded cleanup detected writes outside declared files_changed: ['foo/unauthorized.py']",
+  "agent": "plan-remediator",
+  "model": "claude-opus-4-7",
+  "session_id": "stub-session-remediator-scope",
+  "duration_ms": 3210,
+  "cost_usd": 0.0080,
+  "tokens": {
+    "input": 2800,
+    "output": 410,
+    "cache_read": 0,
+    "cache_creation": 0
+  },
+  "result": {
+    "outcome": "scope-violation",
+    "files_changed": ["foo/bar.py", "foo/unauthorized.py"],
+    "report": {
+      "diff_summary": ["Attempted fix touched a file outside the declared scope."],
+      "test_command": "none",
+      "test_outcome": "not-run",
+      "acceptance_criteria_check": ["[!] AC1 — scope violation detected"],
+      "plan_adaptations": [],
+      "concerns_for_reviewer": ["Out-of-scope write to foo/unauthorized.py was reverted by wrapper."]
+    }
+  },
+  "result_raw_truncated": null,
+  "stderr_tail": null,
+  "permission_denials": [],
+  "scope": {
+    "declared_files_changed": ["foo/bar.py"],
+    "observed_delta_tracked": ["foo/bar.py", "foo/unauthorized.py"],
+    "observed_delta_untracked": [],
+    "scope_violation_detected": true,
+    "scope_misreport_detected": false
+  },
+  "trace": {
+    "run_id": "stub-run-remediator-scope",
+    "span_id": "stub-span-remediator-scope",
+    "parent_span_id": null,
+    "depth": 0,
+    "call_chain": ["orchestrator", "plan-remediator"],
+    "started_at": "2026-04-26T00:00:00Z",
+    "ended_at": "2026-04-26T00:00:03Z"
+  },
+  "error": {
+    "code": "scope_violation",
+    "message": "writes outside declared files_changed: ['foo/unauthorized.py']",
+    "retriable": false
+  }
+}

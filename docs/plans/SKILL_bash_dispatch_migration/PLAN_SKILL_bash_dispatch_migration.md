@@ -1,7 +1,7 @@
 # Plan: Migrate SKILL.md Claude-subagent dispatches to `plan_claude_dispatch.py`
 
 **Created:** 2026-04-20
-**Status:** draft — pending Codex review
+**Status:** in-progress
 **Base branch:** main
 **Related:**
 - `plugins/plan-executor/skills/implement-plan/SKILL.md`
@@ -99,7 +99,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 
 ### TASK-002: Stubbed wrapper harness + envelope fixtures
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Files:**
   - `tests/scripts/stubs/plan_claude_dispatch_stub.py` (create) — env-var-configurable stub that records CLI args to a tempfile and returns a fixture envelope.

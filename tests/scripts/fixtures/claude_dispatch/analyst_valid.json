@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "status": "ok",
+  "status_reason": null,
+  "agent": "plan-analyst",
+  "model": "claude-opus-4-7",
+  "session_id": "stub-session-analyst-valid",
+  "duration_ms": 1234,
+  "cost_usd": 0.0042,
+  "tokens": {
+    "input": 1500,
+    "output": 320,
+    "cache_read": 0,
+    "cache_creation": 0
+  },
+  "result": {
+    "outcome": "valid",
+    "issues": [],
+    "summary": "Plan analyzed; no blocking issues found."
+  },
+  "result_raw_truncated": null,
+  "stderr_tail": null,
+  "permission_denials": [],
+  "scope": {
+    "declared_files_changed": [],
+    "observed_delta_tracked": [],
+    "observed_delta_untracked": [],
+    "scope_violation_detected": false,
+    "scope_misreport_detected": false
+  },
+  "trace": {
+    "run_id": "stub-run-analyst-valid",
+    "span_id": "stub-span-analyst-valid",
+    "parent_span_id": null,
+    "depth": 0,
+    "call_chain": ["orchestrator", "plan-analyst"],
+    "started_at": "2026-04-26T00:00:00Z",
+    "ended_at": "2026-04-26T00:00:01Z"
+  },
+  "error": null
+}
