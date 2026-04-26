@@ -39,7 +39,7 @@ After TASK-002 and TASK-003 land, the `compute-schedule --stdin` recompute in `S
 
 ### TASK-004: Delete `compute-schedule --stdin` from SKILL.md Phase 1 step 3 (default + filter branch) + add a regression fence test + update related prose in `dispatch-templates.md` and `plan_ops_cheatsheet.md`
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`

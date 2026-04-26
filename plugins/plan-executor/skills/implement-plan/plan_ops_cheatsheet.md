@@ -28,6 +28,7 @@ echo "$ANALYST_JSON" | $PYTHON plan_ops.py parse-schedule --stdin --strict
 ```
 
 ### compute-schedule — recompute disjoint batches from `tasks[]`
+Standalone helper for direct callers; not part of `/implement-plan` Phase 1 anymore.
 ```
 echo "$TASKS_JSON" | $PYTHON plan_ops.py compute-schedule --stdin --strict
 ```

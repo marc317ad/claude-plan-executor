@@ -48,7 +48,7 @@
         "002",
         "003"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Deletes the no-op compute-schedule --stdin recompute from SKILL.md Phase 1 step 3 (default + --task-ids filter branches), updates dispatch-templates.md and plan_ops_cheatsheet.md, and adds a fence test that fails if the recompute is ever re-introduced. Depends on TASK-002 + TASK-003 because the deletion is only safe once both batchers route through the same helper (idempotence is provable)."
     },
