@@ -78,6 +78,16 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 
 ---
 
+### 8. prohibit_silent_revert (9 tasks)
+- Status: **HALTED** at Phase 1.5.5 second-pass plan-review (binding) → `plan_review_failed`
+- Branch: `plan/prohibit-silent-revert` (HEAD `2a3bbad` — WIP commit preserves plan-author edits)
+- Run id: `20260426T020217`
+- Path: First Codex plan-review `needs-replan` w/ 2 findings. Triage `needs-rework` (both load-bearing). Plan-author dispatched per finding (TASK-004 Files block + TASK-007 unattended-fail-fast enum ownership) — both author dispatches succeeded. Second Codex plan-review (binding) returned `needs-replan` on a NEW finding: TASK-005 acceptance criterion mandates argparse XOR enforcement but does not enumerate the allowed/rejected flag combinations for `--d4-rescue-tag` vs `--remediation-tag` / `--narrow-remediation-tag`.
+- Per protocol the second verdict is binding (no second triage); halted with run_end reason=plan_review_failed; lock released. Author edits + schedule sidecar preserved on the WIP commit.
+- **User next step:** edit TASK-005's acceptance criteria to enumerate the XOR matrix for `--d4-rescue-tag` interactions, then re-invoke `/implement-plan docs/plans/prohibit_silent_revert/prohibit_silent_revert`. Branch can be reset / replayed cleanly — no commits landed against source code.
+
+---
+
 ### 7. SKILL_bash_dispatch_migration (7 tasks)
 - Status: **HALTED — author pass required** (schema-valid pre-checked, same pattern as PHASE_D)
 - Same root cause as PHASE_D_STATE_MACHINE: `## 1. Goal` / `## 2. Scope` / `## 5. Verification` numbered headings; schema-valid wants bare `## Goal` / `## Context` (or `## Scoped Context`) / `## Verification`. "Scope" → "Context" or "Scoped Context" needed.
