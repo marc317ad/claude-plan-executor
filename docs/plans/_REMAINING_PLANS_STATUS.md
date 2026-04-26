@@ -78,6 +78,21 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 
 ---
 
+### 5. POSTMORTEM_FIXES_2026-04-25 (10 tasks)
+- Status: **HALTED — author pass required** (cannot dispatch as-authored)
+- Run id: `20260426T015555` → `failed` reason `analyst_invalid` (build-tasks `unresolvable-dep`)
+- Root cause: body `Dependencies:` line in TASK-008 reads `["001"]` (with literal quotes — parser surfaces dep_id as the string `"001"` rather than `001`). Beyond the parse error, **body deps disagree with roster deps across TASK-004..009**:
+  - TASK-004 body `[]` vs roster `["003"]`
+  - TASK-005 body `[]` vs roster `["004"]`
+  - TASK-006 body `[]` vs roster `["002"]`
+  - TASK-007 body `[]` vs roster `["002","005","006"]`
+  - TASK-008 body `["001"]` vs roster `["001","005","007"]`
+  - TASK-009 body `[]` vs roster `["008"]`
+- Per SKILL.md §Rules ("Plan-file body edits ... Dependencies ... MUST NOT be altered; the orchestrator is not a plan author"), the orchestrator may not auto-fix this. **User: please align each child's body `**Dependencies:**` line with the corresponding `00_INDEX.json` `chunks[].depends_on`** and re-invoke `/implement-plan`. The trust-roster fallback only fires when body deps parse to the empty list AND roster deps are non-empty — TASK-008's `["001"]` is non-empty so the fallback does not engage.
+- Branch `plan/postmortem-fixes` was deleted (no commits landed)
+
+---
+
 ### 4. CLAUDE_ONLY_FIX_2026-04-24 (3 tasks)
 - Status: **MERGED to main**; branch `plan/claude-only-fix` retained for history
 - Branch: `plan/claude-only-fix` merged via `--no-ff`
