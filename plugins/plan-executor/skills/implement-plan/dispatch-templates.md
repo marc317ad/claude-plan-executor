@@ -461,6 +461,8 @@ Wrapper returns `parsed.verdict ∈ {clean, minor-findings, needs-rework}` per `
 
 ## Phase D-Claude — code-reviewer on Codex work
 
+**TASK-003 reuse callout.** This is now the **single Claude-cross-review template**, used for both (a) Codex-impl→Claude-review (the original purpose, retained verbatim) AND (b) Claude-impl→Claude-review under `claude_only=true` (new TASK-003 routing — see SKILL.md §Phase D.1's route-switch). The template body is reused as-is on both branches; the orchestrator picks the dispatch via `claude_only`. The verdict vocabulary `{ship, ship-with-fixes, needs-rework}` is preserved on both branches; Codex-side `{clean, minor-findings, needs-rework}` is NOT synthesized when this template is used as the `claude_only=true` cross-review path. No new agent file, no new template — `code-reviewer` (Sonnet) is the sole reviewer for both directions on the Claude path.
+
 Agent dispatch, `model: "sonnet"` (explicit v1 choice — see Open risks 3):
 
 > Scope: `<comma-separated files from Codex wrapper's files_changed>`

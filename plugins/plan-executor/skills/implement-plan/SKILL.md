@@ -690,7 +690,20 @@ Otherwise, per successful task:
 
 #### D.1 — Dispatch the opposite-side reviewer
 
-*Claude-implemented → Codex review:*
+**Route-switch (TASK-003): pick the reviewer mechanism by `claude_only`.** Mirrors §Phase 1.5's TASK-002 route-switch — same shape, different seam.
+
+- **`claude_only=true`** → Phase D-Claude path: regardless of which side implemented, dispatch the `code-reviewer` Agent (`subagent_type: "code-reviewer", model: "sonnet"`) using the existing **Phase D-Claude** template from `dispatch-templates.md` (single Claude-cross-review template, used for both Codex-impl→Claude review AND Claude-impl→Claude review under `claude_only=true`). Verdict vocabulary is `{ship, ship-with-fixes, needs-rework}` (matching the existing Codex-impl→Claude review path); the Codex-side `{clean, minor-findings, needs-rework}` vocab is NOT synthesized on this branch. Run-log events on this path carry `reviewer:"claude"`.
+- **`claude_only=false`** → existing wrapper / cross-side path below: Claude-implemented work routes to the Codex wrapper review; Codex-implemented work routes to the Claude `code-reviewer` Agent. Run-log events carry `reviewer:"codex"` or `reviewer:"claude"` respectively.
+
+Both branches feed the **same** `review_done` event shape `{task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}` — the only differences are the dispatch invocation, the verdict vocabulary parsed, and the `reviewer` field. The verdict-routing table at §D.2 below consumes the parsed verdict; routing under `claude_only=true` is documented in §D.2a (D.5 / D.2a.5 / D.2a.6 ladder collapses) and §D.2b (role-swap retry uses `code-reviewer` for the re-review).
+
+*Phase D-Claude path (`claude_only=true`):*
+
+`Agent(subagent_type: "code-reviewer", model: "sonnet", prompt: render(templates.PhaseD_Claude, ...))`.
+
+Parse verdict `∈ {ship, ship-with-fixes, needs-rework}`. Wrap with `review_start {reviewer:"claude", task_id, ...}` before and `review_done {reviewer:"claude", task_id, verdict, findings_count, ...}` after.
+
+*Phase D-Codex path (`claude_only=false`, Claude-implemented → Codex review):*
 
 Wrapper computes the timeout default from `len(files)` per the review formula in §Bash-call idioms; pass `--timeout N` to override.
 
@@ -702,7 +715,7 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" review \
 
 Parse `parsed.verdict ∈ {clean, minor-findings, needs-rework}`.
 
-*Codex-implemented → Claude review:*
+*Phase D-Claude path (`claude_only=false`, Codex-implemented → Claude review):*
 
 `Agent(subagent_type: "code-reviewer", model: "sonnet", prompt: render(templates.PhaseD_Claude, ...))`.
 
@@ -712,7 +725,7 @@ Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count
 
 When findings are non-empty, also pass `--findings-json "$(<json-array>)"` to the `review_done` `log-event` call so the line carries the full Codex payload verbatim under key `findings`. The audit trail depends on this — count-only `review_done` entries lose the finding text within ~20s.
 
-**Wrapper failure outcomes (Codex side).** Wrapper timeout / parse_error / failure outcomes from `subcommand=review` (Codex review path only — `cmd_review` emits these envelopes today) log `review_skipped {task_id, reviewer:"codex", reason}` where `reason` maps as: `timeout` → `"codex_review_timeout"`, `parse_error` → `"codex_review_parse_error"`, `failure` → `"codex_review_failure"`. Then proceed straight to D.3 commit with `--reviewer none --reviewer-verdict ""` (the existing `commit-task` form documented at §`commit-task` example (e); do not duplicate the bash). The commit body's reviewer line records "review skipped (reason)" preserving the audit trail. This mirrors the parallel Phase 1.5 rule at line 450 — wrapper-side errors degrade to a documented skip rather than blocking execution. The Codex-implemented → Claude-review direction's `Agent`-side failures are NOT covered by this rule; that path falls under the existing `Agent` retry semantics and the D.5 ladder for substantive disagreement.
+**Wrapper failure outcomes (Codex side, `claude_only=false` only).** Wrapper timeout / parse_error / failure outcomes from `subcommand=review` (Codex review path only — `cmd_review` emits these envelopes today) log `review_skipped {task_id, reviewer:"codex", reason}` where `reason` maps as: `timeout` → `"codex_review_timeout"`, `parse_error` → `"codex_review_parse_error"`, `failure` → `"codex_review_failure"`. Then proceed straight to D.3 commit with `--reviewer none --reviewer-verdict ""` (the existing `commit-task` form documented at §`commit-task` example (e); do not duplicate the bash). The commit body's reviewer line records "review skipped (reason)" preserving the audit trail. This mirrors the parallel Phase 1.5 rule at line 450 — wrapper-side errors degrade to a documented skip rather than blocking execution. The Codex-implemented → Claude-review direction's `Agent`-side failures are NOT covered by this rule; that path falls under the existing `Agent` retry semantics and the D.5 ladder for substantive disagreement. Under `claude_only=true` this Codex-side wrapper-failure clause does not apply (no Codex shell-out fires); Agent-side dispatch failures degrade through the existing `Agent` retry semantics.
 
 #### D.2 — Route by verdict
 
@@ -720,10 +733,14 @@ When findings are non-empty, also pass `--findings-json "$(<json-array>)"` to th
 |---|---|---|---|
 | Claude | Codex | → D.3 commit | D.2a escalate (unless `--codex-review-binding`) |
 | Codex | Claude | → D.3 commit | D.2b role-swap retry |
+| Claude | Claude (`claude_only=true`) | → D.3 commit | → D.4 fail-task (D.5 / D.2a.5 / D.2a.6 ladder collapses; see §D.2a) |
+| Codex | Claude (`claude_only=true`) | → D.3 commit | D.2b role-swap retry — re-review uses `code-reviewer` Agent, NOT the Codex wrapper (see §D.2b) |
 
 Minor findings in either direction → commit; record in run summary AND commit body tail. Never silently dropped.
 
 #### D.2a — Escalation (§8.4, Codex critical on Claude work)
+
+**`claude_only=true` ladder collapse (TASK-003).** Under `claude_only=true`, D.2a (D.5 escalation), D.2a.5 (bounded remediation), and D.2a.6 (narrow-remediation) are **unreachable** for the Claude-impl→Claude-review path: there is no Codex verdict to adjudicate, so the third-opinion ladder has nothing to split. A `code-reviewer` `needs-rework` verdict on a Claude-implemented task under `claude_only=true` goes **straight to D.4 fail-task** — no D.5 third-opinion dispatch, no D.2a.5 bounded remediation, no D.2a.6 narrow remediation, no `--codex-review-binding` interaction. The Codex-impl→Claude-review path under `claude_only=false` (which still hits this section unchanged) is unaffected; the role-swap retry path (§D.2b) is documented separately. The §Rules section carries the corresponding hard rule.
 
 1. Log `disagreement {task_id, codex_findings[]}`. Pass the Codex findings verbatim via `--findings-json "$(<json-array>)"` so the `disagreement` line carries the full payload under key `findings` — D.5 dispatch happens right after, and audit retrieval of "what did Codex flag that D.5 then adjudicated?" depends on this.
 2. Dispatch the Phase D.5 template: `Agent(subagent_type: "code-reviewer", model: "sonnet", prompt: render(templates.PhaseD5, codex_findings, task_block, wrapper_checks))`. `wrapper_checks` is taken from the Codex review envelope's `wrapper_checks` field; if the field is absent (failure/timeout/parse-error envelopes), pass `{"symbol_warnings": []}` as the default so the template's `<wrapper_checks_json>` placeholder always resolves to a valid JSON object.
@@ -735,7 +752,7 @@ Minor findings in either direction → commit; record in run summary AND commit 
 | `needs-rework` | `partial-agreement` | → **D.2a.6** narrow-remediation retry | D.5 split Codex's findings into load-bearing and dismissed buckets; retry is scoped to the load-bearing subset only. Dismissed indices are recorded in the commit trailer. |
 | `needs-rework` | `needs-rework` | → **D.2a.5** bounded remediation retry | Two independent reviewers agree the finding is load-bearing; give the implementer one chance to fix it narrowly. |
 
-`--codex-review-binding` skips D.2a entirely — binding mode means `needs-rework` → immediate `fail-task` with NO D.5, NO D.2a.5, and NO D.2a.6.
+`--codex-review-binding` skips D.2a entirely — binding mode means `needs-rework` → immediate `fail-task` with NO D.5, NO D.2a.5, and NO D.2a.6. (This flag is mutually exclusive with `--claude-only` per TASK-001's mutex prose; under `claude_only=true` the ladder collapse documented above subsumes the binding mode's effect.)
 
 #### D.2a.5 — Bounded remediation retry (default, non-binding path only)
 
@@ -816,6 +833,8 @@ Per §8.3 line 692: Claude re-implements, Codex re-reviews. One attempt.
 3. On retry success, re-run D.1 using the **Codex** reviewer. Binding — no further retry.
 4. Route re-review: `clean | minor-findings` → D.3. `needs-rework` → D.4.
 
+**`claude_only=true` re-review variant (TASK-003).** Under `claude_only=true`, the implementer side is rewritten to Claude in Phase 1 (per §Phase 1 Step 3's `--claude-only` / `codex_available=false` rewrite), so the Codex-implemented entry condition for this path is structurally unreachable. Documented defensively for contract clarity: were the path ever reachable, step 3's re-review would use the `code-reviewer` Agent (Phase D-Claude template) — NOT the Codex wrapper, because Codex shell-out is forbidden under `claude_only=true` (see §Rules). The retry implement step is unchanged (`plan-implementer` Agent, `model: "opus"`); only the re-review dispatch swaps. Step 4's verdict mapping uses the Claude verdict vocabulary on this branch: `ship | ship-with-fixes` → D.3; `needs-rework` → D.4. Re-review is binding — no further retry, no D.5 escalation.
+
 #### D.3 — Commit
 
 ```bash
@@ -892,6 +911,8 @@ Release this task's file locks. Loop to Phase A.
 2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. `--rows-json` row schema: each row is an object with exactly these six required string keys — `task`, `agent`, `reviewer`, `verdict`, `commit`, `notes` (no extras; values must all be strings). Verdict cells should include any `[disagreement]` / `[remediation]` / `[narrow-remediation]` markers in prose. Missing or unknown keys exit 1 with the full allowed-field list in the error message. Use `--outcome paused` when exiting via the D.2a.5 OR D.2a.6 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting. Partition rows by `plan_file` (same basenames as step 1) and call `finalize-execution-log --plan-file <plans_dir>/<child-basename> --rows-json '<child-scoped rows>'` once per distinct child. No run-level aggregate table — design boundary.
 3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5 or D.2a.6). Include `plan_file: "<dir-basename>"` in the event's `fields` (same value as the `run_start` pair).
 4. Print summary: counts `{done, failed}`, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
+
+   **`claude_only=true` loud banner contract (TASK-003).** When the run had `claude_only=true` for any reason (operator opt-in `--claude-only` OR preflight `codex_available=false` — the OR-binding from §Pre-flight (Phase 0)), the final run summary MUST carry a loud banner: *"Claude-only mode: Phase 1.5 plan review and Phase D cross-review ran via the `code-reviewer`/`plan-reviewer` Agents (Sonnet); no Codex shell-out fired this run."* Include the discriminator `(--claude-only flag)` or `(codex_available=false)` so the operator can tell which input flipped the binding. The banner is parallel to the `--skip-plan-review` and `--skip-cross-review` summary banners and complements the `run_start.fields.claude_only: <bool>` field — both surface the same routing decision in different audit channels.
 5. Housekeeping commit (skip if `done == 0 AND failed == 0`):
    ```bash
    git add <plan-file> <run_log>
@@ -917,6 +938,7 @@ Do NOT auto-push. Do NOT auto-PR.
 
 - **Never edit code files.** Orchestrator only touches plan files, `_run_log.jsonl`, `_run_lock.json`, and git staging. Implementer subagents / Codex wrapper own code changes.
 - **When `claude_only=true`, the orchestrator MUST NOT invoke `plan_codex_dispatch.py` for ANY subcommand (`plan-review`, `review`, `implement`). Codex shell-out under `claude_only` is a protocol violation.** The `claude_only` boolean is bound at Phase 0 preflight from `--claude-only OR (codex_available == false)`; see §Pre-flight (Phase 0) and §Parse arguments mutex prose.
+- **Under `claude_only=true`, the D.2a third-opinion ladder collapses.** D.5 escalation, D.2a.5 bounded remediation, and D.2a.6 narrow-remediation are unreachable — there is no Codex verdict to adjudicate. A `code-reviewer` `needs-rework` verdict on a Claude-implemented task under `claude_only=true` goes straight to D.4 fail-task. The D.2b role-swap retry path (Codex-implemented + Claude-reviewer `needs-rework`) is also structurally unreachable under `claude_only=true` because Phase 1's `--claude-only` / `codex_available=false` rewrite forces every task's implementer side to Claude; §D.2b documents the defensive re-review contract were the path ever reachable. See §Phase D.2a.
 - **Never commit a reviewer-flagged `needs-rework`.** Only clean / minor-findings / ship / ship-with-fixes commit automatically.
 - **Never `git add -A` or `git add .`.** Stage specific files only — `commit-task` already uses `--only`.
 - **Never retry a failed task inside the same run** beyond the one D.2b role-swap, the one D.2a.5 bounded remediation retry, the one D.2a.6 narrow-remediation retry, and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.

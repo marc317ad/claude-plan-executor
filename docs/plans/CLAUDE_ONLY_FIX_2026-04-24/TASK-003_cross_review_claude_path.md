@@ -24,7 +24,7 @@ This task is prose-only edits to `SKILL.md` and `dispatch-templates.md`. No new 
 
 ### TASK-003: Cross-review Claude path and D.2 ladder collapse
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md (edit)
