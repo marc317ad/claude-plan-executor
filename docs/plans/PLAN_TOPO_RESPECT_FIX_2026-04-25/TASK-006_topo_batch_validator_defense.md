@@ -47,7 +47,7 @@ Add a structural check in `_validate_schedule_dag` (`plan_ops.py:648-727`) that 
 
 ### TASK-006: Add `dependency-batch-violation` check to `_validate_schedule_dag` + tests
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`

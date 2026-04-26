@@ -739,7 +739,7 @@ def _validate_schedule_refs(tasks: list, batches: list) -> list[dict]:
 
 
 def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
-    """Cycle + orphan-dep detection on a schedule's task graph.
+    """Cycle + orphan-dep + batch-topo detection on a schedule's task graph.
 
     Returns errors[*]; never calls `_die` — callers decide whether to halt or
     merge into their own error list. Mirrors `_validate_schedule_refs`'s
@@ -749,6 +749,13 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
         does not normalize to a known task id. The orphan is reported, but
         the dep is still dropped before cycle analysis so a cycle among the
         remaining known tasks still surfaces.
+      * ``dependency-batch-violation`` — one per ``task.dependencies[j]`` edge
+        whose prereq is placed in the same batch as, or a later batch than,
+        the dependent. Defense-in-depth wire-format check that runs even if
+        the batchers regress; emitted in a single pass so the operator sees
+        every offending edge. Edges whose prereq or dependent is unbatched,
+        or whose prereq was already flagged as ``unknown-dependency`` in
+        this same call, are skipped to avoid double-reporting.
       * ``dependency-cycle`` — at most one entry; message names the residual
         cyclic task ids (sorted, canonical form).
     """
@@ -768,6 +775,7 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
     # task is reported individually and then dropped from the cycle graph so
     # the subsequent Kahn's pass is over the cleaned subgraph.
     dag_deps: dict[str, list[str]] = {}
+    orphan_dep_ids: set[str] = set()
     for i, t in enumerate(tasks):
         if not isinstance(t, dict):
             continue
@@ -790,11 +798,71 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
                         f"tasks[{i}].dependencies[{j}]={str(dep)!r} is not a known task id"
                     ),
                 })
+                orphan_dep_ids.add(dep_norm)
                 continue
             deps_norm.append(dep_norm)
         dag_deps[tid] = deps_norm
 
-    # 2. Kahn's algorithm — cycle detection over the cleaned dep graph.
+    # 2. Batch-topology check (TASK-006, defense-in-depth). Build a
+    # `batch_of` map and emit `dependency-batch-violation` for every edge
+    # whose prereq sits in the same batch as the dependent or in a later
+    # one. Walks every edge; never short-circuits — operators want the full
+    # picture. Skips edges whose prereq is an orphan (already flagged
+    # above) and edges where either endpoint is unbatched (handled by
+    # `_validate_schedule_refs` upstream). Cyclic edges in the same batch
+    # are surfaced here AND by the Kahn's pass below; both signals fire.
+    batch_of: dict[str, int] = {}
+    for b in batches:
+        if not isinstance(b, dict):
+            continue
+        idx_raw = b.get("index")
+        if not isinstance(idx_raw, int):
+            continue
+        refs = b.get("task_ids") or []
+        if not isinstance(refs, list):
+            continue
+        for r in refs:
+            tid_norm = _normalize_task_id(str(r))
+            if tid_norm is None:
+                continue
+            # First placement wins; duplicate placements are caught by
+            # `_validate_schedule_refs` (`unknown-batch-task-ref` /
+            # duplicate-batch-index) — don't second-guess it here.
+            batch_of.setdefault(tid_norm, idx_raw)
+
+    for i, t in enumerate(tasks):
+        if not isinstance(t, dict):
+            continue
+        raw = t.get("id")
+        if raw is None:
+            continue
+        dependent = _normalize_task_id(str(raw))
+        if not dependent:
+            continue
+        b_dep = batch_of.get(dependent)
+        if b_dep is None:
+            continue
+        for j, dep in enumerate(t.get("dependencies") or []):
+            prereq = _normalize_task_id(str(dep))
+            if prereq is None:
+                continue
+            if prereq in orphan_dep_ids:
+                continue
+            b_pre = batch_of.get(prereq)
+            if b_pre is None:
+                continue
+            if b_pre >= b_dep:
+                errors.append({
+                    "path": f"$.tasks[{i}].dependencies[{j}]",
+                    "code": "dependency-batch-violation",
+                    "message": (
+                        f"TASK-{dependent} (batch {b_dep}) depends on "
+                        f"TASK-{prereq} which is in batch {b_pre}; "
+                        f"dependent must run in a strictly later batch"
+                    ),
+                })
+
+    # 3. Kahn's algorithm — cycle detection over the cleaned dep graph.
     indeg: dict[str, int] = {tid: 0 for tid in dag_deps}
     for tid, deps in dag_deps.items():
         for d in deps:

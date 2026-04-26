@@ -69,7 +69,7 @@
         "002",
         "003"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Defense-in-depth. Adds dependency-batch-violation error to _validate_schedule_dag so any persisted schedule whose batches violate task deps fails parse-schedule / write-schedule / schedule-valid gate. Catches what Codex plan-review already catches at LLM level, but earlier and deterministically. Depends on TASK-002 + TASK-003 because tightening the validator before both batchers are fixed would fail the existing test fixtures."
     }

@@ -10897,6 +10897,182 @@ class TestTask019ScheduleDagHelper:
         assert "dependency-cycle" in codes
 
 
+class TestTask006_validate_schedule_dag_batch_topo:
+    """TASK-006. `_validate_schedule_dag` enforces batch topology.
+
+    Defense-in-depth: even if a batcher (TASK-002 / TASK-003) regresses
+    or a hand-crafted schedule sneaks past, the persisted schedule
+    cannot pass `parse-schedule` / `write-schedule` / `schedule-valid`
+    without batches[] respecting dependencies[]. The class name embeds
+    the `validate_schedule_dag` substring so the canonical test command
+    `pytest -k "validate_schedule_dag or schedule_valid"` selects every
+    test below alongside the existing TASK-019 helper coverage.
+    """
+
+    def test_dag_validator_rejects_dependent_in_same_batch_as_prereq(
+        self,
+    ) -> None:
+        tasks = [
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["001"]},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001", "002"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        assert len(viol) == 1, errors
+        e = viol[0]
+        assert e["path"] == "$.tasks[1].dependencies[0]", e
+        assert e["message"] == (
+            "TASK-002 (batch 1) depends on TASK-001 which is in batch 1; "
+            "dependent must run in a strictly later batch"
+        ), e["message"]
+
+    def test_dag_validator_rejects_dependent_in_earlier_batch_than_prereq(
+        self,
+    ) -> None:
+        tasks = [
+            {"id": "001", "files": [], "dependencies": ["002"]},
+            {"id": "002", "files": [], "dependencies": []},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001"], "file_locks": []},
+            {"index": 2, "task_ids": ["002"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        assert len(viol) == 1, errors
+        e = viol[0]
+        assert e["path"] == "$.tasks[0].dependencies[0]", e
+        assert e["message"] == (
+            "TASK-001 (batch 1) depends on TASK-002 which is in batch 2; "
+            "dependent must run in a strictly later batch"
+        ), e["message"]
+
+    def test_dag_validator_emits_all_violations_not_just_first(self) -> None:
+        # Three offending edges; the validator must surface all three in a
+        # single pass so the operator sees the full extent.
+        tasks = [
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["001"]},
+            {"id": "003", "files": [], "dependencies": ["001", "002"]},
+        ]
+        # All three crammed into one batch — every cross-task edge violates.
+        batches = [
+            {"index": 1, "task_ids": ["001", "002", "003"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        # 002→001, 003→001, 003→002.
+        assert len(viol) == 3, errors
+        paths = sorted(e["path"] for e in viol)
+        assert paths == [
+            "$.tasks[1].dependencies[0]",
+            "$.tasks[2].dependencies[0]",
+            "$.tasks[2].dependencies[1]",
+        ], paths
+
+    def test_dag_validator_accepts_topo_correct_batches(self) -> None:
+        # Negative control: a topo-correct schedule produces zero
+        # batch-violation entries (and no other dag errors either).
+        tasks = [
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["001"]},
+            {"id": "003", "files": [], "dependencies": ["001", "002"]},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001"], "file_locks": []},
+            {"index": 2, "task_ids": ["002"], "file_locks": []},
+            {"index": 3, "task_ids": ["003"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        assert errors == [], errors
+
+    def test_dag_validator_orphan_dep_takes_precedence_over_batch_violation(
+        self,
+    ) -> None:
+        # The orphan-dep pass already names the offending edge; emitting a
+        # second `dependency-batch-violation` for the same edge would be
+        # redundant noise, so the new check skips orphan prereqs.
+        tasks = [
+            # 002 declares a dep on the unknown task 999.
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["999"]},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001", "002"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        codes = [e["code"] for e in errors]
+        assert "unknown-dependency" in codes, errors
+        # Crucially, NO batch-violation for the same edge.
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        assert viol == [], viol
+
+    def test_dag_validator_unbatched_task_does_not_falsely_trigger(
+        self,
+    ) -> None:
+        # 002 is declared in tasks[] but absent from batches[]. The
+        # missing-from-batches problem is `_validate_schedule_refs`'s
+        # responsibility; this validator MUST NOT emit a phantom
+        # batch-violation. (Same applies if 001 — the prereq — were
+        # unbatched; both endpoints must be in `batch_of` for the
+        # violation check to fire.)
+        tasks = [
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["001"]},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001"], "file_locks": []},
+            # 002 is intentionally omitted from any batch.
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        assert viol == [], viol
+
+    def test_parse_schedule_strict_stdin_rejects_batch_topo_violation(
+        self,
+    ) -> None:
+        # CLI envelope test: a synthetic schedule whose batches violate
+        # deps must produce a non-zero exit + the new error code on
+        # `parse-schedule --strict --stdin`. Operators rely on this seam
+        # to fail fast before round-tripping through Codex/Claude review.
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "claude", "files": ["a.py"],
+                 "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b.py"],
+                 "dependencies": ["001"], "plan_file": "sample.md"},
+            ],
+            "batches": [
+                # Same-batch placement of dep + prereq — the bug we catch.
+                {"index": 1, "task_ids": ["001", "002"],
+                 "file_locks": ["a.py", "b.py"]},
+            ],
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT),
+             "parse-schedule", "--stdin", "--strict", "--json"],
+            input=json.dumps(payload),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 1, (cp.returncode, cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        codes = [e["code"] for e in (body.get("errors") or [])]
+        assert "dependency-batch-violation" in codes, body
+        msgs = [e["message"] for e in body["errors"]
+                if e["code"] == "dependency-batch-violation"]
+        assert any(
+            "TASK-002" in m and "TASK-001" in m
+            and "strictly later batch" in m
+            for m in msgs
+        ), msgs
+
+
 class TestTask019ReviewerFindingDisposition:
     """V6-V8. Optional `disposition` field on reviewer minor-findings."""
 
