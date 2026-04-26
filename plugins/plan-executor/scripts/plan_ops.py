@@ -1215,13 +1215,27 @@ def _validate_review_success_payload(
             ),
         })
     elif reviewer_verdict not in commit_allowed:
+        # POSTMORTEM_FIXES TASK-003: surface the canonical D.2a routing form
+        # inline so the next operator who hits this rejection knows which
+        # binding-reviewer call to make without chasing cross-references.
+        # The hint is BOTH structured (separate `hint` field on the JSON
+        # error envelope) AND human-readable (suffixed to the message
+        # string so the non-`--json` stderr path also carries it — `_emit`
+        # only formats top-level `error`, not nested error dicts' `hint`).
+        canonical_hint = (
+            "use --reviewer claude --reviewer-verdict ship-with-fixes "
+            "(or 'ship') for the D.5-driven binding-reviewer commit; "
+            "see SKILL.md §D.2a routing"
+        )
         errors.append({
             "path": "$.reviewer_verdict",
             "code": "uncommittable-reviewer-verdict",
             "message": (
                 f"commit-task cannot accept reviewer verdict {reviewer_verdict!r}; "
-                f"allowed commit verdicts for reviewer {reviewer!r}: {sorted(commit_allowed)}"
+                f"allowed commit verdicts for reviewer {reviewer!r}: {sorted(commit_allowed)}; "
+                f"hint: {canonical_hint}"
             ),
+            "hint": canonical_hint,
         })
 
     errors.extend(_validate_minor_findings_payload(
@@ -9701,7 +9715,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_d5)
 
-    p_commit = sub.add_parser("commit-task", help="Narrow commit + status flip + run log append")
+    p_commit = sub.add_parser(
+        "commit-task",
+        help="Narrow commit + status flip + run log append",
+        epilog=(
+            "see also: SKILL.md §D.2a for D.5-verdict-driven "
+            "binding-reviewer mapping"
+        ),
+    )
     p_commit.add_argument("--plan-file", required=True)
     p_commit.add_argument("--task-id", required=True)
     p_commit.add_argument("--run-id", required=True)

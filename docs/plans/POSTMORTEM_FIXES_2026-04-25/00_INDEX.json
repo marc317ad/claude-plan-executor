@@ -32,7 +32,7 @@
       "file": "TASK-003_commit_task_verdict_mapping_hint.md",
       "priority": "medium",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Post-mortem Issue 3 \u2014 commit-task reviewer-verdict whitelist mismatch with D.5 verdicts; first commit attempt for TASK-017 failed with uncommittable-reviewer-verdict."
     },

@@ -5707,6 +5707,48 @@ class TestReviewerSeamValidation:
         codes = [e["code"] for e in body["errors"]]
         assert "uncommittable-reviewer-verdict" in codes
 
+    def test_commit_task_uncommittable_verdict_carries_canonical_hint(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """POSTMORTEM_FIXES TASK-003: the rejection envelope MUST carry both
+        a structured `hint` field AND a human-readable hint suffix on the
+        message string, naming the canonical D.5-driven binding form and
+        citing the SKILL.md §D.2a routing anchor.
+        """
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "bump x",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "needs-rework",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        rejections = [
+            e for e in body["errors"]
+            if e["code"] == "uncommittable-reviewer-verdict"
+        ]
+        assert len(rejections) == 1
+        rej = rejections[0]
+        # Structured hint field on the envelope.
+        assert "hint" in rej, f"missing structured hint: {rej!r}"
+        assert "ship-with-fixes" in rej["hint"]
+        assert "claude" in rej["hint"]
+        assert "§D.2a" in rej["hint"]
+        # Human-readable suffix on the message itself (so non-JSON
+        # stderr operators see it too).
+        assert "hint:" in rej["message"]
+        assert "ship-with-fixes" in rej["message"]
+        assert "§D.2a" in rej["message"]
+
     def test_fail_task_review_rejects_invalid_reviewer_payload(self, tmp_git_repo: Path) -> None:
         plan = tmp_git_repo / "docs" / "plans" / "sample.md"
         cp = _run(

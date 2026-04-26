@@ -27,7 +27,7 @@ Reduce the friction the orchestrator hit on the first commit attempt for TASK-01
 
 ### TASK-003: commit-task verdict-mapping hint + sugar form
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (edit — `_validate_reviewer_payload` error message; optional `cmd_commit_task` sugar branch)
