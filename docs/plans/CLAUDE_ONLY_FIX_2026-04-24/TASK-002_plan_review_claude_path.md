@@ -25,7 +25,7 @@ The `plan-reviewer` agent's prompt mirrors the Codex prompt body 1:1 except for:
 
 ### TASK-002: Plan review Claude path
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/agents/plan-reviewer.md (create)

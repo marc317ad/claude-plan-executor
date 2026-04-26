@@ -398,16 +398,45 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
 
 On `partial-agreement` and `needs-rework`, re-run the Phase 1 `build-tasks → classifier → write-schedule + schedule-valid gate` sequence after the author edit (TASK-007 wires the concrete re-run; v1 mirrors today's "re-run the analyst" loop against the refactored entrypoint). If the second pass still surfaces `warnings[*]`, halt with `run_end reason=plan_analyst_failed` — NO second analyst-source triage is dispatched. See the re-source-verdict-is-binding rule under `## Rules`.
 
-### Phase 1.5 — Codex plan review (independent pre-dispatch gate)
+### Phase 1.5 — Independent plan review (pre-dispatch gate)
 
-The analyst (Claude/Opus) authored the plan *and* validated the schedule — the same family double-checking itself. Before any batch runs, dispatch Codex for an independent pre-dispatch review of the plan document + persisted schedule. Codex returns `approved | approved-with-notes | needs-replan`.
+The analyst (Claude/Opus) authored the plan *and* validated the schedule — the same family double-checking itself. Before any batch runs, dispatch an independent reviewer for a pre-dispatch review of the persisted schedule. Reviewer returns `approved | approved-with-notes | needs-replan`.
 
-**Skip conditions** (take the first that applies):
+**Route-switch (TASK-002): pick the reviewer mechanism by `claude_only`.**
+
+- **`claude_only=true`** → Phase 1.5-Claude path: dispatch the `plan-reviewer` Agent (`subagent_type: "plan-reviewer", model: "sonnet"`) using the Phase 1.5-Claude template from `dispatch-templates.md`. The agent emits a markdown report whose body concludes with a single fenced ```json block conforming to `codex_plan_review_schema.json`; the orchestrator pipes the JSON through `parse-plan-review-report --stdin --from-claude --json`. Run-log events on this path carry `reviewer:"claude"`.
+- **`claude_only=false`** → existing Codex wrapper path: shell out to `plan_codex_dispatch.py plan-review` (block below). The wrapper envelope flows through `parse-plan-review-report --stdin --json` (no `--from-claude` flag). Run-log events on this path carry `reviewer:"codex"`.
+
+Both branches feed the **same** `parse-plan-review-report` parser and produce the same `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}` shape — the verdict-routing table below, the `--codex-plan-review-binding` mutex (which is mutex with `--claude-only` per TASK-001), the auto-revise `plan-author` path, and the `--allow-gaps` demotion all consume the parsed verdict, not the dispatch mechanism. The only differences between the two branches are the dispatch invocation and the `reviewer` field in the run-log events.
+
+**Skip condition** (single condition; the legacy `codex_available=false → plan_review_skipped {reason:"codex_unavailable"}` clause was retired in TASK-002 — that case now flows through the `claude_only=true` route-switch above and dispatches the Claude reviewer):
 
 - `--skip-plan-review` → log `plan_review_skipped {reason:"flag"}` and proceed. Final run summary MUST carry a loud banner: *"Plan review skipped via --skip-plan-review"*. This flag is parallel-safe with `--skip-cross-review` and works alongside `--dry-run`, `--codex-only`, `--claude-only`, and `--task-ids`.
-- `codex_available=false` (from preflight) → log `plan_review_skipped {reason:"codex_unavailable"}` and proceed with a summary warning *"lacking independent plan review"*. This degrades to a warning rather than halting because plan review is a safety net, not a correctness gate.
 
-Otherwise, proceed with the review:
+Otherwise, proceed with the route-switched review.
+
+**Phase 1.5-Claude path (`claude_only=true`).** Wrap the Agent dispatch with `plan_review_start {reviewer:"claude", plan_file:"<basename>"}` before and `plan_review_done {reviewer:"claude", verdict, findings_count, summary}` after:
+
+```bash
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event plan_review_start \
+  --fields-json '{"reviewer":"claude","plan_file":"<basename>"}' --json
+
+# Agent dispatch (plan-reviewer, model: sonnet) — Phase 1.5-Claude template
+# from dispatch-templates.md. Inputs: plan_path, schedule_path, repo_root,
+# plan_basename, findings_count, allow_gaps_demotion.
+
+# Pipe the agent's emitted JSON block (extracted from its markdown report)
+# through the parser with --from-claude:
+printf '%s' "<agent_output_extracted_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
+  parse-plan-review-report --stdin --from-claude --json
+
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+  --event plan_review_done \
+  --fields-json '{"reviewer":"claude","plan_file":"<basename>","verdict":"<v>","findings_count":<n>,"summary":"..."}' --json
+```
+
+**Phase 1.5-Codex path (`claude_only=false`).** Wrap the wrapper shell-out with `plan_review_start {reviewer:"codex", plan_file:"<basename>"}` before and `plan_review_done {reviewer:"codex", verdict, findings_count, summary}` after:
 
 ```bash
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
@@ -441,16 +470,16 @@ The full wrapper envelope (produced by `plan_codex_dispatch.py plan-review`) has
 }
 ```
 
-Pipe the entire envelope (not just `parsed`) into `parse-plan-review-report`:
+Pipe the entire envelope (not just `parsed`) into `parse-plan-review-report` (no `--from-claude` flag on this path):
 
 ```bash
 printf '%s' "<envelope>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
   parse-plan-review-report --stdin --json
 ```
 
-`parse-plan-review-report` validates the envelope against `codex_plan_review_schema.json` and extracts `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}`. Cross-plan dependency resolution is verified by the orchestrator's Phase 0 `check-plan-deps` gate and is no longer surfaced by the reviewer. Schema violations halt with structured `errors[*]`. Wrapper timeout / parse_error / failure outcomes surface as `outcome ∈ {timeout, parse_error, failure}`; treat as `plan_review_skipped {reason:"codex_unavailable"}` for routing purposes — the pre-dispatch gate degrades on reviewer-side errors rather than blocking execution.
+`parse-plan-review-report` validates the envelope against `codex_plan_review_schema.json` and extracts `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}`. Cross-plan dependency resolution is verified by the orchestrator's Phase 0 `check-plan-deps` gate and is no longer surfaced by the reviewer. Schema violations halt with structured `errors[*]`. Wrapper timeout / parse_error / failure outcomes surface as `outcome ∈ {timeout, parse_error, failure}`; treat as `plan_review_skipped {reason:"codex_unavailable"}` for routing purposes — the pre-dispatch gate degrades on reviewer-side errors rather than blocking execution. (The Phase 1.5-Claude path's Agent dispatch failures are treated symmetrically — degrade to `plan_review_skipped {reason:"claude_review_failure"}` for routing purposes per the `dispatch-templates.md` §Phase 1.5-Claude note.)
 
-Append `plan_review_done {verdict, findings_count, summary}` and route by verdict:
+Append `plan_review_done {reviewer, verdict, findings_count, summary}` and route by verdict:
 
 | Verdict | Route |
 |---|---|
