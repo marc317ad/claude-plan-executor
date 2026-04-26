@@ -20736,3 +20736,255 @@ class TestSandboxDivergenceRunSummary:
         assert body["entries"] == [], body
         assert "## Sandbox divergences" in body["markdown"]
         assert "None." in body["markdown"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-002 (prohibit_silent_revert): first-class `paused` plan status.
+#
+# Locks in the scheduler / mutator / lint awareness contract:
+#   * `ALLOWED_TASK_STATUSES` includes `paused` (and `CANONICAL_CONTRACT`'s
+#     status_vocabulary mirror).
+#   * `mutate_task_status(..., "paused")` produces a byte-identical
+#     `**Status:** paused` mutation (same shape as failed/done/etc.).
+#   * `cmd_batch_next` skips `--paused` ids in `remaining` + `ready_in_batch`
+#     and does NOT cascade — paused does not leak into block-dependents.
+#   * `cmd_lint_plans` recognizes `paused` (no drift flag) but flags
+#     `paused_without_awaiting_user_event` when the run-log pairing is absent.
+# ---------------------------------------------------------------------------
+
+
+class TestPausedStatusVocabulary:
+    """`paused` is a first-class member of the per-task status enum."""
+
+    def test_paused_in_allowed_task_statuses(self) -> None:
+        assert "paused" in plan_ops.ALLOWED_TASK_STATUSES
+
+    def test_paused_in_canonical_contract_status_vocabulary(self) -> None:
+        assert "paused" in plan_ops.CANONICAL_CONTRACT["status_vocabulary"]
+
+    def test_pre_existing_statuses_still_present(self) -> None:
+        # Defense against accidental removal during the paused-add edit.
+        for s in {"pending", "in-progress", "done", "failed", "blocked"}:
+            assert s in plan_ops.ALLOWED_TASK_STATUSES, s
+
+
+class TestMutateStatusPaused:
+    """`mutate_task_status(..., "paused")` produces the canonical mutation."""
+
+    def test_mutate_status_paused_from_in_progress(self) -> None:
+        updated, prior = plan_ops.mutate_task_status(
+            SAMPLE_PLAN_BODY, "002", "paused",
+        )
+        assert prior == "in-progress"
+        # Byte-identical shape to the existing transitions
+        # (see test_in_progress_to_done at line 224).
+        assert (
+            "### TASK-002: Second task with hyphen value\n\n"
+            "- **Status:** paused"
+        ) in updated
+
+    def test_mutate_status_paused_from_open(self) -> None:
+        updated, prior = plan_ops.mutate_task_status(
+            SAMPLE_PLAN_BODY, "001", "paused",
+        )
+        assert prior == "open"
+        assert (
+            "### TASK-001: First task\n\n- **Status:** paused"
+        ) in updated
+
+    def test_mutate_status_paused_other_blocks_untouched(self) -> None:
+        updated, _ = plan_ops.mutate_task_status(
+            SAMPLE_PLAN_BODY, "001", "paused",
+        )
+        assert (
+            "### TASK-002: Second task with hyphen value\n\n"
+            "- **Status:** in-progress"
+        ) in updated
+        assert (
+            "### TASK-003: Third task\n\n- **Status:** done"
+        ) in updated
+
+
+def _paused_schedule_payload() -> dict:
+    """Three-task schedule with simple batch fidelity for paused tests."""
+    return {
+        "outcome": "valid",
+        "tasks": [
+            {
+                "id": "001", "agent": "codex", "files": ["a"],
+                "dependencies": [], "plan_file": "sample.md",
+            },
+            {
+                "id": "002", "agent": "claude", "files": ["b"],
+                "dependencies": [], "plan_file": "sample.md",
+            },
+            {
+                "id": "003", "agent": "codex", "files": ["c"],
+                "dependencies": ["001"], "plan_file": "sample.md",
+            },
+        ],
+        "batches": [
+            {"index": 1, "task_ids": ["001", "002"], "file_locks": ["a", "b"]},
+            {"index": 2, "task_ids": ["003"], "file_locks": ["c"]},
+        ],
+    }
+
+
+class TestBatchNextPaused:
+    """`batch-next` excludes paused ids from pick eligibility (TASK-002)."""
+
+    def test_batch_next_paused_excludes_from_remaining(
+        self, tmp_path: Path,
+    ) -> None:
+        # 001 is paused, 002 is not. Active batch = batch 1. The scheduler
+        # must NOT pick 001 (paused-skip), but MUST pick 002.
+        sched = _write_schedule(tmp_path, _paused_schedule_payload())
+        cp = _run(
+            "batch-next",
+            "--schedule-file", str(sched),
+            "--locked-files", "",
+            "--done", "",
+            "--failed", "",
+            "--paused", "001",
+            "--parallel", "2",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["task_ids"] == ["002"], body
+        assert body["batch_index"] == 1
+        assert body["scheduler_stuck"] is False
+
+    def test_batch_next_paused_blocks_dependents_does_not_cascade(
+        self, tmp_path: Path,
+    ) -> None:
+        # 001 paused. 003 depends on 001. Unlike `failed`, paused does NOT
+        # cascade-block dependents — but 003 is still NOT ready (its dep is
+        # not in `done`). Active batch = batch 1; 002 is the only pickable
+        # task. After 002 done, the scheduler advances to batch 2 and
+        # surfaces scheduler_stuck because 003's dep is not done.
+        sched = _write_schedule(tmp_path, _paused_schedule_payload())
+        cp = _run(
+            "batch-next",
+            "--schedule-file", str(sched),
+            "--done", "002",
+            "--paused", "001",
+            "--parallel", "2",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # Active batch advances past batch 1 (001 paused + 002 done).
+        assert body["batch_index"] == 2
+        # 003's dep (001) is not done → not ready → not picked → stuck.
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is True
+
+    def test_batch_next_paused_does_not_leak_into_failed_set(
+        self, tmp_path: Path,
+    ) -> None:
+        # Sanity: paused arg does NOT inflate the failed CLI set.
+        # Single paused task in an otherwise-empty batch should yield
+        # task_ids=[] (no pickable tasks left in the active batch) without
+        # any cascade-style behavior — the cascade is `cmd_block_dependents`'s
+        # job, gated only on `failed`.
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {
+                    "id": "001", "agent": "codex", "files": ["a"],
+                    "dependencies": [], "plan_file": "sample.md",
+                },
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+            ],
+        }
+        sched = _write_schedule(tmp_path, payload)
+        cp = _run(
+            "batch-next",
+            "--schedule-file", str(sched),
+            "--paused", "001",
+            "--parallel", "2",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # Only task is paused → no active batch left → not stuck.
+        assert body["task_ids"] == []
+        assert body["scheduler_stuck"] is False
+
+
+def _write_awaiting_user_event(run_log: Path, task_id: str) -> None:
+    """Append an awaiting_user event to `run_log` (creating it if absent)."""
+    run_log.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({
+        "event": "awaiting_user",
+        "task_id": task_id,
+        "stage": "post_remediation_review",
+        "run_id": "R1",
+        "ts": "2026-04-26T00:00:00Z",
+    })
+    with run_log.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
+class TestLintPlansPaused:
+    """TASK-002: `paused` is recognized; flagged only when unpaired."""
+
+    def test_lint_paused_with_awaiting_user_event_is_clean(
+        self, lint_workspace: dict,
+    ) -> None:
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-555.md"
+        plan.write_text(_lint_plan_body("555", "paused"), encoding="utf-8")
+        _write_awaiting_user_event(ws["run_log"], "555")
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 0, (
+            f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
+        )
+        body = _parse_json(cp)
+        assert body["findings"] == []
+        # Paused does NOT increment done_tasks (it doesn't pair with commits).
+        assert body["done_tasks"] == 0
+
+    def test_lint_paused_without_awaiting_user_event_flagged(
+        self, lint_workspace: dict,
+    ) -> None:
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-555.md"
+        plan.write_text(_lint_plan_body("555", "paused"), encoding="utf-8")
+        # No awaiting_user event in the run log.
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 1, cp.stderr
+        body = _parse_json(cp)
+        codes = [f["code"] for f in body["findings"]]
+        assert "paused_without_awaiting_user_event" in codes, body
+        # Must NOT cross-flag with the done/partial codes.
+        assert "missing-commit-done-event" not in codes, body
+        assert "missing-feat-commit" not in codes, body
+        finding = next(
+            f for f in body["findings"]
+            if f["code"] == "paused_without_awaiting_user_event"
+        )
+        assert finding["task_id"] == "555"
+        assert "plan-555.md" in finding["plan_file"]
+
+    def test_lint_paused_does_not_require_commit_pairing(
+        self, lint_workspace: dict,
+    ) -> None:
+        # No commit_done event, no feat commit — but paused IS paired with
+        # awaiting_user. Must be clean (paused doesn't pair with commits).
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-555.md"
+        plan.write_text(_lint_plan_body("555", "paused"), encoding="utf-8")
+        _write_awaiting_user_event(ws["run_log"], "555")
+
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        assert cp.returncode == 0, (
+            f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
+        )
+        body = _parse_json(cp)
+        assert body["findings"] == []

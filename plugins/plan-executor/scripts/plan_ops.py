@@ -94,7 +94,25 @@ STATUS_BULLET_RE = re.compile(r"^(\s*-\s*\*\*Status:\*\*)\s*(.+?)\s*$", re.MULTI
 DEPENDENCIES_BULLET_RE = re.compile(
     r"^\s*-\s*\*\*Dependencies:\*\*\s*(.+?)\s*$", re.MULTILINE,
 )
-ALLOWED_TASK_STATUSES = {"pending", "in-progress", "done", "failed", "blocked", "skipped"}
+# Per-task status vocabulary. Recognized values:
+#   pending       — not yet started (default for newly-authored tasks)
+#   in-progress   — claimed by an implementer; mid-flight
+#   done          — completed and committed
+#   failed        — implementer outcome != success and silent-revert authorized
+#   blocked       — cascade-blocked by an upstream `failed` (block-dependents)
+#   skipped       — operator/orchestrator deliberately skipped (e.g. reroute)
+#   paused        — TASK-002 (prohibit_silent_revert): mid-flight task halted
+#                   into the awaiting-user pause path (D.2a.5 / D.2a.6 second
+#                   `needs-rework` OR retry-implement failure). Distinct from
+#                   `failed` because no silent revert occurred — the working
+#                   tree still holds remediation edits and the user's next
+#                   conversation turn decides disposition (revert | keep |
+#                   hand-fix). The scheduler treats `paused` like `failed` for
+#                   pick eligibility (skip) but, crucially, does NOT cascade
+#                   `block-dependents` — a paused task is not a terminal
+#                   failure, so its dependents must wait for human disposition
+#                   rather than being preemptively blocked.
+ALLOWED_TASK_STATUSES = {"pending", "in-progress", "done", "failed", "blocked", "skipped", "paused"}
 ALLOWED_INDEX_STATUSES = {"Done", "Pending", "Superseded"}
 _INDEX_SUPERSEDED_BY: dict[str, list[str]] = {}
 # TASK-008 (per_task_dispatch_refactor_v2): file-mode deprecation aliases were
@@ -319,7 +337,7 @@ def _is_global_lock_path(path: str) -> bool:
 # entries, but no file-mode entries remain.
 CANONICAL_CONTRACT: dict[str, object] = {
     "status_vocabulary": [
-        "blocked", "done", "failed", "in-progress", "pending", "skipped",
+        "blocked", "done", "failed", "in-progress", "paused", "pending", "skipped",
     ],
     "schedule_task_fields": ["id", "plan_file"],
     "schedule_batch_fields": ["index"],
@@ -4094,6 +4112,42 @@ def _load_commit_done_ids(run_log: Path) -> set[str]:
     return ids
 
 
+def _load_awaiting_user_ids(run_log: Path) -> set[str]:
+    """Collect normalized task ids that have an `awaiting_user` event.
+
+    TASK-002 (prohibit_silent_revert): the lint pairs each `**Status:** paused`
+    task with its corresponding `awaiting_user` run-log event. Missing-pairing
+    surfaces as `paused_without_awaiting_user_event`.
+
+    Same tolerance contract as `_load_commit_done_ids`: missing file or
+    malformed lines are skipped — lint flags missing pairings, not run-log
+    integrity issues.
+    """
+    ids: set[str] = set()
+    if not run_log.exists():
+        return ids
+    try:
+        lines = run_log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ids
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("event") != "awaiting_user":
+            continue
+        tid = _normalize_task_id(str(ev.get("task_id", "")))
+        if tid:
+            ids.add(tid)
+    return ids
+
+
 def _load_feat_commit_ids(git_dir: Path) -> set[str]:
     """Collect normalized task ids shipped via `feat(TASK-NNN):` commits.
 
@@ -4134,6 +4188,11 @@ def cmd_lint_plans(args: argparse.Namespace) -> None:
 
     Parent plans whose top-level Status is `superseded` are skipped per the
     §D.3 guidance: their decomposition is tracked by the superseding children.
+
+    TASK-002 (prohibit_silent_revert): `paused` is a recognized task status
+    and is NOT flagged as drift. Each `**Status:** paused` task must be
+    paired with an `awaiting_user` run-log event for the same task; an
+    unpaired paused task surfaces as `paused_without_awaiting_user_event`.
     """
     plans_dir = Path(args.plans_dir).resolve()
     run_log_path = Path(args.run_log).resolve() if args.run_log else None
@@ -4145,6 +4204,9 @@ def cmd_lint_plans(args: argparse.Namespace) -> None:
 
     commit_done_ids = (
         _load_commit_done_ids(run_log_path) if run_log_path else set()
+    )
+    awaiting_user_ids = (
+        _load_awaiting_user_ids(run_log_path) if run_log_path else set()
     )
     feat_commit_ids = _load_feat_commit_ids(git_dir)
 
@@ -4172,9 +4234,8 @@ def cmd_lint_plans(args: argparse.Namespace) -> None:
             if not status_m:
                 continue
             status = status_m.group(2).strip().lower()
-            if status not in {"done", "partial"}:
+            if status not in {"done", "partial", "paused"}:
                 continue
-            done_tasks += 1
             tid = _normalize_task_id(raw_id)
             if tid is None:
                 continue
@@ -4182,6 +4243,24 @@ def cmd_lint_plans(args: argparse.Namespace) -> None:
                 rel_path = str(md.relative_to(anchor))
             except ValueError:
                 rel_path = str(md)
+            if status == "paused":
+                # TASK-002: paused tasks pair with `awaiting_user` events,
+                # not commits. A paused status without a matching
+                # awaiting_user run-log event is drift — either the pause
+                # was authored by hand (no log trail) or the run-log was
+                # truncated. Either way, surface the gap.
+                if tid not in awaiting_user_ids:
+                    findings.append({
+                        "plan_file": rel_path,
+                        "task_id": tid,
+                        "code": "paused_without_awaiting_user_event",
+                        "message": (
+                            f"plan marks TASK-{tid} as 'paused' but no "
+                            f"awaiting_user event found in run log"
+                        ),
+                    })
+                continue
+            done_tasks += 1
             if tid not in commit_done_ids:
                 findings.append({
                     "plan_file": rel_path,
@@ -4641,6 +4720,14 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
     locked = set(_split_csv(args.locked_files))
     done = set(_split_csv(args.done))
     failed = set(_split_csv(args.failed))
+    # TASK-002 (prohibit_silent_revert): `paused` is a first-class scheduler
+    # state. Tasks in this set are excluded from `remaining` + `ready_in_batch`
+    # exactly like `failed` (skip for pick), but unlike `failed` they do NOT
+    # cascade `block-dependents` — see `cmd_block_dependents` for the cascade
+    # contract. A paused task awaits the user's next conversation turn for
+    # disposition; the scheduler must not silently re-pick it on the next
+    # batch round.
+    paused = set(_split_csv(getattr(args, "paused", "") or ""))
 
     tasks_by_id: dict[str, dict] = {}
     for t in data.get("tasks") or []:
@@ -4680,7 +4767,10 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
                 return False
         return True
 
-    remaining = [t for tid, t in tasks_by_id.items() if tid not in done and tid not in failed]
+    remaining = [
+        t for tid, t in tasks_by_id.items()
+        if tid not in done and tid not in failed and tid not in paused
+    ]
     ready = [t for t in remaining if _ready(t)]
 
     # 1. Find active batch: the FIRST batch whose tasks are NOT all
@@ -4693,7 +4783,11 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
         bids = [tid for tid in bids if tid]
         if not bids:
             continue
-        if all(tid in done or tid in failed for tid in bids):
+        # TASK-002: `paused` joins `done | failed` for batch-advancement
+        # purposes. A paused task is treated like `failed` for pick eligibility
+        # (skip) and for active-batch advancement, so the scheduler does not
+        # spin on a batch whose only unresolved task is paused awaiting user.
+        if all(tid in done or tid in failed or tid in paused for tid in bids):
             continue
         active_batch = b
         break
@@ -4713,7 +4807,7 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
         # succeed — the orchestrator relies on this to halt with a
         # diagnostic.
         unresolved = [tid for tid in tasks_by_id
-                      if tid not in done and tid not in failed]
+                      if tid not in done and tid not in failed and tid not in paused]
         if unresolved:
             _emit(args, {
                 "batch_index": 0,
@@ -4784,7 +4878,7 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
     # `len(picked)==0 and len(ready)>0` (uses global ready) must not be
     # shipped.
     unfinished_active = [tid for tid in active_ids
-                         if tid not in done and tid not in failed]
+                         if tid not in done and tid not in failed and tid not in paused]
     scheduler_stuck = (len(picked) == 0) and (len(unfinished_active) > 0)
 
     _emit(args, {
@@ -6122,6 +6216,12 @@ def _is_inside_submodule(abs_path: Path, rel: str, repo_root: Path) -> bool:
 
 def cmd_block_dependents(args: argparse.Namespace) -> None:
     """Cascade `blocked` status onto dependents of a failed task.
+
+    TASK-002 (prohibit_silent_revert): paused tasks do NOT cascade. Only the
+    `failed` terminal status triggers this dependents-blocking cascade; a
+    `paused` task awaits human disposition and its dependents must wait, not
+    be preemptively blocked. The orchestrator MUST NOT call `block-dependents`
+    with a paused task id.
 
     TASK-004D / ISSUE-012: mutate the plan markdown (source of truth) as well
     as append run-log events (observability). Per file, ordering is
@@ -10086,6 +10186,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--locked-files", default="", help="Comma-separated locked files")
     p_batch.add_argument("--done", default="", help="Comma-separated done task ids")
     p_batch.add_argument("--failed", default="", help="Comma-separated failed task ids")
+    p_batch.add_argument(
+        "--paused", default="",
+        help=(
+            "Comma-separated paused task ids (TASK-002). Treated like "
+            "--failed for pick eligibility (skip) but does NOT cascade "
+            "block-dependents."
+        ),
+    )
     p_batch.add_argument("--parallel", type=int, default=2, help="Max concurrent tasks")
     _add_json(p_batch)
 
