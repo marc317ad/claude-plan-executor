@@ -18272,6 +18272,176 @@ class TestBuildTasks:
         ]
         assert not invalid_pf, parsed
 
+    def test_build_tasks_global_lock_task_is_solitary_in_batch(
+        self, tmp_path: Path,
+    ) -> None:
+        """Global-lock tasks land in a solitary batch in `_build_tasks`'s output.
+
+        Regression: pre-PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-003,
+        ``_build_tasks`` ran its own in-loop file-disjoint batcher that
+        did NOT honor ``_is_global_lock_path`` — so a task touching
+        ``requirements.txt`` could co-batch with file-disjoint siblings
+        in `build-tasks` output even though `compute-schedule` would
+        force it solitary. After routing both call sites through the
+        shared ``_dependency_aware_batches`` helper, the global-lock
+        carve-out applies uniformly.
+
+        The fixture is synthesized inline (whole-plan markdown → tmp_path
+        → ``decompose-plan`` → ``build-tasks``) so no on-disk fixture
+        addition is required.
+        """
+        whole_plan = (
+            "# Plan: global-lock smoke\n"
+            "\n"
+            "**Created:** 2026-04-25\n"
+            "**Status:** pending\n"
+            "**Base branch:** main\n"
+            "\n"
+            "## Goal\n"
+            "\n"
+            "Exercise the global-lock solitary-batch carve-out inside\n"
+            "`_build_tasks`'s output.\n"
+            "\n"
+            "## Context\n"
+            "\n"
+            "Three independent (no inter-dependency) tasks. TASK-002 touches\n"
+            "`requirements.txt` (a global-lock path). The shared batcher must\n"
+            "place TASK-002 in its own batch even though it is file-disjoint\n"
+            "from TASK-001 and TASK-003.\n"
+            "\n"
+            "## Verification\n"
+            "\n"
+            "After `decompose-plan` + `build-tasks`, the batches[] array\n"
+            "places TASK-002 alone in its own batch.\n"
+            "\n"
+            "## Tasks\n"
+            "\n"
+            "## TASK-001: Touch alpha file\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - scratch/alpha.txt (create)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** none\n"
+            "- **Acceptance criteria:**\n"
+            "  - alpha exists\n"
+            "- **Reversion guidance:** `rm -f scratch/alpha.txt`\n"
+            "\n"
+            "**Description:**\n"
+            "Independent leaf-write task A.\n"
+            "\n"
+            "## TASK-002: Bump runtime requirement pin\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - requirements.txt\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** none\n"
+            "- **Acceptance criteria:**\n"
+            "  - requirements.txt updated\n"
+            "- **Reversion guidance:** revert pin\n"
+            "\n"
+            "**Description:**\n"
+            "Touches a global-lock path; must land solo in its batch.\n"
+            "\n"
+            "## TASK-003: Touch beta file\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - scratch/beta.txt (create)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** none\n"
+            "- **Acceptance criteria:**\n"
+            "  - beta exists\n"
+            "- **Reversion guidance:** `rm -f scratch/beta.txt`\n"
+            "\n"
+            "**Description:**\n"
+            "Independent leaf-write task B.\n"
+        )
+        plan_path = tmp_path / "global_lock_plan.md"
+        plan_path.write_text(whole_plan, encoding="utf-8")
+        cp = _run("decompose-plan", "--plan-file", str(plan_path), "--json")
+        assert cp.returncode == 0, cp.stderr
+        produced = Path(_parse_json(cp)["produced_dir"])
+        cp2 = _run("build-tasks", "--plans-dir", str(produced), "--json")
+        assert cp2.returncode == 0, cp2.stderr
+        res = _parse_json(cp2)
+        assert res["ok"] is True, res
+        assert res["errors"] == [], res
+        batches = res["batches"]
+        # TASK-002 is global-lock; must be alone in its batch.
+        batch_for_002 = next(
+            (b for b in batches if "002" in b["task_ids"]), None,
+        )
+        assert batch_for_002 is not None, batches
+        assert batch_for_002["task_ids"] == ["002"], (
+            f"global-lock task TASK-002 must be solitary in its batch; "
+            f"got {batch_for_002!r}"
+        )
+        assert batch_for_002["file_locks"] == ["requirements.txt"], (
+            batch_for_002
+        )
+        # The siblings must NOT be co-batched with TASK-002.
+        for b in batches:
+            if "002" in b["task_ids"]:
+                continue
+            assert "002" not in b["task_ids"], b
+
+    def test_build_tasks_then_compute_schedule_is_no_op_on_batches(
+        self,
+    ) -> None:
+        """`build-tasks` and `compute-schedule` agree byte-for-byte on `batches[]`.
+
+        This is the load-bearing post-condition that authorizes
+        TASK-004 (PLAN_TOPO_RESPECT_FIX_2026-04-25) to delete the
+        SKILL.md ``compute-schedule --stdin`` recompute pipe: if both
+        CLIs route through ``_dependency_aware_batches`` and produce
+        bytewise-identical ``batches[]`` for the same input, the
+        recompute is a provable no-op rather than a presumed one.
+
+        The CLIs are invoked via subprocess (not direct function calls)
+        so the JSON serialization layer is exercised — that is where any
+        residual byte-difference would surface.
+        """
+        cp = _run(
+            "build-tasks",
+            "--plans-dir", str(DIRECTORY_MODE_FIXTURE_PATH),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        bt = _parse_json(cp)
+        assert bt["ok"] is True, bt
+        # Pipe `build-tasks` output's tasks/batches into `compute-schedule
+        # --stdin`. The schedule input shape is `{"tasks": [...]}` — the
+        # CLI re-derives `batches[]` from `tasks[]` on its own.
+        sched_input = json.dumps({"tasks": bt["tasks"]})
+        cp2 = subprocess.run(
+            [str(PY), str(SCRIPT), "compute-schedule", "--stdin", "--json"],
+            input=sched_input,
+            capture_output=True,
+            text=True,
+        )
+        assert cp2.returncode == 0, cp2.stderr
+        cs = _parse_json(cp2)
+        assert cs.get("errors") == [], cs
+        # Strict byte-equality contract via canonical (sorted-key) JSON
+        # serialization. Any drift between the two batchers — element
+        # ordering, file_locks ordering, batch indexing — would surface
+        # here.
+        bt_batches_json = json.dumps(bt["batches"], sort_keys=True)
+        cs_batches_json = json.dumps(cs["batches"], sort_keys=True)
+        assert bt_batches_json == cs_batches_json, (
+            f"build-tasks vs compute-schedule batches[] drift:\n"
+            f"  build-tasks   : {bt_batches_json}\n"
+            f"  compute-sched : {cs_batches_json}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TASK-009: resolve-read-targets / pre-read excerpts

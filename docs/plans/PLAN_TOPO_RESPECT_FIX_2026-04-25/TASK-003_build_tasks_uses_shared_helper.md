@@ -33,7 +33,7 @@ Replace the in-loop dep-aware batcher inside `_build_tasks` (`plan_ops.py:2786-2
 
 ### TASK-003: Route `_build_tasks` through `_dependency_aware_batches` + idempotence test + global-lock regression test
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`

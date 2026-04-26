@@ -2848,21 +2848,43 @@ def _build_tasks(plans_dir: Path) -> dict:
         if agent_raw:
             task_entry["agent"] = agent_raw.strip()
         tasks.append(task_entry)
-    # Cycle detection / topo-sort over the collected tasks. Orphan deps
-    # (dep ids not in the roster) are surfaced here too so the caller
-    # sees a single structured error list.
+    # Cycle detection / topo-sort + file-lock + global-lock batching are
+    # delegated to the canonical ``_dependency_aware_batches`` helper
+    # (PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-003). Both ``build-tasks`` and
+    # ``compute-schedule`` route through the same helper so their
+    # ``batches[]`` outputs agree byte-for-byte for the same input. The
+    # roster-specific ``unresolvable-dep`` message is preserved by
+    # post-processing the helper's ``errors[]`` before they are returned.
+    #
+    # The helper is fed a projection of ``tasks`` whose ``files[]`` entries
+    # are normalized through ``_normalize_files_entry`` (strip backticks,
+    # ``(create|modify|delete)`` annotations, ``:line`` suffixes). This
+    # mirrors what ``_compute_schedule_batches`` does before calling the
+    # same helper, and is what makes the pinned byte-equality post-condition
+    # (``test_build_tasks_then_compute_schedule_is_no_op_on_batches``) hold.
+    # The returned ``tasks[]`` retains the raw, annotated ``files`` entries
+    # — only the helper's view is normalized.
     batches: list[dict] = []
     if not errors:
         task_ids_to_process = [str(t["id"]) for t in tasks]
-        # Rename unresolvable-dep error message to be specific to the roster context
-        roster_batches, batch_errors = _create_dependency_aware_batches(
-            tasks, task_ids_to_process
+        helper_tasks = [
+            {
+                **t,
+                "files": [
+                    _normalize_files_entry(str(f))
+                    for f in (t.get("files") or [])
+                ],
+            }
+            for t in tasks
+        ]
+        roster_batches, batch_errors = _dependency_aware_batches(
+            helper_tasks, task_ids_to_process,
         )
         for e in batch_errors:
             if e.get("code") == "unresolvable-dep":
                 e["message"] = (
-                    f"TASK-{e['task_id']} depends on TASK-{e['dep_id']} which is "
-                    "not declared in the roster"
+                    f"TASK-{e['task_id']} depends on TASK-{e['dep_id']} "
+                    "which is not declared in the roster"
                 )
         if batch_errors:
             errors.extend(batch_errors)

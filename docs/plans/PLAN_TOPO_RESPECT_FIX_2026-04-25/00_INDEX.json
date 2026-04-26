@@ -36,7 +36,7 @@
       "depends_on": [
         "001"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Eliminates duplicate batching logic inside _build_tasks by routing it through TASK-001's helper. Side-benefit: build-tasks gains global-lock solitary placement (which it previously omitted), aligning it with compute-schedule. Adds the idempotence test (build-tasks output == compute-schedule output) that authorizes TASK-004's SKILL.md deletion."
     },
