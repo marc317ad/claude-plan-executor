@@ -87,3 +87,11 @@ Lift the dep-aware batching logic that already lives inside `_build_tasks` (`pla
 
 **Reversion guidance:**
 Delete the new helper + new test class. No call sites are touched in this task, so reverting affects nothing else.
+
+## Execution log — 20260425T231744 (success)
+
+Starting SHA: `7a9a34fc70347d2f30362de25dc6852170e77858`  → Ending SHA: `cc7a32c01bbe12884f8c97913b35d2ee954e7e58`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | codex | clean [disagreement] [remediation] | b90eb802 | D.5 needs-rework on name spec; D.2a.5 alias remediation; binding re-review clean |

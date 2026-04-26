@@ -73,3 +73,11 @@ Swap `_build_tasks`'s in-loop dep-aware batcher (`plan_ops.py:2786-2825`) for a 
 
 **Reversion guidance:**
 Restore the original cycle-detection block (lines 2761-2785) and the in-loop batcher (lines 2786-2825) in their pre-TASK-003 form; remove the helper invocation and the error-message rewrite; delete the two new tests.
+
+## Execution log — 20260425T231744 (success)
+
+Starting SHA: `7a9a34fc70347d2f30362de25dc6852170e77858`  → Ending SHA: `cc7a32c01bbe12884f8c97913b35d2ee954e7e58`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | codex | clean | 389bd5fc | helper alias + global-lock + idempotence test |

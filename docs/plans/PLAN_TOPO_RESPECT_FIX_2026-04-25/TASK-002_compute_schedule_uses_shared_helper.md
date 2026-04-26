@@ -84,3 +84,11 @@ Replace the broken in-loop packer in `_compute_schedule_batches` with a delegati
 
 **Reversion guidance:**
 Restore the original in-loop packer (the lines 498-545 region in the pre-TASK-002 state); revert the dep-shape validation addition; revert the `test_disjoint_files_single_batch` assertion change; delete the three new regression tests.
+
+## Execution log — 20260425T231744 (success)
+
+Starting SHA: `7a9a34fc70347d2f30362de25dc6852170e77858`  → Ending SHA: `cc7a32c01bbe12884f8c97913b35d2ee954e7e58`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | claude | codex | minor-findings [remediation] | 979b6dfe | D.5 needs-rework on envelope shape; D.2a.5 envelope normalization remediation; binding re-review surfaced 1 finding; orchestrator-authorized hand-fix on falsy-coercion + commit |

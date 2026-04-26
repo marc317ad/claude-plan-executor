@@ -88,3 +88,11 @@ Remove the `compute-schedule --stdin` recompute pipe from SKILL.md Phase 1 step 
 
 **Reversion guidance:**
 Restore the two deleted code blocks (`compute-schedule --stdin` invocations) at their original SKILL.md positions; restore the original prose that surrounded them; revert dispatch-templates and cheatsheet edits; delete the fence test file. The behavior reverts to "recompute pipe runs as a no-op" — which is harmless under TASK-002 and TASK-003 (the recompute is provably idempotent), so reversion does NOT regress topo correctness.
+
+## Execution log — 20260425T231744 (success)
+
+Starting SHA: `7a9a34fc70347d2f30362de25dc6852170e77858`  → Ending SHA: `cc7a32c01bbe12884f8c97913b35d2ee954e7e58`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | codex | clean | 98646243 | SKILL.md compute-schedule pipe deletion + 5-test fence |

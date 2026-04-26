@@ -87,3 +87,11 @@ Extend `_validate_schedule_dag` with a structural check that emits `dependency-b
 
 **Reversion guidance:**
 Delete the new check block from `_validate_schedule_dag` (revert to the pre-task body of orphan-dep → Kahn's cycle); delete the six new tests. Existing fixture data and other validators are unaffected.
+
+## Execution log — 20260425T231744 (success)
+
+Starting SHA: `7a9a34fc70347d2f30362de25dc6852170e77858`  → Ending SHA: `cc7a32c01bbe12884f8c97913b35d2ee954e7e58`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 006 | claude | codex | clean | cc7a32c0 | dependency-batch-violation validator + 7 tests; flagged 2 collateral TestBatchNextBatchFidelity failures (pre-existing topo-violating fixtures rejected by new validator) as follow-up |
