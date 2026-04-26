@@ -18,9 +18,9 @@ After surveying `docs/plans/`:
 | `POSTMORTEM_FIXES_2026-04-25` | 0 / 10 | **Run** | Cross-cutting friction fixes |
 | `narrow_run_filter_ids` | 0 / 5 | **Run** | `--task-ids` scope fix |
 | `SKILL_bash_dispatch_migration` | 0 / 7 | **Run** | Wrapper now exists (PLAN_NESTED_DISPATCH merged); SKILL.md still has 12 Agent dispatches and 0 wrapper calls — migration is next-in-line |
-| `PHASE_D_STATE_MACHINE` | 0 / 8 | **Defer — flag for user** | Big state-machine refactor; risky; want user steer before launching |
-| `prohibit_silent_revert` | 0 / 9 | **Defer — flag for user** | User halted this one previously (run `20260425T002624`, "user_halt") |
-| `decompose_plans_tasks/build-plan-decomposer-plugin` | 0 / 11 | **Defer — flag for user** | 2026-04-17, predates a lot of work; likely superseded by `plan_ops.py` decomposer |
+| `PHASE_D_STATE_MACHINE` | 0 / 8 | **Run** (was deferred — was over-cautious) | Same orchestrator + Codex review + pause protocol applies |
+| `prohibit_silent_revert` | 0 / 9 | **Real user-decision needed** | Run `20260425T002624` was halted with `reason: user_halt` — user explicitly stopped it. Need user direction: retry now or skip |
+| `decompose_plans_tasks/build-plan-decomposer-plugin` | 0 / 11 | **Skip — superseded** | Verified: no separate `plan-decomposer` plugin exists; `plan_ops.py decompose-plan` (lines 196, 318, 1836, 2330, 2622) absorbed the functionality into `plan-executor`. The 2026-04-17 plan to extract a separate plugin was abandoned in favor of the in-place implementation. Move to archive |
 
 ## Execution order (rationale)
 
@@ -54,15 +54,15 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 6. `SKILL_bash_dispatch_migration` (7 tasks)
 
 ### 2. narrow_run_filter_ids (5 tasks)
-- Status: **PARTIAL → paused at TASK-002 (D.2a.5 awaiting user)**
-- Branch: `plan/narrow-run-filter-ids` (HEAD: `a2a63cb` WIP, parent `15ef5efc` TASK-001 ship)
+- Status: **TASK-001 cherry-picked to main** (`0139ed1`); TASK-002 paused (WIP on topic branch); TASK-003..005 not yet attempted
+- Branch: `plan/narrow-run-filter-ids` (HEAD: `a2a63cb` WIP, parent `15ef5efc` TASK-001 ship — cherry-picked)
 - Run id: `20260425T221732`
 - TASK-001 shipped — `15ef5efc` (`_compute_index_closure` helper + `index-closure` CLI; D.5 dismissed Codex frontier-set finding as misread).
 - TASK-002 paused — first-pass needs-rework on 3 important+high findings (msg field omits offending body line; non-dict + un-normalizable task_id chunks silently skipped in scoped mode). D.5 confirmed all 3 load-bearing. D.2a.5 remediation succeeded. Binding re-review surfaced ONE NEW finding: trust-roster fallback applies even when roster `depends_on` is empty list — spec requires fallback only when roster deps resolve to in-closure task. Per D.2a.5 protocol no further remediation. WIP commit on topic branch preserves work for user disposition (hand-fix the empty-roster-deps gate, drop and revert, or override commit).
 - Gemini still blocked: TASK-001's helper alone is insufficient — needs TASK-002's `--filter-ids` plumbing on `build-tasks` to be wired to actually skip Done-but-in-closure chunks (currently the closure helper exists but `_build_tasks` still filters Done before dep validation).
 
 ### 3. PLAN_TOPO_RESPECT_FIX_2026-04-25 (6 tasks)
-- Status: **COMPLETE — 6/6 done, awaiting user merge to main**
+- Status: **MERGED to main** (`bf8cc40`); branch `plan/topo-respect-fix` retained for history
 - Branch: `plan/topo-respect-fix` (HEAD `0a02111`); 8 commits + bookkeeping; tip is ahead of `main` by 8 commits
 - Run id: `20260425T231744` → `success` (6 done, 0 failed, 3 disagreements, 2 remediations, 1 orchestrator hand-fix)
 - Commits (in order):
@@ -78,15 +78,16 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 
 ---
 
-## Remaining queue (run via `/implement-plan` for token efficiency)
+## Remaining queue (run via `/implement-plan` Skill invocation per plan)
 
-4. `CLAUDE_ONLY_FIX_2026-04-24` (3 tasks; branch `plan/claude-only-fix` already exists per `git branch` — empty so far)
+4. `CLAUDE_ONLY_FIX_2026-04-24` (3 tasks)
 5. `POSTMORTEM_FIXES_2026-04-25` (10 tasks)
-6. `SKILL_bash_dispatch_migration` (7 tasks)
+6. `PHASE_D_STATE_MACHINE` (8 tasks)
+7. `SKILL_bash_dispatch_migration` (7 tasks)
+8. After narrow_run_filter_ids TASK-002 unblocks (user hand-fix or instruct to resume): finish narrow_run TASK-003..005, then resume PLAN_GEMINI_INTEGRATION TASK-005..008 with `--filter-ids`
 
-**Resume gemini after `narrow_run_filter_ids` TASK-002 binding finding is hand-fixed by user** — that unblocks `--filter-ids` for `build-tasks`, which then unblocks PLAN_GEMINI_INTEGRATION TASK-005..008.
+**Skipped (verified superseded):**
+- `decompose_plans_tasks/build-plan-decomposer-plugin` — `plan_ops.py decompose-plan` absorbed the functionality; no separate plugin needed. Move directory to `archive/`.
 
-**Deferred (need user steer):**
-- `PHASE_D_STATE_MACHINE` (8 tasks; big state-machine refactor)
-- `prohibit_silent_revert` (9 tasks; was halted in `20260425T002624`)
-- `decompose_plans_tasks/build-plan-decomposer-plugin` (11 tasks; 2026-04-17, likely superseded)
+**Real user decision needed:**
+- `prohibit_silent_revert` (9 tasks) — explicitly halted in run `20260425T002624` by you. Retry now or skip?
