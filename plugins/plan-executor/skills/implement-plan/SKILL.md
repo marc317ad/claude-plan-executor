@@ -107,7 +107,7 @@ Every schedule entry carries `plan_file: "<child-basename>"` (the fat manifest f
 
 Run-log events carry a `plan_file` field in their `fields` dict so the audit trail records which child each event mutated. The events with this field are:
 
-- `run_start` — `plan_file: "<dir-basename>"`.
+- `run_start` — `plan_file: "<dir-basename>"`. Also carries `claude_only: <bool>` in `fields` — the routing boolean bound at Phase 0 preflight per §Pre-flight (Phase 0). The field itself is wired into `run_start` payloads when TASK-002 (plan review) and TASK-003 (cross-review) land; TASK-001 documents the field's presence so downstream consumers know to expect it.
 - `batch_start` — `plan_file` per batch entry (always-on is cheap and consistent).
 - `implement_start` — `plan_file: "<child-basename>"` for the current task.
 - `commit_done` — `plan_file: "<child-basename>"` (already captured by `commit-task` from the `--plan-file` argument; basename is derived automatically).
@@ -146,7 +146,7 @@ Optional:
   --strict-branch         Halt (not warn) if current branch != plan's Base branch
 ```
 
-Mutual exclusions: `--codex-only` + `--claude-only` → error. Normalize `--task-ids` values via `plan_ops.py normalize-task-id` before filtering.
+Mutual exclusions: `--codex-only` + `--claude-only` → error. `--codex-review-binding` + `--claude-only` → error (Codex review-binding requires Codex availability and is incompatible with the Claude-only routing flag bound at Phase 0). `--codex-plan-review-binding` + `--claude-only` → error (same rationale, applied to the plan-review seam). The orchestrator LLM reads this prose and halts pre-dispatch; there is no structural checker in `plan_ops.py` for these mutexes (consistent with the existing `--codex-only` ⊕ `--claude-only` enforcement). Normalize `--task-ids` values via `plan_ops.py normalize-task-id` before filtering.
 
 ## Pre-flight (Phase 0)
 
@@ -211,6 +211,14 @@ Returns JSON with `pass`, `starting_sha`, `run_id`, `codex_available`, `python_p
 **After preflight**, pin `$PYTHON` for the rest of the run by exporting `PYTHON=<python_path>` from the preflight JSON. Every subsequent `$PYTHON ...` command line in this skill uses the pinned value. If you need to re-dispatch from a fresh shell context, re-export from the same preflight result — do NOT re-resolve in templates.
 
 If `codex_available=false`, override `tasks[].agent = "claude"` throughout Phase 1 and warn; wrapper's own "codex binary not found on PATH" branch is the backstop.
+
+**Bind `claude_only` (single routing boolean).** Immediately after preflight returns, bind a single boolean `claude_only` for the rest of the run, defined as the OR of (a) the operator opt-in `--claude-only` flag and (b) the preflight signal `codex_available == false`:
+
+```
+claude_only := (--claude-only is set) OR (preflight.codex_available == false)
+```
+
+This is the canonical routing flag that every downstream phase consults (Phase 1.5 plan review, Phase D cross-review). Hoisting it to one place keeps the routing decision stateless across phases — no phase recomputes it from the underlying inputs. Behavior wiring on this flag lands in TASK-002 (plan review skip) and TASK-003 (cross-review skip); TASK-001 documents the binding only. Once bound, `claude_only` flows into the `run_start` event's `fields` as `claude_only: <bool>` (the field is added when TASK-002 / TASK-003 wire the downstream phases).
 
 Then run the mandatory cross-plan dependency gate:
 
@@ -879,6 +887,7 @@ Do NOT auto-push. Do NOT auto-PR.
 ## Rules
 
 - **Never edit code files.** Orchestrator only touches plan files, `_run_log.jsonl`, `_run_lock.json`, and git staging. Implementer subagents / Codex wrapper own code changes.
+- **When `claude_only=true`, the orchestrator MUST NOT invoke `plan_codex_dispatch.py` for ANY subcommand (`plan-review`, `review`, `implement`). Codex shell-out under `claude_only` is a protocol violation.** The `claude_only` boolean is bound at Phase 0 preflight from `--claude-only OR (codex_available == false)`; see §Pre-flight (Phase 0) and §Parse arguments mutex prose.
 - **Never commit a reviewer-flagged `needs-rework`.** Only clean / minor-findings / ship / ship-with-fixes commit automatically.
 - **Never `git add -A` or `git add .`.** Stage specific files only — `commit-task` already uses `--only`.
 - **Never retry a failed task inside the same run** beyond the one D.2b role-swap, the one D.2a.5 bounded remediation retry, the one D.2a.6 narrow-remediation retry, and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.

@@ -22,7 +22,7 @@ The mutual-exclusion checks follow the existing prose-driven pattern at `SKILL.m
 
 ### TASK-001: Plumbing — `claude_only` routing flag and mutual exclusions
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md (edit)
