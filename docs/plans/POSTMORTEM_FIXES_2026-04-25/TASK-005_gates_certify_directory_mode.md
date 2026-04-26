@@ -29,7 +29,7 @@ End-of-run `gates --certify --plan-file <plan-dir>` should succeed when the plan
 
 ### TASK-005: Directory-mode certify resolution
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (edit — `cmd_gates --certify` directory-mode resolution; helpers shared with existing `_resolve_directory_plan_file`-style sites if present)

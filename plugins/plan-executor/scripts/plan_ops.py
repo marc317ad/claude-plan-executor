@@ -7710,6 +7710,75 @@ def _gate_commit_safe(
     )
 
 
+def _is_directory_mode_plan(plan_file: str | Path) -> bool:
+    """`plan_file` is a directory containing `00_INDEX.json`.
+
+    Directory-mode certify resolves `schema-valid` per chunk and
+    `commit-safe` per `commit_done` event's child plan-file (per
+    SKILL.md §99-106). Single-file mode is the legacy markdown shape.
+    """
+    p = Path(plan_file)
+    return p.is_dir() and (p / "00_INDEX.json").is_file()
+
+
+def _aggregate_schema_valid_directory(plan_dir: str | Path) -> dict:
+    """Run `_gate_schema_valid` against every chunk in `00_INDEX.json`.
+
+    Returns a single gate dict whose `status` is `pass` iff every chunk
+    passes; `subresults` carries one entry per chunk for attribution.
+    """
+    plan_dir_p = Path(plan_dir)
+    chunks, errors = _load_index_chunks(plan_dir_p)
+    if errors or chunks is None:
+        msg = errors[0]["message"] if errors else "00_INDEX.json missing"
+        gate = _gate_result(
+            "schema-valid", "fail",
+            f"directory-mode schema-valid failed: {msg}",
+        )
+        gate["subresults"] = []
+        return gate
+    subresults: list[dict] = []
+    failures: list[str] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        child = chunk.get("file")
+        if not isinstance(child, str) or not child:
+            continue
+        child_path = plan_dir_p / child
+        sub = _gate_schema_valid(child_path)
+        sub_entry = {
+            "plan_file": child,
+            "status": sub["status"],
+            "reason": sub["reason"],
+        }
+        subresults.append(sub_entry)
+        if sub["status"] != "pass":
+            failures.append(f"{child}: {sub['reason']}")
+    if not subresults:
+        gate = _gate_result(
+            "schema-valid", "fail",
+            f"directory-mode schema-valid: no chunks declared in {plan_dir_p}/00_INDEX.json",
+        )
+        gate["subresults"] = subresults
+        return gate
+    if failures:
+        preview = "; ".join(failures[:3])
+        if len(failures) > 3:
+            preview += f"; … ({len(failures) - 3} more)"
+        gate = _gate_result(
+            "schema-valid", "fail",
+            f"{len(failures)}/{len(subresults)} chunk(s) failed schema-valid: {preview}",
+        )
+    else:
+        gate = _gate_result(
+            "schema-valid", "pass",
+            f"all {len(subresults)} chunk(s) under {plan_dir_p.name} conform to §5 schema",
+        )
+    gate["subresults"] = subresults
+    return gate
+
+
 def _certify_dry_run(plan_file: str | Path, schedule_file: str | Path | None = None) -> list[dict]:
     """Bundle of gates exercised in dry-run mode.
 
@@ -7718,9 +7787,16 @@ def _certify_dry_run(plan_file: str | Path, schedule_file: str | Path | None = N
     because no commits exist in dry-run. `schedule-valid` is required
     for certification — a missing `schedule_file` fails the bundle
     rather than collapsing to `not_applicable`.
+
+    Directory-mode (`plan_file` is a directory containing `00_INDEX.json`):
+    `schema-valid` aggregates per-chunk; other gates are unchanged.
     """
+    if _is_directory_mode_plan(plan_file):
+        schema_gate = _aggregate_schema_valid_directory(plan_file)
+    else:
+        schema_gate = _gate_schema_valid(plan_file)
     gates: list[dict] = [
-        _gate_schema_valid(plan_file),
+        schema_gate,
         _gate_schedule_valid(schedule_file),
         _gate_fixture_valid(),
         _gate_execution_safe(),
@@ -7747,15 +7823,27 @@ def _certify_execute(
     `schedule-valid` is required for certification — a missing
     `schedule_file` fails the bundle rather than collapsing to
     `not_applicable`.
+
+    Directory-mode (`plan_file` is a directory containing `00_INDEX.json`):
+    `schema-valid` aggregates per-chunk and `commit-safe` resolves each
+    `commit_done` event to its child plan-file (preferring the event's
+    `plan_file` field per SKILL.md §99-106; falling back to the chunk
+    declared for that task id in `00_INDEX.json`).
     """
+    is_dir_mode = _is_directory_mode_plan(plan_file)
+    schema_gate = (
+        _aggregate_schema_valid_directory(plan_file) if is_dir_mode
+        else _gate_schema_valid(plan_file)
+    )
     gates: list[dict] = [
-        _gate_schema_valid(plan_file),
+        schema_gate,
         _gate_schedule_valid(schedule_file),
         _gate_fixture_valid(),
         _gate_execution_safe(),
         _gate_review_safe(),
     ]
-    commits: list[tuple[str, str]] = []
+    # Each entry: (task_id, sha, event_plan_file_basename_or_None)
+    commits: list[tuple[str, str, str | None]] = []
     if run_id and RUN_LOG_PATH.is_file():
         try:
             for line in RUN_LOG_PATH.read_text(encoding="utf-8").splitlines():
@@ -7773,8 +7861,11 @@ def _certify_execute(
                     continue
                 tid = _normalize_task_id(str(ev.get("task_id", "")))
                 sha = ev.get("commit_sha") or ev.get("sha") or ""
+                ev_plan = ev.get("plan_file")
+                if not isinstance(ev_plan, str) or not ev_plan:
+                    ev_plan = None
                 if tid and sha:
-                    commits.append((tid, str(sha)))
+                    commits.append((tid, str(sha), ev_plan))
         except OSError:
             pass
     if not commits:
@@ -7789,30 +7880,82 @@ def _certify_execute(
         # same repository that produced the run log, not the caller's
         # cwd. Falls back to Path.cwd() semantics on git failure, matching
         # the helper's existing default.
-        plan_dir = Path(plan_file).resolve().parent
-        toplevel = _git(["rev-parse", "--show-toplevel"], cwd=plan_dir)
+        plan_path_resolved = Path(plan_file).resolve()
+        toplevel_cwd = (
+            plan_path_resolved if plan_path_resolved.is_dir()
+            else plan_path_resolved.parent
+        )
+        toplevel = _git(["rev-parse", "--show-toplevel"], cwd=toplevel_cwd)
         repo_root = (
             Path(toplevel.stdout.strip())
             if toplevel.returncode == 0 and toplevel.stdout.strip()
             else None
         )
+        # In directory mode, build a {task_id: child_basename} index from
+        # `00_INDEX.json` as a fallback when an event lacks `plan_file`.
+        chunk_index: dict[str, str] = {}
+        if is_dir_mode:
+            chunks, _idx_errors = _load_index_chunks(Path(plan_file))
+            for chunk in chunks or []:
+                if not isinstance(chunk, dict):
+                    continue
+                ctid_raw = chunk.get("task_id") or chunk.get("id")
+                cfile = chunk.get("file")
+                if not isinstance(ctid_raw, str) or not isinstance(cfile, str):
+                    continue
+                ctid = _normalize_task_id(ctid_raw)
+                if ctid and cfile:
+                    chunk_index[ctid] = cfile
+        subresults: list[dict] = []
         failures: list[str] = []
-        for tid, sha in commits:
-            res = _gate_commit_safe(sha, tid, plan_file, repo_root=repo_root)
+        for tid, sha, ev_plan in commits:
+            if is_dir_mode:
+                child_basename = ev_plan or chunk_index.get(tid)
+                if not child_basename:
+                    sub_status = "fail"
+                    sub_reason = (
+                        f"directory-mode commit-safe: no plan_file on event "
+                        f"and TASK-{tid} not in 00_INDEX.json"
+                    )
+                    res = _gate_result("commit-safe", sub_status, sub_reason)
+                    target_plan = None
+                else:
+                    target_plan = Path(plan_file) / child_basename
+                    res = _gate_commit_safe(
+                        sha, tid, target_plan, repo_root=repo_root,
+                    )
+            else:
+                target_plan = plan_file
+                res = _gate_commit_safe(
+                    sha, tid, plan_file, repo_root=repo_root,
+                )
+            if is_dir_mode:
+                subresults.append({
+                    "task_id": tid,
+                    "commit_sha": sha,
+                    "plan_file": (
+                        Path(target_plan).name if target_plan else None
+                    ),
+                    "status": res["status"],
+                    "reason": res["reason"],
+                })
             if res["status"] != "pass":
                 failures.append(f"TASK-{tid}@{sha[:12]}: {res['reason']}")
         if failures:
-            gates.append(_gate_result(
+            gate = _gate_result(
                 "commit-safe",
                 "fail",
                 f"{len(failures)}/{len(commits)} commit(s) failed: {failures[:3]}",
-            ))
+            )
         else:
-            gates.append(_gate_result(
+            gate = _gate_result(
                 "commit-safe",
                 "pass",
                 f"all {len(commits)} commit(s) for run_id={run_id} touched only allowed files",
-            ))
+            )
+        if is_dir_mode:
+            gate["subresults"] = subresults
+        gates.append(gate)
     return gates
 
 
@@ -9180,14 +9323,30 @@ def cmd_gates(args: argparse.Namespace) -> None:
             gates = _certify_execute(
                 args.plan_file, args.run_id, args.schedule_file,
             )
-        by_name = {g["name"]: {"status": g["status"], "reason": g["reason"]} for g in gates}
+        # Directory-mode certify (per SKILL.md §99-106): when --plan-file
+        # resolves to a directory containing 00_INDEX.json, the report
+        # carries `plan_mode: "directory"` and any gate that aggregates
+        # subchecks (schema-valid per chunk, commit-safe per commit_done
+        # event) emits a `subresults` array for attribution.
+        plan_mode = "directory" if _is_directory_mode_plan(args.plan_file) else "single-file"
+        by_name: dict[str, dict] = {}
+        for g in gates:
+            entry = {"status": g["status"], "reason": g["reason"]}
+            if "subresults" in g:
+                entry["subresults"] = g["subresults"]
+            by_name[g["name"]] = entry
         # Canonical status vocabulary: pass | fail | not_applicable.
         # Certification passes iff every applicable gate is `pass`; a
         # `not_applicable` gate does not block certification.
         certified = all(g["status"] in {"pass", "not_applicable"} for g in gates)
         _emit(
             args,
-            {"certified": certified, "mode": args.mode, "gates": by_name},
+            {
+                "certified": certified,
+                "mode": args.mode,
+                "plan_mode": plan_mode,
+                "gates": by_name,
+            },
             exit_code=0 if certified else 1,
         )
         return

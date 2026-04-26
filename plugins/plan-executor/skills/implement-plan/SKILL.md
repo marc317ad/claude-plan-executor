@@ -96,7 +96,7 @@ All subcommands accept `--json` for machine-readable output.
 
 ## Per-task `<plan-file>` resolution (TASK-004 write sites)
 
-Five commands mutate plan markdown and therefore take `--plan-file`: `commit-task` (Phase D.3), `fail-task` (Phase C + D.4), `block-dependents` (Phase C + D.4), `update-plan-header` (End-of-run), and the `plan-author` auto-revise dispatch (Phase 1.5a). Each call passes the current task's child file, resolved as:
+Five commands mutate plan markdown and therefore take `--plan-file`: `commit-task` (Phase D.3), `fail-task` (Phase C + D.4), `block-dependents` (Phase C + D.4), `update-plan-header` (End-of-run), and the `plan-author` auto-revise dispatch (Phase 1.5a). One read-only command also honours directory-mode `<plan-file>` resolution: `gates --certify` (End-of-run). For mutators, each call passes the current task's child file; for `gates --certify`, a directory `--plan-file` aggregates `schema-valid` per chunk (over `00_INDEX.json`) and re-checks `commit-safe` per `commit_done` event using each event's recorded `plan_file` field. Resolution rule:
 
 ```
 child_basename = task.plan_file

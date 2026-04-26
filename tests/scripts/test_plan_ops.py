@@ -13250,6 +13250,203 @@ class TestCertifyBundles:
         assert "plan-file" in body.get("error", "").lower()
 
 
+# ---------------------------------------------------------------------------
+# TASK-005 (POSTMORTEM_FIXES): directory-mode certify (`gates --certify`).
+# ---------------------------------------------------------------------------
+
+
+_DIR_CHILD_PLAN_TEMPLATE = """# Plan: {title}
+
+**Created:** 2026-04-25
+**Status:** in-progress
+**Base branch:** main
+
+## Goal
+
+Child plan {tid} for directory-mode certify tests.
+
+## Context
+
+Synthetic child plan; does not touch the live repo.
+
+## Tasks
+
+### TASK-{tid}: Child task {tid}
+
+- **Status:** pending
+- **Priority:** P1
+- **Files:**
+  - `example/{slug}.py` (create)
+- **Dependencies:** none
+- **Test command:** `true`
+- **Acceptance criteria:**
+  - {slug} ships.
+
+**Description:** Synthetic child task for TASK-{tid}.
+
+## Verification
+
+Verification prose for TASK-{tid}.
+"""
+
+
+def _write_dir_mode_plan(
+    tmp_path: Path,
+    chunks: list[dict] | None = None,
+    *,
+    name: str = "plan-dir",
+    bad_child_tid: str | None = None,
+) -> Path:
+    """Materialize a `<tmp_path>/<name>/` directory-mode plan with
+    `00_INDEX.json` + per-chunk child files. If `bad_child_tid` is set,
+    that child's plan is written WITHOUT the required `## Verification`
+    section so `_gate_schema_valid` fails for it (per-child-failure
+    attribution test).
+    """
+    plan_dir = tmp_path / name
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    if chunks is None:
+        chunks = [
+            {"task_id": "001", "file": "TASK-001_alpha.md", "depends_on": []},
+            {"task_id": "002", "file": "TASK-002_beta.md", "depends_on": ["001"]},
+        ]
+    roster = {"schema_version": 1, "chunks": chunks}
+    (plan_dir / "00_INDEX.json").write_text(
+        json.dumps(roster, indent=2) + "\n", encoding="utf-8",
+    )
+    for chunk in chunks:
+        tid = chunk["task_id"]
+        slug = chunk["file"].rsplit(".md", 1)[0].split("_", 1)[-1] if "_" in chunk["file"] else f"task{tid}"
+        body = _DIR_CHILD_PLAN_TEMPLATE.format(title=f"task-{tid}", tid=tid, slug=slug)
+        if bad_child_tid is not None and tid == bad_child_tid:
+            # Drop `## Verification` to force schema-valid fail for this child.
+            body = body.replace("## Verification\n\nVerification prose for TASK-" + tid + ".\n", "")
+        (plan_dir / chunk["file"]).write_text(body, encoding="utf-8")
+    return plan_dir
+
+
+def _write_dir_mode_schedule(
+    tmp_path: Path, plan_dir_name: str = "plan-dir",
+) -> Path:
+    """Schedule sidecar matching the two-chunk dir-mode plan above."""
+    payload = {
+        "outcome": "valid",
+        "tasks": [
+            {
+                "id": "001", "agent": "claude", "priority": "P1",
+                "files": ["example/alpha.py"], "dependencies": [],
+                "plan_file": "TASK-001_alpha.md",
+            },
+            {
+                "id": "002", "agent": "claude", "priority": "P1",
+                "files": ["example/beta.py"], "dependencies": ["001"],
+                "plan_file": "TASK-002_beta.md",
+            },
+        ],
+        "batches": [
+            {"index": 0, "task_ids": ["001"], "file_locks": ["example/alpha.py"]},
+            {"index": 1, "task_ids": ["002"], "file_locks": ["example/beta.py"]},
+        ],
+        "gaps": [], "risks": [],
+    }
+    path = tmp_path / "plan.schedule.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+class TestCertifyDirectoryMode:
+    """`gates --certify` over a directory-mode `<plan-file>` (TASK-005,
+    POSTMORTEM_FIXES). Aggregates `schema-valid` per chunk and is
+    self-describing via `plan_mode: "directory"`. Single-file mode is
+    unchanged and tested by `TestCertifyBundles`."""
+
+    def test_directory_mode_dry_run_success(self, tmp_path: Path) -> None:
+        plan_dir = _write_dir_mode_plan(tmp_path)
+        sched = _write_dir_mode_schedule(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--mode", "dry-run",
+            "--plan-file", str(plan_dir),
+            "--schedule-file", str(sched),
+            "--json",
+        )
+        body = _parse_json(cp)
+        assert body["plan_mode"] == "directory", body
+        # Aggregate schema-valid passes when every child passes.
+        sv = body["gates"]["schema-valid"]
+        assert sv["status"] == "pass", sv
+        assert "subresults" in sv, sv
+        sub_tids = {s["plan_file"] for s in sv["subresults"]}
+        assert sub_tids == {"TASK-001_alpha.md", "TASK-002_beta.md"}
+        for s in sv["subresults"]:
+            assert s["status"] == "pass", s
+        # commit-safe is not_applicable in dry-run regardless of mode.
+        assert body["gates"]["commit-safe"]["status"] == "not_applicable"
+
+    def test_directory_mode_dry_run_per_child_failure_attribution(
+        self, tmp_path: Path,
+    ) -> None:
+        """One child missing `## Verification` fails schema-valid; the
+        aggregate is `fail` and the per-chunk subresults name the
+        offending child."""
+        plan_dir = _write_dir_mode_plan(tmp_path, bad_child_tid="002")
+        sched = _write_dir_mode_schedule(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--mode", "dry-run",
+            "--plan-file", str(plan_dir),
+            "--schedule-file", str(sched),
+            "--json",
+        )
+        assert cp.returncode != 0, cp.stdout
+        body = _parse_json(cp)
+        assert body["plan_mode"] == "directory"
+        assert body["certified"] is False
+        sv = body["gates"]["schema-valid"]
+        assert sv["status"] == "fail", sv
+        # Subresults must name the offending child concretely.
+        bad = [s for s in sv["subresults"] if s["plan_file"] == "TASK-002_beta.md"]
+        good = [s for s in sv["subresults"] if s["plan_file"] == "TASK-001_alpha.md"]
+        assert bad and bad[0]["status"] == "fail", sv
+        assert good and good[0]["status"] == "pass", sv
+        # The aggregate reason mentions the offending basename.
+        assert "TASK-002_beta.md" in sv["reason"], sv
+
+    def test_directory_mode_execute_no_commits_not_applicable(
+        self, tmp_path: Path,
+    ) -> None:
+        """Execute mode + zero `commit_done` events for the run id →
+        commit-safe is `not_applicable`; schema-valid still aggregates
+        per-chunk."""
+        plan_dir = _write_dir_mode_plan(tmp_path)
+        sched = _write_dir_mode_schedule(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--mode", "execute",
+            "--plan-file", str(plan_dir),
+            "--schedule-file", str(sched),
+            "--run-id", "no-such-run-zzz",
+            "--json",
+        )
+        body = _parse_json(cp)
+        assert body["plan_mode"] == "directory"
+        assert body["gates"]["commit-safe"]["status"] == "not_applicable"
+        assert body["gates"]["schema-valid"]["status"] == "pass"
+        assert "subresults" in body["gates"]["schema-valid"]
+
+    def test_single_file_mode_omits_subresults(self, tmp_path: Path) -> None:
+        """Regression: single-file plan-file produces `plan_mode:
+        "single-file"` and no `subresults` key on schema-valid."""
+        plan = _write_gates_plan(tmp_path)
+        sched = _write_gates_schedule(tmp_path)
+        cp = _run(
+            "gates", "--certify", "--mode", "dry-run",
+            "--plan-file", str(plan),
+            "--schedule-file", str(sched),
+            "--json",
+        )
+        body = _parse_json(cp)
+        assert body["plan_mode"] == "single-file"
+        assert "subresults" not in body["gates"]["schema-valid"]
+
+
 class TestExtractTaskFiles:
     """`_extract_task_files_from_plan` is shared with commit-safe."""
 
