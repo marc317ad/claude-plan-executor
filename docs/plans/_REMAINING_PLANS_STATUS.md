@@ -78,6 +78,17 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 
 ---
 
+### 6. PHASE_D_STATE_MACHINE (8 tasks)
+- Status: **HALTED — author pass required** (schema-valid gate fails preflight)
+- Run id: `20260426T015900` → `failed` reason `preflight_gates_failed`
+- Root cause: `PLAN_PHASE_D_STATE_MACHINE.md` uses numbered top-level sections (`## 1. Goal`, `## 2. Why`, `## 3. Design`, `## 5. Verification`); schema-valid (per SKILL.md §Promotion criteria) requires literal headings `## Goal`, `## Context` / `## Scoped Context`, `## Verification`.
+- Fixable as format-only: `## 1. Goal` → `## Goal` and `## 5. Verification` → `## Verification` (same content, prefix removed). Not fixable as format-only: `## 2. Why` → `## Context` is a semantic rename — Why ≠ Context per the SKILL §Rules carve-out for body edits.
+- Per-task structure (### TASK-NNN blocks) IS schema-conformant — Status / Priority / Files / Test command / Acceptance criteria / Description fields all present in TASK-001 sample.
+- **User: rename `## 2. Why` → `## Context`** (or add a `## Context` heading aliasing/preceding the existing Why prose) and bare-prefix the other two headings. Then re-invoke `/implement-plan docs/plans/PHASE_D_STATE_MACHINE`.
+- Branch `plan/phase-d-state-machine` was deleted (no commits landed)
+
+---
+
 ### 5. POSTMORTEM_FIXES_2026-04-25 (10 tasks)
 - Status: **HALTED — author pass required** (cannot dispatch as-authored)
 - Run id: `20260426T015555` → `failed` reason `analyst_invalid` (build-tasks `unresolvable-dep`)
