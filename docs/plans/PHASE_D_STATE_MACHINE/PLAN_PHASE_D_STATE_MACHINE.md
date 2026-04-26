@@ -194,7 +194,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-003: Wrapper envelope sanitizer perimeter
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_codex_dispatch.py (modify)
