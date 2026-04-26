@@ -215,7 +215,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (modify — collapse the per-dispatch error-handling sub-paragraphs into one shared section)
-  - `plugins/plan-executor/scripts/plan_ops.py` (modify — `log-event` subcommand accepts new `claude_dispatch_*` event types if any were missing)
+  - `plugins/plan-executor/scripts/plan_ops.py` (modify — `log-event` subcommand accepts new `claude_dispatch_*` event types if any were missing; **add new `claude-envelope-extract` subcommand** per AC #3 — input: envelope JSON on stdin; args: `--agent {plan-analyst|plan-implementer|plan-remediator}`; output: `{status, outcome, result, scope_violation, scope_misreport, error}`)
   - `docs/plans/SKILL_bash_dispatch_migration/run-log-events.md` (create — enumerate the event types)
   - `tests/scripts/test_claude_dispatch_run_log.py` (create)
 - **Dependencies:** TASK-003, TASK-004, TASK-005
