@@ -24,6 +24,7 @@ Example invocations (resolve $PYTHON via `preflight --json`'s python_path):
 """
 
 import argparse
+import copy
 import fnmatch
 import json
 import os
@@ -461,7 +462,16 @@ ALIAS_WINDOWS: dict[str, list[str]] = {
 }
 
 CANONICAL_ID_RE = re.compile(r"^\d{3}[A-Z]?$")
-ALLOWED_SCHEDULE_TOP_LEVEL = {"outcome", "tasks", "batches", "gaps", "risks"}
+ALLOWED_SCHEDULE_TOP_LEVEL = {"outcome", "tasks", "batches", "gaps", "risks", "state"}
+# TASK-002 (PHASE_D_STATE_MACHINE): persistent orchestrator-state schema
+# (§3.2). All keys optional on input; helpers default-populate missing
+# subfields. Validation is intentionally loose: a freshly-authored schedule
+# omits `state` entirely; an in-flight schedule may have only a subset of
+# subfields populated.
+ALLOWED_SCHEDULE_STATE_FIELDS = {
+    "done", "failed", "blocked", "committed",
+    "locked_files", "review_notes", "retries_used",
+}
 # TASK-008: directory-mode canonical contract. The legacy `task_id` /
 # `batch_index` field aliases are NO longer accepted — schedules carrying
 # them produce structured `unknown-nested-field` (in `--strict`) or warning
@@ -1162,6 +1172,49 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                         })
                     else:
                         warnings.append(msg)
+
+    # TASK-002 (PHASE_D_STATE_MACHINE): optional `state` block. Loosely
+    # validated — every subfield is optional and defaults apply on read.
+    if "state" in data:
+        state = data.get("state")
+        if not isinstance(state, dict):
+            errors.append({
+                "path": "$.state",
+                "code": "invalid-type",
+                "message": "state must be an object",
+            })
+        else:
+            for key in state.keys():
+                if key not in ALLOWED_SCHEDULE_STATE_FIELDS:
+                    msg = f"state unknown field {key!r}"
+                    if strict_nested:
+                        errors.append({
+                            "path": f"$.state.{key}",
+                            "code": "unknown-nested-field",
+                            "message": msg,
+                        })
+                    else:
+                        warnings.append(msg)
+            for list_key in ("done", "failed", "blocked", "locked_files"):
+                if list_key in state and not isinstance(state[list_key], list):
+                    errors.append({
+                        "path": f"$.state.{list_key}",
+                        "code": "invalid-type",
+                        "message": f"state.{list_key} must be an array",
+                    })
+            if "committed" in state and not isinstance(state["committed"], list):
+                errors.append({
+                    "path": "$.state.committed",
+                    "code": "invalid-type",
+                    "message": "state.committed must be an array",
+                })
+            for dict_key in ("review_notes", "retries_used"):
+                if dict_key in state and not isinstance(state[dict_key], dict):
+                    errors.append({
+                        "path": f"$.state.{dict_key}",
+                        "code": "invalid-type",
+                        "message": f"state.{dict_key} must be an object",
+                    })
 
     if not errors:
         errors.extend(_validate_schedule_refs(tasks, batches))
@@ -1925,6 +1978,145 @@ def _atomic_write_text(path: Path, text: str) -> int:
         tmp.unlink(missing_ok=True)
         raise
     return len(text.encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# TASK-002 (PHASE_D_STATE_MACHINE): persistent orchestrator-state helpers.
+#
+# Pure, stateless transitions over the §3.2 `state` dict. The CLI flags
+# `--update-schedule-state` and `--from-schedule-state` are thin file-IO
+# shims that read the schedule, apply one of these helpers, and re-write
+# atomically via `_atomic_write_text`. Tests call these directly against
+# in-memory dicts.
+# ---------------------------------------------------------------------------
+
+
+def _empty_schedule_state() -> dict:
+    """Return a freshly-initialized state dict with every subfield present."""
+    return {
+        "done": [],
+        "failed": [],
+        "blocked": [],
+        "committed": [],
+        "locked_files": [],
+        "review_notes": {},
+        "retries_used": {},
+    }
+
+
+def _normalize_state(state: object) -> dict:
+    """Coerce a possibly-partial state dict to the full shape.
+
+    Missing subfields are defaulted; extra/unknown fields are preserved
+    verbatim. Returns a NEW dict (caller-owned); the input is not mutated.
+    """
+    base = _empty_schedule_state()
+    if isinstance(state, dict):
+        for k, v in state.items():
+            base[k] = copy.deepcopy(v)
+    return base
+
+
+def read_schedule_state(path) -> dict:
+    """Read the `state` block from a schedule JSON file.
+
+    Returns the normalized state dict (every subfield present). On a
+    missing file, malformed JSON, or schedule without a `state` block,
+    returns the empty-state default. Never raises.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return _empty_schedule_state()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _empty_schedule_state()
+    if not isinstance(data, dict):
+        return _empty_schedule_state()
+    return _normalize_state(data.get("state"))
+
+
+def apply_commit_state_transition(
+    state: dict, task_id: str, sha: str, files: list[str],
+) -> dict:
+    """Promote `task_id` into `state.done`, append the commit record, and
+    release this task's entries from `state.locked_files`.
+
+    Idempotent: re-applying for the same task_id is a no-op on `done`,
+    appends a fresh `committed` entry (callers should not call twice for
+    one commit), and removes the `files` from `locked_files` regardless.
+    """
+    out = _normalize_state(state)
+    if task_id not in out["done"]:
+        out["done"] = [*out["done"], task_id]
+    out["committed"] = [*out["committed"], {"task_id": task_id, "sha": sha}]
+    files_set = set(files or [])
+    out["locked_files"] = [f for f in out["locked_files"] if f not in files_set]
+    return out
+
+
+def apply_fail_state_transition(
+    state: dict, task_id: str, retries: dict | None,
+) -> dict:
+    """Append `task_id` to `state.failed` and persist the per-task
+    `retries_used` map under `state.retries_used[task_id]`.
+
+    Passing `retries=None` leaves `state.retries_used[task_id]` untouched
+    (the orchestrator may call `fail-task` without a retry-budget update
+    on stages where no retry was attempted).
+    """
+    out = _normalize_state(state)
+    if task_id not in out["failed"]:
+        out["failed"] = [*out["failed"], task_id]
+    if retries is not None:
+        new_map = dict(out["retries_used"])
+        new_map[task_id] = copy.deepcopy(retries)
+        out["retries_used"] = new_map
+    return out
+
+
+def apply_blocked_state_transition(
+    state: dict, blocked_ids: list[str],
+) -> dict:
+    """Populate `state.blocked` with the supplied ids (de-duplicated,
+    appended to any existing entries in stable order).
+    """
+    out = _normalize_state(state)
+    existing = list(out["blocked"])
+    seen = set(existing)
+    for tid in (blocked_ids or []):
+        if tid not in seen:
+            existing.append(tid)
+            seen.add(tid)
+    out["blocked"] = existing
+    return out
+
+
+def _write_schedule_state(path, state: dict) -> tuple[bool, str | None]:
+    """File-IO shim: load schedule from `path`, replace its `state` block,
+    and atomically rewrite. Returns `(written, warning)`.
+
+    On a schedule that does not exist or is malformed → `(False, warning)`
+    (no-op + warning). On a well-formed schedule, the `state` field is
+    inserted/replaced and written via `_atomic_write_text`.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return False, f"schedule file not found: {p} (state-write no-op)"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return False, f"schedule file unreadable: {e} (state-write no-op)"
+    if not isinstance(data, dict):
+        return False, "schedule top-level is not an object (state-write no-op)"
+    if "state" not in data:
+        return False, (
+            f"legacy schedule (no state block) at {p}; state-write no-op"
+        )
+    data["state"] = state
+    text = json.dumps(data, indent=2, sort_keys=False) + "\n"
+    _atomic_write_text(p, text)
+    return True, None
 
 
 def _split_task_blocks(plan_text: str) -> tuple[str, list[tuple[str, str]]]:
@@ -5114,6 +5306,18 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
     locked = set(_split_csv(args.locked_files))
     done = set(_split_csv(args.done))
     failed = set(_split_csv(args.failed))
+    # TASK-002 (PHASE_D_STATE_MACHINE): merge persisted schedule-state into
+    # the CLI-arg sets when `--from-schedule-state` is passed. Existing CLI
+    # args are preserved (set union); the flag is purely additive so the
+    # CLI-arg contract is unchanged for callers that don't opt in.
+    if getattr(args, "from_schedule_state", False):
+        persisted = read_schedule_state(sched_path)
+        done |= {tid for tid in persisted.get("done", []) if isinstance(tid, str)}
+        failed |= {tid for tid in persisted.get("failed", []) if isinstance(tid, str)}
+        locked |= {f for f in persisted.get("locked_files", []) if isinstance(f, str)}
+        # `state.blocked` joins `failed` for pick eligibility — a blocked
+        # task is unrecoverable until its blocker is resolved.
+        failed |= {tid for tid in persisted.get("blocked", []) if isinstance(tid, str)}
     # TASK-002 (prohibit_silent_revert): `paused` is a first-class scheduler
     # state. Tasks in this set are excluded from `remaining` + `ready_in_batch`
     # exactly like `failed` (skip for pick), but unlike `failed` they do NOT
@@ -6564,11 +6768,32 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
     }
     _append_run_log("commit_done", event_fields)
 
-    _emit(args, {
+    # TASK-002 (PHASE_D_STATE_MACHINE): atomically promote the task into
+    # `state.done`, append a commit record, and release this task's
+    # `state.locked_files` entries. AFTER `commit_done` is logged so the
+    # audit trail captures the commit even if state-write fails.
+    state_write_warning: str | None = None
+    state_written = False
+    sched_for_state = getattr(args, "update_schedule_state", None)
+    if sched_for_state:
+        prior_state = read_schedule_state(sched_for_state)
+        new_state = apply_commit_state_transition(
+            prior_state, tid, commit_sha, files,
+        )
+        state_written, state_write_warning = _write_schedule_state(
+            sched_for_state, new_state,
+        )
+
+    out: dict = {
         "commit_sha": commit_sha,
         "status_updated": True,
         "log_appended": True,
-    })
+    }
+    if sched_for_state:
+        out["schedule_state_written"] = state_written
+        if state_write_warning:
+            out["schedule_state_warning"] = state_write_warning
+    _emit(args, out)
 
 
 def _is_inside_submodule(abs_path: Path, rel: str, repo_root: Path) -> bool:
@@ -6971,11 +7196,30 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
         _die(args, {"errors": [log_failure]})
 
     # ---- Success. ----
-    _emit(args, {
+    # TASK-002 (PHASE_D_STATE_MACHINE): populate `state.blocked` with the
+    # cascade ids. AFTER the run-log appends so the audit trail captures
+    # the cascade even if state-write fails. State-write is best-effort:
+    # warnings surface in the response but do not fail the cascade.
+    state_write_warning: str | None = None
+    state_written = False
+    sched_for_state = getattr(args, "update_schedule_state", None)
+    if sched_for_state:
+        prior_state = read_schedule_state(sched_for_state)
+        new_state = apply_blocked_state_transition(prior_state, blocked)
+        state_written, state_write_warning = _write_schedule_state(
+            sched_for_state, new_state,
+        )
+
+    out: dict = {
         "blocked_task_ids": blocked,
         "plan_mutations_applied": plan_mutations_applied,
         "run_log_appended": run_log_appended,
-    })
+    }
+    if sched_for_state:
+        out["schedule_state_written"] = state_written
+        if state_write_warning:
+            out["schedule_state_warning"] = state_write_warning
+    _emit(args, out)
 
 
 def cmd_fail_task(args: argparse.Namespace) -> None:
@@ -7121,7 +7365,29 @@ def cmd_fail_task(args: argparse.Namespace) -> None:
         event_fields["reviewer_findings"] = parsed_findings
     _append_run_log("failed", event_fields)
 
-    _emit(args, {
+    # TASK-002 (PHASE_D_STATE_MACHINE): persist failure into
+    # `state.failed` and (optionally) `state.retries_used[task_id]`.
+    state_write_warning: str | None = None
+    state_written = False
+    sched_for_state = getattr(args, "update_schedule_state", None)
+    if sched_for_state:
+        retries_obj: dict | None = None
+        retries_raw = getattr(args, "retries_used", None)
+        if retries_raw:
+            try:
+                parsed_r = json.loads(retries_raw)
+            except json.JSONDecodeError as e:
+                _die(args, {"error": f"invalid --retries-used: {e}"})
+            if not isinstance(parsed_r, dict):
+                _die(args, {"error": "--retries-used must be a JSON object"})
+            retries_obj = parsed_r
+        prior_state = read_schedule_state(sched_for_state)
+        new_state = apply_fail_state_transition(prior_state, tid, retries_obj)
+        state_written, state_write_warning = _write_schedule_state(
+            sched_for_state, new_state,
+        )
+
+    out: dict = {
         "restore_ok": restore_ok,
         "status_updated": True,
         "log_appended": True,
@@ -7130,7 +7396,12 @@ def cmd_fail_task(args: argparse.Namespace) -> None:
         "out_of_repo_skipped": out_of_repo_skipped,
         "directory_skipped": directory_skipped,
         "submodule_skipped": submodule_skipped,
-    })
+    }
+    if sched_for_state:
+        out["schedule_state_written"] = state_written
+        if state_write_warning:
+            out["schedule_state_warning"] = state_write_warning
+    _emit(args, out)
 
 
 def cmd_update_plan_header(args: argparse.Namespace) -> None:
@@ -10763,6 +11034,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_batch.add_argument("--parallel", type=int, default=2, help="Max concurrent tasks")
+    # TASK-002 (PHASE_D_STATE_MACHINE): opt-in read of persisted state.
+    # Additive — entries from `state.{done,failed,locked_files,blocked}` are
+    # union-merged with the CLI-supplied sets. The orchestrator can drop the
+    # CSV flags entirely once every caller has migrated.
+    p_batch.add_argument(
+        "--from-schedule-state", action="store_true",
+        dest="from_schedule_state",
+        help=(
+            "Merge done/failed/locked_files/blocked from the persisted "
+            "schedule `state` block (§3.2). Additive to --done/--failed/"
+            "--locked-files; CLI-arg contract unchanged."
+        ),
+    )
     _add_json(p_batch)
 
     p_fs = sub.add_parser(
@@ -10975,6 +11259,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_commit.add_argument("--dry-run", action="store_true")
+    # TASK-002 (PHASE_D_STATE_MACHINE): on success, atomically promote the
+    # task into the persisted schedule's `state.done`, append a commit
+    # record, and release the task's `state.locked_files` entries.
+    # Schedule without a `state` block: state-write no-ops + warns.
+    p_commit.add_argument(
+        "--update-schedule-state", default=None,
+        dest="update_schedule_state",
+        help=(
+            "Path to the schedule JSON. After a successful commit, "
+            "atomically apply the commit transition to the schedule's "
+            "`state` block (`state.done`, `state.committed`, "
+            "`state.locked_files`)."
+        ),
+    )
     # TASK-020B: cap the opt-in `acceptance_v_check` runtime. Default 300s;
     # plans that need longer pass `--v-check-timeout SECONDS` explicitly.
     # Only consulted when the plan carries the YAML frontmatter key.
@@ -11024,6 +11322,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_fail.add_argument("--repo-root", default=None,
                         help="Repo root for path resolution; defaults to CWD")
     p_fail.add_argument("--dry-run", action="store_true")
+    # TASK-002 (PHASE_D_STATE_MACHINE): persist this failure into the
+    # schedule's `state.failed` and (optionally) record the per-task
+    # retry-budget map under `state.retries_used[task_id]`.
+    p_fail.add_argument(
+        "--update-schedule-state", default=None,
+        dest="update_schedule_state",
+        help=(
+            "Path to the schedule JSON. Atomically appends `task_id` to "
+            "`state.failed` and persists `--retries-used` (if supplied) "
+            "under `state.retries_used[task_id]`."
+        ),
+    )
+    p_fail.add_argument(
+        "--retries-used", default=None,
+        dest="retries_used",
+        help=(
+            "JSON object recording the retry-budget consumption for this "
+            "task (e.g. {\"bounded_remediation\": true}). Persisted into "
+            "`state.retries_used[task_id]` when `--update-schedule-state` "
+            "is set."
+        ),
+    )
     _add_json(p_fail)
 
     p_block = sub.add_parser(
@@ -11041,6 +11361,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_block.add_argument("--failed", required=True,
                          help="Task id whose failure triggers the cascade")
     p_block.add_argument("--run-id", required=True, help="Run id for log events")
+    # TASK-002 (PHASE_D_STATE_MACHINE): persist the cascade ids into
+    # `state.blocked` so subsequent `batch-next --from-schedule-state`
+    # invocations skip them without needing the CSV flags.
+    p_block.add_argument(
+        "--update-schedule-state", default=None,
+        dest="update_schedule_state",
+        help=(
+            "Path to the schedule JSON. After a successful cascade, "
+            "atomically populates `state.blocked` with the cascaded "
+            "task ids."
+        ),
+    )
     _add_json(p_block)
 
     p_hdr = sub.add_parser("update-plan-header", help="Mutate **Status:** in plan header block")

@@ -169,7 +169,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-002: Persist orchestrator state in `.schedule.json`
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify)
@@ -226,7 +226,7 @@ Single-session parallel execution within each batch is the target.
   - plugins/plan-executor/agents/content-sanitizer.md (create)
   - plugins/plan-executor/scripts/plan_codex_dispatch.py (modify)
   - tests/scripts/test_content_sanitizer_integration.py (create)
-- **Dependencies:** TASK-003
+- **Dependencies:** none
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_content_sanitizer_integration.py`
 - **Acceptance criteria:**
   - `content-sanitizer.md` declares `tools: ` (empty), cheap model tier, system prompt instructing `{clean|suspicious|malicious}` classification returning `{safe: bool, category: str, summary: str}` only.
@@ -247,7 +247,7 @@ Single-session parallel execution within each batch is the target.
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md (modify)
-- **Dependencies:** TASK-001, TASK-002, TASK-003
+- **Dependencies:** TASK-002
 - **Test command:** deferred (TASK-006)
 - **Acceptance criteria:**
   - D.2, D.2a, D.2a.5, D.2a.6 tables replaced by one paragraph describing the `review-route` call-and-comply loop, with the `unknown_state` pause rule named explicitly.
@@ -291,7 +291,7 @@ Single-session parallel execution within each batch is the target.
 - **Priority:** medium
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/dispatch-templates.md (modify)
-- **Dependencies:** TASK-001, TASK-005
+- **Dependencies:** TASK-005
 - **Test command:** deferred (TASK-008)
 - **Acceptance criteria:**
   - PhaseB-rework and PhaseB-narrow-remediation templates accept the `dispatch_context` shape `review-route` emits (`findings_for_retry`, `dismissed_for_context`, `d5_summary`).
@@ -312,7 +312,7 @@ Single-session parallel execution within each batch is the target.
 - **Files:**
   - tests/scripts/test_phase_d_e2e.py (create)
   - tests/scripts/fixtures/phase_d_plan.md (create)
-- **Dependencies:** TASK-001, TASK-002, TASK-003, TASK-005, TASK-007
+- **Dependencies:** TASK-002, TASK-005, TASK-007
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_phase_d_e2e.py`
 - **Acceptance criteria:**
   - Drives `plan_ops.py preflight → parse-schedule → write-schedule → batch-next → review-route → commit-task | fail-task` against a one-task fixture plan.
