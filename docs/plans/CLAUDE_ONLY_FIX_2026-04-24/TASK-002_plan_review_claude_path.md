@@ -25,7 +25,7 @@ The `plan-reviewer` agent's prompt mirrors the Codex prompt body 1:1 except for:
 
 ### TASK-002: Plan review Claude path
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/agents/plan-reviewer.md (create)
@@ -50,3 +50,11 @@ The `plan-reviewer` agent's prompt mirrors the Codex prompt body 1:1 except for:
 Replace the wrapper shell-out in Phase 1.5 with an Agent dispatch when `claude_only=true`. New `plan-reviewer` agent (Sonnet) produces the same envelope shape as the wrapper; `parse-plan-review-report` gains `--from-claude` to strip the envelope wrapping. Verdict-routing ladder (`approved | approved-with-notes | needs-replan`), `--codex-plan-review-binding` (now mutex with `--claude-only` per TASK-001), the auto-revise `plan-author` path, and the `--allow-gaps` demotion all keep working unchanged because they consume the parsed verdict, not the dispatch mechanism.
 
 The `plan-reviewer` agent's prompt mirrors the Codex prompt body 1:1 except for: (a) replacing Codex-specific calibration ("Codex historically overuses `needs-rework`" guidance from `dispatch-templates.md:387` is dropped — Sonnet's calibration is different), (b) "You do NOT have the Agent tool" constraint, (c) inputs are passed as Agent prompt placeholders rather than CLI args. The output schema is identical to `codex_plan_review_schema.json`.
+
+## Execution log — 20260426T010342 (success)
+
+Starting SHA: `70103df4c2f5aa70d5233ecf4ec6cf1d0133a0bd`  → Ending SHA: `4817f6f8652704fe22a1e6da5cd912f09a6f313d`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | claude | codex | clean | 0e6c0057 | new plan-reviewer agent + --from-claude parser + 13 tests |

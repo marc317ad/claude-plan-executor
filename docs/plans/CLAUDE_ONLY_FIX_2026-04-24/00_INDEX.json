@@ -13,7 +13,7 @@
       "file": "TASK-001_plumbing_claude_only_routing.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -23,7 +23,7 @@
       "depends_on": [
         "001"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -34,7 +34,7 @@
         "001",
         "002"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     }
   ]

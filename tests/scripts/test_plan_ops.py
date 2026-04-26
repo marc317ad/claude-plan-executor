@@ -8437,6 +8437,264 @@ class TestParsePlanReviewReport:
         assert body["envelope_error"] == "codex not found"
 
 
+class Test_parse_plan_review_report_from_claude:
+    """TASK-002 — `--from-claude` flag wires the Phase 1.5-Claude path
+    through the same parser. On this path stdin is the bare `parsed`
+    payload (the Agent emits the schema-conforming JSON directly without
+    the wrapper envelope's `task_id` / `subcommand` / `outcome` fields),
+    so the envelope-level checks are skipped and the body is validated
+    against the same `codex_plan_review_schema.json` the Codex path
+    validates against. Output shape is identical to the Codex path so
+    the verdict-routing ladder consumes the same parser output.
+    """
+
+    def _run_parser(self, payload: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report",
+                "--stdin", "--from-claude", "--json",
+            ],
+            input=json.dumps(payload),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    def _parsed_payload(
+        self,
+        *,
+        verdict: str = "approved",
+        plan_file: str = "sample_plan",
+        findings: list | None = None,
+        notes: list | None = None,
+        schedule_ok: bool = True,
+        summary: str = "ok",
+    ) -> dict:
+        """Build the bare `parsed` payload the Phase 1.5-Claude Agent emits."""
+        return {
+            "plan_file": plan_file,
+            "verdict": verdict,
+            "findings": findings if findings is not None else [],
+            "notes": notes if notes is not None else [],
+            "schedule_ok": schedule_ok,
+            "summary": summary,
+        }
+
+    @pytest.mark.parametrize(
+        "verdict",
+        ["approved", "approved-with-notes", "needs-replan"],
+    )
+    def test_from_claude_accepts_each_verdict(self, verdict: str) -> None:
+        """Bare `parsed` payload with each documented verdict round-trips
+        through the parser when --from-claude is set."""
+        cp = self._run_parser(self._parsed_payload(verdict=verdict))
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["verdict"] == verdict
+        assert body["plan_file"] == "sample_plan"
+        # Outcome is always "success" on the Claude path — Agent failures
+        # bubble up as Agent dispatch errors, not envelope outcomes.
+        assert body["outcome"] == "success"
+        assert body["findings_count"] == 0
+        assert body["errors"] == []
+
+    def test_from_claude_emits_same_result_shape_as_codex_path(self) -> None:
+        """The --from-claude output keys must match the Codex-path output
+        keys (modulo `outcome` always being "success" on the Claude path)
+        so the orchestrator's verdict-routing code consumes the same
+        parser output regardless of which reviewer mechanism produced it.
+        """
+        findings = [
+            {
+                "severity": "important",
+                "blocking": True,
+                "section": "tasks[002].test_command",
+                "concern": "test command is bare 'none' with no deferral",
+                "suggested_change": "add deferred (TASK-NNN) sibling reference",
+                "target_task_id": "002",
+            },
+        ]
+        cp = self._run_parser(
+            self._parsed_payload(
+                verdict="needs-replan",
+                findings=findings,
+                notes=["minor polish suggestion"],
+                schedule_ok=False,
+                summary="one blocking finding",
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # Same keys the Codex path emits in cmd_parse_plan_review_report.
+        expected_keys = {
+            "plan_file", "outcome", "verdict", "findings_count",
+            "findings", "notes", "summary", "schedule_ok", "errors",
+        }
+        assert set(body.keys()) == expected_keys
+        assert body["verdict"] == "needs-replan"
+        assert body["findings_count"] == 1
+        assert body["findings"] == findings
+        assert body["notes"] == ["minor polish suggestion"]
+        assert body["schedule_ok"] is False
+        assert body["summary"] == "one blocking finding"
+        assert body["outcome"] == "success"
+        assert body["errors"] == []
+
+    def test_from_claude_synthesizes_target_task_id_when_missing(self) -> None:
+        """Backward-compat parity with the Codex path: a finding emitted
+        without `target_task_id` is normalized to `None` so downstream
+        consumers (triage template, plan-author dispatcher) can read the
+        field uniformly."""
+        findings_input = [
+            {
+                "severity": "minor",
+                "blocking": False,
+                "section": "schedule.batches[1]",
+                "concern": "batch ordering note",
+                "suggested_change": "reorder",
+                # No target_task_id — parser must synthesize null.
+            },
+        ]
+        cp = self._run_parser(
+            self._parsed_payload(
+                verdict="approved-with-notes", findings=findings_input,
+            )
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["findings_count"] == 1
+        assert body["findings"][0]["target_task_id"] is None
+
+    def test_from_claude_rejects_invalid_verdict(self) -> None:
+        """Schema violations on the Claude path halt with the same
+        `invalid-plan-review-verdict` code the Codex path emits."""
+        cp = self._run_parser(self._parsed_payload(verdict="clean"))
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "invalid-plan-review-verdict" in codes
+
+    def test_from_claude_rejects_missing_required_field(self) -> None:
+        """Schema violations on the Claude path halt with `missing-field`
+        for absent required keys."""
+        payload = self._parsed_payload()
+        payload.pop("schedule_ok")
+        cp = self._run_parser(payload)
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "missing-field" in codes
+
+    def test_from_claude_rejects_unknown_top_level_field(self) -> None:
+        """The Claude payload is the bare `parsed` body; unknown top-level
+        fields are rejected the same way the Codex `parsed` body is."""
+        payload = self._parsed_payload()
+        payload["unexpected_top_field"] = "nope"
+        cp = self._run_parser(payload)
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "unknown-parsed-field" in codes
+
+    def test_from_claude_rejects_malformed_finding(self) -> None:
+        """A finding missing required schema keys halts with the same
+        `missing-plan-review-finding-field` /
+        `invalid-plan-review-finding-severity` codes the Codex path emits.
+        """
+        cp = self._run_parser(
+            self._parsed_payload(
+                verdict="needs-replan",
+                findings=[{"severity": "info", "section": "x"}],
+            )
+        )
+        assert cp.returncode == 1, cp.stdout
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "missing-plan-review-finding-field" in codes
+        assert "invalid-plan-review-finding-severity" in codes
+
+    def test_from_claude_skips_envelope_subcommand_check(self) -> None:
+        """Critical contract — on the Claude path the parser must NOT emit
+        `invalid-subcommand` for a payload that lacks the wrapper
+        envelope's `subcommand` field. The bare `parsed` body has no
+        `subcommand`, and the --from-claude flag tells the parser to skip
+        that envelope-level check entirely. Without --from-claude, the
+        same payload would be rejected with `invalid-subcommand`.
+        """
+        payload = self._parsed_payload()
+        # Without --from-claude this payload is rejected (TestParsePlanReviewReport
+        # `test_invalid_subcommand_hints_inner_payload` covers that case);
+        # with --from-claude the envelope-level check is skipped and the
+        # body validates cleanly.
+        cp = self._run_parser(payload)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # Sanity: no envelope-level error codes leaked into the result.
+        for code in [e["code"] for e in body["errors"]]:
+            assert "invalid-subcommand" not in code
+
+    def test_from_claude_rejects_empty_stdin(self) -> None:
+        """Empty stdin halts the same way on both paths."""
+        cp = subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report",
+                "--stdin", "--from-claude", "--json",
+            ],
+            input="",
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "empty-stdin" in codes
+
+    def test_from_claude_rejects_non_json_stdin(self) -> None:
+        """Non-JSON stdin halts the same way on both paths."""
+        cp = subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report",
+                "--stdin", "--from-claude", "--json",
+            ],
+            input="not json at all",
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "json-decode" in codes
+
+    def test_existing_callers_without_from_claude_still_work(self) -> None:
+        """Regression: every existing caller of parse-plan-review-report
+        must continue to work without the --from-claude flag (no
+        unintended behavior change on the Codex envelope path).
+        Re-asserts the contract end-to-end via a happy-path Codex
+        envelope through the default parser invocation.
+        """
+        env = _plan_review_envelope(verdict="approved-with-notes")
+        cp = subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input=json.dumps(env),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["verdict"] == "approved-with-notes"
+        assert body["outcome"] == "success"
+        assert body["errors"] == []
+
+
 class Test_parse_plan_review_triage_report:
     def _run_parser(
         self,
@@ -8728,7 +8986,14 @@ class TestPlanReviewDocumentation:
 
     def test_skill_md_has_phase_1_5_section(self) -> None:
         text = self.SKILL.read_text(encoding="utf-8")
-        assert "### Phase 1.5 — Codex plan review" in text
+        # TASK-002: the section heading qualifier evolved from "Codex plan
+        # review" to "Independent plan review" when the route-switch
+        # (claude_only=true → plan-reviewer Agent dispatch; otherwise →
+        # Codex wrapper) landed at the top of Phase 1.5. Anchor on the
+        # section number — that's the load-bearing hop the orchestrator
+        # navigates by — and validate the route-switch prose separately.
+        assert "### Phase 1.5 — " in text
+        assert "Phase 1.5-Claude" in text  # claude_only=true branch is documented.
         # V8 event order must be documented for the orchestrator to follow.
         assert "plan_review_start" in text
         assert "plan_review_done" in text
@@ -8736,7 +9001,11 @@ class TestPlanReviewDocumentation:
         assert "approved" in text
         assert "approved-with-notes" in text
         assert "needs-replan" in text
-        # V10 degradation.
+        # V10 degradation. The Codex-path wrapper-failure degrade clause
+        # still maps to `plan_review_skipped {reason:"codex_unavailable"}`
+        # for routing purposes; the legacy preflight skip clause was
+        # retired in TASK-002 (claude_only=true now dispatches the
+        # Claude reviewer instead of skipping plan review entirely).
         assert "codex_unavailable" in text
 
     def test_skill_md_documents_skip_plan_review_flag(self) -> None:

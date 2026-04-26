@@ -88,6 +88,46 @@ Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, t
 
 Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan` (when auto-revise is on — default), dispatch `plan-author` to apply findings to the plan file in place, then re-run Phase 1 end-to-end (`build-tasks` → classifier fan-out → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan, then re-run plan-review. A second `needs-replan` halts with `run_end reason=plan_review_failed`; no batches execute. If `--no-auto-revise` is set, the `needs-replan` route halts immediately with `run_end reason=plan_review_failed` instead of dispatching the author. (The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore — TASK-005 replaced it with the full Phase 1 re-run.)
 
+## Phase 1.5-Claude — plan-reviewer dispatch (claude_only path)
+
+Dispatched in place of the Codex wrapper above whenever `claude_only=true` (bound at Phase 0 preflight from `--claude-only OR (codex_available == false)` per SKILL.md §Pre-flight). The verdict-routing ladder, `--codex-plan-review-binding` mutex, the auto-revise `plan-author` path, and the `--allow-gaps` demotion all consume the parsed verdict — they are agnostic to the dispatch mechanism. The only behavioral differences vs the Codex wrapper path are (a) the dispatch is an Agent invocation rather than a `plan_codex_dispatch.py` shell-out, and (b) the run-log events carry `reviewer:"claude"` instead of `reviewer:"codex"`.
+
+Agent dispatch, `subagent_type: "plan-reviewer"`, `model: "sonnet"`. The agent produces one markdown report whose body concludes with a single fenced ```json block conforming to `scripts/codex_plan_review_schema.json` (the same schema the Codex wrapper validates against). The orchestrator pipes the full report through `parse-plan-review-report --stdin --from-claude --json` to extract the verdict; the `--from-claude` flag tells the parser to treat stdin as the bare `parsed` payload (no wrapper envelope).
+
+> Review the persisted schedule for this plan. The plan was authored by a peer analyst and decomposed into a fat manifest by `plan_ops.py build-tasks`; you are an independent pre-dispatch reviewer working from the schedule JSON alone.
+>
+> Dispatch inputs:
+>
+> - `plan_path`: `<absolute plan path>` (the directory containing `00_INDEX.json` and the per-task child files — read for context only, never edit)
+> - `schedule_path`: `<absolute schedule path>` (your primary input — read this for the unified fat `tasks[]` array; never edit)
+> - `repo_root`: `<absolute repo root>`
+> - `plan_basename`: `<plan_basename>` (the directory basename; emit this verbatim in your output `plan_file` field)
+> - `findings_count`: `<N>` (length of the prior pass's `findings[]` if this is a re-dispatch — `0` on the first pass; advisory only, your output `findings[]` is not bounded by it)
+> - `allow_gaps_demotion`: `<true|false>` (when `true`, apply the demotion clause from your agent spec)
+>
+> Cross-plan dependency resolution has already been verified by the orchestrator in Phase 0 preflight. Do not check or report on cross-plan dependencies. Focus only on schedule structure, task intent, and coordination risk expressed within the supplied schedule.
+>
+> Your job is to determine whether this plan is workable to execute, not whether it is perfect. Apply the review standard, output discipline, "Check specifically" rubric, and verdict vocabulary documented in your agent spec (`plan-reviewer.md`). Emit a markdown report whose body concludes with a single fenced ```json block conforming to `scripts/codex_plan_review_schema.json` (`{plan_file, verdict ∈ {approved, approved-with-notes, needs-replan}, findings[], notes[], schedule_ok, summary}`). Each finding MUST include `target_task_id: string | null` (task id or `null` for schedule-level findings) — the downstream triage + plan-author dispatchers route per-child based on this field.
+>
+> `plan_file` MUST equal the `plan_basename` value above; the parser pins it to that value.
+>
+> **Allow-gaps demotion clause (rendered ONLY when `allow_gaps_demotion: true`):**
+>
+> > Operator override (--allow-gaps): the user explicitly opted in to soft gaps. The persisted schedule's gaps[] contains only soft-severity entries and no structural violations. If `schedule_ok` would otherwise be false for this reason alone, demote the verdict from `needs-replan` to `approved-with-notes` and mention that demotion in the `summary`. Hard gaps or structural violations are not covered by this override.
+>
+> When `allow_gaps_demotion: false` the orchestrator omits this clause entirely; apply the standard verdict vocabulary unchanged.
+>
+> **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash. Do NOT edit the plan or the schedule. Do NOT run tests. Do NOT read source code. Do NOT mutate the git index (read-only git is fine).
+
+The orchestrator pipes the agent's markdown report through:
+
+```bash
+printf '%s' "<agent_output_extracted_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
+  parse-plan-review-report --stdin --from-claude --json
+```
+
+`parse-plan-review-report --from-claude` validates the bare `parsed` payload against `codex_plan_review_schema.json` and emits the same `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}` result the Codex path emits, so the Phase 1.5 verdict-routing table and the Phase 1.5.5 triage entry continue to consume the same parser output regardless of which reviewer mechanism produced it. Outcome on this path is always `success` — Agent-side errors bubble up as Agent dispatch failures, not envelope-level outcomes; treat such failures the same way the Codex path treats `outcome ∈ {timeout, parse_error, failure}` (degrade to `plan_review_skipped {reason:"claude_review_failure"}` for routing rather than blocking execution).
+
 ## Phase 1.5a — plan-author dispatch (needs-replan auto-revise)
 
 Dispatched only when the first Phase 1.5 Codex `plan-review` returns `needs-replan` AND auto-revise is on (default; disabled by `--no-auto-revise`). The author revises the plan text in place so a second review can proceed. Agent dispatch, `subagent_type: "plan-author"`, `model: "opus"`.
@@ -420,6 +460,8 @@ Worked examples (terse, synthetic):
 Wrapper returns `parsed.verdict ∈ {clean, minor-findings, needs-rework}` per `scripts/codex_review_schema.json`; findings carry `severity`, `confidence`, `file`, `line`, `issue`, and `suggested_fix`, plus top-level `notes[]` for non-blocking observations. Orchestrator routes by verdict.
 
 ## Phase D-Claude — code-reviewer on Codex work
+
+**TASK-003 reuse callout.** This is now the **single Claude-cross-review template**, used for both (a) Codex-impl→Claude-review (the original purpose, retained verbatim) AND (b) Claude-impl→Claude-review under `claude_only=true` (new TASK-003 routing — see SKILL.md §Phase D.1's route-switch). The template body is reused as-is on both branches; the orchestrator picks the dispatch via `claude_only`. The verdict vocabulary `{ship, ship-with-fixes, needs-rework}` is preserved on both branches; Codex-side `{clean, minor-findings, needs-rework}` is NOT synthesized when this template is used as the `claude_only=true` cross-review path. No new agent file, no new template — `code-reviewer` (Sonnet) is the sole reviewer for both directions on the Claude path.
 
 Agent dispatch, `model: "sonnet"` (explicit v1 choice — see Open risks 3):
 

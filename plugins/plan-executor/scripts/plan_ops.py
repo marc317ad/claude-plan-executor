@@ -5396,9 +5396,9 @@ def cmd_order_triage_findings(args: argparse.Namespace) -> None:
 
 
 def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
-    """Validate a Phase 1.5 Codex plan-review envelope from stdin.
+    """Validate a Phase 1.5 plan-review envelope from stdin.
 
-    Input: full JSON envelope emitted by
+    Default input: full JSON envelope emitted by
     `plan_codex_dispatch.py plan-review`. Expected shape (minimum):
         {
           "plan_file": "...",
@@ -5407,6 +5407,18 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
           "parsed": { ... },        # validated against codex_plan_review_schema
           ...
         }
+
+    With ``--from-claude`` (TASK-002): the Phase 1.5-Claude path's
+    ``plan-reviewer`` Agent emits the bare ``parsed`` payload directly
+    (no wrapper envelope, no Codex `outcome` semantics). On this path the
+    parser treats stdin as a JSON object matching
+    ``codex_plan_review_schema.json`` directly; the envelope-level
+    `subcommand` / `outcome` / `task_id` checks are skipped, and a
+    successful parse emits the same `{plan_file, verdict, findings_count,
+    findings, notes, schedule_ok, summary}` result shape as the Codex
+    path so downstream verdict routing is identical. Outcome on the
+    Claude path is always `success` (Agent-side errors bubble up as
+    Agent dispatch failures, not envelope-level outcomes).
 
     Exits non-zero with canonical `errors[*]` on schema violations so the
     orchestrator can halt the run before Phase 2. Successful validation
@@ -5438,6 +5450,40 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
             "code": "invalid-type",
             "message": "envelope must be a JSON object",
         }]})
+
+    # TASK-002 — Phase 1.5-Claude path: stdin IS the bare `parsed` payload
+    # (the Claude Agent emits the schema-conforming JSON block directly,
+    # without the wrapper envelope's `task_id` / `subcommand` / `outcome`
+    # / `codex_exit_code` fields). Skip envelope-level validation and
+    # validate the body directly against the same plan-review schema, then
+    # emit the same result shape the Codex path emits so verdict routing
+    # is identical downstream.
+    if getattr(args, "from_claude", False):
+        parsed_errors = _validate_plan_review_parsed(envelope)
+        if parsed_errors:
+            _die(args, {"errors": parsed_errors})
+        findings = envelope.get("findings") or []
+        normalized_findings: list = []
+        for item in findings:
+            if isinstance(item, dict):
+                normalized = dict(item)
+                normalized.setdefault("target_task_id", None)
+                normalized_findings.append(normalized)
+            else:
+                normalized_findings.append(item)
+        result = {
+            "plan_file": envelope.get("plan_file"),
+            "outcome": "success",
+            "verdict": envelope.get("verdict"),
+            "findings_count": len(normalized_findings),
+            "findings": normalized_findings,
+            "notes": envelope.get("notes") or [],
+            "summary": envelope.get("summary", ""),
+            "schedule_ok": envelope.get("schedule_ok"),
+            "errors": [],
+        }
+        _emit(args, result)
+        return
 
     # Envelope-level validation MUST run before the terminal-outcome shortcut
     # so a malformed envelope (e.g. `subcommand:"review"`) can't slip through
@@ -9578,12 +9624,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_prr = sub.add_parser(
         "parse-plan-review-report",
         help=(
-            "Validate a Phase 1.5 Codex plan-review envelope against "
-            "codex_plan_review_schema.json; surface verdict + findings"
+            "Validate a Phase 1.5 plan-review envelope against "
+            "codex_plan_review_schema.json; surface verdict + findings. "
+            "Default input is the Codex wrapper envelope; with "
+            "--from-claude, stdin is the bare `parsed` payload emitted "
+            "by the Phase 1.5-Claude `plan-reviewer` Agent."
         ),
     )
     p_prr.add_argument("--stdin", action="store_true", required=True,
                        help="Read plan-review envelope JSON from stdin")
+    p_prr.add_argument(
+        "--from-claude", action="store_true", dest="from_claude",
+        help=(
+            "Parse the bare `parsed` payload (Phase 1.5-Claude path) "
+            "instead of the Codex wrapper envelope. Skips the envelope-"
+            "level `subcommand`/`outcome`/`task_id` checks and validates "
+            "stdin directly against codex_plan_review_schema.json."
+        ),
+    )
     _add_json(p_prr)
 
     p_otf = sub.add_parser(
