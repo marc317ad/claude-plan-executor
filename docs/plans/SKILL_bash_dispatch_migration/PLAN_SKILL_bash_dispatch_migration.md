@@ -267,3 +267,12 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 - **`--allowedTools` enforcement (v3 Probe 2b).** If Probe 2b shows `acceptEdits` does not enforce the tool allowlist, delta-bounded cleanup carries the full weight of preventing scope creep. This plan assumes v3 handled that; if not, TASK-004 acceptance #4 and TASK-005 acceptance #2 need tightening.
 - **Reviewer dispatches left behind.** Asymmetric surface (analyst/implementer/remediator via wrapper; reviewer via `Agent` tool) is confusing for future readers. Mitigation: TASK-007 ROLLBACK.md appendix explicitly enumerates the remaining `Agent` sites. Symmetric migration is a follow-on plan once v3 expands its dispatchable set to include `code-reviewer`.
 - **Envelope size growth.** If implementer reports routinely exceed the wrapper's `result_raw_truncated` cap (16 KB per v3 §7), structured fields in `.result.report` must carry the load-bearing content. TASK-004 acceptance #7 tests this explicitly with an oversized fixture — not just by assertion.
+
+## Execution log — 20260426T055441 (paused)
+
+Starting SHA: `21f2082ef554fe1b4b4cf40ad96a29c885aab03e`  → Ending SHA: `3d342cd9ec263d10efddbc644cd0ee71e85acb4f`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | claude | codex | clean | 3d342cd | [remediation] post-D.2a.5 |
+| 001 | claude | codex | needs-rework (binding 2nd pass) | - | awaiting_user post_remediation_review |
