@@ -243,7 +243,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-005: SKILL.md rewrite — Phase D collapse, CLI diet, LLM roles
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md (modify)

@@ -53,7 +53,7 @@ The executor promotes from dry-run to execute (and from execute to "certified-cl
 | `review-safe` | Phase 0 preflight | `plan_codex_dispatch.py cmd_review` carries `_snapshot_baseline(` and respects `is_protected_path` / `PROTECTED_EXACT_PATHS`. |
 | `commit-safe` | Phase D.3 (per commit) + End-of-run certification | `git show --name-only <sha>` minus TASK-NNN's declared `Files:` list and the always-ignore set is empty. Dry-run mode → `not_applicable`. Execute mode → verified post-hoc from every `commit_done` run-log event for the run. |
 
-The always-ignore set named by `commit-safe` is the shared `COMMIT_ALWAYS_IGNORE` constant in `plugins/plan-executor/scripts/_plan_paths.py` -- the narrow set of bookkeeping paths that `commit-task` itself writes during orchestration (`docs/plans/_run_log.jsonl`, `docs/plans/_run_lock.json`, the per-plan `*.schedule.json` sidecar, and the `00_INDEX.json` roster next to the plan). `commit-task`'s staging logic and the post-commit `_gate_commit_safe` predicate both key on this same constant, so the pre-commit and post-commit sides cannot drift. Executor scripts such as `plan_ops.py` are protected from delta-cleanup but must still be declared in Files: to commit against; they are NOT members of `COMMIT_ALWAYS_IGNORE`.
+The always-ignore set is the shared `COMMIT_ALWAYS_IGNORE` constant in `_plan_paths.py` (run-log / run-lock / schedule sidecar / `00_INDEX.json`); `commit-task` staging and the post-commit `_gate_commit_safe` predicate key on the same constant. Executor scripts (`plan_ops.py`) are protected from delta-cleanup but must still be declared in `Files:` to commit against — they are NOT members of `COMMIT_ALWAYS_IGNORE`.
 
 **Dry-run pass condition:** `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe` all `pass`; `commit-safe` is `not_applicable` (no commits in dry-run).
 
@@ -71,28 +71,37 @@ Never write inline Python for plan operations. Never `git stash` inside this ski
 
 ## plan_ops.py CLI reference
 
-All subcommands accept `--json` for machine-readable output.
+One-line purpose per subcommand. All accept `--json`. **Run `$PYTHON plan_ops.py <subcommand> --help` for full flag surfaces, validators, and JSON envelope shapes — `--help` is the source of truth.**
 
 | Command | Purpose |
 |---|---|
-| `plan_ops.py preflight --plan-file <abs> [--strict-branch]` | Smart dirty-tree + codex probe + starting_sha + run_id + base-branch check |
-| `plan_ops.py parse-schedule --stdin [--strict]` | Validate analyst JSON; surface errors, tasks, batches, gaps, risks. `--strict` promotes unknown nested fields from warning to error. |
-| `plan_ops.py compute-schedule --stdin [--strict]` | Recompute file-disjoint + topo-respecting batches from `tasks[]`; standalone helper, not invoked by `/implement-plan` Phase 1. |
-| `plan_ops.py write-schedule --schedule-file <path> --stdin [--strict]` | Validate + atomically persist schedule JSON. Refuses to write on any validation error. |
-| `plan_ops.py batch-next --schedule-file ... --locked-files ... --done ... --failed ... --parallel N` | Pick next batch respecting file locks; flags `scheduler_stuck` |
-| `plan_ops.py parse-implementer-report --stdin` | Extract outcome / files_changed / diff_summary / test_outcome / concerns / plan_adaptations / reversion_guidance / warnings / **diagnostics** from the plan-implementer markdown report. `concerns` and `plan_adaptations` are lists of strings (one bullet each). |
-| `plan_ops.py parse-plan-review-report --stdin` | Validate a Phase 1.5 Codex plan-review envelope against `codex_plan_review_schema.json`; surface `{plan_file, verdict ∈ {approved, approved-with-notes, needs-replan}, findings_count, findings, schedule_ok, summary}`. Halts with structured `errors[*]` on schema violations. |
-| `plan_ops.py commit-task ...` | Full D.3: guard, plan-status mutate (→ done), narrow `git commit --only`, SHA capture, run-log `commit_done` append |
-| `plan_ops.py fail-task --stage implement\|review\|commit ...` | Full Phase C / D.4: git restore (if files), plan-status mutate (→ failed), run-log `failed` append |
-| `plan_ops.py block-dependents --schedule-file <path> --plan-file <abs> --failed NNN --run-id <id>` | Cascade `blocked` onto transitive dependents: single plan read/write flips each dependent's `**Status:**` to `blocked`, then appends `blocked` run-log events. Source-of-truth invariant is the plan file. |
-| `plan_ops.py update-plan-header --status in-progress\|complete\|partial` | Mutate the plan-file top-level `**Status:**` |
-| `plan_ops.py finalize-execution-log ...` | Append §5 execution-log markdown table to plan |
-| `plan_ops.py log-event --event E --fields-json '{...}'` | Append JSONL event with tail re-verify |
-| `plan_ops.py normalize-task-id --id 1\|001\|TASK-001\|004A\|TASK-004A` | Canonicalize to `^\d{3}[A-Z]?$` form |
-| `plan_ops.py acquire-lock / release-lock --plan-file ... --run-id ...` | Per-plan-file run-lock against `<run_lock>` |
-| `plan_ops.py path-info` | Emit configured `plan_dir` + derived `run_log` / `run_lock` / `schedule_glob` paths. Run once at Phase 0 to bind the `<plan_dir>` / `<run_log>` / `<run_lock>` / `<schedule_file>` placeholders used throughout this skill. |
-| `plan_ops.py gates --list\|--check <csv>\|--certify --mode dry-run\|execute` | Phase-gate predicates. The six canonical gates — `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`, `commit-safe` — return `{name, status ∈ pass\|fail\|not_applicable, reason}`. Used at Phase 0 preflight (schema + schedule + fixture + execution-safe + review-safe), after each Phase D.3 commit (`commit-safe` for that SHA), and at End-of-run (`--certify --mode execute --run-id <id>` for the full bundle). See §9.7 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
-| `plan_ops.py audit --list\|--json\|--report-file <path>\|--check <csv>\|--strict` | Standing self-audit (TASK-007). Cross-references shipped artifacts (`plan_ops.py`, `plan_codex_dispatch.py`, schema sidecars, SKILL.md, dispatch templates, design doc) against `CANONICAL_CONTRACT`. Findings carry `{check, tier ∈ default\|advisory, status ∈ pass\|fail, canonical, actual, reason}`. TASK-008 retired the legacy alias windows, so audit findings are now plain `pass`/`fail` only. Default verdict excludes advisory tier; `--strict` includes it. Run before any rerun and after substantive protocol changes. See §14 of `DUAL_AGENT_PLAN_EXECUTOR.md`. |
+| `preflight` | Dirty-tree + codex probe + starting_sha + run_id + base-branch check. |
+| `parse-schedule` | Validate analyst JSON shape. |
+| `compute-schedule` | Recompute file-disjoint + topo-respecting batches (standalone). |
+| `write-schedule` | Atomically persist analyst schedule JSON. |
+| `batch-next` | Pick next file-disjoint batch from `.schedule.json` state. |
+| `review-route` | Map a (verdict, claude_only, flags) tuple to a routing action. |
+| `reconcile-batch` | Batch-join out-of-scope reconciliation across wrapper envelopes. |
+| `parse-implementer-report` | Extract outcome/files_changed/diagnostics from implementer markdown. |
+| `parse-plan-review-report` | Validate Phase 1.5 Codex plan-review envelope. |
+| `parse-d5-adjudication` | Validate Phase D.5 third-opinion verdict. |
+| `commit-task` | Phase D.3: guard, status→done, narrow commit, run-log append. |
+| `fail-task` | Phase C / D.4 reversion with explicit authorization-source. |
+| `block-dependents` | Cascade `blocked` onto transitive dependents. |
+| `update-plan-header` | Mutate plan-file top-level `**Status:**`. |
+| `finalize-execution-log` | Append §5 execution-log table to plan. |
+| `log-event` | Append JSONL run-log event with tail re-verify. |
+| `normalize-task-id` | Canonicalize task id to `^\d{3}[A-Z]?$`. |
+| `acquire-lock` / `release-lock` | Per-plan-file run-lock. |
+| `path-info` | Emit `plan_dir` + derived `run_log` / `run_lock` / `schedule_glob`. |
+| `gates` | Phase-gate predicates (`schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`, `commit-safe`). |
+| `audit` | Standing self-audit against `CANONICAL_CONTRACT`. |
+| `auto-validate-divergence` | Phase C sandbox-divergence escape-hatch. |
+| `lint-plans` | Cross-reference plan `**Status:**` markers against run-log + git history. |
+| `run-summary` | Emit per-section run summary (e.g., `sandbox-divergences`). |
+| `build-tasks` | Build the fat `tasks[]` manifest from per-child plan files. |
+
+Footer: every flag, enum, and JSON shape is documented in `$PYTHON plan_ops.py <sub> --help`. Re-grep `--help` after any context compaction; do not rely on hand-curated examples in this file.
 
 ## Per-task `<plan-file>` resolution (TASK-004 write sites)
 
@@ -167,7 +176,7 @@ mirror failure does not block the run.
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" decompose-plan --plan-file <absolute plan> --json
 ```
 
-The subcommand reads the whole-plan `## TASK-NNN:` markdown and writes a sibling directory at `<file-parent>/<file-stem>/` containing `00_INDEX.json` plus one `TASK-NNN_<slug>.md` child per task (each child uses the `### TASK-NNN:` H3 sub-heading that `build-tasks` and every downstream parser expects). On success the result JSON carries `produced_dir` + `task_count`; rebind `<plan-path>` ← `produced_dir` and proceed as if the user had passed a directory from the start. On malformed input the subcommand exits 1 with a structured `errors[*]` list (missing `## TASK-NNN:` headers, duplicate ids, missing required metadata, unresolvable deps, cycles) — surface the errors verbatim and halt without acquiring the lock. Append a run-log event (still via the bootstrap interpreter — `$PYTHON` is bound only after preflight):
+The subcommand reads whole-plan `## TASK-NNN:` markdown and writes a sibling directory at `<file-parent>/<file-stem>/` with `00_INDEX.json` + one `TASK-NNN_<slug>.md` child per task (each child uses the `### TASK-NNN:` H3 heading downstream parsers expect). Success → rebind `<plan-path>` ← `produced_dir`. Malformed input → exit 1 with structured `errors[*]` (missing headers, duplicate ids, unresolvable deps, cycles) — halt without acquiring the lock. Append a run-log event (still via the bootstrap interpreter — `$PYTHON` binds after preflight):
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
@@ -177,7 +186,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
 
 `preflight` runs next (see below) and pins `$PYTHON` for every subsequent `$PYTHON ...` command line in this skill.
 
-Do NOT read the produced child files into the orchestrator's context — the `ls` of the directory is enough; every subsequent phase opens children on demand. The produced directory is treated identically to a user-authored decomposed directory: run-log `plan_file` metadata on `run_start` reflects the directory basename, not the original file. The single `decompose-plan` invocation is the orchestrator's only direct interaction with the whole-plan markdown — after this point everything downstream sees a directory. See §Input shape below for the canonical bindings and the auto-promotion precondition that makes every downstream phase assume `plan_path.is_dir()`.
+Do NOT read the produced child files into context — `ls` of the directory is enough; downstream phases open children on demand. The produced directory is treated identically to a user-authored decomposed directory; `run_start.plan_file` reflects the directory basename. See §Input shape below for canonical bindings.
 
 First, bind the path placeholders used throughout this skill by querying the configured plan directory:
 
@@ -217,21 +226,15 @@ Then run preflight:
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" preflight --plan-file <absolute plan> [--strict-branch] [--strict-scope] [--unattended-revert-policy pause|fail-fast|preserve-only]
 ```
 
-Returns JSON with `pass`, `starting_sha`, `run_id`, `codex_available`, `python_path`, `unattended_revert_policy`, `dirty_files{plan_doc, orchestrator_state, plan_scope_dirty, source_blocking}`, `scope_warnings[]`, `base_branch`, `current_branch`, `base_branch_match`. Halts on `source_blocking` dirty. `plan_doc` churn (the plan file being executed) is allowed. `orchestrator_state` (run-log / run-lock / schedule sidecar) warns but proceeds. `plan_scope_dirty` (paths declared in some task's `Files:` list) is surfaced with per-task attribution and mirrored into `scope_warnings[]`; in non-strict mode it is advisory only (does NOT flip `pass`). Pass `--strict-scope` to promote it to a blocking condition.
+Returns JSON with `pass`, `starting_sha`, `run_id`, `codex_available`, `python_path`, `unattended_revert_policy`, `dirty_files{plan_doc, orchestrator_state, plan_scope_dirty, source_blocking}`, `scope_warnings[]`, `base_branch`, `current_branch`, `base_branch_match`. Halts on `source_blocking`. `plan_doc` churn allowed; `orchestrator_state` warns + proceeds; `plan_scope_dirty` is advisory unless `--strict-scope` is set.
 
 **After preflight**, pin `$PYTHON` for the rest of the run by exporting `PYTHON=<python_path>` from the preflight JSON. Every subsequent `$PYTHON ...` command line in this skill uses the pinned value. If you need to re-dispatch from a fresh shell context, re-export from the same preflight result — do NOT re-resolve in templates.
 
-**Pin `$UNATTENDED_REVERT_POLICY`** the same way: export `UNATTENDED_REVERT_POLICY=<unattended_revert_policy>` from the preflight JSON and use the pinned value for every subsequent pause-path consumer in this run (the awaiting-user pause subroutine introduced in TASK-004, plus the dispatch logic in TASK-005 / TASK-006 / TASK-007 / TASK-008 / reconcile-batch). Do NOT re-resolve from a fresh argparse invocation. The flag is NOT argparse-required: when stdin is a TTY and the operator omits `--unattended-revert-policy`, preflight defaults to `pause` and continues; when stdin is NOT a TTY (cron/CI/wrapped invocation) and the flag is absent, preflight refuses with `errors[*].code = "unattended-revert-policy-required"` so unattended execution cannot silently discard work on a pause path. The three values mean: `pause` — block on the human-in-the-loop seam (the first-principles default for interactive runs; the orchestrator surfaces the pause record and waits); `fail-fast` — emit a structured failure record and halt the run instead of pausing (consumer wiring lands in TASK-005 / TASK-006 / TASK-007 / TASK-008); `preserve-only` — preserve/log the discarded diff to a salvage ref (side location), THEN fail-task / halt the run (consumer wiring also lands in TASK-005 / TASK-006 / TASK-007 / TASK-008). Until those downstream tasks land, only the preflight handshake and this pin are wired up.
+**Pin `$UNATTENDED_REVERT_POLICY`** the same way: export `UNATTENDED_REVERT_POLICY=<unattended_revert_policy>` from the preflight JSON and use the pinned value for every pause-path consumer (Awaiting-user pause subroutine, reconcile-batch). The flag is not argparse-required: TTY stdin defaults to `pause`; non-TTY stdin without the flag refuses with `errors[*].code = "unattended-revert-policy-required"`. Values: `pause` (interactive default — surfaces pause record and waits); `fail-fast` (structured failure record + halt instead of pausing); `preserve-only` (salvage the diff to a side ref, then fail-task / halt).
 
 If `codex_available=false`, override `tasks[].agent = "claude"` throughout Phase 1 and warn; wrapper's own "codex binary not found on PATH" branch is the backstop.
 
-**Bind `claude_only` (single routing boolean).** Immediately after preflight returns, bind a single boolean `claude_only` for the rest of the run, defined as the OR of (a) the operator opt-in `--claude-only` flag and (b) the preflight signal `codex_available == false`:
-
-```
-claude_only := (--claude-only is set) OR (preflight.codex_available == false)
-```
-
-This is the canonical routing flag that every downstream phase consults (Phase 1.5 plan review, Phase D cross-review). Hoisting it to one place keeps the routing decision stateless across phases — no phase recomputes it from the underlying inputs. Behavior wiring on this flag lands in TASK-002 (plan review skip) and TASK-003 (cross-review skip); TASK-001 documents the binding only. Once bound, `claude_only` flows into the `run_start` event's `fields` as `claude_only: <bool>` (the field is added when TASK-002 / TASK-003 wire the downstream phases).
+**Bind `claude_only` (single routing boolean).** `claude_only := (--claude-only is set) OR (preflight.codex_available == false)`. The canonical routing flag every downstream phase consults (Phase 1.5 plan review, Phase D cross-review); hoisted once to keep the decision stateless across phases. Flows into `run_start.fields.claude_only` for audit.
 
 Then run the mandatory cross-plan dependency gate:
 
@@ -254,17 +257,7 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
 
 Halt on any `status: fail`, emitting the gate's `reason` verbatim and logging `run_end reason=preflight_gates_failed`. The halt is strict for every gate in the preflight set -- including `fixture-valid` -- with no per-plan exception and no demotion to warning. The frozen gate status vocabulary is `pass|fail|not_applicable`; there is no `warn` status and no `--warn-only` flag on the `gates` subcommand.
 
-**Per-child `schema-valid` loop.** Run `schema-valid` once per `chunks[].file` in `<plans_dir>/00_INDEX.json`, halting on the first failure. Emit the halt message as `schema-valid failed for child <basename>: <gate.reason>` so the operator can fix the offending child without scanning the full set. `fixture-valid` / `execution-safe` / `review-safe` still run once (they validate the executor itself and the shipped sample fixture, not the user's plan). Pseudocode sketch:
-
-```
-roster = plan_ops.load_00_index(plans_dir)
-for chunk in roster["chunks"]:
-    child = plans_dir / chunk["file"]
-    r = gates_check(["schema-valid"], plan_file=child)
-    if r.failed:
-        halt("schema-valid failed for child " + chunk["file"] + ": " + r.reason)
-gates_check(["fixture-valid", "execution-safe", "review-safe"])  # once
-```
+**Per-child `schema-valid` loop.** Run `schema-valid` once per `chunks[].file` in `<plans_dir>/00_INDEX.json`, halting on the first failure with `schema-valid failed for child <basename>: <gate.reason>`. `fixture-valid` / `execution-safe` / `review-safe` run once each (they validate the executor itself and the shipped fixture, not the user's plan).
 
 Then acquire the run-lock:
 
@@ -339,22 +332,15 @@ Apply the `codex_available=false` preflight override here too — if the preflig
 
 After the merged `tasks[]` has an `agent` field on every entry (either declared in source or filled by step 2), the orchestrator synthesizes the canonical schedule shape in memory and applies any filter / agent-override flags. **No re-batch happens here**: `build-tasks` already emitted topo + file-lock-correct `batches[]` in step 1 using the same canonical batcher the standalone batch-recompute helper would call, so any post-step-2 batcher re-pipe would be a provable no-op. The merged schedule flows directly from this step into step 4's `write-schedule` without any further batching call.
 
-**Shape-shift between `build-tasks` and `write-schedule`.** `build-tasks` emits `{ok, outcome, tasks, batches, warnings, errors}` — six keys, not the canonical schedule shape. The orchestrator synthesizes the canonical 5-key top-level schedule `{outcome, tasks, batches, gaps, risks}` in memory by (a) keeping `tasks` from `build-tasks` (merged with step 2's `agent` populations), (b) keeping `batches` from `build-tasks` verbatim, (c) discarding `ok` / `errors` (the caller already halted on errors in step 1), (d) **mapping `warnings[]` → `gaps[]`** via the transform `{task_id: w.task_id, type: w.code, severity: "soft", detail: w.message}` so the warning signal is preserved in the persisted schedule (each `build-tasks` warning carries `{code, task_id, plan_file, message}` — the `plan_file` field is dropped because `gaps[]` does not carry it; downstream lookup goes through `tasks[].plan_file` instead), and (e) defaulting `risks: []` (risks were legacy analyst output and are not synthesized on this path). The persisted `outcome` is derived from the mapped `gaps[]` to satisfy the schedule validator (which enforces `outcome='valid'` ⟺ `gaps == []` and `outcome='needs-enrichment'` ⟺ `gaps != []`): emit `outcome='needs-enrichment'` when `warnings[]` is non-empty (and the caller is on the warn+proceed branch — allow-gaps short-circuit, or analyst-triage `ship`/`ship-with-fixes` verdict), and `outcome='valid'` when `warnings[]` is empty. `write-schedule --stdin` in step 4 rejects any top-level key outside the canonical five, so this shape-shift is a hard pre-step — do not pipe the raw `build-tasks` output into `write-schedule`.
+**Shape-shift `build-tasks` → `write-schedule`.** `build-tasks` emits `{ok, outcome, tasks, batches, warnings, errors}`; the canonical schedule shape is `{outcome, tasks, batches, gaps, risks}`. The orchestrator synthesizes it in memory: keep `tasks` (merged with step 2 `agent`), keep `batches` verbatim, drop `ok`/`errors`, **map `warnings[] → gaps[]`** as `{task_id, type:w.code, severity:"soft", detail:w.message}` (drop `plan_file`; downstream lookup is via `tasks[].plan_file`), default `risks:[]`. Persisted `outcome` is derived per the validator: `outcome='valid'` ⟺ `gaps==[]`, else `outcome='needs-enrichment'`. `write-schedule --stdin` rejects any top-level key outside the canonical five — the shape-shift is mandatory.
 
 Apply filters and overrides at this seam (on the in-memory schedule, before persistence):
 
 - `--claude-only` or `codex_available=false` → rewrite `tasks[].agent = "claude"` in the in-memory schedule.
 - `--codex-only` → drop claude tasks.
-- `--task-ids` → now stays fully in-memory alongside every other branch. `filter-schedule` supports `--stdin` (user-authorized TASK-005 scope expansion), so the round-3 "pre-persist / filter / re-persist" workaround is retired. On the `--stdin` path `filter-schedule` accepts any schedule `outcome` that parses — including `outcome='needs-enrichment'` emitted by the Step 3 warnings→gaps mapping — so the in-memory schedule flows through filtering without a round-trip to disk. Sequence:
-  ```bash
-  # Filter the in-memory schedule directly; no mid-pipeline persistence.
-  in_memory_schedule=$(printf '%s' "$in_memory_schedule" \
-    | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" filter-schedule \
-      --stdin --task-ids <csv> --json)
-  ```
-  `filter-schedule` emits the requested IDs plus their transitive prerequisites in source order, preserving the source schedule's batch boundaries (it trims `task_ids` within surviving batches; it does not re-batch). Unknown requested ID halts with `unknown-task-id`; a transitive dep missing from `tasks[]` halts with `missing-dependency`; a cycle in the filtered subgraph halts with `dependency-cycle`. The in-memory invariant is now universal — **every branch waits for Step 4's lone `write-schedule`**. `--task-ids` no longer writes a mid-pipeline schedule. (The `--schedule-file` path of `filter-schedule` is retained for backward compatibility and still requires `outcome='valid'`; only `--stdin` relaxes that gate.)
+- `--task-ids` → in-memory: pipe the schedule through `filter-schedule --stdin --task-ids <csv> --json` (emits requested IDs + transitive prerequisites preserving source batch boundaries). Unknown ID → halt `unknown-task-id`; missing dep → `missing-dependency`; cycle → `dependency-cycle`. The `--stdin` path accepts `outcome='needs-enrichment'`; the legacy `--schedule-file` path still requires `outcome='valid'`.
 
-The filtered in-memory schedule flows directly into Step 4 — no `compute-schedule` re-pipe in either branch. Persistence still happens exclusively in Step 4.
+Filtered in-memory schedule flows directly into Step 4. No `compute-schedule` re-pipe; persistence happens exclusively in Step 4.
 
 ### Step 4 — Persist the schedule and gate
 
@@ -373,32 +359,9 @@ Halt on `status: fail` with `run_end reason=schedule_gate_failed`. `write-schedu
 
 **Fire conditions.** `build-tasks` returned `ok: true` with at least one entry in `warnings[]` (the new-flow analogue of the retired `outcome=needs-enrichment`), AND `--allow-gaps` NOT set AND `--analyst-binding` NOT set. Evaluate `--allow-gaps` first: if set, skip triage and warn + proceed regardless of `--analyst-binding`. Only if `--allow-gaps` is NOT set does `--analyst-binding` take effect (halt). Otherwise take the skip branches above (allow-gaps → warn + proceed; binding → halt).
 
-**Dispatch.** `Agent(subagent_type: "plan-review-triage", model: "sonnet", prompt: render(templates.PlanTriage, source="plan-analyst", plan_text, warnings, analyst_outcome, findings_count))`. Uses the Phase 1-triage / Phase 1.5.5 dispatch template from `dispatch-templates.md` with `source="plan-analyst"`. `schedule_path` is intentionally absent — no schedule file exists at this seam (Phase 1-triage fires from Step 1, before Step 4 `write-schedule`); the triage subagent operates solely on the plan text and `warnings[]`. The full shape of the `warnings[]` payload (field names, per-entry schema, renderer placeholder substitution) is TASK-007's scope; until that lands the triage template continues to reference "analyst gaps" in its prose — treat `warnings[]` as the new source that the template's legacy "gaps" placeholder binds to.
+**Dispatch.** Agent (`plan-review-triage`, `model: "sonnet"`) using the Phase 1-triage / Phase 1.5.5 template with `source="plan-analyst"`. `schedule_path` is intentionally absent — no schedule exists at this seam (Phase 1-triage fires from Step 1, pre-Step 4 `write-schedule`); the agent operates on plan text + `warnings[]`. Wrap with `plan_review_triage_start {source:"plan-analyst", findings_count:<N>}` before and `plan_review_triage_done {source, verdict, load_bearing_count, dismissed_count, summary}` after. Pipe the agent output through `parse-plan-review-triage-report --stdin --source plan-analyst --findings-count <N> --json` — returns `{verdict, load_bearing, dismissed, summary, findings_count, source}`.
 
-**Parse.**
-
-```bash
-printf '%s' "<agent_output>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
-  parse-plan-review-triage-report --stdin --source plan-analyst --findings-count <N> --json
-```
-
-`<N>` is the length of the `warnings[]` array from the prior `build-tasks --json` call (the new analogue of the retired analyst `gaps[]`). The parser returns `{verdict, load_bearing, dismissed, summary, findings_count, source}`.
-
-**Run-log events.** Wrap the dispatch:
-
-```bash
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-  --event plan_review_triage_start \
-  --fields-json '{"run_id":"<id>","plan_file":"<basename>","source":"plan-analyst","findings_count":<N>}' --json
-
-# Agent dispatch (plan-review-triage, model: sonnet) — Phase 1-triage template.
-
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-  --event plan_review_triage_done \
-  --fields-json '{"run_id":"<id>","plan_file":"<basename>","source":"plan-analyst","verdict":"<v>","load_bearing_count":<k>,"dismissed_count":<m>,"summary":"..."}' --json
-```
-
-**Route by verdict.** (Verdict-routing language is shared with Phase 1.5.5 — see the routing ladder there. The concrete per-source actions are:)
+**Route by verdict.**
 
 | Verdict | Action (analyst source) |
 |---|---|
@@ -428,69 +391,12 @@ Both branches feed the **same** `parse-plan-review-report` parser and produce th
 
 Otherwise, proceed with the route-switched review.
 
-**Phase 1.5-Claude path (`claude_only=true`).** Wrap the Agent dispatch with `plan_review_start {reviewer:"claude", plan_file:"<basename>"}` before and `plan_review_done {reviewer:"claude", verdict, findings_count, summary}` after:
+**Both paths.** Wrap the dispatch with `plan_review_start {reviewer, plan_file}` before and `plan_review_done {reviewer, plan_file, verdict, findings_count, summary}` after.
 
-```bash
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-  --event plan_review_start \
-  --fields-json '{"reviewer":"claude","plan_file":"<basename>"}' --json
+- **`claude_only=true` (Phase 1.5-Claude path).** Dispatch the `plan-reviewer` Agent (`model: "sonnet"`) using the Phase 1.5-Claude template; the agent emits a markdown report ending in a fenced ```json block. Pipe that JSON through `parse-plan-review-report --stdin --from-claude --json`.
+- **`claude_only=false` (Phase 1.5-Codex path).** Shell out to `$PYTHON plan_codex_dispatch.py plan-review --schedule-file <schedule_file> --repo-root <repo> --timeout 180 [--allow-gaps]`. The wrapper emits the full envelope `{task_id, subcommand, outcome, codex_exit_code, parsed}`; pipe the entire envelope (NOT just `parsed`) through `parse-plan-review-report --stdin --json` (no `--from-claude` flag). Schedule-only review post-TASK-008: the reviewer reads only `<schedule_file>` (unified fat `tasks[]`); `--plan-file` and `--plans-dir` were removed.
 
-# Agent dispatch (plan-reviewer, model: sonnet) — Phase 1.5-Claude template
-# from dispatch-templates.md. Inputs: plan_path, schedule_path, repo_root,
-# plan_basename, findings_count, allow_gaps_demotion.
-
-# Pipe the agent's emitted JSON block (extracted from its markdown report)
-# through the parser with --from-claude:
-printf '%s' "<agent_output_extracted_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
-  parse-plan-review-report --stdin --from-claude --json
-
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-  --event plan_review_done \
-  --fields-json '{"reviewer":"claude","plan_file":"<basename>","verdict":"<v>","findings_count":<n>,"summary":"..."}' --json
-```
-
-**Phase 1.5-Codex path (`claude_only=false`).** Wrap the wrapper shell-out with `plan_review_start {reviewer:"codex", plan_file:"<basename>"}` before and `plan_review_done {reviewer:"codex", verdict, findings_count, summary}` after:
-
-```bash
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-  --event plan_review_start \
-  --fields-json '{"reviewer":"codex","plan_file":"<basename>"}' --json
-
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
-  --schedule-file <schedule_file> \
-  --repo-root <absolute repo root> \
-  --timeout 180 \
-  [--allow-gaps]
-
-# Schedule-only review (post-TASK-006/008): the reviewer reads only the persisted
-# <schedule_file> for the unified fat tasks[] (description + acceptance_criteria
-# included) and validates DAG / file-disjointness / classification / AC-vs-files
-# alignment from the schedule alone. --plan-file and --plans-dir were removed
-# in TASK-008. Codex returns approved|approved-with-notes|needs-replan against
-# the unified schedule.
-
-```
-
-The full wrapper envelope (produced by `plan_codex_dispatch.py plan-review`) has shape:
-
-```json
-{
-  "task_id": "plan",
-  "subcommand": "plan-review",
-  "outcome": "success",
-  "codex_exit_code": 0,
-  "parsed": { "plan_file": "...", "verdict": "...", "findings": [...], "notes": [...], "schedule_ok": true, "summary": "..." }
-}
-```
-
-Pipe the entire envelope (not just `parsed`) into `parse-plan-review-report` (no `--from-claude` flag on this path):
-
-```bash
-printf '%s' "<envelope>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
-  parse-plan-review-report --stdin --json
-```
-
-`parse-plan-review-report` validates the envelope against `codex_plan_review_schema.json` and extracts `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}`. Cross-plan dependency resolution is verified by the orchestrator's Phase 0 `check-plan-deps` gate and is no longer surfaced by the reviewer. Schema violations halt with structured `errors[*]`. Wrapper timeout / parse_error / failure outcomes surface as `outcome ∈ {timeout, parse_error, failure}`; treat as `plan_review_skipped {reason:"codex_unavailable"}` for routing purposes — the pre-dispatch gate degrades on reviewer-side errors rather than blocking execution. (The Phase 1.5-Claude path's Agent dispatch failures are treated symmetrically — degrade to `plan_review_skipped {reason:"claude_review_failure"}` for routing purposes per the `dispatch-templates.md` §Phase 1.5-Claude note.)
+`parse-plan-review-report` validates the envelope against `codex_plan_review_schema.json` and extracts `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}`. Schema violations halt with structured `errors[*]`. Wrapper timeout / parse_error / failure outcomes degrade to `plan_review_skipped {reason:"codex_unavailable"}`; Agent dispatch failures degrade to `plan_review_skipped {reason:"claude_review_failure"}` (see `dispatch-templates.md` §Phase 1.5-Claude). Cross-plan dependency resolution is enforced by Phase 0 `check-plan-deps` and is no longer surfaced by the reviewer.
 
 Append `plan_review_done {reviewer, verdict, findings_count, summary}` and route by verdict:
 
@@ -511,30 +417,7 @@ Append `plan_review_done {reviewer, verdict, findings_count, summary}` and route
 - `--codex-plan-review-binding` → halt immediately with `run_end reason=plan_review_failed`; NO triage dispatch, NO plan-author dispatch. Parallel to `--codex-review-binding` at task level.
 - `--no-auto-revise` → halt immediately (today's behavior, unchanged); NO triage dispatch.
 
-**Dispatch.** `Agent(subagent_type: "plan-review-triage", model: "sonnet", prompt: render(templates.PlanTriage, source="codex-plan-review", plan_text, findings, codex_summary, schedule_path, findings_count))`. Uses the same Phase 1-triage / Phase 1.5.5 dispatch template from `dispatch-templates.md` with `source="codex-plan-review"` — single template, two seams.
-
-**Parse.**
-
-```bash
-printf '%s' "<agent_output>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" \
-  parse-plan-review-triage-report --stdin --source codex-plan-review --findings-count <N> --json
-```
-
-`<N>` is the `findings_count` from the prior `parse-plan-review-report --json` call.
-
-**Run-log events.** Wrap the dispatch:
-
-```bash
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-  --event plan_review_triage_start \
-  --fields-json '{"run_id":"<id>","plan_file":"<basename>","source":"codex-plan-review","findings_count":<N>}' --json
-
-# Agent dispatch (plan-review-triage, model: sonnet) — Phase 1.5.5 template.
-
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-  --event plan_review_triage_done \
-  --fields-json '{"run_id":"<id>","plan_file":"<basename>","source":"codex-plan-review","verdict":"<v>","load_bearing_count":<k>,"dismissed_count":<m>,"summary":"..."}' --json
-```
+**Dispatch.** Agent (`plan-review-triage`, `model: "sonnet"`) using the same Phase 1-triage / Phase 1.5.5 template with `source="codex-plan-review"` (single template, two seams). Wrap with `plan_review_triage_start {source:"codex-plan-review", findings_count:<N>}` / `plan_review_triage_done {source, verdict, load_bearing_count, dismissed_count, summary}`. `<N>` comes from the prior `parse-plan-review-report --json`. Pipe agent output through `parse-plan-review-triage-report --stdin --source codex-plan-review --findings-count <N> --json`.
 
 **Route by verdict.**
 
@@ -549,33 +432,13 @@ On `partial-agreement` and `needs-rework` the routing then falls through to the 
 
 **Per-finding embeds in the triage dispatch (TASK-007).** Before dispatching the Phase 1.5.5 triage, the orchestrator enriches the Codex `findings[]` payload so the triage agent can reason about prioritization: every finding in the embedded JSON carries `{target_task_id, blocking, severity}` alongside the existing `section`, `concern`, `suggested_change`. The triage template (see `dispatch-templates.md` §Phase 1-triage / Phase 1.5.5) instructs the agent to evaluate the findings in priority order: `blocking=true` first, then `severity=critical`, then `severity=important`, then `severity=minor`. Schedule-level findings (`target_task_id=null`) are evaluated against the schedule JSON + roster rather than a single task block; per-task findings (`target_task_id="NNN"`) are evaluated against the corresponding `tasks[NNN]` entry.
 
-**`needs-replan` branch — auto-revise path (default).** Auto-revise is on unless `--no-auto-revise` is set. When on, the orchestrator runs a three-step author → analyst → review sequence before the second verdict is accepted:
+**`needs-replan` branch — auto-revise path (default).** Auto-revise is on unless `--no-auto-revise` is set. Three-step author → analyst → review sequence before the second verdict is accepted:
 
-1. **Dispatch `plan-author` per finding (fan-out, TASK-007)** (Agent, `subagent_type: "plan-author"`, `model: "opus"`) using the Phase 1.5a template from `dispatch-templates.md`. **The payload has shifted from a single whole-plan author dispatch to N per-finding dispatches.** For every finding in the filtered-or-full findings array (filtered to triage `load_bearing` indices on `partial-agreement`; full on `needs-rework`) the orchestrator dispatches a separate `plan-author` agent carrying exactly ONE finding plus the inputs needed to locate its edit target. **The fan-out is one-per-finding for both task-targeted AND schedule-level findings — schedule-level findings are NOT collapsed into a single dispatch.** The author's write scope is the single named file for that dispatch — NOT the whole plan, NOT sibling children. The dispatch input shape depends on `target_task_id`:
-   - **Task-targeted (`target_task_id="NNN"`)** — triple is `{finding, target_task_id, child_plan_file}`; resolve `finding.target_task_id → child_plan_file` via the schedule's `tasks[].plan_file` (same resolution rule as §Per-task `<plan-file>` resolution). `roster_file` is absent on this path. The author edits that one child file in place; `00_INDEX.json` is off-limits.
-   - **Schedule-level (`target_task_id=null`)** — triple is `{finding, target_task_id=null, roster_file}` with `child_plan_file` absent or explicitly `null`. The orchestrator passes `roster_file=<plan_dir>/00_INDEX.json` (absolute path to the schedule roster) so the author has a concrete file target. The triple still gets its own dispatch per schedule-level finding. The author's allowed edit surface is `roster_file` (roster edit) OR empty (`files_edited: []` with a justification note that the finding does not warrant a file change). If multiple schedule-level findings arrive in the same review pass, each dispatches separately; the author may choose to touch `roster_file` idempotently across those dispatches — overlapping roster edits across sibling schedule-level dispatches are expected and fine. The Phase 1.5a template (`dispatch-templates.md` §Phase 1.5a) renders two visually distinct variants — Variant A (task-targeted) and Variant B (schedule-level) — selected per dispatch; the orchestrator never renders both variants in the same dispatch.
+1. **Dispatch `plan-author` per finding (fan-out, TASK-007)** — Agent (`plan-author`, `model: "opus"`) using the Phase 1.5a template (Variant A task-targeted / Variant B schedule-level). One dispatch per finding, NOT one whole-plan dispatch. Filtered-or-full findings array: filtered to triage `load_bearing` on `partial-agreement`; full on `needs-rework`. Per-dispatch input shape: task-targeted → `{finding, target_task_id, child_plan_file}` (resolve `target_task_id → child_plan_file` via schedule's `tasks[].plan_file`; `00_INDEX.json` off-limits on this path); schedule-level (`target_task_id=null`) → `{finding, target_task_id:null, roster_file:<plan_dir>/00_INDEX.json}` (allowed edit surface is `roster_file` or empty). Author write scope is the single named file per dispatch. Overlapping roster edits across sibling schedule-level dispatches are fine. Dismissed findings on `partial-agreement` are NOT forwarded — they ride the summary per the route table. Wrap EACH dispatch with `plan_author_start` before and `plan_author_done {files_edited[], findings_actioned[], findings_skipped[]}` after.
 
-   Dismissed findings on `partial-agreement` are NOT forwarded to any author — they are carried only into the summary per the route table above. Wrap EACH per-finding dispatch with `plan_author_start` before and `plan_author_done` after:
+2. **Re-run Phase 1** (`build-tasks → classifier → write-schedule`) reading from disk (do NOT forward the author's report — invites ping-pong). Route: `build-tasks errors[*] non-empty` → halt `plan_review_failed reason_detail=author_introduced_structural_defect`; `warnings[*] non-empty` → allow-gaps routing as first pass; `ok: true` empty `warnings[]` → step 3.
 
-   ```bash
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-     --event plan_author_start \
-     --fields-json '{"run_id":"<id>","plan_file":"<basename>","findings_count":<N>}' --json
-
-   # Agent dispatch (plan-author, model: opus) — Phase 1.5a template.
-
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-     --event plan_author_done \
-     --fields-json '{"run_id":"<id>","plan_file":"<basename>","files_edited":[...],"findings_actioned":[...],"findings_skipped":[...]}' --json
-   ```
-
-2. **Re-run Phase 1** (`build-tasks → classifier → write-schedule`) for structural re-validation of the revised plan file. The build step reads the plan from disk — do NOT forward the author's edit report (that would invite ping-pong). Route on the re-validation outcome:
-
-   - `build-tasks errors[*] non-empty` → halt with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. The author produced a structurally broken revision; do not run the second review against a malformed plan.
-   - `build-tasks warnings[*] non-empty` → same allow-gaps routing as the first pass (halt if `--allow-gaps` is not set; warn and proceed otherwise).
-   - `build-tasks ok: true` with empty `warnings[]` → proceed to step 3.
-
-3. **Re-run Codex `plan-review`** on the revised plan. The second verdict is binding: `approved | approved-with-notes` → proceed to batch dispatch; `needs-replan` → halt per the "Second `needs-replan`" block below.
+3. **Re-run Codex `plan-review`** on the revised plan. Second verdict is binding: `approved | approved-with-notes` → batch dispatch; `needs-replan` → halt per "Second `needs-replan`" block below.
 
 **`needs-replan` branch — `--no-auto-revise` path (opt-out).** When `--no-auto-revise` is set, the first `needs-replan` verdict halts immediately without dispatching `plan-author`. This preserves the pre-TASK-025 behavior for users who prefer to apply revisions by hand; halt with `run_end reason=plan_review_failed` per the block below. No silent retry without revision.
 
@@ -591,12 +454,7 @@ Release the run-lock and print the failure envelope. Do NOT call `fail-task` (no
 
 **Retry failures** — if the `plan-author` dispatch itself fails (malformed report, out-of-scope writes) or the re-validation analyst returns `outcome=invalid`, halt with `run_end reason=plan_review_failed` same as the second-`needs-replan` path.
 
-**Run-log event order** (V8, with plan-review triage interleaved on both pedantic-flag paths):
-
-- **Analyst branch** (Phase 1): `run_start` → (if `build-tasks` returns `warnings[*]` non-empty AND triage fires; neither `--analyst-binding` nor `--allow-gaps` set) `plan_review_triage_start {source:"plan-analyst"}` → `plan_review_triage_done {source:"plan-analyst", verdict}` → (branch by verdict) `schedule_written` → `analyst_done {outcome:"needs-enrichment"}` (for `ship` / `ship-with-fixes` — the `outcome` string preserves the legacy vocabulary for v1 log consumers) | `plan_author_start` → `plan_author_done` → `schedule_written` → `analyst_done` (for `partial-agreement` / `needs-rework`). When `build-tasks` returns with empty `warnings[]`, the triage events are skipped and the order is `run_start` → `schedule_written` → `analyst_done {outcome:"valid"}`. When `--analyst-binding` is set, emit `analyst_triage_skipped {reason:"binding_flag"}` and halt; when `--allow-gaps` is set, emit `analyst_triage_skipped {reason:"allow_gaps"}` and proceed to `schedule_written` → `analyst_done` with today's demotion. In every variant, **`analyst_done` is emitted only after `write-schedule` persists** — it marks end-of-Phase-1, not mid-pipeline. Classifier fan-out dispatches are not represented in this top-level order — they happen inside the single Phase 1 "step" between `run_start` and `schedule_written`.
-- **Codex branch** (Phase 1.5): ... → `schedule_written` → `analyst_done` → `plan_review_start {reviewer:"codex"}` → `plan_review_done {verdict:"needs-replan", findings_count}` → (if triage fires; neither `--codex-plan-review-binding` nor `--no-auto-revise` set) `plan_review_triage_start {source:"codex-plan-review"}` → `plan_review_triage_done {source:"codex-plan-review", verdict}` → (branch by verdict) `batch_start` (for `ship` / `ship-with-fixes`) | `plan_author_start` → `plan_author_done` → `schedule_written` → `analyst_done` → `plan_review_start` → `plan_review_done` → `batch_start` (for `partial-agreement` / `needs-rework`, only if the second verdict permits).
-
-Both source variants of the triage events share the event names `plan_review_triage_start` / `plan_review_triage_done`; the `source ∈ {plan-analyst, codex-plan-review}` field discriminates them in the log.
+**Run-log event order (V8).** Analyst (Phase 1) and Codex (Phase 1.5) branches interleave triage events on the pedantic paths. Canonical sequence: `run_start` → (Phase 1 with optional `plan_review_triage_{start,done} source:"plan-analyst"` + author retry) → `schedule_written` → `analyst_done` → (Phase 1.5 with optional `plan_review_triage_{start,done} source:"codex-plan-review"` + author retry) → `batch_start`. `analyst_done` is emitted only after `write-schedule` persists. Triage events share names across both seams; the `source` field discriminates. Skip events: `analyst_triage_skipped {reason:"binding_flag"|"allow_gaps"}` (Phase 1), `plan_review_skipped` (Phase 1.5 wrapper failures or `--skip-plan-review`).
 
 ### Dry-run mode
 
@@ -604,16 +462,9 @@ If `--dry-run`: print the schedule + intended dispatches. Release lock. Exit. Dr
 
 ## Execute mode — per-batch A→E loop
 
-```
-ready          : analyst batch order; within a batch, batch-next serializes by file-lock availability
-done           : set[task_id] = {}
-failed         : set[task_id] = {}
-locked_files   : set[str] = {}
-committed      : list[(task_id, sha)]
-review_notes   : dict[task_id -> list[minor findings]] = {}
-```
+Run state (`done` / `failed` / `locked_files` / `blocked` / `ready`) is sourced from `plan_ops.py batch-next --from-schedule-state` (single source of truth — `.schedule.json`'s state block, mutated atomically by `commit-task --update-schedule-state`, `fail-task --update-schedule-state`, and `block-dependents --update-schedule-state`). The orchestrator does NOT track this state in-message; it asks `batch-next` for the next pickable batch each iteration. `review_notes` (per-task minor findings for the run summary) is the only thing the orchestrator carries across turns, and only because it is appended-not-mutated narrative material.
 
-Loop until `ready` is empty OR scheduler stuck.
+Loop until `batch-next` returns an empty batch with `ready_remaining=0` OR `scheduler_stuck=true`.
 
 ### Phase A — Select batch
 
@@ -665,34 +516,25 @@ If the intersection with `files_changed` does not equal `files_changed`, reclass
 
 No `codex_not_found` branch — wrapper emits `outcome=failure` + `error="codex binary not found on PATH"`; preflight already catches it.
 
-At the batch join barrier (after every wrapper in a batch returns, before per-task review/commit dispatch), the orchestrator reconciles observed out-of-scope writes via `plan_ops.py reconcile-batch --repo-root <repo> --schedule-file <path> --plans-dir <plan_dir> --out-of-scope-policy <pause|reconcile-and-revert> < envelopes.json`. The `--schedule-file` argument is the persisted schedule JSON path bound during Phase 1.5 (`<plan_dir>/<plan>.schedule.json` or the directory-mode `<plan_dir>/<basename>.schedule.json`); `--plans-dir` is the directory holding the per-task child plan files (used by the pause path to resolve each task's `plan_file` for its `paused`-status mutation). With `--schedule-file`, each envelope's `out_of_scope_tracked` / `out_of_scope_untracked` is partitioned against the dispatched task's normalised `Files:` list: declared-in-scope entries are PRESERVED (recorded in `reconcile_kept_tracked` / `reconcile_kept_untracked` with outcome `scope_violation_preserved` if nothing else was restored), genuinely out-of-scope entries follow the policy below. WITHOUT `--schedule-file` (or on schedule-load failure), the orchestrator falls back to restore-everything behaviour under `reconcile-and-revert` policy (and may wipe a correct in-scope edit when a stale wrapper produces a buggy `out_of_scope_*` envelope — always pass `--schedule-file` for `/implement-plan` runs); under the default `pause` policy the absence is reported via `warning: "schedule_lookup_failed"` and the task is still paused for the user.
+At the batch join barrier, reconcile observed out-of-scope writes via `plan_ops.py reconcile-batch --repo-root <repo> --schedule-file <path> --plans-dir <plan_dir> --out-of-scope-policy <pause|reconcile-and-revert> < envelopes.json`. With `--schedule-file`, each envelope's `out_of_scope_tracked` / `out_of_scope_untracked` is partitioned against the dispatched task's normalised `Files:` list: declared-in-scope entries are PRESERVED (recorded in `reconcile_kept_*` with `scope_violation_preserved`), genuinely out-of-scope entries follow the policy. Always pass `--schedule-file` for `/implement-plan` runs — without it (or on schedule-load failure) the fallback is restore-everything under `reconcile-and-revert`, which may wipe a correct in-scope edit when a stale wrapper emits a buggy envelope.
 
-**`--out-of-scope-policy pause` (G10 default).** For each envelope with `out_of_scope_observed=true`, the orchestrator does NOT touch the working tree. It mutates the task's plan-status to `paused` (via `mutate_task_status` against the schedule's per-task `plan_file`) and surfaces the four user-facing options in the result entry's `awaiting_user_options`: `widen-plan` (re-author the plan to declare the now-touched files in scope), `in-place-fix` (a follow-up dispatch fixes the cross-cutting code in place to preserve the work), `keep-and-commit` (accept the wider diff as-is for this task), or `revert` (the user authorizes a fail-task under `--authorization-source reconcile-out-of-scope-user-instruction`, the only sanctioned post-pause revert path for this gap). The pause is per-task, not per-batch — peer tasks in the same batch proceed independently to review/commit. Invoke the **Awaiting-user pause** subroutine (call-site `post_reconcile_out_of_scope`, see §Awaiting-user pause) to halt the run for the next conversation turn. See **Completed-Work Preservation Principle** in §Rules — the pause path is the canonical batch-join-barrier application of that principle.
+**`--out-of-scope-policy pause` (default).** Per envelope with `out_of_scope_observed=true`, mutate the task's plan-status to `paused` and invoke the **Awaiting-user pause** subroutine (call-site `post_reconcile_out_of_scope`). Surfaces four user-facing options: `widen-plan`, `in-place-fix`, `keep-and-commit`, `revert` (authorizes `fail-task --authorization-source reconcile-out-of-scope-user-instruction`, the only sanctioned post-pause revert). Pause is per-task — peer tasks in the same batch proceed.
 
-**`--out-of-scope-policy reconcile-and-revert` (legacy / unattended).** Restores tracked entries via `git restore` and unlinks untracked entries (today's behaviour, preserved unchanged). Used by cron/CI when interactive disposition is not available; any `reconciliation_failed` result here remains a hard halt regardless of policy — do NOT advance to the next batch or dispatch review for any task in the affected batch.
+**`--out-of-scope-policy reconcile-and-revert` (legacy / unattended).** Restores tracked entries via `git restore` and unlinks untracked entries. Used when interactive disposition is unavailable; `reconciliation_failed` is a hard halt regardless of policy.
 
-**Policy mapping from Phase 0's `--unattended-revert-policy` pin (TASK-003).** The orchestrator selects the value of `--out-of-scope-policy` from the pinned `$UNATTENDED_REVERT_POLICY`: `pause` → `--out-of-scope-policy pause`; `fail-fast` and `preserve-only` → `--out-of-scope-policy reconcile-and-revert`. The mapping is single-valued (no flag-on-flag mutation; the orchestrator passes the already-resolved value).
+**Policy mapping** from `$UNATTENDED_REVERT_POLICY`: `pause` → `--out-of-scope-policy pause`; `fail-fast` and `preserve-only` → `--out-of-scope-policy reconcile-and-revert`.
 
 ### Phase C — Handle Phase B failures
 
 #### Sandbox divergence escape hatch (TASK-008)
 
-Before classifying a Codex `implement` failure with `cause: independent_test_run_failed`, the orchestrator runs the auto-validate branch — re-execute the task's declared `Test command:` in the target env (cwd = repo root, env inherited). The wrapper's recorded `sandbox_test_command` is NOT used (it may carry an environment-specific prefix that breaks in target).
+Before classifying a Codex `implement` failure with `cause: independent_test_run_failed`, run `plan_ops.py auto-validate-divergence --envelope-file <wrapper-envelope.json> --test-command "<task Test command:>" --repo-root <repo> --run-id <id> --task-id NNN --json` (re-executes the task's declared `Test command:` in the target env; the wrapper's recorded `sandbox_test_command` is NOT used).
 
-```bash
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" auto-validate-divergence \
-  --envelope-file <wrapper-envelope.json> \
-  --test-command "<task Test command:>" \
-  --repo-root <repo> --run-id <id> --task-id NNN --json
-```
+- **Target-passes** (`divergence: true`): treat as success. Handler appends `sandbox_divergence` event with sandbox + target captures (truncated at 32 KB). Next `commit-task` MUST pass `--sandbox-divergence-tag`. Phase D proceeds as if the implementer succeeded.
+- **Target-fails** (`divergence: false, applicable: true`): real failure; existing path (Codex→Claude fallback OR `fail-task`) unchanged.
+- **Non-matching** (`applicable: false`): no-op; existing path unchanged.
 
-- **Target-passes** (`divergence: true`): treat the work as success. The handler appends a structured `sandbox_divergence` event to the run log carrying both the wrapper's sandbox stdout/stderr captures (truncated at 32 KB with `truncated_to` markers) and the target-env captures. The next `commit-task` invocation MUST pass `--sandbox-divergence-tag` so the commit body shows `[sandbox-divergence]` alongside any existing `[disagreement]` / `[remediation]` tags. Cross-review (Phase D) proceeds as if the implementer succeeded.
-- **Target-fails** (`divergence: false`, `applicable: true`): treat as a real failure. The existing failure path (Codex→Claude fallback OR `fail-task`) runs unchanged.
-- **Non-matching cause** (`applicable: false`): the envelope did not surface `cause: independent_test_run_failed`; the handler is a no-op and the existing failure path runs unchanged.
-
-The `[sandbox-divergence]` tag is informational. It does NOT relax the reviewer-verdict whitelist — `commit-task --reviewer codex --reviewer-verdict <bogus>` still fails the same way it always did. `--reviewer none` remains the final-resort override (used only when human judgement decides cross-review is unobtainable); the auto-validate branch is the sanctioned recovery for sandbox divergences and must be preferred over `--reviewer none` when the divergence is the failure cause.
-
-End-of-run summary: `plan_ops.py run-summary --section sandbox-divergences --run-id <id>` emits the "Sandbox divergences" subsection listing every task that hit the auto-validate branch under the run id.
+The `[sandbox-divergence]` tag is informational and does NOT relax the reviewer-verdict whitelist. `--reviewer none` remains the final-resort override; prefer the auto-validate branch when divergence is the cause. End-of-run summary surfaces affected tasks via `run-summary --section sandbox-divergences`.
 
 For each non-success task, the orchestrator FIRST runs the empty-diff probe to decide whether the failure left preservable work in the working tree. The probe is the gate between auto-revert (cheap and correct when the diff is empty) and halt-with-pause (mandatory when the diff is non-empty — see **Completed-Work Preservation Principle** in §Rules).
 
@@ -780,104 +622,15 @@ Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count
 
 When findings are non-empty, also pass `--findings-json "$(<json-array>)"` to the `review_done` `log-event` call so the line carries the full Codex payload verbatim under key `findings`. The audit trail depends on this — count-only `review_done` entries lose the finding text within ~20s.
 
-**Wrapper failure outcomes (Codex side, `claude_only=false` only).** Wrapper timeout / parse_error / failure outcomes from `subcommand=review` (Codex review path only — `cmd_review` emits these envelopes today) log `review_skipped {task_id, reviewer:"codex", reason}` where `reason` maps as: `timeout` → `"codex_review_timeout"`, `parse_error` → `"codex_review_parse_error"`, `failure` → `"codex_review_failure"`. Then proceed straight to D.3 commit with `--reviewer none --reviewer-verdict ""` (the existing `commit-task` form documented at §`commit-task` example (e); do not duplicate the bash). The commit body's reviewer line records "review skipped (reason)" preserving the audit trail. This mirrors the parallel Phase 1.5 rule at line 450 — wrapper-side errors degrade to a documented skip rather than blocking execution. The Codex-implemented → Claude-review direction's `Agent`-side failures are NOT covered by this rule; that path falls under the existing `Agent` retry semantics and the D.5 ladder for substantive disagreement. Under `claude_only=true` this Codex-side wrapper-failure clause does not apply (no Codex shell-out fires); Agent-side dispatch failures degrade through the existing `Agent` retry semantics.
+**Wrapper failure outcomes (Codex side, `claude_only=false`).** `subcommand=review` `outcome ∈ {timeout, parse_error, failure}` → log `review_skipped {task_id, reviewer:"codex", reason}` mapping `reason ∈ {codex_review_timeout, codex_review_parse_error, codex_review_failure}`, then commit with `--reviewer none --reviewer-verdict ""`. Wrapper-side errors degrade to a documented skip rather than blocking. Agent-side failures (Claude reviewer, either direction) fall under existing Agent retry semantics + the D.5 ladder; not covered by this clause.
 
-#### D.2 — Route by verdict
+#### D.2 — Route by verdict (call-and-comply via `review-route`)
 
-| Implementer | Reviewer | clean / minor-findings (or ship / ship-with-fixes) | needs-rework |
-|---|---|---|---|
-| Claude | Codex | → D.3 commit | D.2a escalate (unless `--codex-review-binding`) |
-| Codex | Claude | → D.3 commit | D.2b role-swap retry |
-| Claude | Claude (`claude_only=true`) | → D.3 commit | → D.4 fail-task (D.5 / D.2a.5 / D.2a.6 ladder collapses; see §D.2a) |
-| Codex | Claude (`claude_only=true`) | → D.3 commit | D.2b role-swap retry — re-review uses `code-reviewer` Agent, NOT the Codex wrapper (see §D.2b) |
+Routing across D.2 → D.2a (D.5 escalation) → D.2a.5 (bounded remediation) → D.2a.6 (narrow remediation) → pause is **deterministic and lives in `plan_ops.py review-route`**. The orchestrator does NOT inline this state machine — it builds the routing inputs (implementer side, reviewer side, reviewer verdict, D.5 verdict if dispatched, `claude_only`, `--codex-review-binding`, `--unattended-revert-policy`) and calls `$PYTHON plan_ops.py review-route --json`; the subcommand returns one of `commit | fail | dispatch_d5 | dispatch_bounded_remediation | dispatch_narrow_remediation | dispatch_role_swap | pause_awaiting_user | unknown_state`. The orchestrator complies with the returned action: `commit` → §D.3 (with the appropriate `--disagreement-tag` / `--remediation-tag` / `--narrow-remediation-tag` per the route payload's `commit_flags`); `fail` → §D.4 (which itself is rescue-then-pause per the Completed-Work Preservation Principle — the `fail` action enters §D.4's rescue/pause flow, NOT a direct `fail-task` call; only an explicit `authorization_source` in the route payload sanctions destruction at all); `dispatch_d5` → re-dispatch the **Phase D.5** template (Agent, `code-reviewer`, `model: "sonnet"`, `wrapper_checks` defaulted to `{"symbol_warnings": []}` if absent) and re-call `review-route` with the parsed D.5 verdict; `dispatch_bounded_remediation` → re-dispatch the **Phase B-rework** template (one attempt; re-call D.1 then `review-route` with the re-review verdict); `dispatch_narrow_remediation` → re-dispatch the **Phase B-narrow-remediation** template (one attempt; load-bearing / dismissed-findings split forwarded from D.5; re-call D.1 then `review-route`); `dispatch_role_swap` → §D.2b; `pause_awaiting_user` → invoke the **Awaiting-user pause** subroutine with the route payload's `stage` (one of `post_remediation_review`, `post_remediation_implement`, `post_narrow_remediation_review`, `post_narrow_remediation_implement`, `post_binding_block`, etc. — see the call-site table at §Awaiting-user pause for the per-stage payload contract).
 
-Minor findings in either direction → commit; record in run summary AND commit body tail. Never silently dropped.
+**Unknown-state pause rule (mandatory).** If `review-route` returns `unknown_state`, the orchestrator MUST invoke the **Awaiting-user pause** subroutine immediately — do NOT guess at the routing, do NOT fall through to a default branch, do NOT call `fail-task`. `unknown_state` is the routing seam's escape hatch for an input tuple the call-and-comply table does not cover; surfacing it to the user is the only sanctioned response. The pause carries the verbatim route inputs in `awaiting_user.fields.review_route_inputs` so the next turn can diagnose. Bounding rules (one D.5 dispatch, one bounded-remediation retry, one narrow-remediation retry, no recursion) are enforced inside `review-route` itself; the orchestrator never re-asks beyond what the subcommand authorizes. Log `disagreement {task_id, codex_findings}` (with `--findings-json "$(<json-array>)"`) before any `dispatch_d5` so the audit trail records what Codex flagged.
 
-#### D.2a — Escalation (§8.4, Codex critical on Claude work)
-
-**`claude_only=true` ladder collapse (TASK-003).** Under `claude_only=true`, D.2a (D.5 escalation), D.2a.5 (bounded remediation), and D.2a.6 (narrow-remediation) are **unreachable** for the Claude-impl→Claude-review path: there is no Codex verdict to adjudicate, so the third-opinion ladder has nothing to split. A `code-reviewer` `needs-rework` verdict on a Claude-implemented task under `claude_only=true` goes **straight to D.4 fail-task** — no D.5 third-opinion dispatch, no D.2a.5 bounded remediation, no D.2a.6 narrow remediation, no `--codex-review-binding` interaction. The Codex-impl→Claude-review path under `claude_only=false` (which still hits this section unchanged) is unaffected; the role-swap retry path (§D.2b) is documented separately. The §Rules section carries the corresponding hard rule.
-
-1. Log `disagreement {task_id, codex_findings[]}`. Pass the Codex findings verbatim via `--findings-json "$(<json-array>)"` so the `disagreement` line carries the full payload under key `findings` — D.5 dispatch happens right after, and audit retrieval of "what did Codex flag that D.5 then adjudicated?" depends on this.
-2. Dispatch the Phase D.5 template: `Agent(subagent_type: "code-reviewer", model: "sonnet", prompt: render(templates.PhaseD5, codex_findings, task_block, wrapper_checks))`. `wrapper_checks` is taken from the Codex review envelope's `wrapper_checks` field; if the field is absent (failure/timeout/parse-error envelopes), pass `{"symbol_warnings": []}` as the default so the template's `<wrapper_checks_json>` placeholder always resolves to a valid JSON object.
-3. Parse verdict and route per the table below:
-
-| Codex verdict | D.5 verdict | Route | Rationale |
-|---|---|---|---|
-| `needs-rework` | `ship` \| `ship-with-fixes` | → D.3 with `--disagreement-tag` (existing behavior, unchanged) | D.5 disagreed with Codex; commit wins. Summary row shows `[disagreement]`. |
-| `needs-rework` | `partial-agreement` | → **D.2a.6** narrow-remediation retry | D.5 split Codex's findings into load-bearing and dismissed buckets; retry is scoped to the load-bearing subset only. Dismissed indices are recorded in the commit trailer. |
-| `needs-rework` | `needs-rework` | → **D.2a.5** bounded remediation retry | Two independent reviewers agree the finding is load-bearing; give the implementer one chance to fix it narrowly. |
-
-`--codex-review-binding` skips D.2a third-opinion + retries — binding mode means `needs-rework` is binding for the commit decision and the orchestrator MUST mark the task `paused` and call **Awaiting-user pause** subroutine with `stage=post_binding_block` (NO D.5, NO D.2a.5, NO D.2a.6). User decides disposition in next turn (revert / hand-fix / accept-as-is via `commit-task` with override rationale). Under `--unattended-revert-policy fail-fast`, the orchestrator calls `fail-task --authorization-source unattended-fail-fast --stage review --reason 'codex-review-binding fail-fast'` instead of pausing. (This flag is mutually exclusive with `--claude-only` per TASK-001's mutex prose; under `claude_only=true` the ladder collapse documented above subsumes the binding mode's effect.) See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
-
-#### D.2a.5 — Bounded remediation retry (default, non-binding path only)
-
-Fires when Codex's `needs-rework` is independently confirmed by the D.5 code-reviewer. Strictly one attempt.
-
-1. Log `remediation_start {task_id, findings_count, d5_summary}`.
-2. Re-dispatch `plan-implementer` (Agent, `subagent_type: "plan-implementer"`, `model: "opus"`) using the **Phase B-rework** template from `dispatch-templates.md`. The template embeds `codex_findings_json` + `d5_summary` as a structured block and explicitly instructs the implementer to "fix narrowly, do not scope-inflate".
-3. Classify the retry with the standard Phase B rules. `outcome ≠ success` → halt per step 6 below (same awaiting-user pause path; do NOT call `fail-task`).
-4. On retry success, re-run D.1 (Codex review). The re-review is binding — no further retry regardless of verdict.
-5. Route the re-review:
-   - `clean | minor-findings` → D.3 commit with `--remediation-tag`. Summary row shows `[remediation]` (and `[disagreement]` if both apply).
-   - `needs-rework` (second failure) → proceed to step 6.
-6. **Awaiting-user pause** (second `needs-rework`, OR a failed retry implementer outcome): (See **Awaiting-user pause** subroutine — same control flow.)
-   - Payload shape depends on which branch triggered the pause:
-     - Second-review failure: `stage:"post_remediation_review"`, include `codex_findings:[...]` and `d5_summary:"..."`.
-     - Retry-implement failure: `stage:"post_remediation_implement"`, include `retry_outcome`, `diagnostics`, and `reversion_guidance` from the implementer report; omit `codex_findings` (no second review ran).
-   - `--ending-sha <sha>` MUST be `git rev-parse HEAD` at pause time — not the starting SHA. A paused run has uncommitted remediation edits in the working tree; the ending SHA captures the last committed state (which is typically the prior task's commit or the run's starting SHA if this is the first task). Log the paths of currently-dirty files in the `awaiting_user` event's `dirty_files` field so the next turn has a concrete handoff.
-   ```bash
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-     --event awaiting_user \
-     --fields-json '{"task_id":"NNN","stage":"post_remediation_review","codex_findings":[...],"d5_summary":"...","dirty_files":[...]}' --json
-
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" finalize-execution-log \
-     --run-id <id> --starting-sha <sha> --ending-sha "$(git rev-parse HEAD)" \
-     --outcome paused --rows-json '[...]' --json
-
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-     --event run_end \
-     --fields-json '{"run_id":"<id>","outcome":"paused","done":N,"failed":M,"paused_on_task":"NNN"}' --json
-   ```
-   After the paused `run_end`, the End-of-run sequence (update-plan-header, regular finalize, housekeeping commit) is SKIPPED — the paused branch emits its own `finalize-execution-log --outcome paused` and `run_end outcome=paused` instead. Print the failure envelope, release the run-lock, and return control to the user with pending edits **still in the working tree**. Do NOT call `fail-task`. Do NOT `git restore`. The user's next conversation turn decides disposition:
-   - "revert" → user instructs orchestrator to run `fail-task`.
-   - "keep as-is" → user instructs orchestrator to run `commit-task` with `--remediation-tag` and an override rationale.
-   - "hand-fix" → user edits manually + re-runs review.
-
-   **Hard rule:** D.2a.5's second `needs-rework` MUST NOT trigger `fail-task` automatically. `fail-task` on a paused run requires an explicit user instruction in the next turn. See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
-
-#### D.2a.6 — Narrow-remediation retry (partial-agreement path)
-
-Fires when Codex's `needs-rework` verdict is split by the D.5 third-opinion reviewer into load-bearing + dismissed buckets (`partial-agreement`). Strictly one attempt — same bounding as D.2a.5. `--codex-review-binding` skips this entire section: binding mode means `needs-rework` is binding for commit and the orchestrator pauses for user instruction (NO D.5, NO D.2a.5, NO D.2a.6). Under `--unattended-revert-policy fail-fast`, fail-task fires instead of pausing.
-
-1. Log `narrow_remediation_start {task_id, load_bearing_count, dismissed_count, d5_summary}`. The `narrow_remediation_start` / `narrow_remediation_done` events are distinct from D.2a.5's `remediation_start` / `remediation_done`; the run log is the audit source of truth for which retry path fired.
-2. Re-dispatch `plan-remediator` (Agent, `subagent_type: "plan-remediator"`, `model: "opus"`) using the **Phase B-narrow-remediation** template from `dispatch-templates.md`. The template embeds `load_bearing_findings_json` (filtered subset of Codex findings where the array index ∈ D.5's `load_bearing`), `dismissed_findings_json` (the complement, labeled "DO NOT fix — context only"), and `d5_summary`. The file:line touch-only scope rule in `plan-remediator.md` structurally bounds the retry; "fix narrowly, do not scope-inflate" remains a prompt-level hint.
-3. Classify the retry with the standard Phase B rules plus the new `scope-violation` outcome. `outcome ≠ success` (including `scope-violation`) → halt per step 6 below (same awaiting-user pause path; do NOT call `fail-task`).
-4. On retry success, re-run D.1 (Codex review). The re-review is binding — no further retry regardless of verdict.
-5. Route the re-review:
-   - `clean | minor-findings` → D.3 commit with `--narrow-remediation-tag --dismissed-finding-ids I,J,K` (comma-separated dismissed indices from the D.5 split). Commit body carries `[narrow-remediation]` followed immediately by `[disagreement: I,J,K]`; summary row shows both tags.
-   - `needs-rework` (second failure) → proceed to step 6.
-6. Log `narrow_remediation_done {task_id, outcome}` before entering the pause (on both the retry-implement-failure and second-review-failure branches, so the log records the attempt's terminal state either way).
-7. **Awaiting-user pause** (second `needs-rework`, OR a failed/scope-violation retry implementer outcome): (See **Awaiting-user pause** subroutine — same control flow.)
-   - Payload shape mirrors D.2a.5 with a flipped `stage` label and one added field on the review-failure branch:
-     - Second-review failure: `stage:"post_narrow_remediation_review"`, include `codex_findings:[...]`, `d5_summary:"..."`, and `dismissed_finding_indices:[...]` (for round-tripping the D.5 split into the next turn).
-     - Retry-implement failure: `stage:"post_narrow_remediation_implement"`, include `retry_outcome`, `diagnostics`, and `reversion_guidance` from the implementer report; omit `codex_findings` (no second review ran).
-   - `--ending-sha <sha>` MUST be `git rev-parse HEAD` at pause time, same as D.2a.5. Log currently-dirty file paths in the `awaiting_user` event's `dirty_files` field so the next turn has a concrete handoff.
-   ```bash
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-     --event awaiting_user \
-     --fields-json '{"task_id":"NNN","stage":"post_narrow_remediation_review","codex_findings":[...],"d5_summary":"...","dismissed_finding_indices":[...],"dirty_files":[...]}' --json
-
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" finalize-execution-log \
-     --run-id <id> --starting-sha <sha> --ending-sha "$(git rev-parse HEAD)" \
-     --outcome paused --rows-json '[...]' --json
-
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-     --event run_end \
-     --fields-json '{"run_id":"<id>","outcome":"paused","done":N,"failed":M,"paused_on_task":"NNN"}' --json
-   ```
-   After the paused `run_end`, the End-of-run sequence (update-plan-header, regular finalize, housekeeping commit) is SKIPPED — the paused branch emits its own `finalize-execution-log --outcome paused` and `run_end outcome=paused` instead. Print the failure envelope, release the run-lock, and return control to the user with pending edits **still in the working tree**. Do NOT call `fail-task`. Do NOT `git restore`. The user's next conversation turn decides disposition (same three options as D.2a.5: "revert" / "keep as-is" / "hand-fix").
-
-   **Hard rule:** D.2a.6's second `needs-rework` or non-success retry MUST NOT trigger `fail-task` automatically. Same protocol as D.2a.5's halt path. See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
+Minor findings in either direction → `review-route` returns `commit`; record in run summary AND commit body tail. Never silently dropped. Under `claude_only=true`, on a Claude-impl→Claude-review `needs-rework` the D.5/D.2a.5/D.2a.6 ladder collapses (no third-opinion adjudication, no bounded/narrow retry); the route enters §D.4 rescue/pause, NOT direct `fail-task`. Documented in §Rules. `--codex-review-binding` makes Codex `needs-rework` binding for commit: `review-route` returns `pause_awaiting_user` with `stage=post_binding_block` (or `fail` under `--unattended-revert-policy fail-fast`). The full per-stage `awaiting_user` payload contract — `post_remediation_review` (codex_findings + d5_summary), `post_remediation_implement` (retry_outcome + diagnostics + reversion_guidance), `post_narrow_remediation_review` (+ dismissed_finding_indices), `post_narrow_remediation_implement`, `post_binding_block`, etc. — is defined in the table at §Awaiting-user pause and remains the authoritative payload contract; the route paragraph above only governs *which* action the orchestrator dispatches.
 
 #### D.2b — Role-swap retry (Codex implements + Claude reviewer needs-rework)
 
@@ -888,7 +641,7 @@ Per §8.3 line 692: Claude re-implements, Codex re-reviews. One attempt.
 3. On retry success, re-run D.1 using the **Codex** reviewer. Binding — no further retry.
 4. Route re-review: `clean | minor-findings` → D.3. `needs-rework` → D.4.
 
-**`claude_only=true` re-review variant (TASK-003).** Under `claude_only=true`, the implementer side is rewritten to Claude in Phase 1 (per §Phase 1 Step 3's `--claude-only` / `codex_available=false` rewrite), so the Codex-implemented entry condition for this path is structurally unreachable. Documented defensively for contract clarity: were the path ever reachable, step 3's re-review would use the `code-reviewer` Agent (Phase D-Claude template) — NOT the Codex wrapper, because Codex shell-out is forbidden under `claude_only=true` (see §Rules). The retry implement step is unchanged (`plan-implementer` Agent, `model: "opus"`); only the re-review dispatch swaps. Step 4's verdict mapping uses the Claude verdict vocabulary on this branch: `ship | ship-with-fixes` → D.3; `needs-rework` → D.4. Re-review is binding — no further retry, no D.5 escalation.
+**`claude_only=true` re-review variant.** Structurally unreachable (Phase 1 rewrites `tasks[].agent="claude"`); documented defensively. Were it reachable, step 3's re-review would use the `code-reviewer` Agent (NOT the Codex wrapper); step 4's verdict vocabulary would be `ship | ship-with-fixes` → D.3, `needs-rework` → D.4. Re-review remains binding.
 
 #### D.3 — Commit
 
@@ -906,79 +659,25 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" commit-task \
 
 `<abs>` is the current task's child file — resolve per §Per-task `<plan-file>` resolution. `commit-task`'s `Plan:` commit trailer is derived from the `--plan-file` basename, so the resolution automatically attributes each commit to the correct child.
 
-`--remediation-tag` appends a `[remediation]` line to the commit body; set it only when the commit follows a successful D.2a.5 retry. `--narrow-remediation-tag` (with a non-empty `--dismissed-finding-ids` list) appends `[narrow-remediation]` + `[disagreement: I,J,K]` on adjacent lines; set it only when the commit follows a successful D.2a.6 retry. `--d4-rescue-tag` (TASK-005) appends a bare `[d4-rescue]` line; set it only when the commit follows a successful Phase D.4 single-shot rescue. Argparse enforces six constraints: (a) `--narrow-remediation-tag` XOR `--remediation-tag` XOR `--d4-rescue-tag` (one mutually-exclusive group), (b) `--dismissed-finding-ids` XOR `--disagreement-tag`, (c) `--dismissed-finding-ids` requires `--narrow-remediation-tag`, (d) `--narrow-remediation-tag` requires non-empty `--dismissed-finding-ids`, (e) `--d4-rescue-tag` XOR `--disagreement-tag` (D.4 rescue does not invoke D.5), (f) `--d4-rescue-tag` XOR `--dismissed-finding-ids` (D.4 rescue does not carry dismissed findings).
+Tag flags: `--remediation-tag` (post-D.2a.5), `--narrow-remediation-tag --dismissed-finding-ids I,J,K` (post-D.2a.6), `--d4-rescue-tag` (post-D.4 rescue). Argparse enforces XOR / requires constraints between these tags and `--disagreement-tag` / `--dismissed-finding-ids` — see `commit-task --help` for the full constraint matrix.
 
-This: (1) guard check for unexpected staged overlap, (2) plan-status flip to `done`, (3) `git commit --only <files> <plan-file> -m "feat(TASK-NNN): <title>\n\n<diff summary>\n\nPlan: <basename>"`, (4) SHA capture, (5) run-log `commit_done` append.
+Subcommand flow: (1) pre-commit guard for staged overlap, (2) plan-status → `done`, (3) `git commit --only <files> <plan-file>`, (4) SHA capture, (5) `commit_done` run-log append.
 
-**After a D.2a disagreement (Codex `needs-rework` → D.5 `ship` | `ship-with-fixes`):** pass `--reviewer claude --reviewer-verdict ship-with-fixes --disagreement-tag` (NOT `--reviewer codex --reviewer-verdict needs-rework` — that payload is rejected with `uncommittable-reviewer-verdict` because the D.5 third-opinion verdict is binding, not Codex's). Record Codex's original findings verbatim in `--reviewer-minor-findings`; set each dismissed finding's optional `disposition: "dismissed"` (with an optional `disposition_reason`) so the commit preserves the adjudication trail. For the D.2b role-swap path the same rule applies with the roles inverted: pass `--reviewer codex --reviewer-verdict clean|minor-findings --disagreement-tag`. D.2a.5 (bounded remediation) and D.2a.6 (narrow remediation) use `--remediation-tag` or `--narrow-remediation-tag --dismissed-finding-ids ...` respectively; the binding reviewer is always the one whose verdict satisfied the commit-allowed set (`ship` / `ship-with-fixes` for `--reviewer claude`, `clean` / `minor-findings` for `--reviewer codex`).
+**Post-D.5 disagreement commits.** When `review-route` returns `commit` after a D.5 third-opinion (Codex `needs-rework` → D.5 `ship | ship-with-fixes`), pass `--reviewer claude --reviewer-verdict ship-with-fixes --disagreement-tag` (NOT `--reviewer codex --reviewer-verdict needs-rework` — that's rejected as `uncommittable-reviewer-verdict`). Record Codex's original findings verbatim in `--reviewer-minor-findings`; mark dismissed entries with `disposition:"dismissed"` (+ optional `disposition_reason`). D.2b inverts the roles: `--reviewer codex --reviewer-verdict clean|minor-findings --disagreement-tag`. The binding reviewer is always whichever side satisfied the commit-allowed set.
 
-Commit hook failure → subcommand auto-rolls back (`git reset HEAD`, restore plan text) and exits non-zero → treat as D.4 `stage=commit`.
+Commit hook failure → subcommand auto-rolls back (`git reset HEAD`, restore plan text) → treat as D.4 `stage=commit`.
 
-**Post-commit `commit-safe` gate.** On a successful `commit-task`, capture the returned `commit_sha` and verify that the commit touched only TASK-NNN's declared `Files:` list (plus the always-ignore set + the plan file itself):
+**Post-commit `commit-safe` gate.** On success, capture `commit_sha` and verify the commit touched only TASK-NNN's declared `Files:` (plus always-ignore + plan file): `$PYTHON plan_ops.py gates --check commit-safe --plan-file <abs> --task-id NNN --commit-sha <sha> --json`. `status: fail` → log `commit_safe_gate_failed` and halt before next batch.
 
-```bash
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
-  --check commit-safe \
-  --plan-file <absolute plan> \
-  --task-id NNN --commit-sha <sha> --json
-```
-
-`status: fail` here means the narrow-commit seam leaked — log `commit_safe_gate_failed {task_id, commit_sha, reason}` and halt before moving to the next batch. This is the post-hoc counterpart to `commit-task`'s pre-commit guard; the two together close the execute-bundle loop.
-
-**Lint reference:** `plan_ops.py lint-plans --plans-dir docs/plans --run-log <run_log> --git-dir . --json` cross-references every `**Status:** done` (or `partial`) task against the run log and git history. A `done`/`partial` marker without a matching `commit_done` event AND `feat(TASK-NNN)` commit flags the task as a hand-edit. Run manually during review or before shipping a plan; the PR-gate wiring is a follow-up (TASK-020C).
-
-**Opt-in V-check gate (TASK-020B).** Plans may declare `acceptance_v_check: <shell command>` in YAML frontmatter (delimited by `---` lines at the very top of the file). When present, `commit-task` runs the command with `cwd=<repo-root>` immediately before the git commit, bounded by `--v-check-timeout SECONDS` (default 300). On success a `v_check_passed` run-log event is appended and the commit proceeds. On non-zero exit, timeout, or subprocess error `commit-task` halts with an `errors[*].code ∈ {"acceptance-v-check-failed", "v-check-timeout", "v-check-subprocess-error"}` envelope (including `stdout_tail` and `stderr_tail`, last 2048 bytes each) — no plan mutation, no git commit, no `commit_done` event. Plans without frontmatter (or without the key) behave identically to pre-TASK-020B. Example:
-
-```yaml
----
-acceptance_v_check: venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestMyTask
----
-# TASK-NNN — ...
-```
-
-Shell-injection surface: `shell=True` is intentional — plans must not be edited by untrusted parties without review.
+**Opt-in V-check gate (TASK-020B).** Plans may declare `acceptance_v_check: <shell command>` in YAML frontmatter. When present, `commit-task` runs it (cwd=repo-root, `--v-check-timeout` default 300s) before the git commit. Success → `v_check_passed`. Failure (non-zero, timeout, subprocess error) → halts with `errors[*].code ∈ {"acceptance-v-check-failed", "v-check-timeout", "v-check-subprocess-error"}` (including `stdout_tail` / `stderr_tail`); no plan mutation, no commit, no `commit_done`. `shell=True` is intentional — plans must not be edited by untrusted parties.
 
 #### D.4 — Try rescue, then pause (TASK-005)
 
-D.4 is **no longer a destructive seam**. The reviewer's `needs-rework` (or other halt-worthy verdict) does NOT immediately call `fail-task`; the orchestrator dispatches a **single-shot terminal rescue** first. Rescue-success commits via D.3 with `--d4-rescue-tag`; any non-success outcome of the rescue path falls into the awaiting-user pause and the user's next turn decides disposition.
+D.4 is **no longer a destructive seam**. The reviewer's `needs-rework` (or other halt-worthy verdict) does NOT immediately call `fail-task`; the orchestrator dispatches a **single-shot terminal rescue** first. Rescue-success commits via D.3 with `--d4-rescue-tag`; any non-success outcome falls into the **Awaiting-user pause** subroutine.
 
-Sequence:
+Sequence: (1) log `d4_rescue_start {task_id, reviewer_findings_count}`; (2) dispatch `plan-remediator` (Agent, `model: "opus"`) using the **Phase D.4-rescue** template — inputs are `rescue_findings[]` (verbatim reviewer findings — a distinct key from D.2a.6's `load_bearing_findings[]` so the audit log can tell which retry path fired), `dismissed_findings: []` (literal empty list; D.4 treats every reviewer finding as load-bearing), the task block, reviewer source, and analyst annotations; (3) **strictly single-shot** — `outcome != success` → log `d4_rescue_done` and pause; (4) on rescue success, re-run D.1 (the original reviewer — Codex for Claude-implemented work, `code-reviewer` Agent under `claude_only=true`); the re-review is binding; (5) `clean | minor-findings | ship | ship-with-fixes` → D.3 with bare `--d4-rescue-tag`; `needs-rework` → pause via the subroutine with `stage:"post_d4_rescue_failed"` and payload `{reviewer_findings[], rescue_attempt_outcome, rescue_diagnostics}` (full per-stage contract at §Awaiting-user pause).
 
-1. **Log `d4_rescue_start`** with `{task_id, reviewer_findings_count}`. The reviewer findings are forwarded verbatim to the rescue dispatch as `rescue_findings[]` (a key distinct from D.2a.6's `load_bearing_findings[]` so the audit log can tell which retry path fired). `dismissed_findings: []` is passed as a literal empty list — D.4 rescue treats every reviewer finding as load-bearing and does NOT consume D.5 adjudication.
-
-   ```bash
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-     --event d4_rescue_start \
-     --fields-json '{"run_id":"<id>","task_id":"NNN","reviewer_findings_count":<N>}' --json
-   ```
-
-2. **Dispatch `plan-remediator`** (Agent, `subagent_type: "plan-remediator"`, `model: "opus"`) using the **Phase D.4-rescue** template from `dispatch-templates.md`. Inputs: `rescue_findings[]` (verbatim reviewer findings), `dismissed_findings: []` (literal empty list — matches the agent's empty-marker contract for the `**Dismissed findings noted:**` section), the task block, the reviewer source, and analyst annotations. The remediator's touch-only-these-lines scope rule applies.
-
-3. **Classify the rescue outcome.** The dispatch is **strictly single-shot**: `outcome != success` → log `d4_rescue_done {task_id, outcome}` and proceed to step 6 (awaiting-user pause). Do NOT recurse, do NOT dispatch a second rescue.
-
-4. **On rescue success, re-run D.1** (the original reviewer — Codex for Claude-implemented work, the `code-reviewer` Agent on the `claude_only=true` branch). The re-review is **binding** — no further retry regardless of verdict.
-
-5. **Route the re-review.** `clean | minor-findings` (or `ship | ship-with-fixes`) → log `d4_rescue_done {task_id, outcome:"success", post_review_verdict:"<v>"}`, then D.3 commit with `--d4-rescue-tag` (no companion flag — bare `--d4-rescue-tag` is the canonical rescue-success signature). `needs-rework` on the re-review → log `d4_rescue_done {task_id, outcome:"post_review_failed", post_review_verdict:"needs-rework"}` and proceed to step 6.
-
-6. **Awaiting-user pause** (rescue dispatch failed OR post-rescue re-review failed): (See **Awaiting-user pause** subroutine — same control flow.)
-   - `stage:"post_d4_rescue_failed"`, payload includes `reviewer_findings[]`, `rescue_attempt_outcome`, and `rescue_diagnostics` per the call-site table below. The pre-rescue working tree edits are preserved verbatim — do NOT `git restore`, do NOT call `fail-task`.
-   - `--ending-sha <sha>` MUST be `git rev-parse HEAD` at pause time. Log currently-dirty file paths in the `awaiting_user` event's `dirty_files` field.
-
-   ```bash
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-     --event awaiting_user \
-     --fields-json '{"task_id":"NNN","stage":"post_d4_rescue_failed","reviewer_findings":[...],"rescue_attempt_outcome":"<outcome>","rescue_diagnostics":"...","dirty_files":[...]}' --json
-
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" finalize-execution-log \
-     --run-id <id> --starting-sha <sha> --ending-sha "$(git rev-parse HEAD)" \
-     --outcome paused --rows-json '[...]' --json
-
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
-     --event run_end \
-     --fields-json '{"run_id":"<id>","outcome":"paused","done":N,"failed":M,"paused_on_task":"NNN"}' --json
-   ```
-
-   The user's next conversation turn decides disposition (same three options as D.2a.5/D.2a.6: "revert" / "keep as-is" / "hand-fix"). A user-instructed revert at this point invokes `fail-task --authorization-source phase-d4-rescue-failed` — that is the *only* sanctioned route from this pause to a destructive action.
+A user-instructed revert from this pause invokes `fail-task --authorization-source phase-d4-rescue-failed` — the *only* sanctioned route from the D.4 pause to a destructive action.
 
 **Hard rule:** D.4 is single-shot. The orchestrator MUST NOT dispatch a second rescue, MUST NOT call `fail-task` automatically on rescue failure, MUST NOT `git restore` the pre-rescue working tree. Recursion on the rescue branch would re-introduce the infinite-loop concern the single-shot rule closes. See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
 
@@ -1023,35 +722,35 @@ Release this task's file locks. Loop to Phase A.
 
 ## End of run
 
-1. `plan_ops.py update-plan-header --status <complete|partial>` (complete iff `failed == 0`; else partial). Partition completed + failed tasks by their `plan_file` value, and call `update-plan-header` once per distinct child basename: `--plan-file <plans_dir>/<child-basename> --status <per-child status>`. Per-child status is `complete` iff every task that lived in that child passed, else `partial`. Do NOT synthesize a run-level aggregate header — design boundary (documented in §Directory-mode design boundaries). Children with no tasks in completed+failed are untouched.
-2. `plan_ops.py finalize-execution-log --run-id <id> --starting-sha <sha> --ending-sha <sha> --outcome <success|partial|failed|paused> --rows-json '[...]'` — build the §5 table. `--rows-json` row schema: each row is an object with exactly these six required string keys — `task`, `agent`, `reviewer`, `verdict`, `commit`, `notes` (no extras; values must all be strings). Verdict cells should include any `[disagreement]` / `[remediation]` / `[narrow-remediation]` markers in prose. Missing or unknown keys exit 1 with the full allowed-field list in the error message. Use `--outcome paused` when exiting via the D.2a.5 OR D.2a.6 awaiting-user path; `success`/`partial`/`failed` otherwise per the usual done/failed accounting. Partition rows by `plan_file` (same basenames as step 1) and call `finalize-execution-log --plan-file <plans_dir>/<child-basename> --rows-json '<child-scoped rows>'` once per distinct child. No run-level aggregate table — design boundary.
-3. Log `run_end` event (counts `{done, failed}` + disagreement_count + minor_findings_total; include `outcome=paused` when halting via D.2a.5 or D.2a.6). Include `plan_file: "<dir-basename>"` in the event's `fields` (same value as the `run_start` pair).
-4. Print summary: counts `{done, failed}`, failures with reasons, disagreement-tagged commits, per-task minor-findings digest (from `review_notes`), `git log --oneline <starting_sha>..HEAD` hint.
-   - `TaskList mirror state: {synced | drifted}`. Compare run-log `commit_done` / `task_failed` counts against the `TaskList` completed-task counts; any mismatch is `drifted` and includes the count delta.
-
-   **`claude_only=true` loud banner contract (TASK-003).** When the run had `claude_only=true` for any reason (operator opt-in `--claude-only` OR preflight `codex_available=false` — the OR-binding from §Pre-flight (Phase 0)), the final run summary MUST carry a loud banner: *"Claude-only mode: Phase 1.5 plan review and Phase D cross-review ran via the `code-reviewer`/`plan-reviewer` Agents (Sonnet); no Codex shell-out fired this run."* Include the discriminator `(--claude-only flag)` or `(codex_available=false)` so the operator can tell which input flipped the binding. The banner is parallel to the `--skip-plan-review` and `--skip-cross-review` summary banners and complements the `run_start.fields.claude_only: <bool>` field — both surface the same routing decision in different audit channels.
-5. Housekeeping commit (skip if `done == 0 AND failed == 0`):
-   ```bash
-   git add <plan-file> <run_log>
-   git commit -m "chore(implement-plan): run <run_id> bookkeeping"
-   ```
-6. **Certify the execute bundle.** Before releasing the lock and after the housekeeping commit (if any), run the full phase-gate bundle in execute mode so the run's pass/fail determination is recorded in the run log and visible to downstream tooling:
-
-   ```bash
-   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" gates \
-     --certify --mode execute \
-     --plan-file <absolute plan> \
-     --schedule-file <schedule_file> \
-     --run-id <id> --json
-   ```
-
-   The bundle re-checks `schema-valid`, `schedule-valid`, `fixture-valid`, `execution-safe`, `review-safe`, and re-verifies `commit-safe` against every `commit_done` event for this run. A run with zero commits reports `commit-safe: not_applicable` — that is not a failure. `certified: false` in the output means a gate failed; emit `certify_failed {run_id, gates: {...}}` via `log-event` and surface the failing gate name in the final summary, but do NOT retroactively reopen already-committed tasks. The certify step is a report, not a retry trigger.
-
+1. **Per-child `update-plan-header --status <complete|partial>`** — partition completed + failed tasks by `plan_file`; per-child `complete` iff every task in that child passed. No run-level aggregate header (design boundary). Children with no tasks untouched.
+2. **Per-child `finalize-execution-log`** — `--rows-json` row schema is `{task, agent, reviewer, verdict, commit, notes}` (six required string keys; no extras). Verdict cells include `[disagreement]` / `[remediation]` / `[narrow-remediation]` markers. `--outcome` ∈ `{success, partial, failed, paused}`; use `paused` when exiting via the awaiting-user path. Partition rows by `plan_file`; call once per distinct child. No run-level aggregate table.
+3. **Log `run_end`** with counts `{done, failed, disagreement_count, minor_findings_total}` + `outcome=paused` when halting on a pause path. Include `plan_file: "<dir-basename>"` (matches `run_start`).
+4. **Print summary** — counts, failure reasons, disagreement-tagged commits, per-task minor-findings digest, `git log --oneline <starting_sha>..HEAD`. Include `TaskList mirror state: {synced|drifted}` from comparing run-log `commit_done`/`task_failed` counts against `TaskList`. **`claude_only=true` loud banner (mandatory):** *"Claude-only mode: Phase 1.5 plan review and Phase D cross-review ran via Agents (Sonnet); no Codex shell-out fired."* with discriminator `(--claude-only flag)` or `(codex_available=false)`.
+5. **Housekeeping commit** (skip if `done == 0 AND failed == 0`): `git add <plan-file> <run_log>; git commit -m "chore(implement-plan): run <run_id> bookkeeping"`.
+6. **Certify the execute bundle.** `$PYTHON plan_ops.py gates --certify --mode execute --plan-file <abs> --schedule-file <schedule_file> --run-id <id> --json`. Re-checks all six gates; re-verifies `commit-safe` per `commit_done` event. Zero commits → `commit-safe: not_applicable` (not a failure). `certified: false` → emit `certify_failed` and surface the failing gate; do NOT retroactively reopen committed tasks. Report, not retry trigger.
 7. `plan_ops.py release-lock` (finally-style; runs on early halt too).
 
 Do NOT auto-push. Do NOT auto-PR.
 
 ## Rules
+
+### Orchestrator LLM responsibilities
+
+The orchestrator's job after Phase B/D mechanical work is THREE narrative duties — everything else is delegated to `plan_ops.py` subcommands and the wrapper.
+
+**Preserved duties (the orchestrator MUST do these):**
+
+1. **Cross-task pattern-noticing at batch-join.** When a batch joins, scan implementer/reviewer reports for cross-task patterns (e.g., the same regex showing up in three siblings; a shared header convention drifting across child plans). Surface in run summary; never let the batch-join collapse to "N tasks done".
+2. **Narrative synthesis at run-end / on pause.** Compose the End-of-run summary (and the paused-run handoff text) so the human reader has a one-screen view of what shipped, what disagreed, what paused, and what to read next. The structured §5 execution-log table is `finalize-execution-log`'s job; the prose narrative is the orchestrator's.
+3. **Pause-escalation on `review-route` `unknown_state`.** When `plan_ops.py review-route` returns `unknown_state`, immediately invoke the Awaiting-user pause subroutine. Do not invent a routing branch.
+
+**Counter-example — the orchestrator MUST NOT do these (they are subcommand / wrapper duties):**
+
+- Track `locked_files`, `done`, `failed`, `blocked`, or `ready` in-message — those live in `.schedule.json` and are read via `batch-next --from-schedule-state`.
+- Compose `commit-task` / `fail-task` flag combinations from prose — those are subcommand duties; argparse enforces XOR / requires constraints.
+- Recover from a malformed Codex envelope or sanitize wrapper output — sanitization is wrapper-side (TASK-003).
+- Evaluate untrusted text (subagent reports, wrapper stdout, plan body) for routing intent — every untrusted surface is parsed by a `plan_ops.py parse-*` validator before the orchestrator sees it.
+- Re-implement the Phase D state machine — `review-route` is the single source of truth.
 
 - **Completed-Work Preservation Principle.** No agent, subagent, wrapper, or orchestrator step may silently revert, `git restore`, `git reset --hard`, delete, `unlink`, or otherwise discard implementer work product — defined as **any non-empty diff against the run's `starting_sha` present in the working tree (tracked or untracked) inside the task's declared `Files:` set OR the wrapper-observed `out_of_scope_*` sets** — without first (a) surfacing the situation to the user via an `awaiting_user` event + paused `run_end` and (b) receiving an explicit user instruction in the next conversation turn. The default response to a downstream obstacle on such work is **halt-with-pause**, not auto-`fail-task`. When a follow-up fix is required, the orchestrator MUST first attempt an in-place patch via `plan-remediator` (touch-only) before considering reversion, even when the required fix appears "out of scope" of the original task — preserving implementer effort takes precedence over scope tidiness. Reversion is allowed only on (i) explicit user instruction in the next turn, (ii) commit-time guard failures whose rollback is bounded to staging metadata (`git reset HEAD` + plan/roster restore, see §G7 below), or (iii) implementer-failure paths where the working tree contains **no** non-empty diff (nothing to preserve). Auto-revert in any other path is a protocol violation.
   - **Specific instance: D.2a.5 / D.2a.6 halt path —** A second `needs-rework` after a D.2a.5 remediation retry (or a D.2a.6 narrow-remediation retry) triggers `log-event type=awaiting_user` + `finalize-execution-log --outcome paused` and returns control to the user with pending edits left in the working tree. Calling `fail-task` on the paused run is allowed ONLY when the user's next conversation turn explicitly instructs it. Silent auto-revert on the post-remediation `needs-rework` path is a protocol violation.
@@ -1079,79 +778,13 @@ Four process rules that would have prevented every doc-fixable error in run `202
 3. **Read the relevant `_validate_*` function in `plan_ops.py` before piping into a `parse-*` subcommand.** The validator checks the envelope shape, not what downstream code consumes. **Why:** prevents error 1 (fed bare `parsed` object to `parse-plan-review-report` instead of the full `{subcommand,outcome,parsed}` envelope).
 4. **Never Agent-dispatch a subagent file created during the current run.** The Claude Code Agent registry **snapshots at session start**; newly-created subagent files become available in the next fresh session, not the one that created them. If you must retry within the current session, fall back to the closest existing subagent with an inlined prompt matching the new subagent's contract. **Why:** prevents error 4 (Agent-registry miss on the same-session-created `plan-remediator`).
 
-## Cleanup policy (wrapper-enforced, for reference)
-
-The Codex dispatch wrapper operates **delta-bounded cleanup** against a pre-dispatch baseline. It never runs `git checkout -- .` or `git clean -fd`, so disjoint sibling work is not destroyed. Protected paths are never touched by cleanup; they land in `extra.protected_skipped_tracked` / `extra.protected_skipped_untracked` for observability.
-
-- **Protected exact paths:** `_run_lock.json`, `.claude`, `.codex`
-- **Protected prefixes:** `<plan_dir>/_run_log.jsonl`, `<plan_dir>/_run_lock.json`, `.claude/`, `.codex/`
-- **Delta invariant:** cleanup only touches `(allowed_files ∪ new-delta-violations) − protected`. Files present in the baseline are never deleted or restored.
-- **Scope misreport:** if Codex's `files_changed` disagrees with the post-dispatch delta, the wrapper emits `outcome="failure"` with `extra.reason="scope_misreport"` and `extra.test_result.result="not_run"`; the test command is skipped but delta-only restore still runs.
-- **Review-path:** keeps "log but succeed" semantics by explicit design; a post-dispatch sandbox escape surfaces in `extra.sandbox_escape_detected` without changing outcome.
-
 ## Command reference
 
-For a one-page lifecycle-ordered CLI summary (especially after a context compaction), Read `plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md` first — it rehydrates the full subcommand vocabulary in a single tool call. This appendix is the deep reference: full JSON payload shapes, validator pointers, and worked examples for the non-obvious subcommands. Examples were verified against `$PYTHON plan_ops.py <sub> --help` at audit anchor `1456687`. Substitute placeholders (`<plan-file>`, `<task-id>`, `<run-id>`, `<sha>`, file paths) only — flag names and enum values are literal.
+For a one-page lifecycle-ordered CLI summary (especially after a context compaction), Read `plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md` first — it rehydrates the full subcommand vocabulary in a single tool call. For full payload shapes, validator pointers, and worked examples, run `$PYTHON plan_ops.py <subcommand> --help` — every subcommand carries its own argparse contract and is the source of truth for flag names, enum values, and JSON envelope shapes. Do NOT hand-curate worked examples here; rely on `--help` after a context compaction.
 
-### `parse-plan-review-report`
+### `ALLOWED_LOG_EVENTS` (post-compaction reference)
 
-Validates the **full envelope** the Codex plan-review wrapper emits, not the inner `parsed` object. `_validate_plan_review_envelope` requires the top-level keys `{subcommand, outcome, parsed}` — feeding a bare `parsed` payload exits 1 with `unknown-top-level-key` errors. This was error 1 in run `20260417T214309`.
-
-Correct shape:
-
-```bash
-echo '{
-  "subcommand": "plan-review",
-  "outcome": "success",
-  "parsed": {
-    "plan_file": "<plan-file>",
-    "verdict": "approved-with-notes",
-    "findings": [],
-    "schedule_ok": true,
-    "summary": "..."
-  }
-}' | $PYTHON plan_ops.py parse-plan-review-report --stdin --json
-```
-
-Incorrect (rejected):
-
-```bash
-# Bare `parsed` — fails with unknown-top-level-key on every key.
-echo '{"plan_file":"...","verdict":"approved","findings":[]}' \
-  | $PYTHON plan_ops.py parse-plan-review-report --stdin
-```
-
-If unsure about the envelope, grep `_validate_plan_review_envelope` in `plan_ops.py` for the live shape.
-
-### `parse-d5-adjudication`
-
-Stdin payload shape: `{verdict, summary, load_bearing, dismissed}`. `--codex-findings-count N` is **mandatory** — partial-agreement indices are validated against `range(0, N)`. One example per verdict:
-
-```bash
-# ship — load_bearing/dismissed omitted (or empty arrays).
-echo '{"verdict":"ship","summary":"D.5 sides with implementer; Codex findings dismissed."}' \
-  | $PYTHON plan_ops.py parse-d5-adjudication --stdin --codex-findings-count 3 --json
-
-# ship-with-fixes — Codex findings stand; commit with [disagreement] tag.
-echo '{"verdict":"ship-with-fixes","summary":"All Codex findings load-bearing; ship + fix later."}' \
-  | $PYTHON plan_ops.py parse-d5-adjudication --stdin --codex-findings-count 3 --json
-
-# needs-rework — D.5 escalates to D.2a.5 remediation retry.
-echo '{"verdict":"needs-rework","summary":"D.5 confirms blockers; remediation needed."}' \
-  | $PYTHON plan_ops.py parse-d5-adjudication --stdin --codex-findings-count 3 --json
-
-# partial-agreement — disjoint, in-range index splits required; both buckets non-empty.
-echo '{"verdict":"partial-agreement","summary":"Findings 0,2 load-bearing; finding 1 dismissed.","load_bearing":[0,2],"dismissed":[1]}' \
-  | $PYTHON plan_ops.py parse-d5-adjudication --stdin --codex-findings-count 3 --json
-```
-
-Empty-bucket or overlapping-bucket payloads exit with `partial-agreement-invalid-split`; out-of-range indices exit with `partial-agreement-unknown-index`.
-
-### `log-event`
-
-Use `--fields-json '{...}'`, **not `--payload`** (error 5 in run `20260417T214309` was post-compaction flag amnesia). The event name MUST be in `ALLOWED_LOG_EVENTS`; inventing a name (e.g., `d5_review_done`) exits 1 (error 2 in run `20260417T214309`).
-
-`ALLOWED_LOG_EVENTS` (alphabetized — grep this block after compaction; matches `plan_ops.py` exactly):
+`log-event --event` rejects any name not in this set. Grep this block after a context compaction; matches `plan_ops.py:ALLOWED_LOG_EVENTS` exactly.
 
 ```
 analyst_done
@@ -1187,102 +820,7 @@ v_check_failed
 v_check_passed
 ```
 
-One example per class:
+Use `--fields-json '{...}'` (NOT `--payload`) to attach the event payload.
 
-```bash
-# Lifecycle (run-bracket).
-$PYTHON plan_ops.py log-event --event run_start \
-  --fields-json '{"run_id":"<run-id>","plan_file":"<dir-basename>","starting_sha":"<sha>"}'
-
-# Phase (per-task / per-batch checkpoint).
-$PYTHON plan_ops.py log-event --event implement_start \
-  --fields-json '{"run_id":"<run-id>","task_id":"<task-id>","plan_file":"<child-basename>","agent":"claude"}'
-
-# Outcome (commit / fail / disagreement).
-$PYTHON plan_ops.py log-event --event disagreement \
-  --fields-json '{"run_id":"<run-id>","task_id":"<task-id>","reviewer":"codex","verdict":"needs-rework","d5_verdict":"ship-with-fixes"}'
-```
-
-**`review_skipped.reason` enum.** The `review_skipped` event's `reason` field uses a fixed vocabulary:
-
-- `flag` — operator passed `--skip-cross-review` (existing).
-- `codex_review_timeout` — wrapper `subcommand=review` returned `outcome=timeout` (§D.1 routing).
-- `codex_review_parse_error` — wrapper `subcommand=review` returned `outcome=parse_error` (§D.1 routing).
-- `codex_review_failure` — wrapper `subcommand=review` returned `outcome=failure` (§D.1 routing).
-
-### `commit-task`
-
-`--reviewer-minor-findings` is a JSON **array** of finding objects with required keys `{severity ∈ {critical, important, minor}, confidence ∈ {high, medium, low}, file, line, issue, suggested_fix}`. The severity enum is fixed; `_validate_reviewer_finding` exits 1 on any other value.
-
-(a) Standard `minor-findings` commit (Codex reviewer, ship despite advisory findings):
-
-```bash
-$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
-  --files "a.py,b.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
-  --reviewer codex --reviewer-verdict minor-findings \
-  --reviewer-minor-findings '[{"severity":"minor","confidence":"high","file":"a.py","line":42,"issue":"Magic number","suggested_fix":"Extract constant"}]' \
-  --dry-run
-```
-
-(b) **D.5-disagreement commit (post-§8.4 third opinion).** D.5 is the third-opinion tie-breaker; **D.5's verdict (`ship | ship-with-fixes | partial-agreement`) is passed as `--reviewer-verdict`; Codex's `needs-rework` is NOT** — that was the confusion behind error 3 in run `20260417T214309`. `--disagreement-tag` records that Codex disagreed; the verdict that ships is D.5's:
-
-```bash
-$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
-  --files "a.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
-  --reviewer claude --reviewer-verdict ship-with-fixes \
-  --disagreement-tag --dry-run
-```
-
-The `[disagreement]` bare trailer encodes "Codex flagged needs-rework, D.5 overrode to ship-with-fixes." Do NOT pass `--reviewer-verdict needs-rework` — the commit guard rejects it because needs-rework never auto-commits.
-
-(c) **D.2a.5 remediation retry** — full rework, single retry; `[remediation]` trailer:
-
-```bash
-$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
-  --files "a.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
-  --reviewer codex --reviewer-verdict clean \
-  --remediation-tag --dry-run
-```
-
-(d) **D.2a.6 narrow remediation** — dismissed indices recorded as `[disagreement: I,J,K]` adjacent to `[narrow-remediation]`:
-
-```bash
-$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
-  --files "a.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
-  --reviewer codex --reviewer-verdict minor-findings \
-  --reviewer-minor-findings '[]' \
-  --narrow-remediation-tag --dismissed-finding-ids "0,2" --dry-run
-```
-
-(e) **User-override / post-pause keep-as-is** — no reviewer signal:
-
-```bash
-$PYTHON plan_ops.py commit-task --plan-file <plan-file> --task-id <task-id> --run-id <run-id> \
-  --files "a.py" --title "feat(TASK-NNN): <one-line>" --diff-summary "<one-line>" \
-  --reviewer none --reviewer-verdict "" \
-  --remediation-tag --dry-run
-```
-
-### `finalize-execution-log`
-
-`--rows-json` is a JSON array; each row carries `{task, agent, reviewer, verdict, commit, notes}` (the keys in `ALLOWED_ROW_FIELDS`). `--outcome` is optional (omitted preserves the legacy unlabelled header) and accepts `{success, partial, failed, paused}`.
-
-`--outcome` semantics:
-
-| value | meaning |
-|---|---|
-| `success` | All tasks committed cleanly (or with reviewer-approved minor-findings / ship-with-fixes). |
-| `partial` | At least one task succeeded, at least one failed/blocked. The §5 table records the mix. |
-| `failed` | No tasks succeeded — preflight or batch 1 halted before any commit landed. |
-| `paused` | D.2a.5 awaiting-user halt — second `needs-rework` after remediation retry. Pending edits remain in the working tree; the user's next conversation turn decides disposition. |
-
-```bash
-$PYTHON plan_ops.py finalize-execution-log --plan-file <plan-file> --run-id <run-id> \
-  --starting-sha <sha-start> --ending-sha <sha-end> \
-  --rows-json '[
-    {"task":"001","agent":"claude","reviewer":"codex","verdict":"clean","commit":"<sha>","notes":""},
-    {"task":"002","agent":"codex","reviewer":"claude","verdict":"ship-with-fixes","commit":"<sha>","notes":"[disagreement]"}
-  ]' \
-  --outcome success
-```
+For full payload shapes for `parse-plan-review-report`, `parse-d5-adjudication`, `log-event`, `commit-task`, and `finalize-execution-log` — including envelope validators, dismissed-finding-id rules, and per-verdict commit-tag combinations — run `$PYTHON plan_ops.py <subcommand> --help`. The `--help` text is the source of truth; do not rely on hand-curated examples here.
 
