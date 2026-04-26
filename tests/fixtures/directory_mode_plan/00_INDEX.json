@@ -1,9 +1,5 @@
 {
   "schema_version": 1,
-  "parallel_batches": [
-    ["001"],
-    ["002", "003"]
-  ],
   "chunks": [
     {
       "task_id": "001",

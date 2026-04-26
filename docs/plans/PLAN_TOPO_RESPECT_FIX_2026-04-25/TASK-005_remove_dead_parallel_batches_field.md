@@ -52,7 +52,7 @@ Option (b) is correct. The field has no consumer; preserving it for "human-reada
 
 ### TASK-005: Remove `parallel_batches` from `_decompose_plan` (manifest + return), update live rosters + fixtures + tests, add back-compat parse test
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
@@ -102,3 +102,11 @@ Delete the dead `parallel_batches` emission from `_decompose_plan` and strip the
 
 **Reversion guidance:**
 Restore the two `"parallel_batches": batches` lines in `_decompose_plan`; restore the deleted assertions in `test_plan_ops.py`; delete the two new tests; restore the `parallel_batches` key in each modified 00_INDEX.json (re-derive the value via `decompose-plan --force` against the matching whole-plan source markdown, or accept that hand-edited rosters lose it permanently — the field has no consumer, so the loss is purely cosmetic).
+
+## Execution log — 20260425T231744 (success)
+
+Starting SHA: `7a9a34fc70347d2f30362de25dc6852170e77858`  → Ending SHA: `cc7a32c01bbe12884f8c97913b35d2ee954e7e58`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | claude | codex | clean | c605536a | parallel_batches drop from 5 live rosters + fixture + tests; archive untouched |

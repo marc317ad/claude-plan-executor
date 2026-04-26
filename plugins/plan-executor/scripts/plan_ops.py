@@ -436,10 +436,31 @@ def _task_order_key(task_id: str, priority: str) -> tuple[int, int, str]:
 def _create_dependency_aware_batches(
     tasks: list[dict], task_ids_to_process: list[str],
 ) -> tuple[list[dict], list[dict]]:
-    """Dependency-aware + file-lock-aware batching.
+    """Dependency-aware + file-lock-aware batching (canonical helper).
 
-    Topo-sorts tasks, then partitions each topo-layer into file-disjoint
-    batches.
+    Topo-sorts tasks via ``_compute_decompose_batches`` (Kahn's), then
+    partitions each topo layer into file-disjoint sub-batches using a
+    greedy first-fit packer, with global-lock tasks
+    (``_is_global_lock_path`` over the task's files) forced into their
+    own solitary sub-batches. Sub-batches are flattened across topo
+    layers into the canonical schedule wire shape
+    ``[{index, task_ids, file_locks}, ...]`` with monotonically
+    increasing 1-based ``index``.
+
+    Inputs are not mutated. The function does not call ``_die``, write
+    files, or print — it is a pure (helper-style) function.
+
+    Error codes returned (in ``errors[]``, with ``batches=[]``):
+
+    * ``unresolvable-dep`` — a ``dependencies[]`` entry references an
+      id not present in ``tasks[]``.
+    * ``cyclic-dependency`` — Kahn's cannot drain the graph.
+
+    Regression prevented: ``docs/plans/PLAN_TOPO_RESPECT_FIX_2026-04-25``
+    — without topo layering, a serial chain ``001 → 002 → 003`` whose
+    files are disjoint collapses into a single batch (file-disjoint
+    only), which violates the declared dependency DAG and is correctly
+    flagged by Codex ``plan-review`` as a layering violation.
     """
     errors: list[dict] = []
     # Cycle detection / topo-sort over the collected tasks.
@@ -528,6 +549,15 @@ def _create_dependency_aware_batches(
     return batches, []
 
 
+# Spec-named alias for TASK-001 of PLAN_TOPO_RESPECT_FIX_2026-04-25. Both
+# names point at the canonical helper; the alias satisfies the plan's
+# Acceptance criteria which names the symbol exactly as
+# ``_dependency_aware_batches(tasks, ordered_task_ids)``. The original
+# ``_create_dependency_aware_batches`` is preserved so existing call sites
+# (``_compute_schedule_batches``, ``_build_tasks``) keep working unchanged.
+_dependency_aware_batches = _create_dependency_aware_batches
+
+
 def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[dict]]:
     errors: list[dict] = []
     normalized_tasks: list[dict] = []
@@ -569,7 +599,7 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
             })
             continue
 
-        raw_deps = task.get("dependencies") or []
+        raw_deps = task["dependencies"] if "dependencies" in task else []
         if not isinstance(raw_deps, list):
             errors.append({
                 "path": f"$.tasks[{i}].dependencies",
@@ -599,8 +629,8 @@ def _compute_schedule_batches(tasks: list) -> tuple[list[str], list[dict], list[
         key=lambda task: _task_order_key(task["id"], task["priority"]),
     )
     ordered_task_ids = [task["id"] for task in ordered_tasks]
-    
-    batches, batch_errors = _create_dependency_aware_batches(
+
+    batches, batch_errors = _dependency_aware_batches(
         normalized_tasks, ordered_task_ids,
     )
     if batch_errors:
@@ -709,7 +739,7 @@ def _validate_schedule_refs(tasks: list, batches: list) -> list[dict]:
 
 
 def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
-    """Cycle + orphan-dep detection on a schedule's task graph.
+    """Cycle + orphan-dep + batch-topo detection on a schedule's task graph.
 
     Returns errors[*]; never calls `_die` — callers decide whether to halt or
     merge into their own error list. Mirrors `_validate_schedule_refs`'s
@@ -719,6 +749,13 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
         does not normalize to a known task id. The orphan is reported, but
         the dep is still dropped before cycle analysis so a cycle among the
         remaining known tasks still surfaces.
+      * ``dependency-batch-violation`` — one per ``task.dependencies[j]`` edge
+        whose prereq is placed in the same batch as, or a later batch than,
+        the dependent. Defense-in-depth wire-format check that runs even if
+        the batchers regress; emitted in a single pass so the operator sees
+        every offending edge. Edges whose prereq or dependent is unbatched,
+        or whose prereq was already flagged as ``unknown-dependency`` in
+        this same call, are skipped to avoid double-reporting.
       * ``dependency-cycle`` — at most one entry; message names the residual
         cyclic task ids (sorted, canonical form).
     """
@@ -738,6 +775,7 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
     # task is reported individually and then dropped from the cycle graph so
     # the subsequent Kahn's pass is over the cleaned subgraph.
     dag_deps: dict[str, list[str]] = {}
+    orphan_dep_ids: set[str] = set()
     for i, t in enumerate(tasks):
         if not isinstance(t, dict):
             continue
@@ -760,11 +798,71 @@ def _validate_schedule_dag(tasks: list, batches: list) -> list[dict]:
                         f"tasks[{i}].dependencies[{j}]={str(dep)!r} is not a known task id"
                     ),
                 })
+                orphan_dep_ids.add(dep_norm)
                 continue
             deps_norm.append(dep_norm)
         dag_deps[tid] = deps_norm
 
-    # 2. Kahn's algorithm — cycle detection over the cleaned dep graph.
+    # 2. Batch-topology check (TASK-006, defense-in-depth). Build a
+    # `batch_of` map and emit `dependency-batch-violation` for every edge
+    # whose prereq sits in the same batch as the dependent or in a later
+    # one. Walks every edge; never short-circuits — operators want the full
+    # picture. Skips edges whose prereq is an orphan (already flagged
+    # above) and edges where either endpoint is unbatched (handled by
+    # `_validate_schedule_refs` upstream). Cyclic edges in the same batch
+    # are surfaced here AND by the Kahn's pass below; both signals fire.
+    batch_of: dict[str, int] = {}
+    for b in batches:
+        if not isinstance(b, dict):
+            continue
+        idx_raw = b.get("index")
+        if not isinstance(idx_raw, int):
+            continue
+        refs = b.get("task_ids") or []
+        if not isinstance(refs, list):
+            continue
+        for r in refs:
+            tid_norm = _normalize_task_id(str(r))
+            if tid_norm is None:
+                continue
+            # First placement wins; duplicate placements are caught by
+            # `_validate_schedule_refs` (`unknown-batch-task-ref` /
+            # duplicate-batch-index) — don't second-guess it here.
+            batch_of.setdefault(tid_norm, idx_raw)
+
+    for i, t in enumerate(tasks):
+        if not isinstance(t, dict):
+            continue
+        raw = t.get("id")
+        if raw is None:
+            continue
+        dependent = _normalize_task_id(str(raw))
+        if not dependent:
+            continue
+        b_dep = batch_of.get(dependent)
+        if b_dep is None:
+            continue
+        for j, dep in enumerate(t.get("dependencies") or []):
+            prereq = _normalize_task_id(str(dep))
+            if prereq is None:
+                continue
+            if prereq in orphan_dep_ids:
+                continue
+            b_pre = batch_of.get(prereq)
+            if b_pre is None:
+                continue
+            if b_pre >= b_dep:
+                errors.append({
+                    "path": f"$.tasks[{i}].dependencies[{j}]",
+                    "code": "dependency-batch-violation",
+                    "message": (
+                        f"TASK-{dependent} (batch {b_dep}) depends on "
+                        f"TASK-{prereq} which is in batch {b_pre}; "
+                        f"dependent must run in a strictly later batch"
+                    ),
+                })
+
+    # 3. Kahn's algorithm — cycle detection over the cleaned dep graph.
     indeg: dict[str, int] = {tid: 0 for tid in dag_deps}
     for tid, deps in dag_deps.items():
         for d in deps:
@@ -2818,21 +2916,43 @@ def _build_tasks(plans_dir: Path) -> dict:
         if agent_raw:
             task_entry["agent"] = agent_raw.strip()
         tasks.append(task_entry)
-    # Cycle detection / topo-sort over the collected tasks. Orphan deps
-    # (dep ids not in the roster) are surfaced here too so the caller
-    # sees a single structured error list.
+    # Cycle detection / topo-sort + file-lock + global-lock batching are
+    # delegated to the canonical ``_dependency_aware_batches`` helper
+    # (PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-003). Both ``build-tasks`` and
+    # ``compute-schedule`` route through the same helper so their
+    # ``batches[]`` outputs agree byte-for-byte for the same input. The
+    # roster-specific ``unresolvable-dep`` message is preserved by
+    # post-processing the helper's ``errors[]`` before they are returned.
+    #
+    # The helper is fed a projection of ``tasks`` whose ``files[]`` entries
+    # are normalized through ``_normalize_files_entry`` (strip backticks,
+    # ``(create|modify|delete)`` annotations, ``:line`` suffixes). This
+    # mirrors what ``_compute_schedule_batches`` does before calling the
+    # same helper, and is what makes the pinned byte-equality post-condition
+    # (``test_build_tasks_then_compute_schedule_is_no_op_on_batches``) hold.
+    # The returned ``tasks[]`` retains the raw, annotated ``files`` entries
+    # — only the helper's view is normalized.
     batches: list[dict] = []
     if not errors:
         task_ids_to_process = [str(t["id"]) for t in tasks]
-        # Rename unresolvable-dep error message to be specific to the roster context
-        roster_batches, batch_errors = _create_dependency_aware_batches(
-            tasks, task_ids_to_process
+        helper_tasks = [
+            {
+                **t,
+                "files": [
+                    _normalize_files_entry(str(f))
+                    for f in (t.get("files") or [])
+                ],
+            }
+            for t in tasks
+        ]
+        roster_batches, batch_errors = _dependency_aware_batches(
+            helper_tasks, task_ids_to_process,
         )
         for e in batch_errors:
             if e.get("code") == "unresolvable-dep":
                 e["message"] = (
-                    f"TASK-{e['task_id']} depends on TASK-{e['dep_id']} which is "
-                    "not declared in the roster"
+                    f"TASK-{e['task_id']} depends on TASK-{e['dep_id']} "
+                    "which is not declared in the roster"
                 )
         if batch_errors:
             errors.extend(batch_errors)
@@ -4125,6 +4245,33 @@ def cmd_compute_schedule(args: argparse.Namespace) -> None:
         }]})
 
     topo, batches, errors = _compute_schedule_batches(tasks)
+    # PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-002 (rework): normalize helper
+    # errors to the documented CLI envelope shape ``{path, code, message}``.
+    # ``_dependency_aware_batches`` is allowed to emit rich helper-level
+    # errors (with ``task_id`` / ``dep_id`` / ``task_ids`` keys) for direct
+    # helper callers, but the CLI envelope contract — preserved byte-for-byte
+    # across compute-schedule's error codes — only carries path/code/message.
+    normalized_errors: list[dict] = []
+    for err in errors:
+        code = err.get("code")
+        if code == "unresolvable-dep":
+            normalized_errors.append({
+                "path": f"$.tasks[{err.get('task_id', '')}].dependencies",
+                "code": code,
+                "message": err.get("message", ""),
+            })
+        elif code == "cyclic-dependency":
+            normalized_errors.append({
+                "path": "$.tasks",
+                "code": code,
+                "message": err.get("message", ""),
+            })
+        else:
+            # Errors emitted by _compute_schedule_batches itself (e.g.
+            # invalid-type, invalid-task-id, duplicate-task-id) already
+            # carry path/code/message — pass through unchanged.
+            normalized_errors.append(err)
+    errors = normalized_errors
     # TASK-010: tag tasks with `global_lock` so downstream consumers see
     # the same flag the batcher used to enforce solitary-batch placement.
     tagged_tasks: list = []

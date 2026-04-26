@@ -7,14 +7,14 @@
   "base_branch": "main",
   "depends_on_plans": [],
   "supersedes": [],
-  "_batching_rationale": "TASK-001 ships a pure-addition shared helper (plan_ops.py + tests/scripts/test_plan_ops.py) and unblocks TASK-002 + TASK-003. TASK-002 and TASK-003 both lock plan_ops.py + tests/scripts/test_plan_ops.py, so they cannot co-batch — they serialize after TASK-001. TASK-005 also locks plan_ops.py + tests/scripts/test_plan_ops.py and is independent of the helper, so it serializes alongside the TASK-002/003 chain (the dep-aware batcher places it on its own layer). TASK-004 touches SKILL.md + dispatch-templates.md + plan_ops_cheatsheet.md + a brand-new test file (no plan_ops.py / test_plan_ops.py overlap), so it co-batches freely after TASK-002 + TASK-003. TASK-006 locks plan_ops.py + test_plan_ops.py and depends on TASK-002 + TASK-003, so it lands last on the plan_ops.py chain.",
+  "_batching_rationale": "TASK-001 ships a pure-addition shared helper (plan_ops.py + tests/scripts/test_plan_ops.py) and unblocks TASK-002 + TASK-003. TASK-002 and TASK-003 both lock plan_ops.py + tests/scripts/test_plan_ops.py, so they cannot co-batch \u2014 they serialize after TASK-001. TASK-005 also locks plan_ops.py + tests/scripts/test_plan_ops.py and is independent of the helper, so it serializes alongside the TASK-002/003 chain (the dep-aware batcher places it on its own layer). TASK-004 touches SKILL.md + dispatch-templates.md + plan_ops_cheatsheet.md + a brand-new test file (no plan_ops.py / test_plan_ops.py overlap), so it co-batches freely after TASK-002 + TASK-003. TASK-006 locks plan_ops.py + test_plan_ops.py and depends on TASK-002 + TASK-003, so it lands last on the plan_ops.py chain.",
   "chunks": [
     {
       "task_id": "001",
       "file": "TASK-001_extract_dependency_aware_batches_helper.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Path C (canonicalize). Pure-addition helper extraction; no behavior change in isolation. Unblocks TASK-002 (compute-schedule wiring) and TASK-003 (build-tasks wiring). The helper consolidates the two batchers' overlapping logic into a single source of truth for topo + file-disjoint + global-lock placement, which is the structural prerequisite for declaring the SKILL.md recompute a provable no-op."
     },
@@ -22,17 +22,21 @@
       "task_id": "002",
       "file": "TASK-002_compute_schedule_uses_shared_helper.md",
       "priority": "high",
-      "depends_on": ["001"],
-      "status": "Pending",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Done",
       "superseded_by": [],
-      "origin_note": "Load-bearing fix. Replaces _compute_schedule_batches's broken file-disjoint-only packer with a delegation to TASK-001's helper, adds dependencies[] shape validation, and rewrites the test that pins the bug (test_disjoint_files_single_batch). After this task lands, the compute-schedule --stdin CLI returns topo-respecting batches for every caller — including the orchestrator's Phase 1 step 3 pipe (until TASK-004 deletes that pipe entirely)."
+      "origin_note": "Load-bearing fix. Replaces _compute_schedule_batches's broken file-disjoint-only packer with a delegation to TASK-001's helper, adds dependencies[] shape validation, and rewrites the test that pins the bug (test_disjoint_files_single_batch). After this task lands, the compute-schedule --stdin CLI returns topo-respecting batches for every caller \u2014 including the orchestrator's Phase 1 step 3 pipe (until TASK-004 deletes that pipe entirely)."
     },
     {
       "task_id": "003",
       "file": "TASK-003_build_tasks_uses_shared_helper.md",
       "priority": "high",
-      "depends_on": ["001"],
-      "status": "Pending",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Eliminates duplicate batching logic inside _build_tasks by routing it through TASK-001's helper. Side-benefit: build-tasks gains global-lock solitary placement (which it previously omitted), aligning it with compute-schedule. Adds the idempotence test (build-tasks output == compute-schedule output) that authorizes TASK-004's SKILL.md deletion."
     },
@@ -40,8 +44,11 @@
       "task_id": "004",
       "file": "TASK-004_drop_redundant_skill_recompute.md",
       "priority": "high",
-      "depends_on": ["002", "003"],
-      "status": "Pending",
+      "depends_on": [
+        "002",
+        "003"
+      ],
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Deletes the no-op compute-schedule --stdin recompute from SKILL.md Phase 1 step 3 (default + --task-ids filter branches), updates dispatch-templates.md and plan_ops_cheatsheet.md, and adds a fence test that fails if the recompute is ever re-introduced. Depends on TASK-002 + TASK-003 because the deletion is only safe once both batchers route through the same helper (idempotence is provable)."
     },
@@ -50,7 +57,7 @@
       "file": "TASK-005_remove_dead_parallel_batches_field.md",
       "priority": "medium",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Removes the write-only parallel_batches field from _decompose_plan emission and from all live (non-archive) 00_INDEX.json rosters + fixtures + tests. Adds a back-compat parse test pinning that old rosters carrying the field continue to parse. Independent of the topo fix proper; bundled here as adjacent cleanup that reduces operator confusion between roster parallel_batches and schedule batches[]."
     },
@@ -58,8 +65,11 @@
       "task_id": "006",
       "file": "TASK-006_topo_batch_validator_defense.md",
       "priority": "medium",
-      "depends_on": ["002", "003"],
-      "status": "Pending",
+      "depends_on": [
+        "002",
+        "003"
+      ],
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Defense-in-depth. Adds dependency-batch-violation error to _validate_schedule_dag so any persisted schedule whose batches violate task deps fails parse-schedule / write-schedule / schedule-valid gate. Catches what Codex plan-review already catches at LLM level, but earlier and deterministically. Depends on TASK-002 + TASK-003 because tightening the validator before both batchers are fixed would fail the existing test fixtures."
     }

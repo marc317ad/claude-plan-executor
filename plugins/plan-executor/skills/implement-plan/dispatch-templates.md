@@ -86,7 +86,7 @@ Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, t
 }
 ```
 
-Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan` (when auto-revise is on — default), dispatch `plan-author` to apply findings to the plan file in place, then re-run Phase 1 end-to-end (`build-tasks` → classifier fan-out → `compute-schedule` → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan, then re-run plan-review. A second `needs-replan` halts with `run_end reason=plan_review_failed`; no batches execute. If `--no-auto-revise` is set, the `needs-replan` route halts immediately with `run_end reason=plan_review_failed` instead of dispatching the author. (The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore — TASK-005 replaced it with the full Phase 1 re-run.)
+Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan` (when auto-revise is on — default), dispatch `plan-author` to apply findings to the plan file in place, then re-run Phase 1 end-to-end (`build-tasks` → classifier fan-out → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan, then re-run plan-review. A second `needs-replan` halts with `run_end reason=plan_review_failed`; no batches execute. If `--no-auto-revise` is set, the `needs-replan` route halts immediately with `run_end reason=plan_review_failed` instead of dispatching the author. (The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore — TASK-005 replaced it with the full Phase 1 re-run.)
 
 ## Phase 1.5a — plan-author dispatch (needs-replan auto-revise)
 
@@ -194,7 +194,7 @@ Renders when the finding carries `target_task_id=null`. Inputs: `roster_file` (r
 >
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
 
-After all per-child authors return, the orchestrator re-runs Phase 1 end-to-end (`build-tasks` → classifier fan-out → `compute-schedule` → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan. If the second-pass `build-tasks` surfaces fatal `errors[]` the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (clean tasks, or tasks with warnings — same allow-gaps / binding / analyst-triage routing as the first pass) Codex `plan-review` runs once more; that second verdict is binding. The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore.
+After all per-child authors return, the orchestrator re-runs Phase 1 end-to-end (`build-tasks` → classifier fan-out → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan. If the second-pass `build-tasks` surfaces fatal `errors[]` the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (clean tasks, or tasks with warnings — same allow-gaps / binding / analyst-triage routing as the first pass) Codex `plan-review` runs once more; that second verdict is binding. The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore.
 
 ## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)
 

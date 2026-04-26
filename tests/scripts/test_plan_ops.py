@@ -1647,7 +1647,14 @@ class TestComputeSchedule:
             text=True,
         )
 
-    def test_disjoint_files_single_batch(self) -> None:
+    def test_serial_chain_with_disjoint_files_yields_n_batches(self) -> None:
+        """Renamed from ``test_disjoint_files_single_batch`` (PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-002).
+
+        Old assertion (collapsing 001→002→003 into one file-disjoint batch)
+        was the bug being fixed. Topo layering MUST take precedence over
+        file-disjoint packing: a serial chain with disjoint files yields
+        N batches in topo order, not one.
+        """
         payload = {
             "tasks": [
                 {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
@@ -1660,7 +1667,9 @@ class TestComputeSchedule:
         body = _parse_json(cp)
         assert body["topo"] == ["001", "002", "003"]
         assert body["batches"] == [
-            {"index": 1, "task_ids": ["001", "002", "003"], "file_locks": ["a.py", "b.py", "c.py"]}
+            {"index": 1, "task_ids": ["001"], "file_locks": ["a.py"]},
+            {"index": 2, "task_ids": ["002"], "file_locks": ["b.py"]},
+            {"index": 3, "task_ids": ["003"], "file_locks": ["c.py"]},
         ]
 
     def test_parallel_disjoint_files(self) -> None:
@@ -1746,6 +1755,303 @@ class TestComputeSchedule:
         assert body["batches"] == [
             {"index": 1, "task_ids": ["001"], "file_locks": ["a.py"]}
         ]
+
+    # PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-002: regression-pinning + helper
+    # error-propagation tests at the CLI envelope layer. The helper-level
+    # equivalents live in TestDependencyAwareBatches; these confirm
+    # _compute_schedule_batches forwards helper errors to the third tuple
+    # position and preserves the compute-schedule envelope shape.
+    def test_serial_chain_with_disjoint_files_respects_dependencies(self) -> None:
+        """Regression pin: serial chain ``001 → 002 → 003`` with file-disjoint
+        payloads MUST emit 3 topo-ordered batches via the compute-schedule
+        envelope, not collapse into a single file-disjoint batch.
+
+        Pre-fix bug: ``_compute_schedule_batches`` ran its own file-disjoint
+        packer that ignored ``dependencies[]``. Post-fix it delegates to
+        ``_dependency_aware_batches`` which topo-layers first.
+        """
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+                {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+                {"id": "003", "priority": "high", "files": ["c.py"], "dependencies": ["002"]},
+            ]
+        }
+        cp = self._run_compute(payload)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["topo"] == ["001", "002", "003"]
+        assert [b["task_ids"] for b in body["batches"]] == [["001"], ["002"], ["003"]]
+        assert [b["index"] for b in body["batches"]] == [1, 2, 3]
+        assert [b["file_locks"] for b in body["batches"]] == [["a.py"], ["b.py"], ["c.py"]]
+
+    def test_orphan_dep_returns_unresolvable_dep_error(self) -> None:
+        """A ``dependencies[]`` entry pointing at an id absent from
+        ``tasks[]`` MUST surface as ``unresolvable-dep`` in the envelope's
+        ``errors[]`` (helper error propagated via the third tuple slot).
+
+        Asserts the documented CLI envelope shape only — ``{path, code,
+        message}``. Helper-specific keys (``task_id`` / ``dep_id``) are
+        pinned at the helper layer in
+        ``TestDependencyAwareBatches.test_orphan_dep_returns_unresolvable_dep_error``.
+        """
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["999"]},
+            ]
+        }
+        cp = self._run_compute(payload)
+        assert cp.returncode == 1, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body["batches"] == []
+        assert body["topo"] == []
+        codes = [e.get("code") for e in body["errors"]]
+        assert "unresolvable-dep" in codes
+        orphan = next(e for e in body["errors"] if e.get("code") == "unresolvable-dep")
+        assert orphan["path"] == "$.tasks[001].dependencies"
+        assert orphan["code"] == "unresolvable-dep"
+        assert "999" in orphan["message"]
+
+    def test_cycle_returns_cyclic_dependency_error(self) -> None:
+        """A cycle ``001 → 002 → 001`` MUST surface as ``cyclic-dependency``
+        in the envelope's ``errors[]``.
+
+        Asserts the documented CLI envelope shape only — ``{path, code,
+        message}``. Helper-specific keys (``task_ids``) are pinned at the
+        helper layer in
+        ``TestDependencyAwareBatches.test_cycle_returns_cyclic_dependency_error``.
+        """
+        payload = {
+            "tasks": [
+                {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["002"]},
+                {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+            ]
+        }
+        cp = self._run_compute(payload)
+        assert cp.returncode == 1, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body["batches"] == []
+        assert body["topo"] == []
+        codes = [e.get("code") for e in body["errors"]]
+        assert "cyclic-dependency" in codes
+        cycle = next(e for e in body["errors"] if e.get("code") == "cyclic-dependency")
+        assert cycle["path"] == "$.tasks"
+        assert cycle["code"] == "cyclic-dependency"
+        assert "cycle" in cycle["message"].lower()
+
+
+# ---------------------------------------------------------------------------
+# PLAN_TOPO_RESPECT_FIX TASK-001: shared dep-aware batching helper
+# ---------------------------------------------------------------------------
+
+
+class TestDependencyAwareBatches:
+    """Direct unit tests for ``_dependency_aware_batches`` —
+    the canonical (topo-layered + file-disjoint + global-lock-solitary)
+    batching helper shared by ``_compute_schedule_batches`` and
+    ``_build_tasks``.
+
+    Regression-pinning suite for
+    ``docs/plans/PLAN_TOPO_RESPECT_FIX_2026-04-25``: a serial chain with
+    disjoint files MUST yield N batches in topo order, not collapse into
+    a single file-disjoint batch.
+    """
+
+    @staticmethod
+    def _ordered_ids(tasks: list[dict]) -> list[str]:
+        """Mimic ``_compute_schedule_batches``'s caller-side priority
+        sort so the helper sees ids in the canonical order."""
+        return [
+            t["id"]
+            for t in sorted(
+                tasks,
+                key=lambda t: plan_ops._task_order_key(
+                    t["id"], t.get("priority", "low"),
+                ),
+            )
+        ]
+
+    def test_single_task_yields_single_batch(self) -> None:
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        assert batches == [
+            {"index": 1, "task_ids": ["001"], "file_locks": ["a.py"]},
+        ]
+
+    def test_independent_disjoint_tasks_pack_into_single_batch(self) -> None:
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": []},
+            {"id": "003", "priority": "high", "files": ["c.py"], "dependencies": []},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        assert batches == [
+            {
+                "index": 1,
+                "task_ids": ["001", "002", "003"],
+                "file_locks": ["a.py", "b.py", "c.py"],
+            },
+        ]
+
+    def test_independent_overlapping_tasks_split_into_multiple_batches(
+        self,
+    ) -> None:
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["shared.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["shared.py"], "dependencies": []},
+            {"id": "003", "priority": "high", "files": ["shared.py"], "dependencies": []},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        # File-disjoint packer cannot share `shared.py` → solitary batches
+        # in priority/id order.
+        assert [b["task_ids"] for b in batches] == [["001"], ["002"], ["003"]]
+        assert [b["index"] for b in batches] == [1, 2, 3]
+
+    def test_serial_chain_disjoint_files_yields_n_batches(self) -> None:
+        """Regression-pinning: serial chain ``001 → 002 → 003`` with
+        file-disjoint payloads MUST produce 3 topo-ordered batches, not
+        collapse into a single file-disjoint batch.
+
+        See ``docs/plans/PLAN_TOPO_RESPECT_FIX_2026-04-25`` for the
+        post-mortem; this is the case the prior file-disjoint-only
+        batcher got wrong.
+        """
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+            {"id": "003", "priority": "high", "files": ["c.py"], "dependencies": ["002"]},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        assert len(batches) == 3
+        assert [b["task_ids"] for b in batches] == [["001"], ["002"], ["003"]]
+        assert [b["index"] for b in batches] == [1, 2, 3]
+        assert [b["file_locks"] for b in batches] == [["a.py"], ["b.py"], ["c.py"]]
+
+    def test_diamond_dependency_yields_three_batches(self) -> None:
+        """Diamond ``A → B,C → D`` with file-disjoint B and C produces
+        3 batches: ``[[A], [B, C], [D]]``."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+            {"id": "003", "priority": "high", "files": ["c.py"], "dependencies": ["001"]},
+            {"id": "004", "priority": "high", "files": ["d.py"], "dependencies": ["002", "003"]},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        assert [b["task_ids"] for b in batches] == [
+            ["001"], ["002", "003"], ["004"],
+        ]
+        assert [b["index"] for b in batches] == [1, 2, 3]
+
+    def test_global_lock_task_forced_into_solitary_batch(self) -> None:
+        """A task whose files intersect ``GLOBAL_LOCK_PATHS`` MUST get
+        its own sub-batch even when file-disjoint with siblings."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["requirements.txt"], "dependencies": []},
+            {"id": "003", "priority": "high", "files": ["b.py"], "dependencies": []},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert errors == []
+        # 001 and 003 are file-disjoint with each other; 002 is
+        # global-locked → solitary sub-batch.
+        assert [b["task_ids"] for b in batches] == [
+            ["001", "003"], ["002"],
+        ]
+        assert [b["index"] for b in batches] == [1, 2]
+        # Confirm the global-lock entry is the solitary one.
+        solitary = [b for b in batches if b["task_ids"] == ["002"]][0]
+        assert solitary["file_locks"] == ["requirements.txt"]
+
+    def test_cycle_returns_cyclic_dependency_error(self) -> None:
+        """``A → B → A`` returns ``cyclic-dependency`` and empty batches."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["002"]},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert batches == []
+        assert len(errors) == 1
+        assert errors[0]["code"] == "cyclic-dependency"
+        assert sorted(errors[0]["task_ids"]) == ["001", "002"]
+
+    def test_orphan_dep_returns_unresolvable_dep_error(self) -> None:
+        """A dep id not present in the task set returns
+        ``unresolvable-dep`` and empty batches."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": ["999"]},
+        ]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, self._ordered_ids(tasks),
+        )
+        assert batches == []
+        assert len(errors) == 1
+        assert errors[0]["code"] == "unresolvable-dep"
+        assert errors[0]["task_id"] == "001"
+        assert errors[0]["dep_id"] == "999"
+
+    def test_mixed_priority_within_layer_packs_higher_priority_first(
+        self,
+    ) -> None:
+        """Within a single topo layer, the greedy packer sees ids in
+        ``_task_order_key`` (priority-then-id) order, so high-priority
+        ids occupy the first sub-batch slot when file conflicts force a
+        split."""
+        # Three independent (no-deps) tasks all touching `shared.py` →
+        # one layer with three solitary sub-batches; the high-priority
+        # task MUST land in batch 1.
+        tasks = [
+            {"id": "001", "priority": "low", "files": ["shared.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["shared.py"], "dependencies": []},
+            {"id": "003", "priority": "medium", "files": ["shared.py"], "dependencies": []},
+        ]
+        ordered = self._ordered_ids(tasks)
+        # Sanity: caller-side sort places high → medium → low.
+        assert ordered == ["002", "003", "001"]
+        batches, errors = plan_ops._dependency_aware_batches(
+            tasks, ordered,
+        )
+        assert errors == []
+        assert [b["task_ids"] for b in batches] == [
+            ["002"], ["003"], ["001"],
+        ]
+        assert [b["index"] for b in batches] == [1, 2, 3]
+
+    def test_helper_does_not_mutate_inputs(self) -> None:
+        """Pure-function contract: neither ``tasks`` nor
+        ``ordered_task_ids`` is mutated by the call."""
+        tasks = [
+            {"id": "001", "priority": "high", "files": ["a.py"], "dependencies": []},
+            {"id": "002", "priority": "high", "files": ["b.py"], "dependencies": ["001"]},
+        ]
+        ordered = self._ordered_ids(tasks)
+        # Snapshot via deep copy through json round-trip (sufficient for
+        # plain dicts/lists; we don't carry sets at the wire boundary).
+        tasks_before = json.loads(json.dumps(tasks))
+        ordered_before = list(ordered)
+        plan_ops._dependency_aware_batches(tasks, ordered)
+        assert tasks == tasks_before
+        assert ordered == ordered_before
 
 
 # ---------------------------------------------------------------------------
@@ -10591,6 +10897,182 @@ class TestTask019ScheduleDagHelper:
         assert "dependency-cycle" in codes
 
 
+class TestTask006_validate_schedule_dag_batch_topo:
+    """TASK-006. `_validate_schedule_dag` enforces batch topology.
+
+    Defense-in-depth: even if a batcher (TASK-002 / TASK-003) regresses
+    or a hand-crafted schedule sneaks past, the persisted schedule
+    cannot pass `parse-schedule` / `write-schedule` / `schedule-valid`
+    without batches[] respecting dependencies[]. The class name embeds
+    the `validate_schedule_dag` substring so the canonical test command
+    `pytest -k "validate_schedule_dag or schedule_valid"` selects every
+    test below alongside the existing TASK-019 helper coverage.
+    """
+
+    def test_dag_validator_rejects_dependent_in_same_batch_as_prereq(
+        self,
+    ) -> None:
+        tasks = [
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["001"]},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001", "002"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        assert len(viol) == 1, errors
+        e = viol[0]
+        assert e["path"] == "$.tasks[1].dependencies[0]", e
+        assert e["message"] == (
+            "TASK-002 (batch 1) depends on TASK-001 which is in batch 1; "
+            "dependent must run in a strictly later batch"
+        ), e["message"]
+
+    def test_dag_validator_rejects_dependent_in_earlier_batch_than_prereq(
+        self,
+    ) -> None:
+        tasks = [
+            {"id": "001", "files": [], "dependencies": ["002"]},
+            {"id": "002", "files": [], "dependencies": []},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001"], "file_locks": []},
+            {"index": 2, "task_ids": ["002"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        assert len(viol) == 1, errors
+        e = viol[0]
+        assert e["path"] == "$.tasks[0].dependencies[0]", e
+        assert e["message"] == (
+            "TASK-001 (batch 1) depends on TASK-002 which is in batch 2; "
+            "dependent must run in a strictly later batch"
+        ), e["message"]
+
+    def test_dag_validator_emits_all_violations_not_just_first(self) -> None:
+        # Three offending edges; the validator must surface all three in a
+        # single pass so the operator sees the full extent.
+        tasks = [
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["001"]},
+            {"id": "003", "files": [], "dependencies": ["001", "002"]},
+        ]
+        # All three crammed into one batch — every cross-task edge violates.
+        batches = [
+            {"index": 1, "task_ids": ["001", "002", "003"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        # 002→001, 003→001, 003→002.
+        assert len(viol) == 3, errors
+        paths = sorted(e["path"] for e in viol)
+        assert paths == [
+            "$.tasks[1].dependencies[0]",
+            "$.tasks[2].dependencies[0]",
+            "$.tasks[2].dependencies[1]",
+        ], paths
+
+    def test_dag_validator_accepts_topo_correct_batches(self) -> None:
+        # Negative control: a topo-correct schedule produces zero
+        # batch-violation entries (and no other dag errors either).
+        tasks = [
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["001"]},
+            {"id": "003", "files": [], "dependencies": ["001", "002"]},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001"], "file_locks": []},
+            {"index": 2, "task_ids": ["002"], "file_locks": []},
+            {"index": 3, "task_ids": ["003"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        assert errors == [], errors
+
+    def test_dag_validator_orphan_dep_takes_precedence_over_batch_violation(
+        self,
+    ) -> None:
+        # The orphan-dep pass already names the offending edge; emitting a
+        # second `dependency-batch-violation` for the same edge would be
+        # redundant noise, so the new check skips orphan prereqs.
+        tasks = [
+            # 002 declares a dep on the unknown task 999.
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["999"]},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001", "002"], "file_locks": []},
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        codes = [e["code"] for e in errors]
+        assert "unknown-dependency" in codes, errors
+        # Crucially, NO batch-violation for the same edge.
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        assert viol == [], viol
+
+    def test_dag_validator_unbatched_task_does_not_falsely_trigger(
+        self,
+    ) -> None:
+        # 002 is declared in tasks[] but absent from batches[]. The
+        # missing-from-batches problem is `_validate_schedule_refs`'s
+        # responsibility; this validator MUST NOT emit a phantom
+        # batch-violation. (Same applies if 001 — the prereq — were
+        # unbatched; both endpoints must be in `batch_of` for the
+        # violation check to fire.)
+        tasks = [
+            {"id": "001", "files": [], "dependencies": []},
+            {"id": "002", "files": [], "dependencies": ["001"]},
+        ]
+        batches = [
+            {"index": 1, "task_ids": ["001"], "file_locks": []},
+            # 002 is intentionally omitted from any batch.
+        ]
+        errors = plan_ops._validate_schedule_dag(tasks, batches)
+        viol = [e for e in errors if e["code"] == "dependency-batch-violation"]
+        assert viol == [], viol
+
+    def test_parse_schedule_strict_stdin_rejects_batch_topo_violation(
+        self,
+    ) -> None:
+        # CLI envelope test: a synthetic schedule whose batches violate
+        # deps must produce a non-zero exit + the new error code on
+        # `parse-schedule --strict --stdin`. Operators rely on this seam
+        # to fail fast before round-tripping through Codex/Claude review.
+        payload = {
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "claude", "files": ["a.py"],
+                 "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b.py"],
+                 "dependencies": ["001"], "plan_file": "sample.md"},
+            ],
+            "batches": [
+                # Same-batch placement of dep + prereq — the bug we catch.
+                {"index": 1, "task_ids": ["001", "002"],
+                 "file_locks": ["a.py", "b.py"]},
+            ],
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT),
+             "parse-schedule", "--stdin", "--strict", "--json"],
+            input=json.dumps(payload),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 1, (cp.returncode, cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        codes = [e["code"] for e in (body.get("errors") or [])]
+        assert "dependency-batch-violation" in codes, body
+        msgs = [e["message"] for e in body["errors"]
+                if e["code"] == "dependency-batch-violation"]
+        assert any(
+            "TASK-002" in m and "TASK-001" in m
+            and "strictly later batch" in m
+            for m in msgs
+        ), msgs
+
+
 class TestTask019ReviewerFindingDisposition:
     """V6-V8. Optional `disposition` field on reviewer minor-findings."""
 
@@ -16450,7 +16932,6 @@ class TestDecomposePlan:
         res = _parse_json(cp)
         assert res["ok"] is True
         assert res["task_count"] == 3
-        assert res["parallel_batches"] == [["001"], ["002", "003"]]
         produced = Path(res["produced_dir"])
         assert produced.is_dir()
         # Canonical manifest shape.
@@ -16711,25 +17192,118 @@ class TestDecomposePlan:
         assert manifest["base_branch"] == "main"
         assert manifest["depends_on_plans"] == []
         assert manifest["supersedes"] == []
-        assert isinstance(manifest["parallel_batches"], list)
         assert isinstance(manifest["chunks"], list)
         # Compare the emitted top-level key set against the canonical
         # manual-sidecar manifest. The decomposer may add additional
         # provenance keys (e.g. `source_plan_file`) but must emit at
-        # least every canonical top-level field.
+        # least every canonical top-level field. The canonical reference
+        # was archived under `docs/plans/archive/` and still carries the
+        # legacy `parallel_batches` field — that field is intentionally
+        # no longer emitted by `_decompose_plan`, so it is excluded from
+        # the comparison set.
         canonical_path = (
             REPO_ROOT
-            / "docs" / "plans"
+            / "docs" / "plans" / "archive"
             / "per_task_dispatch_refactor_v2" / "00_INDEX.json"
         )
         canonical = json.loads(
             canonical_path.read_text(encoding="utf-8"),
         )
-        missing = set(canonical.keys()) - set(manifest.keys())
+        canonical_keys = set(canonical.keys()) - {"parallel_batches"}
+        missing = canonical_keys - set(manifest.keys())
         assert not missing, (
             f"decomposed manifest missing canonical top-level keys: "
             f"{sorted(missing)}"
         )
+
+    def test_decompose_manifest_omits_parallel_batches(
+        self, tmp_path: Path,
+    ) -> None:
+        """Negative pin: emitted manifest must NOT carry `parallel_batches`.
+
+        TASK-005 of PLAN_TOPO_RESPECT_FIX_2026-04-25 deleted the dead
+        `parallel_batches` field from `_decompose_plan`. This test pins
+        the absence so a future re-introduction (whether intentional or
+        accidental) breaks loudly. The schedule's `batches[]` is the
+        single batch source-of-truth; the roster is no longer expected
+        to carry batch metadata.
+        """
+        src = tmp_path / "canonical.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(
+            src, tmp_path / "out", force=True,
+        )
+        assert res["ok"] is True, res
+        # The function's return dict must not carry it.
+        assert "parallel_batches" not in res, res
+        # The persisted manifest must not carry it.
+        manifest = json.loads(
+            (Path(res["produced_dir"]) / "00_INDEX.json").read_text(
+                encoding="utf-8",
+            ),
+        )
+        assert "parallel_batches" not in manifest, manifest
+
+    def test_decompose_roster_back_compat_parses_legacy_parallel_batches(
+        self, tmp_path: Path,
+    ) -> None:
+        """Back-compat: `_parse_index_roster` tolerates rosters in the
+        wild that still carry the legacy `parallel_batches` field.
+
+        Pre-existing 00_INDEX.json files written before TASK-005 of
+        PLAN_TOPO_RESPECT_FIX_2026-04-25 may still ship with
+        `parallel_batches`. The parser must ignore the extra key so
+        operators do not need to rewrite every historical roster to
+        adopt the cleanup.
+        """
+        legacy = {
+            "schema_version": 1,
+            "source": "manual-sidecar",
+            "plan_title": "Legacy back-compat roster",
+            "created": "2026-04-25",
+            "base_branch": "main",
+            "depends_on_plans": [],
+            "supersedes": [],
+            "parallel_batches": [["001"], ["002", "003"]],
+            "chunks": [
+                {
+                    "task_id": "001",
+                    "file": "TASK-001_a.md",
+                    "depends_on": [],
+                    "status": "Pending",
+                    "superseded_by": [],
+                },
+                {
+                    "task_id": "002",
+                    "file": "TASK-002_b.md",
+                    "depends_on": ["001"],
+                    "status": "Pending",
+                    "superseded_by": [],
+                },
+                {
+                    "task_id": "003",
+                    "file": "TASK-003_c.md",
+                    "depends_on": ["001"],
+                    "status": "Pending",
+                    "superseded_by": [],
+                },
+            ],
+        }
+        path = tmp_path / "00_INDEX.json"
+        path.write_text(json.dumps(legacy, indent=2), encoding="utf-8")
+        roster = plan_ops._parse_index_roster(path)
+        assert set(roster.keys()) == {"001", "002", "003"}
+        assert roster["001"]["depends_on"] == []
+        assert roster["002"]["depends_on"] == ["001"]
+        assert roster["003"]["depends_on"] == ["001"]
+        for tid in ("001", "002", "003"):
+            assert roster[tid]["status"] == "Pending"
+            assert roster[tid]["file"].startswith(f"TASK-{tid}_")
 
     def test_decompose_plan_timing_budget(self, tmp_path: Path) -> None:
         """Decomposition for a 10-task plan completes under 100 ms wall.
@@ -17873,6 +18447,176 @@ class TestBuildTasks:
             if isinstance(e, dict) and e.get("code") == "invalid-plan-file"
         ]
         assert not invalid_pf, parsed
+
+    def test_build_tasks_global_lock_task_is_solitary_in_batch(
+        self, tmp_path: Path,
+    ) -> None:
+        """Global-lock tasks land in a solitary batch in `_build_tasks`'s output.
+
+        Regression: pre-PLAN_TOPO_RESPECT_FIX_2026-04-25 TASK-003,
+        ``_build_tasks`` ran its own in-loop file-disjoint batcher that
+        did NOT honor ``_is_global_lock_path`` — so a task touching
+        ``requirements.txt`` could co-batch with file-disjoint siblings
+        in `build-tasks` output even though `compute-schedule` would
+        force it solitary. After routing both call sites through the
+        shared ``_dependency_aware_batches`` helper, the global-lock
+        carve-out applies uniformly.
+
+        The fixture is synthesized inline (whole-plan markdown → tmp_path
+        → ``decompose-plan`` → ``build-tasks``) so no on-disk fixture
+        addition is required.
+        """
+        whole_plan = (
+            "# Plan: global-lock smoke\n"
+            "\n"
+            "**Created:** 2026-04-25\n"
+            "**Status:** pending\n"
+            "**Base branch:** main\n"
+            "\n"
+            "## Goal\n"
+            "\n"
+            "Exercise the global-lock solitary-batch carve-out inside\n"
+            "`_build_tasks`'s output.\n"
+            "\n"
+            "## Context\n"
+            "\n"
+            "Three independent (no inter-dependency) tasks. TASK-002 touches\n"
+            "`requirements.txt` (a global-lock path). The shared batcher must\n"
+            "place TASK-002 in its own batch even though it is file-disjoint\n"
+            "from TASK-001 and TASK-003.\n"
+            "\n"
+            "## Verification\n"
+            "\n"
+            "After `decompose-plan` + `build-tasks`, the batches[] array\n"
+            "places TASK-002 alone in its own batch.\n"
+            "\n"
+            "## Tasks\n"
+            "\n"
+            "## TASK-001: Touch alpha file\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - scratch/alpha.txt (create)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** none\n"
+            "- **Acceptance criteria:**\n"
+            "  - alpha exists\n"
+            "- **Reversion guidance:** `rm -f scratch/alpha.txt`\n"
+            "\n"
+            "**Description:**\n"
+            "Independent leaf-write task A.\n"
+            "\n"
+            "## TASK-002: Bump runtime requirement pin\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - requirements.txt\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** none\n"
+            "- **Acceptance criteria:**\n"
+            "  - requirements.txt updated\n"
+            "- **Reversion guidance:** revert pin\n"
+            "\n"
+            "**Description:**\n"
+            "Touches a global-lock path; must land solo in its batch.\n"
+            "\n"
+            "## TASK-003: Touch beta file\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - scratch/beta.txt (create)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** none\n"
+            "- **Acceptance criteria:**\n"
+            "  - beta exists\n"
+            "- **Reversion guidance:** `rm -f scratch/beta.txt`\n"
+            "\n"
+            "**Description:**\n"
+            "Independent leaf-write task B.\n"
+        )
+        plan_path = tmp_path / "global_lock_plan.md"
+        plan_path.write_text(whole_plan, encoding="utf-8")
+        cp = _run("decompose-plan", "--plan-file", str(plan_path), "--json")
+        assert cp.returncode == 0, cp.stderr
+        produced = Path(_parse_json(cp)["produced_dir"])
+        cp2 = _run("build-tasks", "--plans-dir", str(produced), "--json")
+        assert cp2.returncode == 0, cp2.stderr
+        res = _parse_json(cp2)
+        assert res["ok"] is True, res
+        assert res["errors"] == [], res
+        batches = res["batches"]
+        # TASK-002 is global-lock; must be alone in its batch.
+        batch_for_002 = next(
+            (b for b in batches if "002" in b["task_ids"]), None,
+        )
+        assert batch_for_002 is not None, batches
+        assert batch_for_002["task_ids"] == ["002"], (
+            f"global-lock task TASK-002 must be solitary in its batch; "
+            f"got {batch_for_002!r}"
+        )
+        assert batch_for_002["file_locks"] == ["requirements.txt"], (
+            batch_for_002
+        )
+        # The siblings must NOT be co-batched with TASK-002.
+        for b in batches:
+            if "002" in b["task_ids"]:
+                continue
+            assert "002" not in b["task_ids"], b
+
+    def test_build_tasks_then_compute_schedule_is_no_op_on_batches(
+        self,
+    ) -> None:
+        """`build-tasks` and `compute-schedule` agree byte-for-byte on `batches[]`.
+
+        This is the load-bearing post-condition that authorizes
+        TASK-004 (PLAN_TOPO_RESPECT_FIX_2026-04-25) to delete the
+        SKILL.md ``compute-schedule --stdin`` recompute pipe: if both
+        CLIs route through ``_dependency_aware_batches`` and produce
+        bytewise-identical ``batches[]`` for the same input, the
+        recompute is a provable no-op rather than a presumed one.
+
+        The CLIs are invoked via subprocess (not direct function calls)
+        so the JSON serialization layer is exercised — that is where any
+        residual byte-difference would surface.
+        """
+        cp = _run(
+            "build-tasks",
+            "--plans-dir", str(DIRECTORY_MODE_FIXTURE_PATH),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        bt = _parse_json(cp)
+        assert bt["ok"] is True, bt
+        # Pipe `build-tasks` output's tasks/batches into `compute-schedule
+        # --stdin`. The schedule input shape is `{"tasks": [...]}` — the
+        # CLI re-derives `batches[]` from `tasks[]` on its own.
+        sched_input = json.dumps({"tasks": bt["tasks"]})
+        cp2 = subprocess.run(
+            [str(PY), str(SCRIPT), "compute-schedule", "--stdin", "--json"],
+            input=sched_input,
+            capture_output=True,
+            text=True,
+        )
+        assert cp2.returncode == 0, cp2.stderr
+        cs = _parse_json(cp2)
+        assert cs.get("errors") == [], cs
+        # Strict byte-equality contract via canonical (sorted-key) JSON
+        # serialization. Any drift between the two batchers — element
+        # ordering, file_locks ordering, batch indexing — would surface
+        # here.
+        bt_batches_json = json.dumps(bt["batches"], sort_keys=True)
+        cs_batches_json = json.dumps(cs["batches"], sort_keys=True)
+        assert bt_batches_json == cs_batches_json, (
+            f"build-tasks vs compute-schedule batches[] drift:\n"
+            f"  build-tasks   : {bt_batches_json}\n"
+            f"  compute-sched : {cs_batches_json}"
+        )
 
 
 # ---------------------------------------------------------------------------
