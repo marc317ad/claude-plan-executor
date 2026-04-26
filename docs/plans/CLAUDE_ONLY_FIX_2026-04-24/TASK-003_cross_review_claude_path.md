@@ -45,3 +45,11 @@ This task is prose-only edits to `SKILL.md` and `dispatch-templates.md`. No new 
 Route Phase D.1 cross-review through the existing `code-reviewer` agent when `claude_only=true`, mirroring TASK-002's Phase 1.5 route-switch. The `code-reviewer` agent and Phase D-Claude template are reused as-is. The D.2a third-opinion ladder collapses because there is no Codex verdict to adjudicate; `needs-rework` goes straight to D.4 fail-task. The D.2b role-swap retry uses `code-reviewer` for the re-review.
 
 This task is prose-only edits to `SKILL.md` and `dispatch-templates.md`. No new agent file. No code changes in `plan_ops.py`. No new tests. The run summary banner contract from TASK-001/TASK-002's `claude_only` plumbing fires here — the End-of-run summary section gains a one-paragraph rule that emits the banner when `claude_only=true`.
+
+## Execution log — 20260426T010342 (success)
+
+Starting SHA: `70103df4c2f5aa70d5233ecf4ec6cf1d0133a0bd`  → Ending SHA: `4817f6f8652704fe22a1e6da5cd912f09a6f313d`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | codex | clean | 4817f6f8 | prose-only D.1 route-switch + D.2 ladder collapse + run-summary banner |

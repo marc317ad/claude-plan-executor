@@ -1,0 +1,102 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Plumbing \u2014 `claude_only` routing flag and mutual exclusions",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md (edit)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "priority": "high",
+      "plan_file": "TASK-001_plumbing_claude_only_routing.md",
+      "agent": "codex",
+      "classification_reason": "single file, prose-only edit, concrete test command",
+      "description": "Hoist the routing decision to one place so TASK-002 and TASK-003 each have a single boolean to consult.",
+      "acceptance_criteria": [
+        "see child plan"
+      ]
+    },
+    {
+      "id": "002",
+      "title": "Plan review Claude path",
+      "files": [
+        "plugins/plan-executor/agents/plan-reviewer.md (create)",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md (edit)",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md (edit)",
+        "plugins/plan-executor/scripts/plan_ops.py (edit)",
+        "tests/scripts/test_plan_ops.py (edit)"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"parse_plan_review_report\"",
+      "priority": "high",
+      "plan_file": "TASK-002_plan_review_claude_path.md",
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, new agent module creation",
+      "description": "Replace the wrapper shell-out in Phase 1.5 with an Agent dispatch when `claude_only=true`.",
+      "acceptance_criteria": [
+        "see child plan"
+      ]
+    },
+    {
+      "id": "003",
+      "title": "Cross-review Claude path and D.2 ladder collapse",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md (edit)",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md (edit)"
+      ],
+      "dependencies": [
+        "001",
+        "002"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
+      "priority": "high",
+      "plan_file": "TASK-003_cross_review_claude_path.md",
+      "agent": "claude",
+      "classification_reason": "multi-file prose routing changes, complex behavioral spec",
+      "description": "Route Phase D.1 cross-review through the existing `code-reviewer` agent when `claude_only=true`.",
+      "acceptance_criteria": [
+        "see child plan"
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-reviewer.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}
