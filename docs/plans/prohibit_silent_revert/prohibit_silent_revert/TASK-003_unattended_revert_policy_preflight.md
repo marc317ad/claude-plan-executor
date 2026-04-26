@@ -46,7 +46,7 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 
 ### TASK-003: `--unattended-revert-policy` preflight + TTY refuse + orchestrator pin
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** claude
 - **Files:**

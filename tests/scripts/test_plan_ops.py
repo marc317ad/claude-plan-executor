@@ -5009,6 +5009,9 @@ class TestPreflightDirtyCategorization:
         cmd = [str(PY), str(SCRIPT), "preflight", "--plan-file", str(plan), "--json"]
         if strict_scope:
             cmd.append("--strict-scope")
+        # TASK-003: explicitly pass the unattended-revert policy so these
+        # legacy classifier tests stay decoupled from the new TTY-refuse seam.
+        cmd.extend(["--unattended-revert-policy", "pause"])
         return subprocess.run(
             cmd,
             cwd=str(repo),
@@ -5176,7 +5179,13 @@ class TestPreflightPythonPath:
 
     def _preflight(self, repo: Path, plan: Path, env: dict | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [str(PY), str(SCRIPT), "preflight", "--plan-file", str(plan), "--json"],
+            [
+                str(PY), str(SCRIPT), "preflight",
+                "--plan-file", str(plan), "--json",
+                # TASK-003: pass the unattended-revert policy explicitly so
+                # this PythonPath fixture stays decoupled from the TTY-refuse seam.
+                "--unattended-revert-policy", "pause",
+            ],
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -5287,6 +5296,103 @@ class TestPreflightPythonPath:
         assert "venv/bin/python" not in resolved or not resolved.startswith(str(tmp_git_repo))
         assert Path(resolved).is_file()
         assert os.access(resolved, os.X_OK)
+
+
+class TestPreflightUnattendedRevertPolicy:
+    """TASK-003 (prohibit_silent_revert): preflight wires up
+    ``--unattended-revert-policy`` with TTY-conditional refuse semantics so
+    cron/CI callers cannot silently discard work on a pause path.
+
+    The flag is NOT argparse-required. When stdin IS a TTY and the flag is
+    absent, preflight defaults to ``pause``. When stdin is NOT a TTY and the
+    flag is absent, preflight refuses with
+    ``errors[*].code = "unattended-revert-policy-required"``. The resolved
+    value is echoed on the JSON envelope as ``unattended_revert_policy`` so
+    the orchestrator can pin it as ``$UNATTENDED_REVERT_POLICY`` for the rest
+    of the run (parallel to the existing ``$PYTHON`` pin pattern).
+    """
+
+    def _preflight(
+        self,
+        repo: Path,
+        plan: Path,
+        *,
+        policy: str | None = None,
+        stdin_is_tty: bool = False,
+    ) -> subprocess.CompletedProcess:
+        cmd = [str(PY), str(SCRIPT), "preflight", "--plan-file", str(plan), "--json"]
+        if policy is not None:
+            cmd.extend(["--unattended-revert-policy", policy])
+        if stdin_is_tty:
+            import pty
+            master_fd, slave_fd = pty.openpty()
+            try:
+                cp = subprocess.run(
+                    cmd,
+                    cwd=str(repo),
+                    capture_output=True,
+                    text=True,
+                    stdin=slave_fd,
+                )
+            finally:
+                os.close(slave_fd)
+                os.close(master_fd)
+            return cp
+        return subprocess.run(
+            cmd,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+
+    def test_preflight_refuses_when_unattended_and_no_policy(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """No TTY + no flag -> non-zero exit + structured error code."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
+        cp = self._preflight(tmp_git_repo, plan_dir)
+        assert cp.returncode != 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert "errors" in body and isinstance(body["errors"], list)
+        assert body["errors"], body
+        codes = [e.get("code") for e in body["errors"]]
+        assert "unattended-revert-policy-required" in codes, body
+        # The error message should instruct the caller to pass an explicit value.
+        msg = body["errors"][0].get("message", "")
+        assert "pause" in msg and "fail-fast" in msg and "preserve-only" in msg, msg
+
+    def test_preflight_unattended_explicit_policy_accepted(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """No TTY + explicit flag -> proceed; policy echoed on envelope."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
+        for value in ("pause", "fail-fast", "preserve-only"):
+            cp = self._preflight(tmp_git_repo, plan_dir, policy=value)
+            assert cp.returncode == 0, (value, cp.stdout, cp.stderr)
+            body = _parse_json(cp)
+            assert body.get("unattended_revert_policy") == value, (value, body)
+
+    def test_preflight_tty_default_pause_when_flag_absent(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """TTY stdin + no flag -> default to ``pause`` and continue."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
+        cp = self._preflight(tmp_git_repo, plan_dir, stdin_is_tty=True)
+        assert cp.returncode == 0, cp.stdout + cp.stderr
+        body = _parse_json(cp)
+        assert body.get("unattended_revert_policy") == "pause", body
+
+    def test_preflight_unattended_revert_policy_rejects_invalid_value(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """argparse ``choices=`` rejects values outside the three-element set."""
+        plan_dir = _sample_plan_as_directory(tmp_git_repo)
+        cp = self._preflight(tmp_git_repo, plan_dir, policy="bogus-mode")
+        assert cp.returncode != 0
+        # argparse emits the error on stderr and exits non-zero before
+        # cmd_preflight runs; we only assert the rejection here.
+        assert "bogus-mode" in (cp.stderr + cp.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -17171,6 +17277,9 @@ class TestPreflightDirectoryMode:
         cmd = [str(PY), str(SCRIPT), "preflight", "--plan-file", str(plan_dir), "--json"]
         if strict_scope:
             cmd.append("--strict-scope")
+        # TASK-003: pass the unattended-revert policy explicitly so this
+        # legacy directory-mode helper stays decoupled from the TTY-refuse seam.
+        cmd.extend(["--unattended-revert-policy", "pause"])
         return subprocess.run(
             cmd,
             cwd=str(repo),

@@ -4344,6 +4344,29 @@ def _is_preflight_always_ignored(path: str, plan_dir: str, plan_basename: str) -
 
 
 def cmd_preflight(args: argparse.Namespace) -> None:
+    # TASK-003 (prohibit_silent_revert): resolve --unattended-revert-policy
+    # before any further work. The flag is NOT argparse-required because the
+    # requirement is conditional on stdin being a TTY: interactive callers can
+    # omit it and get a 'pause' default; cron/CI callers (no TTY) MUST pass an
+    # explicit value or we refuse with a structured error. Loud failure beats
+    # silent destruction in unattended execution.
+    raw_policy = getattr(args, "unattended_revert_policy", None)
+    if raw_policy is None:
+        if not sys.stdin.isatty():
+            _die(args, {"errors": [{
+                "path": "$.unattended_revert_policy",
+                "code": "unattended-revert-policy-required",
+                "message": (
+                    "stdin is not a TTY and --unattended-revert-policy was not "
+                    "provided. Pass an explicit value (pause | fail-fast | "
+                    "preserve-only) so unattended execution cannot silently "
+                    "discard work on a pause path."
+                ),
+            }]})
+        unattended_revert_policy = "pause"
+    else:
+        unattended_revert_policy = raw_policy
+
     plan = Path(args.plan_file)
     # Directory-mode input is the sole supported shape: `00_INDEX.json`
     # roster + one or more `TASK-NNN_*.md` child files. Single-file plan
@@ -4490,6 +4513,7 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         "current_branch": current_branch,
         "base_branch_match": base_branch_match,
         "python_path": _resolve_python(),
+        "unattended_revert_policy": unattended_revert_policy,
     }
     if not pass_flag:
         _die(args, result)
@@ -10100,6 +10124,20 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Halt (not warn) if current branch != plan's Base branch")
     p_pre.add_argument("--strict-scope", action="store_true",
                        help="Halt if any dirty file lies within the plan's declared scope")
+    p_pre.add_argument(
+        "--unattended-revert-policy",
+        choices=["pause", "fail-fast", "preserve-only"],
+        default=None,
+        help=(
+            "Policy that controls how new pause paths behave under unattended "
+            "execution. Required when stdin is not a TTY: cron/CI callers MUST "
+            "pass an explicit value (pause | fail-fast | preserve-only). When "
+            "stdin IS a TTY and the flag is absent, defaults to 'pause'. The "
+            "resolved value is echoed back on the JSON envelope as "
+            "unattended_revert_policy so the orchestrator can pin it as "
+            "$UNATTENDED_REVERT_POLICY for the rest of the run."
+        ),
+    )
     _add_json(p_pre)
 
     p_rr = sub.add_parser(
