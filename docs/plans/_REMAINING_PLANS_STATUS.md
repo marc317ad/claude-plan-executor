@@ -62,5 +62,31 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 - Gemini still blocked: TASK-001's helper alone is insufficient — needs TASK-002's `--filter-ids` plumbing on `build-tasks` to be wired to actually skip Done-but-in-closure chunks (currently the closure helper exists but `_build_tasks` still filters Done before dep validation).
 
 ### 3. PLAN_TOPO_RESPECT_FIX_2026-04-25 (6 tasks)
-- Status: **pending start**
-- Branch: `plan/topo-respect-fix`
+- Status: **COMPLETE — 6/6 done, awaiting user merge to main**
+- Branch: `plan/topo-respect-fix` (HEAD `0a02111`); 8 commits + bookkeeping; tip is ahead of `main` by 8 commits
+- Run id: `20260425T231744` → `success` (6 done, 0 failed, 3 disagreements, 2 remediations, 1 orchestrator hand-fix)
+- Commits (in order):
+  - `b90eb802` feat(TASK-001) `_dependency_aware_batches` alias + 10-test class — D.5 needs-rework on name (spec); D.2a.5 alias remediation; binding re-review clean. `[disagreement] [remediation]`
+  - `c605536a` feat(TASK-005) drop dead `parallel_batches` from 5 live rosters + 1 fixture + tests — clean (archive untouched)
+  - `979b6dfe` feat(TASK-002) `_compute_schedule_batches` routes through helper alias + envelope normalization + dep validation — D.5 needs-rework on envelope shape; D.2a.5 normalization remediation; binding re-review surfaced new finding (falsy-coercion); orchestrator-authorized hand-fix per user broad-authority + run_log `20260423T094734` precedent. `[remediation]`
+  - `389bd5fc` feat(TASK-003) `_build_tasks` helper alias + global-lock + idempotence test — clean
+  - `9864624` feat(TASK-004) drop redundant `compute-schedule --stdin` from SKILL.md Phase 1 step 3 + 5-test fence in `tests/scripts/test_skill_md_invariants.py`
+  - `cc7a32c0` feat(TASK-006) `_validate_schedule_dag` emits `dependency-batch-violation` (defense in depth) + 7 tests
+  - `caa5685` chore(implement-plan) bookkeeping (run 20260425T231744)
+  - `0a02111` chore(implement-plan) track schedule sidecar
+- Pre-existing test failures in `test_plan_ops.py` are baseline (8 in `TestAudit*`/`TestGlobalLockPaths`/`TestTask007PlanReview`; require `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md`); 2 collateral failures in `TestBatchNextBatchFidelity` flagged by TASK-006 implementer (the V3 hand-crafted fixtures violate the new validator and need rewriting — follow-up).
+
+---
+
+## Remaining queue (run via `/implement-plan` for token efficiency)
+
+4. `CLAUDE_ONLY_FIX_2026-04-24` (3 tasks; branch `plan/claude-only-fix` already exists per `git branch` — empty so far)
+5. `POSTMORTEM_FIXES_2026-04-25` (10 tasks)
+6. `SKILL_bash_dispatch_migration` (7 tasks)
+
+**Resume gemini after `narrow_run_filter_ids` TASK-002 binding finding is hand-fixed by user** — that unblocks `--filter-ids` for `build-tasks`, which then unblocks PLAN_GEMINI_INTEGRATION TASK-005..008.
+
+**Deferred (need user steer):**
+- `PHASE_D_STATE_MACHINE` (8 tasks; big state-machine refactor)
+- `prohibit_silent_revert` (9 tasks; was halted in `20260425T002624`)
+- `decompose_plans_tasks/build-plan-decomposer-plugin` (11 tasks; 2026-04-17, likely superseded)
