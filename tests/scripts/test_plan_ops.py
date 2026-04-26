@@ -3032,6 +3032,105 @@ class TestParseImplementerReport:
         assert body["outcome"] == "success"
         assert "not applicable" in body["raw"]
 
+    def test_outcome_states_block_round_trips(self) -> None:
+        # TASK-006 (POSTMORTEM_FIXES): a report carrying the optional
+        # **Outcome states:** block (emitted when the AC enumerates ≥3
+        # distinct outcome states for a helper/function/branch/test set)
+        # must round-trip through `parse-implementer-report` without
+        # surfacing a parser error or losing any of the canonical fields.
+        # Like the Coupling check block, the Outcome states block is
+        # opaque to the parser today (preserved verbatim inside the
+        # report `raw`); this test pins that the parser does not choke
+        # on the new section header and that the count + branches
+        # surface in the orchestrator-side report parser.
+        report = (
+            "**Outcome:** success\n"
+            "**Files changed:**\n- tests/integration/test_cli_envelope.py\n"
+            "**Diff summary:** replace `_unwrap_cli_envelope -> str | None` "
+            "with `_classify_cli_envelope(stdout) -> tuple[str, object]` "
+            "to distinguish all three enumerated states.\n"
+            "**Test outcome:** passed\n"
+            "**Coupling check:** not applicable — AC names no regex/header/symbol pattern.\n"
+            "**Outcome states:**\n"
+            "```yaml\n"
+            "count: 3\n"
+            "branches:\n"
+            '  - name: "unwrapped"\n'
+            '    return_value: "(\\"unwrapped\\", str)"\n'
+            '    condition: "parsed JSON has expected envelope shape"\n'
+            '  - name: "unexpected"\n'
+            '    return_value: "(\\"unexpected\\", body)"\n'
+            '    condition: "parsed JSON but envelope shape unexpected"\n'
+            '  - name: "non-json"\n'
+            '    return_value: "(\\"non-json\\", None)"\n'
+            '    condition: "stdout is not valid JSON"\n'
+            "```\n"
+            "**Concerns for reviewer:**\n- none\n"
+            "**Plan adaptations:**\n- none\n"
+            "**Reversion guidance:** revert the helper rename + return-shape change.\n"
+        )
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-implementer-report", "--stdin", "--json"],
+            input=report,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # Canonical fields still parse correctly despite the new block.
+        assert body["outcome"] == "success"
+        assert body["files_changed"] == [
+            "tests/integration/test_cli_envelope.py",
+        ]
+        assert body["test_outcome"] == "passed"
+        assert body["concerns"] == ["none"]
+        assert body["plan_adaptations"] == ["none"]
+        # No mandatory-header diagnostics — Plan adaptations + Concerns
+        # for reviewer headers are both present.
+        codes = [d["code"] for d in body.get("diagnostics") or []]
+        assert "missing-plan-adaptations" not in codes, body
+        assert "missing-concerns-for-reviewer" not in codes, body
+        # The Outcome states block is preserved verbatim in `raw` so
+        # the cross-reviewer dispatch can read the count + branches.
+        assert "**Outcome states:**" in body["raw"]
+        assert "count: 3" in body["raw"]
+        assert "branches:" in body["raw"]
+        assert '"unwrapped"' in body["raw"]
+        assert '"unexpected"' in body["raw"]
+        assert '"non-json"' in body["raw"]
+
+    def test_outcome_states_block_absent_when_not_triggered(self) -> None:
+        # TASK-006: the Outcome states block is OPTIONAL — when the
+        # Step 4.6 trigger does not fire (AC enumerates fewer than 3
+        # outcome states), the implementer omits the block entirely.
+        # The parser must not require the header and must not emit a
+        # diagnostic for its absence.
+        report = (
+            "**Outcome:** success\n"
+            "**Files changed:**\n- a.txt\n"
+            "**Diff summary:** noop\n"
+            "**Test outcome:** not_run\n"
+            "**Coupling check:** not applicable — AC names no regex/header/symbol pattern.\n"
+            "**Concerns for reviewer:**\n- none\n"
+            "**Plan adaptations:**\n- none\n"
+        )
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-implementer-report", "--stdin", "--json"],
+            input=report,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["outcome"] == "success"
+        # Outcome states header is absent — the report is well-formed.
+        assert "**Outcome states:**" not in body["raw"]
+        codes = [d["code"] for d in body.get("diagnostics") or []]
+        # No diagnostic complaining about the missing optional block.
+        assert not any("outcome-states" in c for c in codes), body
+
 
 # ---------------------------------------------------------------------------
 # commit-task + fail-task — smoke tests against a fresh git repo

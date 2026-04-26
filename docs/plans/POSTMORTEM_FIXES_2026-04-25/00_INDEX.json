@@ -65,7 +65,7 @@
       "depends_on": [
         "002"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Post-mortem Issue 6 \u2014 _unwrap_cli_envelope collapsed two distinct failure states; AC named a 3-state contract."
     },

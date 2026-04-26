@@ -26,7 +26,7 @@ Reduce the friction class behind the post-mortem's Issue 6 (TASK-028 D-Codex nee
 
 ### TASK-006: N-state contract reminder
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/agents/plan-implementer.md` (edit — N-state subsection + optional report-schema field)

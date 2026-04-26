@@ -89,6 +89,14 @@ When at least one trigger fires, you MUST:
 
 When NO trigger fires, emit `**Coupling check:** not applicable — <one-line reason, e.g., "AC does not name a regex/constant/header pattern">`. Do not omit the field.
 
+### Step 4.6 — N-state contract (mandatory when AC enumerates ≥3 outcome states)
+
+This step is the sibling of Step 4.5 — both refine how you read the AC. It fires when the AC enumerates **three or more distinct outcome states** for a single helper, function, branch, or test set (e.g., "the helper returns the unwrapped string OR signals unexpected-shape OR signals non-json"). The rule: **the return shape must distinguish all N enumerated states; do not collapse failure states into a single sentinel.**
+
+**Worked example (TASK-028 CLI envelope unwrap).** TASK-028's AC enumerated three states for the CLI envelope helper: `unwrapped` (parsed + expected shape), `unexpected` (parsed but unexpected envelope shape — the live test must `pytest.skip` with the body for diagnosis), and `non-json` (unparseable). The first implementation flattened states 2 and 3 into `str | None`, losing the `unexpected` body needed for the skip message. The fix replaced `_unwrap_cli_envelope -> str | None` with `_classify_cli_envelope(stdout) -> tuple[str, object]` returning `("unwrapped", str)`, `("unexpected", body)`, or `("non-json", None)` — a tuple shape that distinguishes all three states. A two-state `str | None` return would have been correct for a 2-state AC; with 3 states the sentinel collapse is the bug.
+
+When the trigger fires, emit the optional `**Outcome states:**` block in your report (schema below) so the cross-reviewer can confirm the return shape matches the enumerated branch count. When NO trigger fires (the AC does not enumerate ≥3 states for any helper/function/branch/test set), omit the block entirely — it is optional.
+
 ### Step 5 — Report
 
 Emit the report using the exact shape below.
@@ -127,6 +135,17 @@ siblings_checked:
     line: <line number>
     disposition: uniformly_applied | excluded_with_reason | not_applicable
     note: "<one-line reason — required when disposition is excluded_with_reason>"
+```
+
+**Outcome states:**
+<Optional. Emit ONLY when the Step 4.6 trigger fired (the AC enumerated ≥3 distinct outcome states for a helper/function/branch/test set). When the trigger did not fire, omit this block entirely — do not emit a placeholder. The cross-reviewer reads this block to confirm the return shape distinguishes all N enumerated branches; the parser preserves it verbatim in the report `raw` (no schema validation today). Emit as a fenced ```yaml or ```json block.>
+
+```yaml
+count: <int — number of distinct enumerated states>
+branches:
+  - name: "<state name from the AC, e.g., 'unwrapped'>"
+    return_value: "<concrete return shape, e.g., '(\"unwrapped\", str)'>"
+    condition: "<one-line trigger, e.g., 'parsed JSON has expected envelope shape'>"
 ```
 
 **Plan adaptations:**
