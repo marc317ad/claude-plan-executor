@@ -709,6 +709,8 @@ Pass the **failed task's** child file as `--plan-file` (same resolution rule). `
 
 Release this task's file locks. Remove the task from `ready`. Peer tasks in the same and later batches proceed independently. Do NOT proceed to Phase D for this task.
 
+See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
+
 ### Phase D — Review + commit (serial per task, analyst batch order)
 
 **If `--skip-cross-review`:** skip to D.3 immediately. Log `review_skipped`. Final summary shows a loud warning banner.
@@ -781,7 +783,7 @@ Minor findings in either direction → commit; record in run summary AND commit 
 | `needs-rework` | `partial-agreement` | → **D.2a.6** narrow-remediation retry | D.5 split Codex's findings into load-bearing and dismissed buckets; retry is scoped to the load-bearing subset only. Dismissed indices are recorded in the commit trailer. |
 | `needs-rework` | `needs-rework` | → **D.2a.5** bounded remediation retry | Two independent reviewers agree the finding is load-bearing; give the implementer one chance to fix it narrowly. |
 
-`--codex-review-binding` skips D.2a entirely — binding mode means `needs-rework` → immediate `fail-task` with NO D.5, NO D.2a.5, and NO D.2a.6. (This flag is mutually exclusive with `--claude-only` per TASK-001's mutex prose; under `claude_only=true` the ladder collapse documented above subsumes the binding mode's effect.)
+`--codex-review-binding` skips D.2a entirely — binding mode means `needs-rework` → immediate `fail-task` with NO D.5, NO D.2a.5, and NO D.2a.6. (This flag is mutually exclusive with `--claude-only` per TASK-001's mutex prose; under `claude_only=true` the ladder collapse documented above subsumes the binding mode's effect.) See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
 
 #### D.2a.5 — Bounded remediation retry (default, non-binding path only)
 
@@ -794,7 +796,7 @@ Fires when Codex's `needs-rework` is independently confirmed by the D.5 code-rev
 5. Route the re-review:
    - `clean | minor-findings` → D.3 commit with `--remediation-tag`. Summary row shows `[remediation]` (and `[disagreement]` if both apply).
    - `needs-rework` (second failure) → proceed to step 6.
-6. **Awaiting-user pause** (second `needs-rework`, OR a failed retry implementer outcome):
+6. **Awaiting-user pause** (second `needs-rework`, OR a failed retry implementer outcome): (See **Awaiting-user pause** subroutine — same control flow.)
    - Payload shape depends on which branch triggered the pause:
      - Second-review failure: `stage:"post_remediation_review"`, include `codex_findings:[...]` and `d5_summary:"..."`.
      - Retry-implement failure: `stage:"post_remediation_implement"`, include `retry_outcome`, `diagnostics`, and `reversion_guidance` from the implementer report; omit `codex_findings` (no second review ran).
@@ -817,7 +819,7 @@ Fires when Codex's `needs-rework` is independently confirmed by the D.5 code-rev
    - "keep as-is" → user instructs orchestrator to run `commit-task` with `--remediation-tag` and an override rationale.
    - "hand-fix" → user edits manually + re-runs review.
 
-   **Hard rule:** D.2a.5's second `needs-rework` MUST NOT trigger `fail-task` automatically. `fail-task` on a paused run requires an explicit user instruction in the next turn. See the "Never auto-`fail-task` on the D.2a.5 halt path" rule below.
+   **Hard rule:** D.2a.5's second `needs-rework` MUST NOT trigger `fail-task` automatically. `fail-task` on a paused run requires an explicit user instruction in the next turn. See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
 
 #### D.2a.6 — Narrow-remediation retry (partial-agreement path)
 
@@ -831,7 +833,7 @@ Fires when Codex's `needs-rework` verdict is split by the D.5 third-opinion revi
    - `clean | minor-findings` → D.3 commit with `--narrow-remediation-tag --dismissed-finding-ids I,J,K` (comma-separated dismissed indices from the D.5 split). Commit body carries `[narrow-remediation]` followed immediately by `[disagreement: I,J,K]`; summary row shows both tags.
    - `needs-rework` (second failure) → proceed to step 6.
 6. Log `narrow_remediation_done {task_id, outcome}` before entering the pause (on both the retry-implement-failure and second-review-failure branches, so the log records the attempt's terminal state either way).
-7. **Awaiting-user pause** (second `needs-rework`, OR a failed/scope-violation retry implementer outcome):
+7. **Awaiting-user pause** (second `needs-rework`, OR a failed/scope-violation retry implementer outcome): (See **Awaiting-user pause** subroutine — same control flow.)
    - Payload shape mirrors D.2a.5 with a flipped `stage` label and one added field on the review-failure branch:
      - Second-review failure: `stage:"post_narrow_remediation_review"`, include `codex_findings:[...]`, `d5_summary:"..."`, and `dismissed_finding_indices:[...]` (for round-tripping the D.5 split into the next turn).
      - Retry-implement failure: `stage:"post_narrow_remediation_implement"`, include `retry_outcome`, `diagnostics`, and `reversion_guidance` from the implementer report; omit `codex_findings` (no second review ran).
@@ -851,7 +853,7 @@ Fires when Codex's `needs-rework` verdict is split by the D.5 third-opinion revi
    ```
    After the paused `run_end`, the End-of-run sequence (update-plan-header, regular finalize, housekeeping commit) is SKIPPED — the paused branch emits its own `finalize-execution-log --outcome paused` and `run_end outcome=paused` instead. Print the failure envelope, release the run-lock, and return control to the user with pending edits **still in the working tree**. Do NOT call `fail-task`. Do NOT `git restore`. The user's next conversation turn decides disposition (same three options as D.2a.5: "revert" / "keep as-is" / "hand-fix").
 
-   **Hard rule:** D.2a.6's second `needs-rework` or non-success retry MUST NOT trigger `fail-task` automatically. Same protocol as D.2a.5's halt path — the "Never auto-`fail-task` on the D.2a.5 halt path" rule below extends to D.2a.6.
+   **Hard rule:** D.2a.6's second `needs-rework` or non-success retry MUST NOT trigger `fail-task` automatically. Same protocol as D.2a.5's halt path. See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
 
 #### D.2b — Role-swap retry (Codex implements + Claude reviewer needs-rework)
 
@@ -931,6 +933,34 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
 
 Same atomic shape as Phase C, and the same per-task `<plan-file>` resolution: `<abs>` is the failed task's child file; `block-dependents` internally routes each dependent's mutation to its own child per the schedule's `tasks[].plan_file`.
 
+See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
+
+#### Awaiting-user pause (shared control flow)
+
+Shared subroutine factored out of D.2a.5, D.2a.6, and (per future tasks) Phase C / Phase D.4 / D.2a binding-mode / `reconcile_batch` out-of-scope. **Control flow only** — per-stage payload contracts are intentionally distinct and stay declared at each call site. The subroutine spec lists the call-site contracts as a table:
+
+| Call site | `stage` value | Required payload fields (additional to `dirty_files`) |
+|---|---|---|
+| D.2a.5 second-review fail | `post_remediation_review` | `codex_findings[]`, `d5_summary` |
+| D.2a.5 retry-implement fail | `post_remediation_implement` | `retry_outcome`, `diagnostics`, `reversion_guidance` |
+| D.2a.6 second-review fail | `post_narrow_remediation_review` | `codex_findings[]`, `d5_summary`, `dismissed_finding_indices[]` |
+| D.2a.6 retry-implement fail | `post_narrow_remediation_implement` | `retry_outcome`, `diagnostics`, `reversion_guidance` |
+| Phase C (non-empty diff) | `post_implement_failure` | `implementer_outcome`, `diagnostics`, `reversion_guidance`, `nonempty_diff_files[]` |
+| Phase D.4 after rescue | `post_d4_rescue_failed` | `reviewer_findings[]`, `rescue_attempt_outcome`, `rescue_diagnostics` |
+| Phase D.4 commit-seam | `post_commit_seam_failure` | `commit_seam_reason`, `seam_diagnostics` |
+| D.2a binding-mode block | `post_binding_block` | `codex_findings[]`, `binding_flag` |
+| `reconcile_batch` out-of-scope | `post_reconcile_out_of_scope` | `out_of_scope_tracked[]`, `out_of_scope_untracked[]`, `task_id`, `wrapper_envelope_summary` |
+
+The subroutine itself does the same five things at every call site:
+
+1. `log-event awaiting_user --fields-json '{"task_id":"NNN","stage":"<see table>",...,"dirty_files":[...]}'` (per-site payload merged in).
+2. `finalize-execution-log --outcome paused --ending-sha "$(git rev-parse HEAD)"`.
+3. `log-event run_end --fields-json '{"outcome":"paused","paused_on_task":"NNN",...}'`.
+4. Skip End-of-run housekeeping; print failure envelope; release the run-lock.
+5. **Never** call `fail-task`; **never** `git restore`; **never** mutate plan-status to `failed`.
+
+See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
+
 ### Phase E — Next batch
 
 Release this task's file locks. Loop to Phase A.
@@ -967,6 +997,8 @@ Do NOT auto-push. Do NOT auto-PR.
 
 ## Rules
 
+- **Completed-Work Preservation Principle.** No agent, subagent, wrapper, or orchestrator step may silently revert, `git restore`, `git reset --hard`, delete, `unlink`, or otherwise discard implementer work product — defined as **any non-empty diff against the run's `starting_sha` present in the working tree (tracked or untracked) inside the task's declared `Files:` set OR the wrapper-observed `out_of_scope_*` sets** — without first (a) surfacing the situation to the user via an `awaiting_user` event + paused `run_end` and (b) receiving an explicit user instruction in the next conversation turn. The default response to a downstream obstacle on such work is **halt-with-pause**, not auto-`fail-task`. When a follow-up fix is required, the orchestrator MUST first attempt an in-place patch via `plan-remediator` (touch-only) before considering reversion, even when the required fix appears "out of scope" of the original task — preserving implementer effort takes precedence over scope tidiness. Reversion is allowed only on (i) explicit user instruction in the next turn, (ii) commit-time guard failures whose rollback is bounded to staging metadata (`git reset HEAD` + plan/roster restore, see §G7 below), or (iii) implementer-failure paths where the working tree contains **no** non-empty diff (nothing to preserve). Auto-revert in any other path is a protocol violation.
+  - **Specific instance: D.2a.5 / D.2a.6 halt path —** A second `needs-rework` after a D.2a.5 remediation retry (or a D.2a.6 narrow-remediation retry) triggers `log-event type=awaiting_user` + `finalize-execution-log --outcome paused` and returns control to the user with pending edits left in the working tree. Calling `fail-task` on the paused run is allowed ONLY when the user's next conversation turn explicitly instructs it. Silent auto-revert on the post-remediation `needs-rework` path is a protocol violation.
 - **Never edit code files.** Orchestrator only touches plan files, `_run_log.jsonl`, `_run_lock.json`, and git staging. Implementer subagents / Codex wrapper own code changes.
 - **When `claude_only=true`, the orchestrator MUST NOT invoke `plan_codex_dispatch.py` for ANY subcommand (`plan-review`, `review`, `implement`). Codex shell-out under `claude_only` is a protocol violation.** The `claude_only` boolean is bound at Phase 0 preflight from `--claude-only OR (codex_available == false)`; see §Pre-flight (Phase 0) and §Parse arguments mutex prose.
 - **Under `claude_only=true`, the D.2a third-opinion ladder collapses.** D.5 escalation, D.2a.5 bounded remediation, and D.2a.6 narrow-remediation are unreachable — there is no Codex verdict to adjudicate. A `code-reviewer` `needs-rework` verdict on a Claude-implemented task under `claude_only=true` goes straight to D.4 fail-task. The D.2b role-swap retry path (Codex-implemented + Claude-reviewer `needs-rework`) is also structurally unreachable under `claude_only=true` because Phase 1's `--claude-only` / `codex_available=false` rewrite forces every task's implementer side to Claude; §D.2b documents the defensive re-review contract were the path ever reachable. See §Phase D.2a.
@@ -974,7 +1006,6 @@ Do NOT auto-push. Do NOT auto-PR.
 - **Never `git add -A` or `git add .`.** Stage specific files only — `commit-task` already uses `--only`.
 - **Never retry a failed task inside the same run** beyond the one D.2b role-swap, the one D.2a.5 bounded remediation retry, the one D.2a.6 narrow-remediation retry, and the one Codex→Claude fallback. Terminal failures stay isolated — peers continue independently.
 - **Re-source-verdict is binding after plan-review triage + plan-author.** When a Phase 1-triage or Phase 1.5.5 triage returns `partial-agreement` or `needs-rework`, the subsequent `plan-author` → re-source-verdict sequence runs EXACTLY ONCE and that second source verdict is binding. On the analyst source (`source="plan-analyst"`), the re-source-verdict is a re-run of Phase 1 (`build-tasks → classifier → write-schedule`); a second round of non-empty `build-tasks warnings[]` halts per `run_end reason=plan_analyst_failed` (equivalent to the retired "second `needs-enrichment`"). On the Codex source (`source="codex-plan-review"`), the re-source-verdict is the re-dispatched Codex `plan-review`; a second `needs-replan` halts per `run_end reason=plan_review_failed`. NO second plan-review triage is dispatched on either path — mirrors the D.5 "re-review is binding" rule at task level.
-- **Never auto-`fail-task` on the D.2a.5 halt path.** A second `needs-rework` after a D.2a.5 remediation retry triggers `log-event type=awaiting_user` + `finalize-execution-log --outcome paused` and returns control to the user with pending edits left in the working tree. Calling `fail-task` on the paused run is allowed ONLY when the user's next conversation turn explicitly instructs it. Silent auto-revert on the post-remediation `needs-rework` path is a protocol violation.
 - **Plan-file body edits are narrowly allowed.** Allowed: (a) `**Status:**` bullet mutations; (b) append-only mutation of the tail execution-log section; (c) pre-dispatch format-only corrections needed to satisfy schema / phase-gate predicates (e.g., promoting a bulleted `- **Description:**` to the required prose-header `**Description:**`). Task semantics — prose, acceptance criteria, Files, Test command, Implementation notes, Reversion guidance, Dependencies, Scope boundaries — MUST NOT be altered; the orchestrator is not a plan author. Any format correction under (c) MUST be mentioned in the execution-log tail so the edit is auditable. The run log remains append-only.
 - **One commit per task** plus at most one `chore:` housekeeping commit per run. Narrow `git commit --only` in Phase D.3 is mandatory.
 - **Never auto-push, never auto-PR.**

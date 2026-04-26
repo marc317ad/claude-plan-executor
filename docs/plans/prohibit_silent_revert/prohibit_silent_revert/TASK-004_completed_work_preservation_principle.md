@@ -45,11 +45,12 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 
 ### TASK-004: Completed-Work Preservation Principle text + shared awaiting-user pause subroutine
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** claude
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md
+  - plugins/plan-executor/scripts/plan_ops.py
 - **Dependencies:** [001, 002, 003]
 - **Test command:** `python3 plugins/plan-executor/scripts/plan_ops.py audit --strict --json`
 - **Acceptance criteria:**

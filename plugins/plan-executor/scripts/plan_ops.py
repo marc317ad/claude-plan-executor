@@ -9300,6 +9300,136 @@ def _check_canonical_fixture_not_archived() -> dict:
     )
 
 
+def _check_principle_referenced() -> dict:
+    """`Completed-Work Preservation Principle` is anchored in §Rules and
+    cross-referenced from at least 4 other phase sections of SKILL.md.
+
+    TASK-004 (prohibit_silent_revert): the principle text lives canonically
+    in `## Rules`. Each phase that documents a destructive auto-revert
+    seam (Phase C, Phase D.4, D.2a binding-mode, D.2a.5/D.2a.6 halt
+    paths, the shared awaiting-user pause subroutine) must carry a
+    cross-reference back to the principle so a reader landing in the
+    phase section sees the binding rule. This check enforces the
+    cross-reference invariant.
+    """
+    skill_path = (
+        _SCRIPT_DIR.parent / "skills" / "implement-plan" / "SKILL.md"
+    )
+    canonical_payload = {
+        "source": (
+            "TASK-004 prohibit_silent_revert: principle text in §Rules + "
+            ">=4 phase-section cross-references"
+        ),
+        "value": {
+            "literal": "Completed-Work Preservation Principle",
+            "min_phase_section_refs": 4,
+        },
+    }
+    owning_path = _audit_relpath(skill_path)
+    if not skill_path.is_file():
+        return _audit_finding(
+            check="principle_referenced",
+            status="fail",
+            tier="default",
+            canonical=canonical_payload,
+            actual={"source": str(skill_path), "value": None},
+            reason=f"SKILL.md not found: {skill_path}",
+            locations=[{
+                "path": owning_path, "line": None,
+                "reason": f"SKILL.md not found: {skill_path}",
+            }],
+        )
+    try:
+        text = skill_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return _audit_finding(
+            check="principle_referenced",
+            status="fail",
+            tier="default",
+            canonical=canonical_payload,
+            actual={"source": str(skill_path), "value": None},
+            reason=f"SKILL.md unreadable: {e}",
+            locations=[{
+                "path": owning_path, "line": None,
+                "reason": f"SKILL.md unreadable: {e}",
+            }],
+        )
+    literal = "Completed-Work Preservation Principle"
+    lines = text.splitlines()
+
+    # Section partition: walk through SKILL.md, classifying each line by
+    # which top-level (`## `) section it lives in. The §Rules section is
+    # the home of the principle bullet; everything else (Phase C / Phase D
+    # subsections, the shared awaiting-user pause subsection, etc.) is a
+    # "phase section" for the cross-reference count.
+    in_rules = False
+    rules_hits: list[int] = []
+    phase_section_hits: dict[str, list[int]] = {}
+    current_top: str | None = None
+    current_sub: str | None = None
+    for idx, line in enumerate(lines, 1):
+        if line.startswith("## ") and not line.startswith("### "):
+            current_top = line[3:].strip()
+            current_sub = None
+            in_rules = (current_top == "Rules")
+            continue
+        if line.startswith("### ") or line.startswith("#### "):
+            current_sub = line.lstrip("#").strip()
+        if literal in line:
+            if in_rules:
+                rules_hits.append(idx)
+            else:
+                # Bucket by the nearest sub-heading when present, else
+                # by the top-level section name. This ensures multiple
+                # references inside the same phase still count as one
+                # phase section.
+                key = current_sub or current_top or "<unknown>"
+                phase_section_hits.setdefault(key, []).append(idx)
+
+    distinct_phase_sections = len(phase_section_hits)
+    actual_payload = {
+        "source": owning_path,
+        "value": {
+            "rules_hits": rules_hits,
+            "phase_sections_with_ref": sorted(phase_section_hits.keys()),
+            "distinct_phase_section_count": distinct_phase_sections,
+        },
+    }
+    problems: list[str] = []
+    locations: list[dict] = []
+    if not rules_hits:
+        msg = (
+            f"literal {literal!r} not found in `## Rules` section"
+        )
+        problems.append(msg)
+        locations.append({"path": owning_path, "line": None, "reason": msg})
+    if distinct_phase_sections < 4:
+        msg = (
+            f"literal {literal!r} appears in {distinct_phase_sections} "
+            f"phase section(s); require >= 4 cross-references"
+        )
+        problems.append(msg)
+        locations.append({"path": owning_path, "line": None, "reason": msg})
+    if problems:
+        return _audit_finding(
+            check="principle_referenced",
+            status="fail",
+            tier="default",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason="; ".join(problems),
+            locations=locations,
+        )
+    return _audit_finding(
+        check="principle_referenced",
+        status="pass",
+        tier="default",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+    )
+
+
 # Ordered registry. The order is the canonical `--list` output and the
 # row order in the Markdown report. Append new checks to the end so
 # downstream tooling that snapshots `--list` does not drift.
@@ -9314,6 +9444,7 @@ AUDIT_CHECKS: tuple[tuple[str, object, str], ...] = (
     ("design_doc_orphans", _check_design_doc_orphans, "default"),
     ("global_lock_paths", _check_global_lock_paths, "default"),
     ("canonical_fixture_not_archived", _check_canonical_fixture_not_archived, "default"),
+    ("principle_referenced", _check_principle_referenced, "default"),
 )
 AUDIT_CHECK_NAMES: tuple[str, ...] = tuple(name for name, _, _ in AUDIT_CHECKS)
 AUDIT_CHECK_TIERS: dict[str, str] = {name: tier for name, _, tier in AUDIT_CHECKS}
