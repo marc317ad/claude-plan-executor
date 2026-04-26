@@ -19,7 +19,7 @@ After surveying `docs/plans/`:
 | `narrow_run_filter_ids` | 0 / 5 | **Run** | `--task-ids` scope fix |
 | `SKILL_bash_dispatch_migration` | 0 / 7 | **Run** | Wrapper now exists (PLAN_NESTED_DISPATCH merged); SKILL.md still has 12 Agent dispatches and 0 wrapper calls — migration is next-in-line |
 | `PHASE_D_STATE_MACHINE` | 0 / 8 | **Run** (was deferred — was over-cautious) | Same orchestrator + Codex review + pause protocol applies |
-| `prohibit_silent_revert` | 0 / 9 | **Real user-decision needed** | Run `20260425T002624` was halted with `reason: user_halt` — user explicitly stopped it. Need user direction: retry now or skip |
+| `prohibit_silent_revert` | 0 / 9 | **Run** | Prior halt (`20260425T002624`) was due to issues since fixed; user cleared to proceed |
 | `decompose_plans_tasks/build-plan-decomposer-plugin` | 0 / 11 | **Skip — superseded** | Verified: no separate `plan-decomposer` plugin exists; `plan_ops.py decompose-plan` (lines 196, 318, 1836, 2330, 2622) absorbed the functionality into `plan-executor`. The 2026-04-17 plan to extract a separate plugin was abandoned in favor of the in-place implementation. Move to archive |
 
 ## Execution order (rationale)
@@ -84,10 +84,8 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 5. `POSTMORTEM_FIXES_2026-04-25` (10 tasks)
 6. `PHASE_D_STATE_MACHINE` (8 tasks)
 7. `SKILL_bash_dispatch_migration` (7 tasks)
-8. After narrow_run_filter_ids TASK-002 unblocks (user hand-fix or instruct to resume): finish narrow_run TASK-003..005, then resume PLAN_GEMINI_INTEGRATION TASK-005..008 with `--filter-ids`
+8. `prohibit_silent_revert` (9 tasks) — prior halt was for issues since fixed
+9. After narrow_run_filter_ids TASK-002 unblocks (user hand-fix or instruct to resume): finish narrow_run TASK-003..005, then resume PLAN_GEMINI_INTEGRATION TASK-005..008 with `--filter-ids`
 
 **Skipped (verified superseded):**
 - `decompose_plans_tasks/build-plan-decomposer-plugin` — `plan_ops.py decompose-plan` absorbed the functionality; no separate plugin needed. Move directory to `archive/`.
-
-**Real user decision needed:**
-- `prohibit_silent_revert` (9 tasks) — explicitly halted in run `20260425T002624` by you. Retry now or skip?
