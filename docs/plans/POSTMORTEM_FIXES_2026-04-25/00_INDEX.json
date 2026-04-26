@@ -43,7 +43,7 @@
       "depends_on": [
         "003"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Post-mortem Issue 4 \u2014 fixture-valid gate hardcodes docs/plans/sample_phase4.md; preflight halted after archival."
     },

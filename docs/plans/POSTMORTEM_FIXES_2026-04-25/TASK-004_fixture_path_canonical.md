@@ -30,7 +30,7 @@ Both are cheap; ship both. The lint catches the future-self error; the SoT remov
 
 ### TASK-004: Fixture path canonicalization + pre-archive lint
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (edit — `CANONICAL_CONTRACT` constant + `_gate_fixture_valid` read site + new audit-check `_check_canonical_fixture_not_archived`)

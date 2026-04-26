@@ -351,6 +351,13 @@ CANONICAL_CONTRACT: dict[str, object] = {
     # `DUAL_AGENT_PLAN_EXECUTOR.md` §9.4 and fails on drift.
     "global_lock_paths_default": sorted(GLOBAL_LOCK_PATHS),
     "global_lock_globs_default": list(GLOBAL_LOCK_GLOBS),
+    # TASK-004 (POSTMORTEM_FIXES_2026-04-25): single source of truth for the
+    # canonical sample fixture path the `fixture-valid` gate validates.
+    # `_gate_fixture_valid` reads from this field; the audit check
+    # `canonical_fixture_not_archived` lints that the fixture has not been
+    # moved under `docs/plans/archive/` without updating this constant.
+    "fixture_path": "docs/plans/sample_phase4.md",
+    "fixture_schedule_path": "docs/plans/sample_phase4.schedule.json",
 }
 
 ALIAS_WINDOWS: dict[str, list[str]] = {
@@ -6881,7 +6888,11 @@ GATE_NAMES: tuple[str, ...] = (
 # correct fixture, and unit tests that run from an arbitrary tmp_path are
 # unaffected.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_FIXTURE_RELATIVE_PATH = "docs/plans/sample_phase4.md"
+# TASK-004: read the SoT path from `CANONICAL_CONTRACT.fixture_path` so the
+# string literal lives in exactly one place. The audit check
+# `canonical_fixture_not_archived` flags drift if the fixture is moved
+# under `docs/plans/archive/` without updating the constant.
+_FIXTURE_RELATIVE_PATH = str(CANONICAL_CONTRACT["fixture_path"])
 _FIXTURE_ABSOLUTE_PATH = _REPO_ROOT / _FIXTURE_RELATIVE_PATH
 
 # Canonical locations of wrapper predicates. `_gate_execution_safe` and
@@ -7072,7 +7083,8 @@ def _gate_schedule_valid(schedule_file: str | Path | None) -> dict:
 def _gate_fixture_valid(plan_file: str | Path | None = None) -> dict:
     """Sample fixture passes schema-valid and schedule-valid.
 
-    TASK-006 rewrites `docs/plans/sample_phase4.md` to the canonical schema.
+    TASK-006 rewrites the canonical sample fixture (see
+    `CANONICAL_CONTRACT.fixture_path`) to the canonical schema.
     Running this gate against the pre-rewrite fixture is **expected to
     return `fail`** — the gate vocabulary is established here, its live-tree
     green status lands with TASK-006. Unit tests drive this predicate via
@@ -7089,37 +7101,47 @@ def _gate_fixture_valid(plan_file: str | Path | None = None) -> dict:
     # caller was invoked. Tests can still override by passing `plan_file`.
     path = Path(plan_file) if plan_file is not None else _FIXTURE_ABSOLUTE_PATH
     if not path.is_file():
-        return _gate_result(
+        result = _gate_result(
             "fixture-valid",
             "fail",
             f"fixture not found: {path}",
         )
+        # TASK-004: attribute the SoT path in the failure envelope so an
+        # operator can locate the canonical declaration without grepping.
+        result["expected_from"] = "CANONICAL_CONTRACT.fixture_path"
+        return result
     schema = _gate_schema_valid(path)
     if schema["status"] != "pass":
-        return _gate_result(
+        result = _gate_result(
             "fixture-valid",
             "fail",
             f"schema-valid failed: {schema['reason']}",
         )
+        result["expected_from"] = "CANONICAL_CONTRACT.fixture_path"
+        return result
     # Schedule sidecar convention: `<basename>.schedule.json` under plan_dir.
     # fixture-valid is the aggregate schema + schedule certification, so a
     # missing sidecar is a fail — otherwise dry-run/execute certification
     # could go green without exercising schedule validation on the fixture.
     sidecar = path.with_suffix(".schedule.json")
     if not sidecar.is_file():
-        return _gate_result(
+        result = _gate_result(
             "fixture-valid",
             "fail",
             f"schedule sidecar missing: {sidecar.name} "
             f"(fixture-valid requires schema + schedule; sidecar absent)",
         )
+        result["expected_from"] = "CANONICAL_CONTRACT.fixture_path"
+        return result
     sched = _gate_schedule_valid(sidecar)
     if sched["status"] != "pass":
-        return _gate_result(
+        result = _gate_result(
             "fixture-valid",
             "fail",
             f"schedule-valid failed on {sidecar.name}: {sched['reason']}",
         )
+        result["expected_from"] = "CANONICAL_CONTRACT.fixture_path"
+        return result
     return _gate_result(
         "fixture-valid",
         "pass",
@@ -8882,6 +8904,52 @@ def _check_global_lock_paths() -> dict:
     )
 
 
+def _check_canonical_fixture_not_archived() -> dict:
+    """`CANONICAL_CONTRACT.fixture_path` does not point under `docs/plans/archive/`.
+
+    TASK-004 (POSTMORTEM_FIXES_2026-04-25): pre-archive lint. When a plan
+    is moved to the archive, authors sometimes forget to update the SoT
+    fixture path; the `fixture-valid` gate then validates an archived
+    artifact instead of the live conformance fixture. This check catches
+    that drift before it ships.
+    """
+    fixture_value = str(CANONICAL_CONTRACT.get("fixture_path", ""))
+    canonical_payload = {
+        "source": "CANONICAL_CONTRACT[fixture_path]",
+        "value": fixture_value,
+    }
+    actual_payload = {
+        "source": "CANONICAL_CONTRACT[fixture_path]",
+        "value": fixture_value,
+    }
+    owning_path = _audit_relpath(_SCRIPT_DIR / "plan_ops.py")
+    line_no = _audit_locate_constant("CANONICAL_CONTRACT")
+    if fixture_value.startswith("docs/plans/archive/"):
+        reason = (
+            f"`CANONICAL_CONTRACT.fixture_path` points under "
+            f"`docs/plans/archive/` ({fixture_value!r}); update "
+            "`CANONICAL_CONTRACT.fixture_path` to point at the live "
+            "fixture before archiving"
+        )
+        return _audit_finding(
+            check="canonical_fixture_not_archived",
+            status="fail",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason=reason,
+            locations=[
+                {"path": owning_path, "line": line_no, "reason": reason},
+            ],
+        )
+    return _audit_finding(
+        check="canonical_fixture_not_archived",
+        status="pass",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+    )
+
+
 # Ordered registry. The order is the canonical `--list` output and the
 # row order in the Markdown report. Append new checks to the end so
 # downstream tooling that snapshots `--list` does not drift.
@@ -8895,6 +8963,7 @@ AUDIT_CHECKS: tuple[tuple[str, object, str], ...] = (
     ("wrapper_isolation", _check_wrapper_isolation, "default"),
     ("design_doc_orphans", _check_design_doc_orphans, "default"),
     ("global_lock_paths", _check_global_lock_paths, "default"),
+    ("canonical_fixture_not_archived", _check_canonical_fixture_not_archived, "default"),
 )
 AUDIT_CHECK_NAMES: tuple[str, ...] = tuple(name for name, _, _ in AUDIT_CHECKS)
 AUDIT_CHECK_TIERS: dict[str, str] = {name: tier for name, _, tier in AUDIT_CHECKS}
@@ -9140,7 +9209,8 @@ def cmd_gates(args: argparse.Namespace) -> None:
             results.append(_gate_schedule_valid(args.schedule_file))
         elif name == "fixture-valid":
             # The gate invariant is about the canonical sample fixture
-            # (`docs/plans/sample_phase4.md`), not the user's plan file.
+            # (see `CANONICAL_CONTRACT.fixture_path`), not the user's plan
+            # file.
             # Passing `args.plan_file` here caused Phase 0 to validate the
             # execution plan twice (via schema-valid and fixture-valid) and
             # skip the sample fixture gate entirely — the opposite of the

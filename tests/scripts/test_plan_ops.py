@@ -13331,6 +13331,124 @@ class TestGateFixtureValidSidecar:
         assert "schedule-valid failed" in result["reason"]
 
 
+class TestCanonicalFixturePathSoT:
+    """TASK-004 (POSTMORTEM_FIXES_2026-04-25): the fixture path lives in
+    `CANONICAL_CONTRACT.fixture_path`; the gate reads it from there and
+    failure envelopes attribute the SoT via `expected_from`. A pre-archive
+    audit check fires when the SoT drifts under `docs/plans/archive/`."""
+
+    def test_canonical_contract_carries_fixture_path(self) -> None:
+        """`CANONICAL_CONTRACT.fixture_path` is the canonical sample fixture."""
+        assert (
+            plan_ops.CANONICAL_CONTRACT["fixture_path"]
+            == "docs/plans/sample_phase4.md"
+        )
+
+    def test_fixture_relative_path_reads_from_canonical_contract(self) -> None:
+        """The module-level `_FIXTURE_RELATIVE_PATH` is sourced from the SoT."""
+        assert (
+            plan_ops._FIXTURE_RELATIVE_PATH
+            == plan_ops.CANONICAL_CONTRACT["fixture_path"]
+        )
+
+    def test_fixture_path_string_literal_appears_only_in_canonical_contract(
+        self,
+    ) -> None:
+        """The literal `docs/plans/sample_phase4.md` does not appear elsewhere
+        in `plan_ops.py`."""
+        text = SCRIPT.read_text(encoding="utf-8")
+        # Count occurrences of the literal substring. Acceptable: exactly
+        # one in CANONICAL_CONTRACT (as a string value); the sidecar entry
+        # is `sample_phase4.schedule.json`, which shares the prefix but
+        # is a separate literal.
+        # Locate every occurrence and assert each one is inside
+        # CANONICAL_CONTRACT (i.e. between its opening and closing lines).
+        # Use a strict substring count: the bare path appears once.
+        count_bare = text.count('"docs/plans/sample_phase4.md"')
+        assert count_bare == 1, (
+            f"`docs/plans/sample_phase4.md` literal appeared {count_bare} "
+            f"times in plan_ops.py; expected exactly 1 (inside "
+            f"CANONICAL_CONTRACT)."
+        )
+
+    def test_gate_fixture_valid_success_envelope_omits_expected_from(
+        self, tmp_path: Path,
+    ) -> None:
+        """On the success path the envelope is the canonical 3-key shape."""
+        plan = _write_gates_plan(tmp_path)
+        _write_gates_schedule(tmp_path)
+        result = plan_ops._gate_fixture_valid(plan)
+        assert result["status"] == "pass", result
+        # `expected_from` is a failure-attribution field; success envelopes
+        # do not carry it.
+        assert "expected_from" not in result
+
+    def test_gate_fixture_valid_failure_envelope_attributes_sot(
+        self, tmp_path: Path,
+    ) -> None:
+        """Failure envelope names the SoT field via `expected_from`."""
+        # Point the gate at a non-existent fixture under tmp_path; the
+        # `fixture not found` failure path must attribute the SoT.
+        missing = tmp_path / "does_not_exist.md"
+        result = plan_ops._gate_fixture_valid(missing)
+        assert result["status"] == "fail"
+        assert result.get("expected_from") == "CANONICAL_CONTRACT.fixture_path"
+
+    def test_gate_fixture_valid_sidecar_failure_attributes_sot(
+        self, tmp_path: Path,
+    ) -> None:
+        """Sidecar-missing failure also attributes the SoT field."""
+        plan = _write_gates_plan(tmp_path)
+        # No sidecar.
+        result = plan_ops._gate_fixture_valid(plan)
+        assert result["status"] == "fail"
+        assert result.get("expected_from") == "CANONICAL_CONTRACT.fixture_path"
+
+
+class TestCanonicalFixtureNotArchivedAuditCheck:
+    """TASK-004: pre-archive lint registered as a `default`-tier audit check."""
+
+    def test_canonical_fixture_not_archived_registered_in_audit_checks(
+        self,
+    ) -> None:
+        """The check is registered in `AUDIT_CHECKS` at tier `default`."""
+        assert (
+            "canonical_fixture_not_archived" in plan_ops.AUDIT_CHECK_NAMES
+        )
+        assert (
+            plan_ops.AUDIT_CHECK_TIERS["canonical_fixture_not_archived"]
+            == "default"
+        )
+
+    def test_canonical_fixture_not_archived_passes_for_live_path(self) -> None:
+        """With the SoT pointing at `docs/plans/sample_phase4.md`, the
+        check passes."""
+        finding = plan_ops._check_canonical_fixture_not_archived()
+        assert finding["check"] == "canonical_fixture_not_archived"
+        assert finding["status"] == "pass", finding
+        assert finding["tier"] == "default"
+
+    def test_canonical_fixture_not_archived_fails_when_archived(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When `CANONICAL_CONTRACT.fixture_path` points under
+        `docs/plans/archive/`, the check fails with a remediation tip."""
+        archived = "docs/plans/archive/sample_phase4.md"
+        # Patch the dict in-place; restore via monkeypatch teardown using
+        # `setitem`.
+        monkeypatch.setitem(
+            plan_ops.CANONICAL_CONTRACT, "fixture_path", archived,
+        )
+        finding = plan_ops._check_canonical_fixture_not_archived()
+        assert finding["status"] == "fail", finding
+        assert "archive" in finding["reason"]
+        assert "update" in finding["reason"].lower()
+        assert "CANONICAL_CONTRACT.fixture_path" in finding["reason"]
+        # Locations carry the constant declaration line + reason.
+        locs = finding["locations"]
+        assert locs and locs[0]["path"].endswith("plan_ops.py")
+
+
 class TestGateExecutionSafeScopedRegions:
     """`execution-safe` must locate snapshot inside cmd_implement + timeout."""
 
