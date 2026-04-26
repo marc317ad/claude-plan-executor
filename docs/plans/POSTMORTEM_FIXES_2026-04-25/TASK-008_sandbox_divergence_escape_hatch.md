@@ -43,7 +43,7 @@ This task ships two complementary mechanisms:
 
 ### TASK-008: Sandbox-divergence escape hatch
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit — `cmd_implement` failure-path envelope construction + sandbox stdout/stderr capture)

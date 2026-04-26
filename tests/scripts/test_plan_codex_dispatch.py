@@ -29,6 +29,7 @@ import importlib.util
 import inspect
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -1498,3 +1499,274 @@ def test_target_task_id_argparse_exposes_flag():
         "--repo-root", "/tmp",
     ])
     assert impl_default.target_task_id is None
+
+
+# ---------------------------------------------------------------------------
+# TASK-008 (POSTMORTEM_FIXES) — sandbox-divergence escape hatch.
+#
+# The Codex wrapper's `implement` failure envelope (cause:
+# independent_test_run_failed) MUST carry sandbox_test_stdout,
+# sandbox_test_stderr, sandbox_test_command, sandbox_test_exit_code,
+# and sandbox_test_attempt_count so the orchestrator's auto-validate
+# branch can distinguish a "real test red" from a sandbox-only
+# divergence (missing dep, permission, path, etc.) before classifying
+# the failure.
+#
+# Each stream is capped at SANDBOX_TEST_CAPTURE_CAP (32 KB); when
+# truncation fires the original byte length is recorded as
+# `sandbox_test_*_truncated_to`.
+# ---------------------------------------------------------------------------
+
+
+def _impl_plan_with_test_cmd(
+    plan: Path, task_id: str, files: list[str], test_cmd: str,
+) -> None:
+    """Variant of `_impl_plan` that emits an explicit Test command:.
+
+    The TASK-008 sandbox-divergence path requires a real (failing)
+    test command in the parsed task block so `cmd_implement`'s
+    independent test re-run reaches the failure branch under test.
+    """
+    bullets = "\n".join(f"  - {f}" for f in files)
+    plan.write_text(
+        "\n".join([
+            "# Plan",
+            "",
+            "## Context",
+            "",
+            "(unused).",
+            "",
+            "## Tasks",
+            "",
+            f"### TASK-{task_id}: sandbox divergence test",
+            "",
+            "- **Status:** pending",
+            "- **Priority:** medium",
+            "- **Files:**",
+            bullets,
+            f"- **Test command:** {test_cmd}",
+            "- **Acceptance criteria:**",
+            "  - It works.",
+            "",
+            "**Description:**",
+            "Test fixture.",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+
+def _make_codex_writer(parsed_body: dict, on_disk_files: dict[str, str]):
+    """Return a fake invoke_codex that writes ``parsed_body`` to the
+    output file AND mutates the repo to create ``on_disk_files`` so
+    the wrapper's scope/dishonesty checks see a consistent picture.
+
+    Keys of ``on_disk_files`` are paths relative to ``workdir``;
+    values are the file contents.
+    """
+
+    def fake(prompt, workdir, schema_path, output_path, timeout_sec,
+             sandbox=None):
+        for rel, content in on_disk_files.items():
+            target = Path(workdir) / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        Path(output_path).write_text(
+            json.dumps(parsed_body), encoding="utf-8",
+        )
+        return {
+            "status": "ok",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "file_changes": list(on_disk_files.keys()),
+            "wall_seconds": 0.1,
+        }
+
+    return fake
+
+
+def _codex_completed_body(task_id: str, files_changed: list[str]) -> dict:
+    """Minimal Codex parsed body that satisfies the implement schema.
+
+    Includes the five new TASK-008 fields as null so the wrapper's
+    structured-output schema validates AND the wrapper does not surface
+    them on the success path (no
+    ``sandbox_test_stdout`` / ``sandbox_test_stderr`` etc. in the
+    envelope unless the failure branch fires).
+    """
+    return {
+        "task_id": task_id,
+        "status": "completed",
+        "summary": "ok",
+        "files_changed": files_changed,
+        "tests_run": [],
+        "blockers": [],
+        "concerns": [],
+        "plan_adaptations": [],
+        "sandbox_test_stdout": None,
+        "sandbox_test_stderr": None,
+        "sandbox_test_command": None,
+        "sandbox_test_exit_code": None,
+        "sandbox_test_attempt_count": None,
+    }
+
+
+def test_implement_independent_test_run_failure_envelope_carries_sandbox_fields(
+    tmp_path, monkeypatch, capsys,
+):
+    """Failure envelope (cause: independent_test_run_failed) MUST carry
+    all five sandbox_test_* fields plus `cause`.
+
+    Sandbox stdout/stderr come from the test re-run's captures; command,
+    exit_code, attempt_count come from the same `test_result` dict.
+    """
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    # Test command always exits 1 with stdout marker; flaky retry caps at 2.
+    test_cmd = "echo SANDBOX_OUT && echo SANDBOX_ERR 1>&2 && exit 1"
+    _impl_plan_with_test_cmd(plan, "001", ["a.py"], test_cmd)
+
+    body = _codex_completed_body("001", ["a.py"])
+    monkeypatch.setattr(
+        wrapper, "invoke_codex",
+        _make_codex_writer(body, {"a.py": "x = 1\n"}),
+    )
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+
+    assert rc == 1, envelope
+    assert envelope["outcome"] == "failure", envelope
+    assert envelope.get("cause") == "independent_test_run_failed", envelope
+    # All five new fields present with concrete values.
+    assert "sandbox_test_stdout" in envelope, envelope
+    assert "sandbox_test_stderr" in envelope, envelope
+    assert "sandbox_test_command" in envelope, envelope
+    assert "sandbox_test_exit_code" in envelope, envelope
+    assert "sandbox_test_attempt_count" in envelope, envelope
+    # parse_task_block strips backticks from `Test command:` but the
+    # exact form depends on the wrapper's normalization rule; assert
+    # the substantive command text round-trips.
+    assert "echo SANDBOX_OUT" in envelope["sandbox_test_command"]
+    # Two attempts (flaky-retry) before classifying as failed.
+    assert envelope["sandbox_test_attempt_count"] == 2, envelope
+    # Exit code is non-zero.
+    assert envelope["sandbox_test_exit_code"] == 1, envelope
+    # Stdout / stderr captured separately (mixing happens in output_tail).
+    assert "SANDBOX_OUT" in envelope["sandbox_test_stdout"], envelope
+    assert "SANDBOX_ERR" in envelope["sandbox_test_stderr"], envelope
+    # Truncation markers absent on small captures.
+    assert "sandbox_test_stdout_truncated_to" not in envelope, envelope
+    assert "sandbox_test_stderr_truncated_to" not in envelope, envelope
+
+
+def test_implement_independent_test_run_envelope_truncates_at_32kb(
+    tmp_path, monkeypatch, capsys,
+):
+    """Stdout / stderr captures larger than SANDBOX_TEST_CAPTURE_CAP (32 KB)
+    are truncated and surfaced with the `sandbox_test_*_truncated_to`
+    marker carrying the original byte length."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    # Emit a stream much larger than 32 KB on stdout and stderr, then
+    # fail. Write the test driver to a script file inside the repo to
+    # sidestep shell-quote escaping (the parsed `Test command:` field
+    # round-trips through markdown's backtick stripping).
+    big_chars = 64 * 1024  # 64 KB worth of 1-byte chars
+    driver = repo / "noisy_fail.py"
+    driver.write_text(
+        "import sys\n"
+        f"sys.stdout.write('A' * {big_chars})\n"
+        f"sys.stderr.write('B' * {big_chars})\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    test_cmd = f"{sys.executable} {driver}"
+    _impl_plan_with_test_cmd(plan, "001", ["a.py"], test_cmd)
+
+    body = _codex_completed_body("001", ["a.py"])
+    monkeypatch.setattr(
+        wrapper, "invoke_codex",
+        _make_codex_writer(body, {"a.py": "x = 1\n"}),
+    )
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+
+    cap = wrapper.SANDBOX_TEST_CAPTURE_CAP
+    assert rc == 1, envelope
+    assert envelope["outcome"] == "failure", envelope
+    # Captured streams capped at 32 KB exactly.
+    assert len(envelope["sandbox_test_stdout"].encode("utf-8")) == cap, envelope
+    assert len(envelope["sandbox_test_stderr"].encode("utf-8")) == cap, envelope
+    # Truncation markers carry the original byte length (= big_chars).
+    assert envelope["sandbox_test_stdout_truncated_to"] == big_chars, envelope
+    assert envelope["sandbox_test_stderr_truncated_to"] == big_chars, envelope
+
+
+def test_implement_success_envelope_omits_sandbox_divergence_fields(
+    tmp_path, monkeypatch, capsys,
+):
+    """The wrapper-level sandbox_test_* fields are added only on the
+    independent-test-run failure path. A success envelope MUST NOT
+    surface them at the top level (they may still exist on the inner
+    `parsed.sandbox_test_*` as `null` from the structured-output
+    contract — those are Codex-side, not wrapper-side)."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    # `none` short-circuits run_test_command to result=not_run, which
+    # the wrapper treats as success-path (no failure classification).
+    _impl_plan_with_test_cmd(plan, "001", ["a.py"], "none")
+
+    body = _codex_completed_body("001", ["a.py"])
+    monkeypatch.setattr(
+        wrapper, "invoke_codex",
+        _make_codex_writer(body, {"a.py": "x = 1\n"}),
+    )
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+
+    assert rc == 0, envelope
+    assert envelope["outcome"] == "success", envelope
+    # The wrapper-level top-level surfaces are absent on success.
+    for fld in (
+        "sandbox_test_stdout", "sandbox_test_stderr",
+        "sandbox_test_command", "sandbox_test_exit_code",
+        "sandbox_test_attempt_count",
+    ):
+        assert fld not in envelope, (fld, envelope)
+    assert envelope.get("cause") is None or "cause" not in envelope
+
+
+def test_implement_schema_declares_sandbox_divergence_fields_optional_but_required():
+    """codex_implement_schema.json declares the five new TASK-008 fields
+    as optional-but-required (typed as nullable) and they appear in
+    `required` so the OpenAI strict-output invariant
+    set(required) == set(properties.keys()) holds."""
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "plugins" / "plan-executor" / "scripts"
+        / "codex_implement_schema.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    properties = schema["properties"]
+    required = set(schema["required"])
+
+    for fld in (
+        "sandbox_test_stdout", "sandbox_test_stderr",
+        "sandbox_test_command",
+    ):
+        assert fld in properties, fld
+        assert "null" in properties[fld]["type"], (fld, properties[fld])
+        assert "string" in properties[fld]["type"], (fld, properties[fld])
+        assert fld in required, fld
+    for fld in ("sandbox_test_exit_code", "sandbox_test_attempt_count"):
+        assert fld in properties, fld
+        assert "null" in properties[fld]["type"], (fld, properties[fld])
+        assert "integer" in properties[fld]["type"], (fld, properties[fld])
+        assert fld in required, fld
+
+    # The structural invariant from CODEX_FRICTION TASK-001 still holds.
+    assert required == set(properties.keys())

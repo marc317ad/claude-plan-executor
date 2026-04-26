@@ -5863,6 +5863,15 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         # clean first-pass commits. Kept on its own line adjacent to any
         # [disagreement] tag that D.2a might have already appended upstream.
         commit_msg = commit_msg.rstrip("\n") + "\n\n[remediation]\n"
+    if getattr(args, "sandbox_divergence_tag", False):
+        # TASK-008 (POSTMORTEM_FIXES): orchestrator auto-validate branch
+        # writes `[sandbox-divergence]` to the commit body alongside any
+        # existing [disagreement] / [remediation] tags. The tag is
+        # informational — it does NOT relax the reviewer-verdict
+        # whitelist (`_validate_review_success_payload` runs unchanged
+        # above). Adjacent to other trailers and on its own line so
+        # `git log --oneline` and the run summary can scan for it.
+        commit_msg = commit_msg.rstrip("\n") + "\n\n[sandbox-divergence]\n"
     if getattr(args, "narrow_remediation_tag", False):
         # TASK-016C D.2a.6 post-narrow-remediation commit: a trailing
         # [narrow-remediation] tag plus a [disagreement: i,j] trailer
@@ -6014,6 +6023,13 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
             getattr(args, "narrow_remediation_tag", False)
         ),
         "dismissed_finding_ids": dismissed_ids,
+        # TASK-008 (POSTMORTEM_FIXES): surface the auto-validate
+        # divergence tag in the commit_done event so the run summary's
+        # "Sandbox divergences" subsection (and downstream auditing) can
+        # enumerate affected tasks without re-parsing commit bodies.
+        "sandbox_divergence_tag": bool(
+            getattr(args, "sandbox_divergence_tag", False)
+        ),
     }
     _append_run_log("commit_done", event_fields)
 
@@ -10098,6 +10114,24 @@ def build_parser() -> argparse.ArgumentParser:
             "mutually exclusive with --disagreement-tag."
         ),
     )
+    # TASK-008 (POSTMORTEM_FIXES): the sandbox-divergence escape hatch.
+    # Orthogonal to the remediation / narrow-remediation / disagreement
+    # axes — it stacks freely with each (you can have a remediation
+    # commit that ALSO hit a sandbox divergence on the retry). The flag
+    # only inscribes `[sandbox-divergence]` into the commit body and
+    # logs `sandbox_divergence_tag=true` on the commit_done event; it
+    # does NOT relax the reviewer-verdict whitelist.
+    p_commit.add_argument(
+        "--sandbox-divergence-tag", action="store_true",
+        help=(
+            "Mark commit as TASK-008 sandbox-divergence-validated. "
+            "Appends a [sandbox-divergence] tag line to the commit "
+            "body. Set by the orchestrator's auto-validate branch when "
+            "the wrapper sandbox test failed but the same test command "
+            "passed in the target environment. Does NOT relax the "
+            "reviewer-verdict whitelist."
+        ),
+    )
     p_commit.add_argument("--dry-run", action="store_true")
     # TASK-020B: cap the opt-in `acceptance_v_check` runtime. Default 300s;
     # plans that need longer pass `--v-check-timeout SECONDS` explicitly.
@@ -10439,7 +10473,320 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_gates)
 
+    # -----------------------------------------------------------------
+    # TASK-008 (POSTMORTEM_FIXES): sandbox-divergence escape hatch CLI
+    # -----------------------------------------------------------------
+    # Two subcommands:
+    #   * ``auto-validate-divergence`` — orchestrator dispatch handler.
+    #     Reads the wrapper's failure-path implement envelope (stdin or
+    #     ``--envelope-file``), and on the matching failure cause
+    #     (``cause: independent_test_run_failed``) re-runs the task's
+    #     declared ``Test command:`` in the target env (cwd = repo root,
+    #     env inherited). Target-passes → emits ``divergence: true`` and
+    #     appends a ``sandbox_divergence`` run-log event. Target-fails →
+    #     emits ``divergence: false`` so the existing failure path
+    #     (Codex→Claude fallback OR task-fail) runs unchanged.
+    #   * ``run-summary`` — end-of-run report. Scans the run log for
+    #     ``sandbox_divergence`` events under ``--run-id`` and emits the
+    #     "Sandbox divergences" subsection.
+    p_avd = sub.add_parser(
+        "auto-validate-divergence",
+        help=(
+            "Orchestrator auto-validate branch for the TASK-008 "
+            "sandbox-divergence escape hatch. Reads a Codex implement "
+            "envelope and re-runs the task's Test command in the "
+            "target env on `cause: independent_test_run_failed`."
+        ),
+    )
+    p_avd.add_argument(
+        "--envelope-file", default=None,
+        help=(
+            "Path to a JSON file containing the wrapper's implement "
+            "envelope. When omitted, reads JSON from stdin."
+        ),
+    )
+    p_avd.add_argument(
+        "--test-command", required=True,
+        help=(
+            "The task's declared `Test command:` field, resolved from "
+            "the plan markdown by the orchestrator. The wrapper's "
+            "recorded sandbox command is NOT used (it may carry an "
+            "environment-specific prefix that breaks in the target env)."
+        ),
+    )
+    p_avd.add_argument(
+        "--repo-root", default=None,
+        help=(
+            "Working directory for the target-env test re-run. Defaults "
+            "to the current working directory."
+        ),
+    )
+    p_avd.add_argument(
+        "--run-id", default=None,
+        help=(
+            "Run identifier; when set, a `sandbox_divergence` event is "
+            "appended to the run log on target-passes outcomes."
+        ),
+    )
+    p_avd.add_argument(
+        "--task-id", default=None,
+        help=(
+            "Task identifier for the run-log event. Falls back to the "
+            "envelope's `task_id` when omitted."
+        ),
+    )
+    p_avd.add_argument(
+        "--timeout", type=int, default=300,
+        help="Timeout in seconds for the target-env test re-run.",
+    )
+    _add_json(p_avd)
+
+    p_rsm = sub.add_parser(
+        "run-summary",
+        help=(
+            "End-of-run report subsections. Emits the TASK-008 "
+            "'Sandbox divergences' list when --section sandbox-divergences "
+            "is selected."
+        ),
+    )
+    p_rsm.add_argument(
+        "--section", required=True,
+        choices=["sandbox-divergences"],
+        help="Which subsection of the run summary to emit.",
+    )
+    p_rsm.add_argument(
+        "--run-id", required=True,
+        help="Run identifier to scope the run-log scan.",
+    )
+    _add_json(p_rsm)
+
     return parser
+
+
+def cmd_auto_validate_divergence(args: argparse.Namespace) -> None:
+    """TASK-008 (POSTMORTEM_FIXES) — orchestrator auto-validate branch.
+
+    Reads the wrapper's implement envelope (stdin or ``--envelope-file``)
+    and, when its outcome is `failure` with cause
+    `independent_test_run_failed`, re-runs the task's declared
+    `Test command:` in the target env. Returns:
+
+        {
+          "divergence": bool,         # True iff sandbox-failed but target-passed
+          "applicable": bool,         # False when the envelope did not match the cause
+          "task_id": str | None,
+          "target_test": {            # only present when applicable
+            "result": "passed"|"failed"|"not_run",
+            "exit_code": int|None,
+            "stdout_tail": str,
+            "stderr_tail": str,
+            "command": str,
+          },
+          "sandbox_divergence": { ... } | None,  # block to embed in commit-task / run-log
+          "errors": [...]
+        }
+
+    On `divergence: true` AND `--run-id` set, a `sandbox_divergence`
+    event is appended to the run log so `run-summary
+    --section sandbox-divergences` can list affected tasks.
+    """
+    # Load envelope
+    if args.envelope_file:
+        try:
+            raw = Path(args.envelope_file).read_text(encoding="utf-8")
+        except OSError as e:
+            _die(args, {"error": f"failed to read --envelope-file: {e}"})
+    else:
+        raw = sys.stdin.read()
+    if not raw.strip():
+        _die(args, {"error": "auto-validate-divergence expects an envelope on stdin (or --envelope-file)"})
+    try:
+        envelope = json.loads(raw)
+    except json.JSONDecodeError as e:
+        _die(args, {"error": f"envelope is not valid JSON: {e}"})
+    if not isinstance(envelope, dict):
+        _die(args, {"error": "envelope must be a JSON object"})
+
+    task_id = args.task_id or envelope.get("task_id")
+    outcome = envelope.get("outcome")
+    cause = envelope.get("cause")
+
+    # Only the matching failure cause triggers auto-validation. Any
+    # other outcome (success, timeout, scope_violation, parse_error,
+    # generic failure) falls through to the existing routing. This is
+    # the explicit guardrail on scope creep called out in the plan's
+    # implementation notes.
+    if not (outcome == "failure" and cause == "independent_test_run_failed"):
+        _emit(args, {
+            "divergence": False,
+            "applicable": False,
+            "task_id": task_id,
+            "target_test": None,
+            "sandbox_divergence": None,
+            "reason": (
+                f"envelope outcome={outcome!r} cause={cause!r} does not "
+                "match independent_test_run_failed; auto-validate skipped"
+            ),
+            "errors": [],
+        })
+
+    test_cmd = (args.test_command or "").strip()
+    if not test_cmd or test_cmd.lower() == "none":
+        _die(args, {
+            "error": (
+                "auto-validate-divergence requires a non-empty "
+                "--test-command; the failure cause matched but no "
+                "target-env command is available to re-run"
+            ),
+        })
+
+    repo_root = args.repo_root or os.getcwd()
+    timeout_sec = int(args.timeout)
+
+    # Run the task's Test command in the target env (cwd=repo_root,
+    # env inherited). Single attempt — flaky retry is the wrapper's
+    # responsibility; here we only need a yes/no signal.
+    try:
+        proc = subprocess.run(
+            test_cmd,
+            shell=True,
+            cwd=repo_root,
+            capture_output=True,
+            timeout=timeout_sec,
+        )
+        timed_out = False
+        target_stdout = proc.stdout.decode(errors="replace")
+        target_stderr = proc.stderr.decode(errors="replace")
+        target_exit = proc.returncode
+    except subprocess.TimeoutExpired as e:
+        timed_out = True
+        target_stdout = (e.stdout or b"").decode(errors="replace")
+        target_stderr = (
+            f"TIMEOUT after {timeout_sec}s\n"
+            + (e.stderr or b"").decode(errors="replace")
+        )
+        target_exit = None
+
+    target_passed = (not timed_out) and target_exit == 0
+    # Truncate to a manageable tail for embedding in run-log + summary.
+    # 32 KB matches the wrapper's SANDBOX_TEST_CAPTURE_CAP for symmetry.
+    cap = 32 * 1024
+    def _tail(s: str) -> str:
+        encoded = (s or "").encode("utf-8", errors="replace")
+        if len(encoded) <= cap:
+            return s or ""
+        return encoded[-cap:].decode("utf-8", errors="replace")
+
+    target_test = {
+        "result": "passed" if target_passed else "failed",
+        "exit_code": target_exit,
+        "stdout_tail": _tail(target_stdout),
+        "stderr_tail": _tail(target_stderr),
+        "command": test_cmd,
+    }
+
+    sandbox_block: dict | None = None
+    if target_passed:
+        # Build the structured `sandbox_divergence` block that downstream
+        # consumers (run-log event, commit-task callsite) embed verbatim.
+        sandbox_block = {
+            "task_id": task_id,
+            "sandbox": {
+                "stdout": envelope.get("sandbox_test_stdout"),
+                "stderr": envelope.get("sandbox_test_stderr"),
+                "command": envelope.get("sandbox_test_command"),
+                "exit_code": envelope.get("sandbox_test_exit_code"),
+                "attempt_count": envelope.get("sandbox_test_attempt_count"),
+                "stdout_truncated_to": envelope.get(
+                    "sandbox_test_stdout_truncated_to"
+                ),
+                "stderr_truncated_to": envelope.get(
+                    "sandbox_test_stderr_truncated_to"
+                ),
+            },
+            "target": target_test,
+        }
+        if args.run_id:
+            event_fields = {
+                "run_id": args.run_id,
+                "task_id": task_id,
+                "sandbox_divergence": sandbox_block,
+            }
+            _append_run_log("sandbox_divergence", event_fields)
+
+    _emit(args, {
+        "divergence": target_passed,
+        "applicable": True,
+        "task_id": task_id,
+        "target_test": target_test,
+        "sandbox_divergence": sandbox_block,
+        "errors": [],
+    })
+
+
+def cmd_run_summary(args: argparse.Namespace) -> None:
+    """TASK-008 (POSTMORTEM_FIXES) — end-of-run report subsections.
+
+    Currently supports a single section, ``sandbox-divergences``,
+    which scans the run log for ``sandbox_divergence`` events under
+    ``--run-id`` and emits the "Sandbox divergences" list. Each entry
+    carries the task id and a brief `command` reference so the human
+    reviewer can locate the underlying captures (the full sandbox
+    stdout/stderr live in the run-log event, by design — keeping the
+    summary scannable).
+    """
+    if args.section != "sandbox-divergences":
+        _die(args, {"error": f"unknown --section: {args.section!r}"})
+
+    entries: list[dict] = []
+    if RUN_LOG_PATH.is_file():
+        try:
+            for line in RUN_LOG_PATH.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("event") != "sandbox_divergence":
+                    continue
+                if rec.get("run_id") != args.run_id:
+                    continue
+                block = rec.get("sandbox_divergence") or {}
+                sandbox = block.get("sandbox") or {}
+                target = block.get("target") or {}
+                entries.append({
+                    "task_id": rec.get("task_id"),
+                    "sandbox_command": sandbox.get("command"),
+                    "sandbox_exit_code": sandbox.get("exit_code"),
+                    "target_command": target.get("command"),
+                    "ts": rec.get("ts"),
+                })
+        except OSError:
+            pass
+
+    lines = ["## Sandbox divergences"]
+    if not entries:
+        lines.append("")
+        lines.append("None.")
+    else:
+        lines.append("")
+        for e in entries:
+            lines.append(
+                f"- TASK-{e['task_id']}: sandbox exit={e['sandbox_exit_code']!r} "
+                f"(`{e['sandbox_command']}`); target re-run "
+                f"(`{e['target_command']}`) passed @ {e['ts']}"
+            )
+    markdown = "\n".join(lines) + "\n"
+
+    _emit(args, {
+        "section": "sandbox-divergences",
+        "run_id": args.run_id,
+        "count": len(entries),
+        "entries": entries,
+        "markdown": markdown,
+    })
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -10528,6 +10875,9 @@ def main(argv: list[str] | None = None) -> None:
         "audit": cmd_audit,
         "resolve-read-targets": cmd_resolve_read_targets,
         "list-global-lock-paths": cmd_list_global_lock_paths,
+        # TASK-008 (POSTMORTEM_FIXES): sandbox-divergence escape hatch.
+        "auto-validate-divergence": cmd_auto_validate_divergence,
+        "run-summary": cmd_run_summary,
     }
     handlers[args.command](args)
 

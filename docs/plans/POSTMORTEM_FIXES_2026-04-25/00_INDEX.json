@@ -91,7 +91,7 @@
         "005",
         "007"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Post-mortem Issue 8 \u2014 Codex sandbox tests sometimes fail when target-env tests pass; wrapper failure envelope opaque (no test stdout/stderr surfaced)."
     },

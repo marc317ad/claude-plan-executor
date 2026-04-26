@@ -20281,3 +20281,368 @@ class TestExtraTaskHeadingWarningNamesTargetTaskId:
         msg = extra[0]["message"]
         assert "target_task_id" in msg, msg
         assert "TASK-027" in msg or "shared.md" in msg or "TASK-NNN" in msg, msg
+
+
+# ---------------------------------------------------------------------------
+# TASK-008 (POSTMORTEM_FIXES) — sandbox-divergence escape hatch tests.
+#
+# Three branches:
+#   1. `commit-task --sandbox-divergence-tag` writes [sandbox-divergence] in
+#      the commit body and records `sandbox_divergence_tag=true` in the
+#      `commit_done` run-log event. Stacks freely with [remediation] /
+#      [disagreement] tags.
+#   2. `auto-validate-divergence` target-passes path: emits divergence=true
+#      and writes a `sandbox_divergence` run-log event.
+#   3. `auto-validate-divergence` target-fails path AND non-matching cause
+#      path: emits divergence=false (existing failure path runs unchanged).
+#   4. `run-summary --section sandbox-divergences` enumerates events.
+# ---------------------------------------------------------------------------
+
+
+class TestSandboxDivergenceCommitTag:
+    """V — `commit-task --sandbox-divergence-tag` writes [sandbox-divergence]
+    in the commit body alongside other tags AND records the flag in the
+    `commit_done` run-log event. The tag is informational; it does NOT
+    relax the reviewer-verdict whitelist (that path is exercised by the
+    existing TestRemediationTag suite — here we only check the inscription
+    + log surface)."""
+
+    def test_sandbox_divergence_tag_in_commit_body(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "validated in target env",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--sandbox-divergence-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        body = subprocess.run(
+            ["git", "log", "-1", "--pretty=format:%B"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert "[sandbox-divergence]" in body, (
+            f"expected [sandbox-divergence] tag in commit body, got:\n{body}"
+        )
+
+    def test_sandbox_divergence_tag_logged_in_commit_done(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "validated in target env",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--sandbox-divergence-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        commit_events = [
+            json.loads(ln) for ln in lines if '"commit_done"' in ln
+        ]
+        assert commit_events, f"no commit_done event in log: {lines}"
+        assert commit_events[-1]["sandbox_divergence_tag"] is True
+
+    def test_sandbox_divergence_tag_does_not_relax_reviewer_whitelist(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """The flag is informational — passing an invalid reviewer-verdict
+        STILL fails commit-task. Whitelist behavior is unchanged."""
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "v",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "definitely-not-a-real-verdict",
+            "--sandbox-divergence-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        # commit-task --reviewer codex --reviewer-verdict <bogus> dies
+        # with the canonical invalid-reviewer-verdict error code; the
+        # sandbox-divergence tag does NOT short-circuit that gate.
+        assert cp.returncode != 0, (cp.stdout, cp.stderr)
+        out = cp.stdout + cp.stderr
+        assert "invalid-reviewer-verdict" in out, out
+
+    def test_sandbox_divergence_tag_absent_by_default(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text(
+            "x = 2\n", encoding="utf-8",
+        )
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "no-divergence baseline",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = subprocess.run(
+            ["git", "log", "-1", "--pretty=format:%B"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert "[sandbox-divergence]" not in body
+
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        commit_events = [
+            json.loads(ln) for ln in lines if '"commit_done"' in ln
+        ]
+        assert commit_events
+        assert commit_events[-1]["sandbox_divergence_tag"] is False
+
+
+class TestAutoValidateDivergence:
+    """V — `auto-validate-divergence` orchestrator dispatch handler.
+
+    Three branches under test:
+      * matching-cause + target passes → divergence=true + run-log event
+      * matching-cause + target fails  → divergence=false (no event)
+      * non-matching cause             → applicable=false (skipped)
+    """
+
+    @staticmethod
+    def _envelope(
+        cause: str = "independent_test_run_failed",
+        outcome: str = "failure",
+    ) -> dict:
+        return {
+            "task_id": "027C",
+            "subcommand": "implement",
+            "outcome": outcome,
+            "cause": cause,
+            "error": "Independent test run failed after 2 attempt(s)",
+            "sandbox_test_stdout": "FAIL on missing dep\n",
+            "sandbox_test_stderr": "ImportError: no foo\n",
+            "sandbox_test_command": "pytest -q tests/foo.py",
+            "sandbox_test_exit_code": 1,
+            "sandbox_test_attempt_count": 2,
+        }
+
+    def test_independent_test_run_target_passes_emits_divergence(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        envelope = self._envelope()
+        env_file = tmp_git_repo / "envelope.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        cp = _run(
+            "auto-validate-divergence",
+            "--envelope-file", str(env_file),
+            "--test-command", "true",  # target env passes (exit 0)
+            "--repo-root", str(tmp_git_repo),
+            "--run-id", "R-DIVERGE",
+            "--task-id", "027C",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        assert body["divergence"] is True, body
+        assert body["applicable"] is True, body
+        assert body["task_id"] == "027C", body
+        assert body["target_test"]["result"] == "passed", body
+        assert body["target_test"]["exit_code"] == 0, body
+        # The structured sandbox_divergence block is built and surfaced.
+        sb = body["sandbox_divergence"]
+        assert sb is not None, body
+        assert sb["task_id"] == "027C"
+        assert sb["sandbox"]["command"] == envelope["sandbox_test_command"]
+        assert sb["sandbox"]["stdout"] == envelope["sandbox_test_stdout"]
+        assert sb["target"]["command"] == "true"
+
+        # Run-log event appended on the divergence path.
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        events = [
+            json.loads(ln)
+            for ln in log_path.read_text(encoding="utf-8").splitlines()
+            if '"sandbox_divergence"' in ln
+        ]
+        assert events, log_path.read_text(encoding="utf-8")
+        ev = events[-1]
+        assert ev["event"] == "sandbox_divergence"
+        assert ev["run_id"] == "R-DIVERGE"
+        assert ev["task_id"] == "027C"
+        assert "sandbox_divergence" in ev
+
+    def test_independent_test_run_target_fails_emits_no_divergence(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        envelope = self._envelope()
+        env_file = tmp_git_repo / "envelope.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        cp = _run(
+            "auto-validate-divergence",
+            "--envelope-file", str(env_file),
+            "--test-command", "false",  # target env fails (exit 1)
+            "--repo-root", str(tmp_git_repo),
+            "--run-id", "R-NODIV",
+            "--task-id", "027C",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        assert body["divergence"] is False, body
+        assert body["applicable"] is True, body
+        assert body["sandbox_divergence"] is None, body
+        # No sandbox_divergence event written on the target-fails branch.
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        if log_path.is_file():
+            events = [
+                json.loads(ln)
+                for ln in log_path.read_text(encoding="utf-8").splitlines()
+                if '"sandbox_divergence"' in ln
+                and json.loads(ln).get("run_id") == "R-NODIV"
+            ]
+            assert not events, events
+
+    def test_independent_test_run_non_matching_cause_skips(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """Envelopes whose `cause` does not match independent_test_run_failed
+        flow through unchanged — applicable=False, no target-env re-run."""
+        envelope = self._envelope(
+            cause="scope_misreport", outcome="failure",
+        )
+        env_file = tmp_git_repo / "envelope.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        cp = _run(
+            "auto-validate-divergence",
+            "--envelope-file", str(env_file),
+            # Even with a passing test command, the matching-cause guard
+            # short-circuits before re-running anything.
+            "--test-command", "true",
+            "--repo-root", str(tmp_git_repo),
+            "--run-id", "R-SKIP",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        assert body["divergence"] is False, body
+        assert body["applicable"] is False, body
+        assert body["target_test"] is None, body
+        assert body["sandbox_divergence"] is None, body
+
+
+class TestSandboxDivergenceRunSummary:
+    """V — `run-summary --section sandbox-divergences --run-id R` enumerates
+    every `sandbox_divergence` event written under that run id."""
+
+    def test_run_summary_lists_every_divergence_event(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        envelope = TestAutoValidateDivergence._envelope()
+        env_file = tmp_git_repo / "envelope.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        # Two divergences under the same run id, plus one under a
+        # different run id (must not appear in the summary).
+        for tid in ("027C", "027D"):
+            cp = _run(
+                "auto-validate-divergence",
+                "--envelope-file", str(env_file),
+                "--test-command", "true",
+                "--repo-root", str(tmp_git_repo),
+                "--run-id", "R-SUMMARY",
+                "--task-id", tid,
+                "--json",
+                cwd=tmp_git_repo,
+            )
+            assert cp.returncode == 0, (cp.stdout, cp.stderr, tid)
+
+        cp_other = _run(
+            "auto-validate-divergence",
+            "--envelope-file", str(env_file),
+            "--test-command", "true",
+            "--repo-root", str(tmp_git_repo),
+            "--run-id", "R-OTHER",
+            "--task-id", "027E",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp_other.returncode == 0, (cp_other.stdout, cp_other.stderr)
+
+        cp = _run(
+            "run-summary",
+            "--section", "sandbox-divergences",
+            "--run-id", "R-SUMMARY",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        assert body["section"] == "sandbox-divergences"
+        assert body["run_id"] == "R-SUMMARY"
+        assert body["count"] == 2, body
+        ids = sorted(e["task_id"] for e in body["entries"])
+        assert ids == ["027C", "027D"], body
+        # Markdown subsection carries the documented header.
+        assert "## Sandbox divergences" in body["markdown"]
+        assert "TASK-027C" in body["markdown"]
+        assert "TASK-027D" in body["markdown"]
+        # The other-run entry is excluded from this scope.
+        assert "027E" not in body["markdown"]
+
+    def test_run_summary_empty_section_emits_none(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        cp = _run(
+            "run-summary",
+            "--section", "sandbox-divergences",
+            "--run-id", "R-EMPTY",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        assert body["count"] == 0, body
+        assert body["entries"] == [], body
+        assert "## Sandbox divergences" in body["markdown"]
+        assert "None." in body["markdown"]

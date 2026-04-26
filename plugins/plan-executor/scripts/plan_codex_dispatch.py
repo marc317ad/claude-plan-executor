@@ -1064,13 +1064,47 @@ def _handle_timeout_cleanup(
 # ---------------------------------------------------------------------------
 
 
+# TASK-008 (POSTMORTEM_FIXES): the sandbox-divergence escape hatch caps
+# the per-stream capture surfaced in the failure envelope at 32 KB. Larger
+# outputs are truncated keeping the trailing window (most relevant to a
+# test failure) and a `truncated_to` byte marker is recorded alongside.
+SANDBOX_TEST_CAPTURE_CAP = 32 * 1024
+
+
+def _truncate_stream(text: str, cap: int = SANDBOX_TEST_CAPTURE_CAP) -> tuple[str, int | None]:
+    """Cap ``text`` to ``cap`` bytes, preserving the trailing window.
+
+    Returns ``(text, None)`` when no truncation was needed; otherwise
+    ``(tail, original_len_bytes)`` where ``tail`` is the last ``cap``
+    bytes of the UTF-8 encoded form, decoded back with replacement on
+    UTF-8 boundary mid-codepoint splits. The integer is the wrapper's
+    ``truncated_to`` marker (the original byte length) so consumers can
+    tell how much was elided.
+    """
+    if text is None:
+        return "", None
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= cap:
+        return text, None
+    tail = encoded[-cap:].decode("utf-8", errors="replace")
+    return tail, len(encoded)
+
+
 def run_test_command(
     test_cmd: str,
     repo_root: str,
     timeout_sec: int = TEST_TIMEOUT,
     max_attempts: int = 2,
 ) -> dict:
-    """Run a test command with flaky-detection retry."""
+    """Run a test command with flaky-detection retry.
+
+    Returns a dict with ``result`` ∈ {passed, failed, not_run},
+    ``attempts``, ``flaky``, ``command``, ``output_tail`` (combined
+    stdout+stderr last 2KB — preserved for back-compat) plus
+    ``stdout`` / ``stderr`` / ``exit_code`` capturing the LAST attempt's
+    captured streams (used by TASK-008's sandbox-divergence envelope to
+    surface sandbox vs target-env test divergence).
+    """
     cmd = (test_cmd or "").strip()
     if not cmd or cmd.lower() == "none":
         return {
@@ -1079,9 +1113,15 @@ def run_test_command(
             "output_tail": "",
             "flaky": False,
             "command": cmd,
+            "stdout": "",
+            "stderr": "",
+            "exit_code": None,
         }
 
     last_tail = ""
+    last_stdout = ""
+    last_stderr = ""
+    last_exit_code: int | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             proc = subprocess.run(
@@ -1093,15 +1133,25 @@ def run_test_command(
             )
         except subprocess.TimeoutExpired as e:
             tail = (e.stdout or b"").decode(errors="replace")[-2000:]
+            timeout_stdout = (e.stdout or b"").decode(errors="replace")
+            timeout_stderr = (e.stderr or b"").decode(errors="replace")
             return {
                 "result": "failed",
                 "attempts": attempt,
                 "output_tail": f"TIMEOUT after {timeout_sec}s\n{tail}",
                 "flaky": False,
                 "command": cmd,
+                "stdout": timeout_stdout,
+                "stderr": (
+                    f"TIMEOUT after {timeout_sec}s\n{timeout_stderr}"
+                ),
+                "exit_code": None,
             }
 
-        out = (proc.stdout + proc.stderr).decode(errors="replace")
+        last_stdout = proc.stdout.decode(errors="replace")
+        last_stderr = proc.stderr.decode(errors="replace")
+        last_exit_code = proc.returncode
+        out = last_stdout + last_stderr
         last_tail = out[-2000:]
         if proc.returncode == 0:
             return {
@@ -1110,6 +1160,9 @@ def run_test_command(
                 "output_tail": last_tail,
                 "flaky": attempt > 1,
                 "command": cmd,
+                "stdout": last_stdout,
+                "stderr": last_stderr,
+                "exit_code": last_exit_code,
             }
 
     return {
@@ -1118,6 +1171,9 @@ def run_test_command(
         "output_tail": last_tail,
         "flaky": False,
         "command": cmd,
+        "stdout": last_stdout,
+        "stderr": last_stderr,
+        "exit_code": last_exit_code,
     }
 
 
@@ -1428,6 +1484,39 @@ def cmd_implement(args) -> int:
             timeout_sec=TEST_TIMEOUT,
         )
         if test_result["result"] == "failed":
+            # TASK-008 (POSTMORTEM_FIXES): surface sandbox stdout/stderr
+            # so the orchestrator's auto-validate branch can distinguish
+            # "real test red" from "sandbox missing dep / permission /
+            # path divergence" before classifying the failure. Each
+            # stream is capped at SANDBOX_TEST_CAPTURE_CAP bytes; when
+            # truncation fires the original byte length is recorded as
+            # `sandbox_test_*_truncated_to` (the wrapper's
+            # `truncated_to` marker convention).
+            sandbox_stdout, stdout_truncated = _truncate_stream(
+                test_result.get("stdout") or "",
+            )
+            sandbox_stderr, stderr_truncated = _truncate_stream(
+                test_result.get("stderr") or "",
+            )
+            extra: dict = {
+                "cause": "independent_test_run_failed",
+                "scope": scope,
+                "test_result": test_result,
+                "undeclared_changes": undeclared,
+                "phantom_declarations": phantom,
+                "jsonl_file_changes": codex["file_changes"],
+                "wall_seconds": codex["wall_seconds"],
+                "effective_timeout": effective_timeout,
+                "sandbox_test_stdout": sandbox_stdout,
+                "sandbox_test_stderr": sandbox_stderr,
+                "sandbox_test_command": test_result.get("command"),
+                "sandbox_test_exit_code": test_result.get("exit_code"),
+                "sandbox_test_attempt_count": test_result.get("attempts"),
+            }
+            if stdout_truncated is not None:
+                extra["sandbox_test_stdout_truncated_to"] = stdout_truncated
+            if stderr_truncated is not None:
+                extra["sandbox_test_stderr_truncated_to"] = stderr_truncated
             emit(make_envelope(
                 task["task_id"], "implement", "failure",
                 exit_code=codex["exit_code"],
@@ -1437,15 +1526,7 @@ def cmd_implement(args) -> int:
                     f"Independent test run failed after "
                     f"{test_result['attempts']} attempt(s)"
                 ),
-                extra={
-                    "scope": scope,
-                    "test_result": test_result,
-                    "undeclared_changes": undeclared,
-                    "phantom_declarations": phantom,
-                    "jsonl_file_changes": codex["file_changes"],
-                    "wall_seconds": codex["wall_seconds"],
-                    "effective_timeout": effective_timeout,
-                },
+                extra=extra,
             ))
             return 1
 

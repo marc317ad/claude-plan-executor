@@ -38,6 +38,21 @@
     "plan_adaptations": {
       "type": "array",
       "items": { "type": "string" }
+    },
+    "sandbox_test_stdout": {
+      "type": ["string", "null"]
+    },
+    "sandbox_test_stderr": {
+      "type": ["string", "null"]
+    },
+    "sandbox_test_command": {
+      "type": ["string", "null"]
+    },
+    "sandbox_test_exit_code": {
+      "type": ["integer", "null"]
+    },
+    "sandbox_test_attempt_count": {
+      "type": ["integer", "null"]
     }
   },
   "required": [
@@ -48,7 +63,12 @@
     "tests_run",
     "blockers",
     "concerns",
-    "plan_adaptations"
+    "plan_adaptations",
+    "sandbox_test_stdout",
+    "sandbox_test_stderr",
+    "sandbox_test_command",
+    "sandbox_test_exit_code",
+    "sandbox_test_attempt_count"
   ],
   "additionalProperties": false
 }

@@ -663,6 +663,25 @@ At the batch join barrier (after every wrapper in a batch returns, before per-ta
 
 ### Phase C — Handle Phase B failures
 
+#### Sandbox divergence escape hatch (TASK-008)
+
+Before classifying a Codex `implement` failure with `cause: independent_test_run_failed`, the orchestrator runs the auto-validate branch — re-execute the task's declared `Test command:` in the target env (cwd = repo root, env inherited). The wrapper's recorded `sandbox_test_command` is NOT used (it may carry an environment-specific prefix that breaks in target).
+
+```bash
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" auto-validate-divergence \
+  --envelope-file <wrapper-envelope.json> \
+  --test-command "<task Test command:>" \
+  --repo-root <repo> --run-id <id> --task-id NNN --json
+```
+
+- **Target-passes** (`divergence: true`): treat the work as success. The handler appends a structured `sandbox_divergence` event to the run log carrying both the wrapper's sandbox stdout/stderr captures (truncated at 32 KB with `truncated_to` markers) and the target-env captures. The next `commit-task` invocation MUST pass `--sandbox-divergence-tag` so the commit body shows `[sandbox-divergence]` alongside any existing `[disagreement]` / `[remediation]` tags. Cross-review (Phase D) proceeds as if the implementer succeeded.
+- **Target-fails** (`divergence: false`, `applicable: true`): treat as a real failure. The existing failure path (Codex→Claude fallback OR `fail-task`) runs unchanged.
+- **Non-matching cause** (`applicable: false`): the envelope did not surface `cause: independent_test_run_failed`; the handler is a no-op and the existing failure path runs unchanged.
+
+The `[sandbox-divergence]` tag is informational. It does NOT relax the reviewer-verdict whitelist — `commit-task --reviewer codex --reviewer-verdict <bogus>` still fails the same way it always did. `--reviewer none` remains the final-resort override (used only when human judgement decides cross-review is unobtainable); the auto-validate branch is the sanctioned recovery for sandbox divergences and must be preferred over `--reviewer none` when the divergence is the failure cause.
+
+End-of-run summary: `plan_ops.py run-summary --section sandbox-divergences --run-id <id>` emits the "Sandbox divergences" subsection listing every task that hit the auto-validate branch under the run id.
+
 For each non-success task:
 
 ```bash
