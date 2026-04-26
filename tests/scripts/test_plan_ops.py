@@ -11226,6 +11226,366 @@ class TestNarrowRemediationArgparseConstraints:
         assert cp.returncode == 0, (cp.stdout, cp.stderr)
 
 
+class TestD4RescueLogEvents:
+    """TASK-005 — `d4_rescue_start` / `d4_rescue_done` MUST be in the
+    `log-event` allow-list so the orchestrator can signal D.4 rescue
+    entry/exit without the allow-list tripwire firing. Distinct from
+    `remediation_start` / `narrow_remediation_start` so the run log is
+    the audit source of truth for which retry path fired (D.2a.5
+    bounded vs D.2a.6 narrow vs D.4 single-shot rescue).
+    """
+
+    def test_d4_rescue_start_accepted(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "d4_rescue_start",
+            "--fields-json",
+            (
+                '{"run_id":"R1","task_id":"001",'
+                '"reviewer_findings_count":3}'
+            ),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "d4_rescue_start"
+        assert rec["reviewer_findings_count"] == 3
+
+    def test_d4_rescue_done_accepted(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "d4_rescue_done",
+            "--fields-json",
+            (
+                '{"run_id":"R1","task_id":"001",'
+                '"outcome":"success","post_review_verdict":"clean"}'
+            ),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "d4_rescue_done"
+        assert rec["outcome"] == "success"
+
+    def test_d4_rescue_events_distinct_from_other_retry_events(self) -> None:
+        """The D.4 rescue events are sibling entries to the D.2a.5 and
+        D.2a.6 events, not replacements. All three pairs MUST coexist
+        in the allow-list."""
+        assert "remediation_start" in plan_ops.ALLOWED_LOG_EVENTS
+        assert "narrow_remediation_start" in plan_ops.ALLOWED_LOG_EVENTS
+        assert "d4_rescue_start" in plan_ops.ALLOWED_LOG_EVENTS
+        assert "d4_rescue_done" in plan_ops.ALLOWED_LOG_EVENTS
+
+
+class TestD4RescueAuthorizationSource:
+    """TASK-005 — ALLOWED_FAIL_AUTHORIZATION_SOURCES gains
+    `phase-d4-rescue-failed`. Authorized only after a failed D.4 rescue
+    when the user explicitly instructs a revert in the next turn.
+    """
+
+    def test_allowed_authorization_sources_includes_d4_rescue_failed(self) -> None:
+        assert "phase-d4-rescue-failed" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+        # Coexists with the TASK-001 initial set.
+        assert "phase-c-impl-failure" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+        assert "phase-d4-review-failure" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+        assert "user-instruction" in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+
+    def test_fail_task_accepts_phase_d4_rescue_failed(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "fail-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--stage", "review",
+            "--reason", "post-rescue review still needs-rework, user authorized revert",
+            "--authorization-source", "phase-d4-rescue-failed",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["status_updated"] is True
+
+
+class TestCommitTaskD4RescueTag:
+    """TASK-005 — `commit-task --d4-rescue-tag` emits a bare `[d4-rescue]`
+    trailer line on the commit body and surfaces `d4_rescue_tag: true` on
+    the `commit_done` run-log event. Bare use (no companion flag) is the
+    canonical successful-rescue commit signature.
+    """
+
+    def test_d4_rescue_trailer_in_commit_body(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "rescue applied",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--d4-rescue-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = subprocess.run(
+            ["git", "log", "-1", "--pretty=format:%B"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert "[d4-rescue]" in body, (
+            f"expected [d4-rescue] trailer in commit body, got:\n{body}"
+        )
+        # Sibling tags must NOT appear on a rescue commit.
+        assert "[remediation]" not in body, (
+            f"unexpected [remediation] tag: {body}"
+        )
+        assert "[narrow-remediation]" not in body, (
+            f"unexpected [narrow-remediation] tag: {body}"
+        )
+        assert "[disagreement" not in body, (
+            f"unexpected disagreement trailer: {body}"
+        )
+
+    def test_commit_done_records_d4_rescue_tag(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "rescue applied",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--d4-rescue-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        commit_events = [json.loads(ln) for ln in lines if '"commit_done"' in ln]
+        assert commit_events, f"no commit_done event: {lines}"
+        rec = commit_events[-1]
+        assert rec["d4_rescue_tag"] is True
+        # Sibling tags must coexist as parallel keys, all false.
+        assert rec["remediation_tag"] is False
+        assert rec["narrow_remediation_tag"] is False
+        assert rec["disagreement_tag"] is False
+        assert rec["dismissed_finding_ids"] == []
+
+    def test_d4_rescue_tag_absent_by_default(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "First task",
+            "--diff-summary", "plain first pass",
+            "--reviewer", "none",
+            "--reviewer-verdict", "",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = subprocess.run(
+            ["git", "log", "-1", "--pretty=format:%B"],
+            cwd=tmp_git_repo, capture_output=True, text=True, check=True,
+        ).stdout
+        assert "[d4-rescue]" not in body
+
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        rec = json.loads(
+            [ln for ln in log_path.read_text(encoding="utf-8").splitlines()
+             if '"commit_done"' in ln][-1]
+        )
+        assert rec["d4_rescue_tag"] is False
+
+
+class TestCommitTaskD4RescueXorConstraints:
+    """TASK-005 — argparse / post-parse rules enforce the new XOR
+    constraints around `--d4-rescue-tag`:
+        (a) --d4-rescue-tag XOR --remediation-tag (mutex group)
+        (b) --d4-rescue-tag XOR --narrow-remediation-tag (mutex group)
+        (e) --d4-rescue-tag XOR --disagreement-tag (post-parse)
+        (f) --d4-rescue-tag XOR --dismissed-finding-ids (post-parse)
+    Each violation halts before any commit is written.
+    """
+
+    COMMON = [
+        "commit-task",
+        "--plan-file", "docs/plans/sample.md",
+        "--task-id", "001",
+        "--run-id", "R1",
+        "--files", "src/foo.py",
+        "--title", "t",
+        "--diff-summary", "d",
+        "--reviewer", "none",
+        "--reviewer-verdict", "",
+    ]
+
+    def test_d4_rescue_xor_remediation_tag(
+        self, tmp_git_repo: Path
+    ) -> None:
+        cp = _run(
+            *self.COMMON,
+            "--remediation-tag",
+            "--d4-rescue-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "not allowed with" in cp.stderr or "mutually exclusive" in cp.stderr
+
+    def test_d4_rescue_xor_narrow_remediation_tag(
+        self, tmp_git_repo: Path
+    ) -> None:
+        cp = _run(
+            *self.COMMON,
+            "--narrow-remediation-tag",
+            "--d4-rescue-tag",
+            "--dismissed-finding-ids", "1",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "not allowed with" in cp.stderr or "mutually exclusive" in cp.stderr
+
+    def test_d4_rescue_xor_disagreement_tag(
+        self, tmp_git_repo: Path
+    ) -> None:
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan_before = plan.read_text(encoding="utf-8")
+        cp = _run(
+            *self.COMMON,
+            "--d4-rescue-tag",
+            "--disagreement-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        # parser.error() prefaces with `error:` on stderr; both flag
+        # names appear in the message.
+        assert "--d4-rescue-tag" in cp.stderr
+        assert "--disagreement-tag" in cp.stderr
+        # No plan mutation — argparse exits before cmd_commit_task runs.
+        assert plan.read_text(encoding="utf-8") == plan_before
+
+    def test_d4_rescue_xor_dismissed_finding_ids(
+        self, tmp_git_repo: Path
+    ) -> None:
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        plan_before = plan.read_text(encoding="utf-8")
+        cp = _run(
+            *self.COMMON,
+            "--d4-rescue-tag",
+            "--dismissed-finding-ids", "1,2",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 2, (cp.stdout, cp.stderr)
+        assert "--d4-rescue-tag" in cp.stderr
+        assert "--dismissed-finding-ids" in cp.stderr
+        assert plan.read_text(encoding="utf-8") == plan_before
+
+    def test_d4_rescue_bare_use_passes(self, tmp_git_repo: Path) -> None:
+        """Bare `--d4-rescue-tag` (no companion flag) is the canonical
+        successful-rescue commit signature; argparse must NOT reject."""
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 2\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "commit-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--title", "t",
+            "--diff-summary", "d",
+            "--reviewer", "codex",
+            "--reviewer-verdict", "clean",
+            "--d4-rescue-tag",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+
+
+class TestPhaseD4RescueDispatchTemplate:
+    """TASK-005 — dispatch-templates.md gains a Phase D.4-rescue
+    subsection. Distinct from Phase B-narrow-remediation: input key is
+    `rescue_findings[]` (NOT `load_bearing_findings[]`),
+    `dismissed_findings: []` is the literal empty list, and the
+    `**Dismissed findings noted:**` empty-marker is documented.
+    """
+
+    TEMPLATES = (
+        REPO_ROOT / "plugins" / "plan-executor"
+        / "skills" / "implement-plan" / "dispatch-templates.md"
+    )
+
+    def _rescue_section(self) -> str:
+        text = self.TEMPLATES.read_text(encoding="utf-8")
+        start = text.find("## Phase D.4-rescue")
+        assert start >= 0, (
+            "Phase D.4-rescue heading missing from dispatch-templates.md"
+        )
+        body = text[start:]
+        next_section = body.find("\n## ", 1)
+        if next_section >= 0:
+            body = body[:next_section]
+        return body
+
+    def test_template_heading_and_plan_remediator_dispatch(self) -> None:
+        body = self._rescue_section()
+        assert "plan-remediator" in body
+        assert "opus" in body
+        # Single-shot bounding must be explicit so the orchestrator
+        # cannot recurse on the rescue branch.
+        assert "single-shot" in body.lower() or "one attempt" in body.lower()
+
+    def test_template_uses_rescue_findings_key(self) -> None:
+        body = self._rescue_section()
+        # The discriminator key for the dual-input contract.
+        assert "rescue_findings" in body
+        # Must NOT use the D.2a.6 key — that would collapse the two
+        # modes and re-introduce the audit-trail ambiguity.
+        assert "load_bearing_findings_json" not in body
+
+    def test_template_documents_empty_dismissed_marker(self) -> None:
+        body = self._rescue_section()
+        # The literal output contract for the dismissed section.
+        assert "(none — D.4 rescue does not carry dismissed findings)" in body
+        # The literal empty list passed alongside.
+        assert "dismissed_findings" in body
+
+    def test_template_has_no_agent_tool_constraint(self) -> None:
+        body = self._rescue_section()
+        assert "You do NOT have the Agent tool" in body
+
+
 class TestPhaseBNarrowRemediationTemplate:
     """V8 — dispatch-templates.md gains a Phase B-narrow-remediation
     template. The orchestrator's D.2a.6 dispatch reads the template

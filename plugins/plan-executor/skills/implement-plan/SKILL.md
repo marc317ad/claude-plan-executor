@@ -882,7 +882,7 @@ $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" commit-task \
 
 `<abs>` is the current task's child file — resolve per §Per-task `<plan-file>` resolution. `commit-task`'s `Plan:` commit trailer is derived from the `--plan-file` basename, so the resolution automatically attributes each commit to the correct child.
 
-`--remediation-tag` appends a `[remediation]` line to the commit body; set it only when the commit follows a successful D.2a.5 retry. `--narrow-remediation-tag` (with a non-empty `--dismissed-finding-ids` list) appends `[narrow-remediation]` + `[disagreement: I,J,K]` on adjacent lines; set it only when the commit follows a successful D.2a.6 retry. Argparse enforces four constraints: (a) `--narrow-remediation-tag` XOR `--remediation-tag`, (b) `--dismissed-finding-ids` XOR `--disagreement-tag`, (c) `--dismissed-finding-ids` requires `--narrow-remediation-tag`, (d) `--narrow-remediation-tag` requires non-empty `--dismissed-finding-ids`.
+`--remediation-tag` appends a `[remediation]` line to the commit body; set it only when the commit follows a successful D.2a.5 retry. `--narrow-remediation-tag` (with a non-empty `--dismissed-finding-ids` list) appends `[narrow-remediation]` + `[disagreement: I,J,K]` on adjacent lines; set it only when the commit follows a successful D.2a.6 retry. `--d4-rescue-tag` (TASK-005) appends a bare `[d4-rescue]` line; set it only when the commit follows a successful Phase D.4 single-shot rescue. Argparse enforces six constraints: (a) `--narrow-remediation-tag` XOR `--remediation-tag` XOR `--d4-rescue-tag` (one mutually-exclusive group), (b) `--dismissed-finding-ids` XOR `--disagreement-tag`, (c) `--dismissed-finding-ids` requires `--narrow-remediation-tag`, (d) `--narrow-remediation-tag` requires non-empty `--dismissed-finding-ids`, (e) `--d4-rescue-tag` XOR `--disagreement-tag` (D.4 rescue does not invoke D.5), (f) `--d4-rescue-tag` XOR `--dismissed-finding-ids` (D.4 rescue does not carry dismissed findings).
 
 This: (1) guard check for unexpected staged overlap, (2) plan-status flip to `done`, (3) `git commit --only <files> <plan-file> -m "feat(TASK-NNN): <title>\n\n<diff summary>\n\nPlan: <basename>"`, (4) SHA capture, (5) run-log `commit_done` append.
 
@@ -914,26 +914,58 @@ acceptance_v_check: venv/bin/pytest -q tests/scripts/test_plan_ops.py::TestMyTas
 
 Shell-injection surface: `shell=True` is intentional — plans must not be edited by untrusted parties without review.
 
-#### D.4 — Phase D fail
+#### D.4 — Try rescue, then pause (TASK-005)
 
-```bash
-$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
-  --plan-file <abs> --task-id NNN --run-id <id> \
-  --files <files> --stage review --reason "..." \
-  --authorization-source phase-d4-review-failure \
-  --reviewer-findings '<json>' --json
-```
+D.4 is **no longer a destructive seam**. The reviewer's `needs-rework` (or other halt-worthy verdict) does NOT immediately call `fail-task`; the orchestrator dispatches a **single-shot terminal rescue** first. Rescue-success commits via D.3 with `--d4-rescue-tag`; any non-success outcome of the rescue path falls into the awaiting-user pause and the user's next turn decides disposition.
 
-Then cascade `blocked` onto transitive dependents (same contract as Phase C):
+Sequence:
+
+1. **Log `d4_rescue_start`** with `{task_id, reviewer_findings_count}`. The reviewer findings are forwarded verbatim to the rescue dispatch as `rescue_findings[]` (a key distinct from D.2a.6's `load_bearing_findings[]` so the audit log can tell which retry path fired). `dismissed_findings: []` is passed as a literal empty list — D.4 rescue treats every reviewer finding as load-bearing and does NOT consume D.5 adjudication.
+
+   ```bash
+   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+     --event d4_rescue_start \
+     --fields-json '{"run_id":"<id>","task_id":"NNN","reviewer_findings_count":<N>}' --json
+   ```
+
+2. **Dispatch `plan-remediator`** (Agent, `subagent_type: "plan-remediator"`, `model: "opus"`) using the **Phase D.4-rescue** template from `dispatch-templates.md`. Inputs: `rescue_findings[]` (verbatim reviewer findings), `dismissed_findings: []` (literal empty list — matches the agent's empty-marker contract for the `**Dismissed findings noted:**` section), the task block, the reviewer source, and analyst annotations. The remediator's touch-only-these-lines scope rule applies.
+
+3. **Classify the rescue outcome.** The dispatch is **strictly single-shot**: `outcome != success` → log `d4_rescue_done {task_id, outcome}` and proceed to step 6 (awaiting-user pause). Do NOT recurse, do NOT dispatch a second rescue.
+
+4. **On rescue success, re-run D.1** (the original reviewer — Codex for Claude-implemented work, the `code-reviewer` Agent on the `claude_only=true` branch). The re-review is **binding** — no further retry regardless of verdict.
+
+5. **Route the re-review.** `clean | minor-findings` (or `ship | ship-with-fixes`) → log `d4_rescue_done {task_id, outcome:"success", post_review_verdict:"<v>"}`, then D.3 commit with `--d4-rescue-tag` (no companion flag — bare `--d4-rescue-tag` is the canonical rescue-success signature). `needs-rework` on the re-review → log `d4_rescue_done {task_id, outcome:"post_review_failed", post_review_verdict:"needs-rework"}` and proceed to step 6.
+
+6. **Awaiting-user pause** (rescue dispatch failed OR post-rescue re-review failed): (See **Awaiting-user pause** subroutine — same control flow.)
+   - `stage:"post_d4_rescue_failed"`, payload includes `reviewer_findings[]`, `rescue_attempt_outcome`, and `rescue_diagnostics` per the call-site table below. The pre-rescue working tree edits are preserved verbatim — do NOT `git restore`, do NOT call `fail-task`.
+   - `--ending-sha <sha>` MUST be `git rev-parse HEAD` at pause time. Log currently-dirty file paths in the `awaiting_user` event's `dirty_files` field.
+
+   ```bash
+   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+     --event awaiting_user \
+     --fields-json '{"task_id":"NNN","stage":"post_d4_rescue_failed","reviewer_findings":[...],"rescue_attempt_outcome":"<outcome>","rescue_diagnostics":"...","dirty_files":[...]}' --json
+
+   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" finalize-execution-log \
+     --run-id <id> --starting-sha <sha> --ending-sha "$(git rev-parse HEAD)" \
+     --outcome paused --rows-json '[...]' --json
+
+   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" log-event \
+     --event run_end \
+     --fields-json '{"run_id":"<id>","outcome":"paused","done":N,"failed":M,"paused_on_task":"NNN"}' --json
+   ```
+
+   The user's next conversation turn decides disposition (same three options as D.2a.5/D.2a.6: "revert" / "keep as-is" / "hand-fix"). A user-instructed revert at this point invokes `fail-task --authorization-source phase-d4-rescue-failed` — that is the *only* sanctioned route from this pause to a destructive action.
+
+**Hard rule:** D.4 is single-shot. The orchestrator MUST NOT dispatch a second rescue, MUST NOT call `fail-task` automatically on rescue failure, MUST NOT `git restore` the pre-rescue working tree. Recursion on the rescue branch would re-introduce the infinite-loop concern the single-shot rule closes. See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
+
+After a paused run is resumed by user instruction (either a `commit-task --d4-rescue-tag` to keep the rescued work, or a `fail-task --authorization-source user-instruction` to discard, or hand-edit + re-review), the orchestrator cascades `blocked` onto transitive dependents only on the failure path:
 
 ```bash
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" block-dependents \
   --schedule-file <path> --plan-file <abs> --failed NNN --run-id <id> --json
 ```
 
-Same atomic shape as Phase C, and the same per-task `<plan-file>` resolution: `<abs>` is the failed task's child file; `block-dependents` internally routes each dependent's mutation to its own child per the schedule's `tasks[].plan_file`.
-
-See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
+Same atomic shape as Phase C, and the same per-task `<plan-file>` resolution: `<abs>` is the failed task's child file; `block-dependents` internally routes each dependent's mutation to its own child per the schedule's `tasks[].plan_file`. The `block-dependents` call is skipped on the rescue-success commit path — a successfully rescued task's dependents are not blocked.
 
 #### Awaiting-user pause (shared control flow)
 
@@ -1103,6 +1135,8 @@ analyst_triage_skipped
 awaiting_user
 batch_start
 commit_done
+d4_rescue_done
+d4_rescue_start
 decompose_auto_promote
 disagreement
 fallback_used

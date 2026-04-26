@@ -48,7 +48,7 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 
 ### TASK-005: Phase D.4 rescue + `--d4-rescue-tag` commit + dispatch template + plan-remediator dual input mode
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**

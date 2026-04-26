@@ -138,12 +138,19 @@ ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 #   - "phase-d4-review-failure": Phase D.4 review-stage failure path
 #     (reviewer verdict requires a halt; the implementation succeeded but
 #     review found the work unshippable).
+#   - "phase-d4-rescue-failed": Phase D.4 rescue path's terminal failure
+#     (TASK-005). Authorized when the single-shot D.4 rescue dispatch
+#     itself failed AND the user instructed a revert in the next turn.
+#     Rescue-success commits use `--d4-rescue-tag` on commit-task and do
+#     NOT invoke fail-task; this enum value is reserved for the user-
+#     authorized post-pause revert that follows a failed rescue.
 #   - "user-instruction": the user's next conversation turn after a paused
 #     run explicitly instructed the orchestrator to revert (the only
 #     sanctioned post-pause revert path).
 ALLOWED_FAIL_AUTHORIZATION_SOURCES = {
     "phase-c-impl-failure",
     "phase-d4-review-failure",
+    "phase-d4-rescue-failed",
     "user-instruction",
 }
 ALLOWED_CODEX_REVIEW_VERDICTS = {"clean", "minor-findings", "needs-rework"}
@@ -210,6 +217,15 @@ ALLOWED_LOG_EVENTS = {
     # rework vs D.2a.6 narrow scope).
     "narrow_remediation_start",
     "narrow_remediation_done",
+    # `d4_rescue_start` / `d4_rescue_done` are added per TASK-005 D.4
+    # rescue. Single-shot terminal rescue path: before D.4 halts, the
+    # orchestrator dispatches `plan-remediator` once on the reviewer's
+    # findings as `rescue_findings[]`. Distinct from D.2a.5/D.2a.6 events
+    # so the audit trail can tell which retry path fired (D.4 rescue does
+    # NOT consume D.5 adjudication; it operates directly on reviewer
+    # findings).
+    "d4_rescue_start",
+    "d4_rescue_done",
     "plan_review_start",
     "plan_review_done",
     "plan_review_skipped",
@@ -6018,6 +6034,14 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         # above). Adjacent to other trailers and on its own line so
         # `git log --oneline` and the run summary can scan for it.
         commit_msg = commit_msg.rstrip("\n") + "\n\n[sandbox-divergence]\n"
+    if getattr(args, "d4_rescue_tag", False):
+        # TASK-005 D.4 rescue commit: append a [d4-rescue] trailer line
+        # so `git log --oneline` and the run summary can distinguish a
+        # successful rescue from D.2a.5 [remediation] or D.2a.6
+        # [narrow-remediation] retries. Argparse + post-parse blocks
+        # have already excluded --remediation-tag, --narrow-remediation
+        # -tag, --disagreement-tag, and --dismissed-finding-ids.
+        commit_msg = commit_msg.rstrip("\n") + "\n\n[d4-rescue]\n"
     if getattr(args, "narrow_remediation_tag", False):
         # TASK-016C D.2a.6 post-narrow-remediation commit: a trailing
         # [narrow-remediation] tag plus a [disagreement: i,j] trailer
@@ -6167,6 +6191,13 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         # commit body.
         "narrow_remediation_tag": bool(
             getattr(args, "narrow_remediation_tag", False)
+        ),
+        # TASK-005: surface the D.4-rescue flag in commit_done so the
+        # run summary and downstream auditing can distinguish rescue
+        # commits from D.2a.5/D.2a.6 retries without re-parsing the
+        # commit body. Parallel to the remediation/narrow flags above.
+        "d4_rescue_tag": bool(
+            getattr(args, "d4_rescue_tag", False)
         ),
         "dismissed_finding_ids": dismissed_ids,
         # TASK-008 (POSTMORTEM_FIXES): surface the auto-validate
@@ -10517,6 +10548,25 @@ def build_parser() -> argparse.ArgumentParser:
             "non-empty --dismissed-finding-ids."
         ),
     )
+    # TASK-005: a commit cannot be a D.2a.5 OR D.2a.6 OR D.4-rescue
+    # retry simultaneously — each tag denotes a distinct retry path
+    # (bounded D.2a.5 vs narrow D.2a.6 vs single-shot D.4 rescue) and a
+    # single commit cannot belong to two paths. Joining the same
+    # mutually-exclusive group as the existing remediation tags hands
+    # the rejection to argparse with its standard exit-code-2 banner.
+    p_commit_rem_grp.add_argument(
+        "--d4-rescue-tag", action="store_true",
+        help=(
+            "Mark commit as a TASK-005 D.4-rescue retry. "
+            "Appends a [d4-rescue] tag line to the commit body. "
+            "Mutually exclusive with --remediation-tag and "
+            "--narrow-remediation-tag; also mutually exclusive with "
+            "--disagreement-tag and --dismissed-finding-ids (D.4 "
+            "rescue does not invoke D.5 and does not carry dismissed "
+            "findings). Bare use (no companion flag) is the canonical "
+            "successful-rescue commit signature."
+        ),
+    )
     # TASK-016C: a commit cannot be both "D.5 disagrees with all Codex
     # findings" (bare --disagreement-tag) AND "D.5 disagrees with a
     # subset" (--dismissed-finding-ids i,j). The bare form is used by
@@ -11620,6 +11670,31 @@ def main(argv: list[str] | None = None) -> None:
         narrow = bool(getattr(args, "narrow_remediation_tag", False))
         dismissed_raw = getattr(args, "dismissed_finding_ids", "") or ""
         has_dismissed = bool(dismissed_raw.strip())
+        d4_rescue = bool(getattr(args, "d4_rescue_tag", False))
+        disagreement = bool(getattr(args, "disagreement_tag", False))
+        # TASK-005: --d4-rescue-tag is mutually exclusive with
+        # --disagreement-tag (D.4 rescue does not invoke D.5; it commits
+        # directly on post-rescue clean re-review per SKILL.md §D.4).
+        if d4_rescue and disagreement:
+            parser.error(
+                "--d4-rescue-tag is mutually exclusive with "
+                "--disagreement-tag; D.4 rescue does not invoke D.5 "
+                "(the rescue branch commits directly on post-rescue "
+                "clean re-review per SKILL.md §D.4)"
+            )
+        # TASK-005: --d4-rescue-tag is mutually exclusive with
+        # --dismissed-finding-ids. The rescue dispatch's
+        # rescue_findings[] is exhaustive — every reviewer finding is
+        # treated as load-bearing for the rescue attempt — so there is
+        # no dismissed bucket to record.
+        if d4_rescue and has_dismissed:
+            parser.error(
+                "--d4-rescue-tag is mutually exclusive with "
+                "--dismissed-finding-ids; D.4 rescue does not carry "
+                "dismissed findings (rescue_findings[] in the dispatch "
+                "template is exhaustive — every reviewer finding is "
+                "treated as load-bearing for the rescue attempt)"
+            )
         # (c) --dismissed-finding-ids requires --narrow-remediation-tag.
         if has_dismissed and not narrow:
             parser.error(

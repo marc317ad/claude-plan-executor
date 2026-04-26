@@ -704,3 +704,59 @@ Unlike Phase B-rework, the forwarded findings are **filtered** to the load-beari
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
 
 After retry success, re-run Phase D-Codex (wrapper review) on the re-implementation. `clean | minor-findings` → D.3 commit with `--narrow-remediation-tag --dismissed-finding-ids <comma-separated indices from D.5's dismissed bucket>`. `needs-rework` on the re-review triggers the D.2a.6 awaiting-user pause (see SKILL.md §D.2a.6 step 7); the orchestrator does NOT call `fail-task`. A retry outcome of `scope-violation` — or any other non-success outcome — triggers the same awaiting-user pause with `stage:"post_narrow_remediation_implement"`.
+
+## Phase D.4-rescue — plan-remediator dispatch (single-shot rescue)
+
+**`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading, the orchestrator's render path prepends ``Apply the D.4 rescue specifically to `### TASK-NNN:` ...`` as the first instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting the field for a >1-heading file is a render-time error.
+
+Dispatched only as the **single-shot terminal rescue** before a Phase D.4 halt (TASK-005). Strictly one attempt — the rescue branch never recurses; any non-success outcome falls into the awaiting-user pause per SKILL.md §D.4. Use `Agent(subagent_type: "plan-remediator", model: "opus")` — the same role used by D.2a.6, but invoked through a distinct input-key contract.
+
+**Distinct from D.2a.6.** D.4 rescue does NOT consume D.5 adjudication: there is no `load_bearing` / `dismissed` split, no `d5_summary`. Every reviewer finding is treated as load-bearing for the rescue attempt. The dispatch uses `rescue_findings[]` (NOT `load_bearing_findings[]`) as the input key, and `dismissed_findings: []` is passed as a literal empty list — the remediator's empty-marker contract for the mandatory `**Dismissed findings noted:**` report section requires the literal output `(none — D.4 rescue does not carry dismissed findings)`. The `(file, line)` union of `rescue_findings[]` is the remediator's permitted edit region; the touch-only-these-lines scope rule applies unchanged.
+
+> Apply a single-shot D.4 rescue to this task's existing implementation at `<absolute plan path>`. The prior attempt is **still in the working tree** — it was NOT reverted. The reviewer (`<reviewer_source>` — `codex` or `claude` per the original Phase D dispatch) returned `needs-rework` and the orchestrator is invoking the single-shot rescue path before halting. There is no D.5 third-opinion adjudication on this branch — every reviewer finding below is treated as load-bearing for the rescue attempt. Patch the current working-tree edits with a minimal, surgical fix that addresses each rescue finding. Do NOT rebuild from the base commit; do NOT re-do work that is already correct.
+>
+> Plan context:
+>
+> ```markdown
+> <## Context section verbatim>
+> ```
+>
+> Task (verbatim from plan):
+>
+> ```markdown
+> <entire TASK-NNN block>
+> ```
+>
+> Base commit SHA: `<starting_sha>`
+>
+> Reviewer source: `<reviewer_source>` (`codex` or `claude` — the role of the reviewer whose verdict triggered the rescue).
+>
+> Rescue findings (verbatim from the reviewer's findings array — every entry is load-bearing for this rescue):
+>
+> ```json
+> <rescue_findings_json>
+> ```
+>
+> Dismissed findings — D.4 rescue does NOT carry a dismissed bucket. The literal value below is the empty list:
+>
+> ```json
+> []
+> ```
+>
+> Echo the empty-marker literal `(none — D.4 rescue does not carry dismissed findings)` in the mandatory `**Dismissed findings noted:**` report section — do NOT enumerate per-index acks (there are no indices to ack on this branch).
+>
+> Analyst annotations (verbatim, may be empty):
+>
+> ```json
+> <analyst_annotations_json>
+> ```
+>
+> **Scope rule (the touch-only-these-lines contract):** the union of `(file, line)` coordinates across `rescue_findings[]` defines your permitted edit region. Unjustified edits outside that region flip the outcome to `scope-violation`. **Fix narrowly, do not scope-inflate.** Address each rescue finding directly. Do NOT refactor unrelated code, do NOT add docstrings to untouched regions, do NOT tidy formatting outside the edited scope. If a finding cannot be reconciled with the plan's acceptance criteria, report `plan-incorrect` — do not invent a compromise.
+>
+> You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec (including the mandatory `**Dismissed findings noted:**` and `**Scope violations:**` sections). Do not commit. Do not use `git stash`.
+>
+> **Parallel-tree caveat:** other implementers and reviewers may be running concurrently on disjoint files; unstaged changes to disjoint files may be in the working tree. Focus strictly on the scope files listed in the task's `Files:` field. Trust the diff when classifying test failures; do NOT use `git stash` (it would collide).
+>
+> **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
+
+After rescue success, re-run the original D.1 reviewer (Codex wrapper for `reviewer_source=codex`, `code-reviewer` Agent for `reviewer_source=claude`) on the rescued working tree. The re-review is binding — no further retry. `clean | minor-findings` (or `ship | ship-with-fixes`) → D.3 commit with bare `--d4-rescue-tag` (no `--remediation-tag`, no `--narrow-remediation-tag`, no `--disagreement-tag`, no `--dismissed-finding-ids` — argparse rejects any companion flag). `needs-rework` on the re-review — or any non-success rescue outcome (`partial`, `failed`, `plan-incorrect`, `blocked`, `scope-violation`) — triggers the D.4 awaiting-user pause (see SKILL.md §D.4 step 6) with `stage:"post_d4_rescue_failed"`; the orchestrator does NOT call `fail-task`.
