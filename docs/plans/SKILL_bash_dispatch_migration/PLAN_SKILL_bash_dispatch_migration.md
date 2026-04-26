@@ -75,7 +75,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 
 ### TASK-001: Canary A/B probe — behavioral parity
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Files:**
   - `tests/scripts/test_claude_dispatch_canary.py` (create)
