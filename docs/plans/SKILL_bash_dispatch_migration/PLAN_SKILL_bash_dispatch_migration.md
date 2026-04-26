@@ -137,7 +137,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (modify — Phase 1 dispatch paragraph only)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (modify — analyst template transport section only)
   - `tests/scripts/test_skill_dispatch_analyst.py` (create)
-- **Dependencies:** TASK-001, TASK-002
+- **Dependencies:** none (TASK-001 and TASK-002 already Done; runtime artifacts in place)
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_skill_dispatch_analyst.py`
 - **Acceptance criteria:**
   - Phase 1 in SKILL.md replaces its `Agent(subagent_type="plan-executor:plan-analyst", ...)` block with a Bash invocation of `plan_claude_dispatch.py run --input <payload.json>` where payload sets `agent=plan-analyst` and carries the plan path, run_id, and output schema reference.
@@ -163,7 +163,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (modify — Phase B default, Phase D.2a.5 rework, Phase D.2b role-swap dispatch paragraphs)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (modify — `PhaseB-default`, `PhaseB-rework`, `PhaseD.2b-role-swap` transport sections)
   - `tests/scripts/test_skill_dispatch_implementer.py` (create)
-- **Dependencies:** TASK-002
+- **Dependencies:** none (TASK-002 already Done; runtime artifacts in place)
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_skill_dispatch_implementer.py`
 - **Acceptance criteria:**
   - All three implementer call sites invoke `plan_claude_dispatch.py run --input <payload.json>` where `payload.agent=plan-implementer` and `payload.variant ∈ {default, rework, role-swap}` carries the template selector. No new subcommand; variant is carried in the payload.
@@ -191,7 +191,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (modify — Phase D.2a.6 dispatch paragraph only)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (modify — `PhaseB-narrow-remediation` transport section)
   - `tests/scripts/test_skill_dispatch_remediator.py` (create)
-- **Dependencies:** TASK-002
+- **Dependencies:** none (TASK-002 already Done; runtime artifacts in place)
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_skill_dispatch_remediator.py`
 - **Acceptance criteria:**
   - D.2a.6 dispatch invokes `plan_claude_dispatch.py run --input <payload.json>` where `payload.agent=plan-remediator` and payload carries `load_bearing_findings[]` and `dismissed_findings[]`.
