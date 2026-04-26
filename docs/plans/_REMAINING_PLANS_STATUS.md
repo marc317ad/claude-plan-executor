@@ -20,7 +20,7 @@ After surveying `docs/plans/`:
 | `SKILL_bash_dispatch_migration` | 0 / 7 | **Run** | Wrapper now exists (PLAN_NESTED_DISPATCH merged); SKILL.md still has 12 Agent dispatches and 0 wrapper calls — migration is next-in-line |
 | `PHASE_D_STATE_MACHINE` | 0 / 8 | **Run** (was deferred — was over-cautious) | Same orchestrator + Codex review + pause protocol applies |
 | `prohibit_silent_revert` | 0 / 9 | **Run** | Prior halt (`20260425T002624`) was due to issues since fixed; user cleared to proceed |
-| `decompose_plans_tasks/build-plan-decomposer-plugin` | 0 / 11 | **Run** | Builds a NEW `plan-decomposer` plugin (Canonical Contract constants, fingerprint, render templates, validate-output gates, atomic 7-phase commit-swap, recover crash windows, sync-status, plan-decomposer agent + skill). Distinct from `plan_ops.py decompose-plan` which is a narrow internal markdown-splitter inside plan-executor. The plugin's job: take a Claude-authored freeform plan and decompose it into the directory + 00_INDEX.json + TASK-NNN child files that `/implement-plan` consumes. Not overlapping plan-executor |
+| `decompose_plans_tasks/build-plan-decomposer-plugin` | 0 / 11 | **Don't run yet — needs re-evaluation** | Builds a NEW `plan-decomposer` plugin (Canonical Contract constants, fingerprint, render templates, validate-output gates, atomic 7-phase commit-swap, recover crash windows, sync-status, plan-decomposer agent + skill). Plan dates from 2026-04-17; significant plan-executor evolution since then (per_task_dispatch_refactor_v2, directory-mode, build-tasks fat manifest, etc.). Plan needs review for compatibility with the current canonical contract before dispatch — likely needs author updates so the new plugin's interface matches what `/implement-plan` consumes today |
 
 ## Execution order (rationale)
 
@@ -85,5 +85,7 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 6. `PHASE_D_STATE_MACHINE` (8 tasks)
 7. `SKILL_bash_dispatch_migration` (7 tasks)
 8. `prohibit_silent_revert` (9 tasks) — prior halt was for issues since fixed
-9. `decompose_plans_tasks/build-plan-decomposer-plugin` (11 tasks) — builds NEW `plan-decomposer` plugin (Canonical Contract constants + fingerprint + render templates + validate-output + 7-phase atomic commit-swap + recover crash windows + sync-status + agent + skill). Distinct from plan-executor's internal `plan_ops.py decompose-plan` markdown-splitter; not overlapping
-10. After narrow_run_filter_ids TASK-002 unblocks (user hand-fix or instruct to resume): finish narrow_run TASK-003..005, then resume PLAN_GEMINI_INTEGRATION TASK-005..008 with `--filter-ids`
+9. After narrow_run_filter_ids TASK-002 unblocks (user hand-fix or instruct to resume): finish narrow_run TASK-003..005, then resume PLAN_GEMINI_INTEGRATION TASK-005..008 with `--filter-ids`
+
+**Don't run yet (needs user re-evaluation before dispatch):**
+- `decompose_plans_tasks/build-plan-decomposer-plugin` (11 tasks; 2026-04-17). Builds NEW separate plan-decomposer plugin. Significant plan-executor evolution since plan was authored — plan needs compatibility review against the current canonical contract before dispatch. User to update the plan, then run.
