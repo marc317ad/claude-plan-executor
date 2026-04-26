@@ -326,3 +326,12 @@ Single-session parallel execution within each batch is the target.
 **Reversion guidance:** Delete the test file + fixture.
 
 ---
+
+## Execution log — 20260426T045750 (paused)
+
+Starting SHA: `51e6ec627c7481059e4279d2c052688375832bd8`  → Ending SHA: `f0ad0ad5cb78fb907f701ebdf5abf0a4573e511d`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | codex | clean | f0ad0ad5cb78 |  |
+| 003 | claude | codex | needs-rework (D.2a.5 binding second review) | - | PAUSED: layer-1 invoke_codex stdout-trim missing |
