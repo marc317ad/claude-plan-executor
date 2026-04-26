@@ -6232,11 +6232,17 @@ def _run_reconcile(
     envelopes: list,
     *,
     schedule_file: Path | str | None = None,
+    out_of_scope_policy: str | None = None,
+    plans_dir: Path | str | None = None,
 ) -> subprocess.CompletedProcess:
     cmd = [str(PY), str(SCRIPT), "reconcile-batch",
            "--repo-root", str(repo), "--json"]
     if schedule_file is not None:
         cmd.extend(["--schedule-file", str(schedule_file)])
+    if out_of_scope_policy is not None:
+        cmd.extend(["--out-of-scope-policy", out_of_scope_policy])
+    if plans_dir is not None:
+        cmd.extend(["--plans-dir", str(plans_dir)])
     return subprocess.run(
         cmd,
         input=json.dumps(envelopes),
@@ -6251,17 +6257,43 @@ def _write_reconcile_schedule(
     *,
     task_id: str,
     files: list[str],
+    plan_file: str | None = None,
 ) -> Path:
     """Write a minimal schedule.json fixture with one task entry.
 
     The schedule's per-task identifier field is `id` (matching the
-    on-disk `build-tasks` output).
+    on-disk `build-tasks` output). When `plan_file` is supplied it is
+    written alongside `id`/`files` so reconcile-batch's pause-mode
+    path (TASK-008) can resolve the task's plan file for status
+    mutation.
     """
     sched = tmp_path / "fixture.schedule.json"
-    sched.write_text(json.dumps({
-        "tasks": [{"id": task_id, "files": list(files)}],
-    }))
+    entry: dict = {"id": task_id, "files": list(files)}
+    if plan_file is not None:
+        entry["plan_file"] = plan_file
+    sched.write_text(json.dumps({"tasks": [entry]}))
     return sched
+
+
+def _write_reconcile_plan_file(
+    plans_dir: Path, plan_file_basename: str, task_id: str,
+) -> Path:
+    """Write a minimal child plan markdown carrying TASK-NNN with a
+    `pending` status bullet — sized for `mutate_task_status` only."""
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    body = (
+        "# Plan stub\n\n"
+        "## Tasks\n\n"
+        f"### TASK-{task_id}: stub\n\n"
+        "- **Status:** pending\n"
+        "- **Agent:** codex\n"
+        "- **Files:**\n"
+        "  - foo.py\n"
+        "- **Dependencies:** none\n"
+    )
+    p = plans_dir / plan_file_basename
+    p.write_text(body, encoding="utf-8")
+    return p
 
 
 def _scope_envelope(task_id: str, *, tracked=(), untracked=(), observed=True) -> dict:
@@ -6298,7 +6330,9 @@ class TestReconcileBatch:
         stray.write_text("observed but out of scope\n")
 
         envelope = _scope_envelope("001", untracked=["stray.txt"])
-        cp = _run_reconcile(repo, [envelope])
+        cp = _run_reconcile(
+            repo, [envelope], out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 0, cp.stderr
         body = json.loads(cp.stdout)
         results = body["results"]
@@ -6319,7 +6353,9 @@ class TestReconcileBatch:
         other.write_text("codex-touched\n")
 
         envelope = _scope_envelope("002", tracked=["other.py"])
-        cp = _run_reconcile(repo, [envelope])
+        cp = _run_reconcile(
+            repo, [envelope], out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 0, cp.stderr
         body = json.loads(cp.stdout)
         results = body["results"]
@@ -6337,7 +6373,9 @@ class TestReconcileBatch:
             _scope_envelope("001", untracked=["stray_a.txt"]),
             _scope_envelope("002", untracked=["stray_b.txt"]),
         ]
-        cp = _run_reconcile(repo, envelopes)
+        cp = _run_reconcile(
+            repo, envelopes, out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 0, cp.stderr
         body = json.loads(cp.stdout)
         results = body["results"]
@@ -6357,7 +6395,9 @@ class TestReconcileBatch:
         envelope = _scope_envelope(
             "001", untracked=["docs/plans/_run_log.jsonl"],
         )
-        cp = _run_reconcile(repo, [envelope])
+        cp = _run_reconcile(
+            repo, [envelope], out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 0, cp.stderr
         body = json.loads(cp.stdout)
         results = body["results"]
@@ -6375,7 +6415,9 @@ class TestReconcileBatch:
         repo = _reconcile_git_repo(tmp_path)
         # File does not exist — unlink raises FileNotFoundError
         envelope = _scope_envelope("001", untracked=["ghost.txt"])
-        cp = _run_reconcile(repo, [envelope])
+        cp = _run_reconcile(
+            repo, [envelope], out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 1, (cp.stdout, cp.stderr)
         body = json.loads(cp.stdout)
         assert body["reconciliation_failed"] is True
@@ -6404,7 +6446,10 @@ class TestReconcileBatch:
             tmp_path, task_id="001", files=["`Makefile` (edit)"],
         )
         envelope = _scope_envelope("001", tracked=["Makefile"])
-        cp = _run_reconcile(repo, [envelope], schedule_file=sched)
+        cp = _run_reconcile(
+            repo, [envelope], schedule_file=sched,
+            out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 0, (cp.stdout, cp.stderr)
         body = json.loads(cp.stdout)
         results = body["results"]
@@ -6437,7 +6482,10 @@ class TestReconcileBatch:
             tmp_path, task_id="002", files=["`Makefile` (edit)"],
         )
         envelope = _scope_envelope("002", tracked=["other.py"])
-        cp = _run_reconcile(repo, [envelope], schedule_file=sched)
+        cp = _run_reconcile(
+            repo, [envelope], schedule_file=sched,
+            out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 0, (cp.stdout, cp.stderr)
         body = json.loads(cp.stdout)
         results = body["results"]
@@ -6465,7 +6513,10 @@ class TestReconcileBatch:
             tmp_path, task_id="003", files=["`new_module.py` (create)"],
         )
         envelope = _scope_envelope("003", untracked=["new_module.py"])
-        cp = _run_reconcile(repo, [envelope], schedule_file=sched)
+        cp = _run_reconcile(
+            repo, [envelope], schedule_file=sched,
+            out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 0, (cp.stdout, cp.stderr)
         body = json.loads(cp.stdout)
         results = body["results"]
@@ -6501,7 +6552,10 @@ class TestReconcileBatch:
         envelope = _scope_envelope(
             "004", tracked=["Makefile", "other.py"],
         )
-        cp = _run_reconcile(repo, [envelope], schedule_file=sched)
+        cp = _run_reconcile(
+            repo, [envelope], schedule_file=sched,
+            out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 0, (cp.stdout, cp.stderr)
         body = json.loads(cp.stdout)
         results = body["results"]
@@ -6529,7 +6583,10 @@ class TestReconcileBatch:
         # Path that does not exist.
         bogus = tmp_path / "does_not_exist.schedule.json"
         envelope = _scope_envelope("999", tracked=["other.py"])
-        cp = _run_reconcile(repo, [envelope], schedule_file=bogus)
+        cp = _run_reconcile(
+            repo, [envelope], schedule_file=bogus,
+            out_of_scope_policy="reconcile-and-revert",
+        )
         assert cp.returncode == 0, (cp.stdout, cp.stderr)
         body = json.loads(cp.stdout)
         results = body["results"]
@@ -6539,6 +6596,325 @@ class TestReconcileBatch:
         assert results[0]["reconciled_tracked"] == ["other.py"]
         assert results[0]["reconcile_kept_tracked"] == []
         assert stranger.read_text() == "v1\n"
+
+    # ------------------------------------------------------------------
+    # TASK-008 (G10): out-of-scope pause + four-option payload
+    # ------------------------------------------------------------------
+
+    def test_reconcile_batch_out_of_scope_paused_marks_task_paused(
+        self, tmp_path: Path,
+    ) -> None:
+        """Pause-mode (default): an envelope with `out_of_scope_observed=true`
+        does NOT touch the working tree, mutates the task's plan-status to
+        `paused` via the schedule's per-task `plan_file`, and returns the
+        four user-facing options in `awaiting_user_options`."""
+        repo = _reconcile_git_repo(tmp_path)
+        # Pre-existing tracked file edited out-of-scope; pause must NOT
+        # restore it.
+        other = repo / "other.py"
+        other.write_text("v1\n")
+        subprocess.run(["git", "add", "other.py"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add other"],
+                       cwd=repo, check=True)
+        other.write_text("codex-touched\n")
+
+        plans_dir = tmp_path / "plans"
+        _write_reconcile_plan_file(plans_dir, "TASK-001_stub.md", "001")
+        sched = _write_reconcile_schedule(
+            tmp_path, task_id="001",
+            files=["`Makefile` (edit)"],
+            plan_file="TASK-001_stub.md",
+        )
+        envelope = _scope_envelope("001", tracked=["other.py"])
+        cp = _run_reconcile(
+            repo, [envelope],
+            schedule_file=sched,
+            out_of_scope_policy="pause",
+            plans_dir=plans_dir,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        assert body["reconciliation_failed"] is False
+        assert body["paused"] is True
+        result = body["results"][0]
+        assert result["outcome"] == "scope_violation_paused"
+        # Working tree NOT touched — out-of-scope edit preserved.
+        assert other.read_text() == "codex-touched\n"
+        assert result["reconciled_tracked"] == []
+        assert result["reconciled_untracked"] == []
+        # Four options surfaced verbatim in the documented order.
+        assert result["awaiting_user_options"] == [
+            "widen-plan", "in-place-fix", "keep-and-commit", "revert",
+        ]
+        # Plan-status mutation succeeded.
+        assert result["plan_status_updated"] is True
+        plan_text = (plans_dir / "TASK-001_stub.md").read_text(
+            encoding="utf-8",
+        )
+        assert "**Status:** paused" in plan_text
+
+    def test_reconcile_batch_out_of_scope_pause_default_policy(
+        self, tmp_path: Path,
+    ) -> None:
+        """When --out-of-scope-policy is omitted the default is `pause`."""
+        repo = _reconcile_git_repo(tmp_path)
+        plans_dir = tmp_path / "plans"
+        _write_reconcile_plan_file(plans_dir, "TASK-002_stub.md", "002")
+        sched = _write_reconcile_schedule(
+            tmp_path, task_id="002",
+            files=["`foo.py`"],
+            plan_file="TASK-002_stub.md",
+        )
+        # Untracked stray file — pause must NOT unlink it.
+        stray = repo / "stray.txt"
+        stray.write_text("hands off\n")
+        envelope = _scope_envelope("002", untracked=["stray.txt"])
+        # No out_of_scope_policy passed.
+        cp = _run_reconcile(
+            repo, [envelope], schedule_file=sched, plans_dir=plans_dir,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        assert body["paused"] is True
+        result = body["results"][0]
+        assert result["outcome"] == "scope_violation_paused"
+        assert stray.exists()
+        assert result["awaiting_user_options"][0] == "widen-plan"
+
+    def test_reconcile_and_revert_preserves_legacy_behaviour(
+        self, tmp_path: Path,
+    ) -> None:
+        """`reconcile-and-revert` policy keeps today's restore-tracked
+        / unlink-untracked semantics — the same path tested by the
+        TASK-002/003 tests above, here pinned explicitly."""
+        repo = _reconcile_git_repo(tmp_path)
+        other = repo / "other.py"
+        other.write_text("v1\n")
+        subprocess.run(["git", "add", "other.py"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add other"],
+                       cwd=repo, check=True)
+        other.write_text("codex-touched\n")
+        envelope = _scope_envelope("003", tracked=["other.py"])
+        cp = _run_reconcile(
+            repo, [envelope],
+            out_of_scope_policy="reconcile-and-revert",
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        assert body["paused"] is False
+        result = body["results"][0]
+        assert result["outcome"] == "scope_violation_reconciled"
+        assert result["reconciled_tracked"] == ["other.py"]
+        # Legacy behaviour: tracked path restored.
+        assert other.read_text() == "v1\n"
+
+    def test_reconciliation_failed_unchanged_under_reconcile_and_revert(
+        self, tmp_path: Path,
+    ) -> None:
+        """A non-existent untracked path under `reconcile-and-revert`
+        still produces `reconciliation_failed` (hard halt) — the
+        residual-dirt failure path is unaffected by TASK-008."""
+        repo = _reconcile_git_repo(tmp_path)
+        envelope = _scope_envelope("001", untracked=["ghost.txt"])
+        cp = _run_reconcile(
+            repo, [envelope],
+            out_of_scope_policy="reconcile-and-revert",
+        )
+        assert cp.returncode == 1, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        assert body["reconciliation_failed"] is True
+        assert body["results"][0]["outcome"] == "reconciliation_failed"
+
+    def test_reconcile_batch_pause_warns_when_schedule_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        """Pause-mode without a resolvable plan_file emits
+        `plan_status_error` but still returns the four options so the
+        next conversation turn is not lost."""
+        repo = _reconcile_git_repo(tmp_path)
+        envelope = _scope_envelope("001", untracked=["stray.txt"])
+        (repo / "stray.txt").write_text("hands off\n")
+        # No schedule_file — pause path should warn but not crash.
+        cp = _run_reconcile(repo, [envelope], out_of_scope_policy="pause")
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        result = body["results"][0]
+        assert result["outcome"] == "scope_violation_paused"
+        assert result["plan_status_updated"] is False
+        assert "plan_status_error" in result
+        assert result["awaiting_user_options"] == [
+            "widen-plan", "in-place-fix", "keep-and-commit", "revert",
+        ]
+
+    def test_reconcile_batch_out_of_scope_pause_partitions_before_pausing(
+        self, tmp_path: Path,
+    ) -> None:
+        """Codex review fix: schedule-aware partitioning runs BEFORE the
+        pause branch. An envelope reporting both a declared-in-scope path
+        AND a genuinely out-of-scope path under `pause` policy must:
+
+        - PRESERVE the declared path in `reconcile_kept_tracked` (the
+          Completed-Work Preservation contract for in-scope work).
+        - Surface ONLY the genuinely out-of-scope remainder in
+          `out_of_scope_tracked` / `awaiting_user_options` payload.
+        - Still pause the task (status -> paused, four options shown).
+
+        Pre-fix bug: pause branch ran before partitioning, so the
+        declared path was paused with empty `reconcile_kept_*`.
+        """
+        repo = _reconcile_git_repo(tmp_path)
+        # Pre-existing tracked files (both declared and undeclared
+        # edited out-of-scope by the wrapper). Pause must not touch
+        # either, but classification must distinguish them.
+        declared = repo / "declared.py"
+        declared.write_text("v1\n")
+        undeclared = repo / "undeclared.py"
+        undeclared.write_text("v1\n")
+        subprocess.run(
+            ["git", "add", "declared.py", "undeclared.py"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add both"],
+            cwd=repo, check=True,
+        )
+        declared.write_text("codex-touched-declared\n")
+        undeclared.write_text("codex-touched-undeclared\n")
+
+        plans_dir = tmp_path / "plans"
+        _write_reconcile_plan_file(plans_dir, "TASK-099_stub.md", "099")
+        # Schedule declares ONLY declared.py as in-scope.
+        sched = _write_reconcile_schedule(
+            tmp_path, task_id="099",
+            files=["declared.py"],
+            plan_file="TASK-099_stub.md",
+        )
+        envelope = _scope_envelope(
+            "099", tracked=["declared.py", "undeclared.py"],
+        )
+        cp = _run_reconcile(
+            repo, [envelope],
+            schedule_file=sched,
+            out_of_scope_policy="pause",
+            plans_dir=plans_dir,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        assert body["paused"] is True
+        assert body["reconciliation_failed"] is False
+        result = body["results"][0]
+        assert result["outcome"] == "scope_violation_paused"
+        # Declared-in-scope path PRESERVED (kept), not paused-as-violation.
+        assert result["reconcile_kept_tracked"] == ["declared.py"]
+        # Only the genuinely out-of-scope remainder surfaces in the
+        # awaiting-user payload.
+        assert result["out_of_scope_tracked"] == ["undeclared.py"]
+        assert result["out_of_scope_untracked"] == []
+        # Working tree NOT touched for either path (pause is a hands-off
+        # operation; the kept path is preserved and the actionable path
+        # is left for the user's next turn to decide).
+        assert declared.read_text() == "codex-touched-declared\n"
+        assert undeclared.read_text() == "codex-touched-undeclared\n"
+        # Pause is still a pause: four options + status mutation.
+        assert result["awaiting_user_options"] == [
+            "widen-plan", "in-place-fix", "keep-and-commit", "revert",
+        ]
+        assert result["plan_status_updated"] is True
+        plan_text = (plans_dir / "TASK-099_stub.md").read_text(
+            encoding="utf-8",
+        )
+        assert "**Status:** paused" in plan_text
+
+    def test_reconcile_batch_out_of_scope_pause_all_in_scope_yields_preserved(
+        self, tmp_path: Path,
+    ) -> None:
+        """When every reported out-of-scope path is actually declared
+        in the task's `Files:`, partitioning leaves zero actionable
+        paths and the pause branch falls through to the legacy
+        preservation outcome (`scope_violation_preserved`). No pause."""
+        repo = _reconcile_git_repo(tmp_path)
+        declared = repo / "declared.py"
+        declared.write_text("v1\n")
+        subprocess.run(
+            ["git", "add", "declared.py"], cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add declared"],
+            cwd=repo, check=True,
+        )
+        declared.write_text("codex-touched\n")
+
+        plans_dir = tmp_path / "plans"
+        _write_reconcile_plan_file(plans_dir, "TASK-100_stub.md", "100")
+        sched = _write_reconcile_schedule(
+            tmp_path, task_id="100",
+            files=["declared.py"],
+            plan_file="TASK-100_stub.md",
+        )
+        envelope = _scope_envelope("100", tracked=["declared.py"])
+        cp = _run_reconcile(
+            repo, [envelope],
+            schedule_file=sched,
+            out_of_scope_policy="pause",
+            plans_dir=plans_dir,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        # Nothing actionable -> not paused, classified as preserved.
+        assert body["paused"] is False
+        result = body["results"][0]
+        assert result["outcome"] == "scope_violation_preserved"
+        assert result["reconcile_kept_tracked"] == ["declared.py"]
+        assert result["reconciled_tracked"] == []
+        # Edit preserved on disk (kept path is not restored).
+        assert declared.read_text() == "codex-touched\n"
+
+
+class TestFailTaskOutOfScopeUserInstruction:
+    """TASK-008: cmd_fail_task accepts the new authorization-source enum
+    value `reconcile-out-of-scope-user-instruction`, used for the
+    sanctioned post-pause revert when the user's next conversation turn
+    instructs revert on an out-of-scope-paused task."""
+
+    def test_fail_task_accepts_reconcile_out_of_scope_user_instruction(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        plans_dir = tmp_path / "docs" / "plans"
+        plans_dir.mkdir(parents=True)
+        plan = plans_dir / "sample.md"
+        plan.write_text(SAMPLE_PLAN_BODY, encoding="utf-8")
+
+        repo = tmp_path
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@x"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / "src").mkdir()
+        (repo / "src" / "foo.py").write_text("seed\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+        cmd = [
+            str(PY), str(SCRIPT), "fail-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "r-test",
+            "--files", "src/foo.py",
+            "--stage", "implement",
+            "--reason", "user instructed revert post out-of-scope pause",
+            "--authorization-source", "reconcile-out-of-scope-user-instruction",
+            "--repo-root", str(repo),
+            "--json",
+        ]
+        cp = subprocess.run(
+            cmd, cwd=str(repo), capture_output=True, text=True,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        assert body["status_updated"] is True
+        # And the plan status is now `failed`.
+        assert "### TASK-001: First task\n\n- **Status:** failed" in (
+            plan.read_text(encoding="utf-8")
+        )
 
 
 def test_cli_envelope_unwrap_round_trips_analyst_fenced_json() -> None:

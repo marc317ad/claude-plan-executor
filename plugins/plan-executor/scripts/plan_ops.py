@@ -162,6 +162,14 @@ ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 #     active and the unattended-revert policy is `fail-fast`, the
 #     orchestrator skips the awaiting-user pause and authorizes the revert
 #     under this value.
+#   - "reconcile-out-of-scope-user-instruction": authorized post-pause
+#     revert path for the G10 `reconcile_batch` out-of-scope pause
+#     (TASK-008). When the wrapper observes out-of-scope writes and the
+#     policy is `pause` (default), the orchestrator marks the task
+#     `paused` and returns four options to the user: widen-plan,
+#     in-place-fix, keep-and-commit, revert. Only the user's explicit
+#     "revert" instruction in the next conversation turn authorizes
+#     `fail-task` under this value.
 # Binding-mode pause note: `--codex-review-binding` (TASK-007) pauses by
 # default and does NOT call `fail-task`. If the user instructs a revert in
 # the next turn, that revert authorizes under `user-instruction` (NOT a
@@ -174,6 +182,7 @@ ALLOWED_FAIL_AUTHORIZATION_SOURCES = {
     "phase-d4-rescue-failed",
     "user-instruction",
     "unattended-fail-fast",
+    "reconcile-out-of-scope-user-instruction",
 }
 ALLOWED_CODEX_REVIEW_VERDICTS = {"clean", "minor-findings", "needs-rework"}
 ALLOWED_CLAUDE_REVIEW_VERDICTS = {
@@ -3501,11 +3510,22 @@ def _envelope_field(env: dict, key: str, default=None):
     return default
 
 
+OUT_OF_SCOPE_PAUSE_OPTIONS = (
+    "widen-plan",
+    "in-place-fix",
+    "keep-and-commit",
+    "revert",
+)
+ALLOWED_OUT_OF_SCOPE_POLICIES = ("pause", "reconcile-and-revert")
+
+
 def reconcile_batch(
     batch_envelopes: list[dict],
     repo_root: str,
     *,
     schedule_file: str | None = None,
+    out_of_scope_policy: str = "pause",
+    plans_dir: str | None = None,
 ) -> list[dict]:
     """Reconcile observed out-of-scope writes after a batch's join barrier.
 
@@ -3538,10 +3558,20 @@ def reconcile_batch(
     ``warning: "schedule_lookup_failed"`` in that envelope's result
     entry.
     """
+    if out_of_scope_policy not in ALLOWED_OUT_OF_SCOPE_POLICIES:
+        raise ValueError(
+            f"out_of_scope_policy {out_of_scope_policy!r} not in "
+            f"{list(ALLOWED_OUT_OF_SCOPE_POLICIES)}"
+        )
+
     # Build {canonical_task_id: set(normalised file paths)} once. Empty
     # dict signals "no plan-aware filter available"; per-envelope
     # missing-task lookups also degrade to that baseline behaviour.
     schedule_files_by_task: dict[str, set[str]] = {}
+    # TASK-008: capture per-task plan_file (basename) for the pause-mode
+    # `mutate_task_status` call. Schedule entries declare `plan_file` in
+    # directory mode; single-file mode may omit it.
+    schedule_plan_file_by_task: dict[str, str] = {}
     schedule_load_failed = False
     if schedule_file:
         try:
@@ -3558,6 +3588,9 @@ def reconcile_batch(
                     for entry in raw_files
                     if isinstance(entry, str)
                 }
+                pf = task.get("plan_file")
+                if isinstance(pf, str) and pf:
+                    schedule_plan_file_by_task[tid] = pf
         except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
             schedule_load_failed = True
 
@@ -3631,6 +3664,105 @@ def reconcile_batch(
         else:
             actionable_tracked = list(protected_filtered_tracked)
             actionable_untracked = list(protected_filtered_untracked)
+
+        # TASK-008 (G10): out-of-scope pause. Under the default
+        # `pause` policy we do NOT touch the working tree for paths
+        # that are genuinely out-of-scope — the Completed-Work
+        # Preservation Principle requires we hand control back to the
+        # user. Mark the task `paused` in its plan file (when we can
+        # resolve it) and surface the four options so the next
+        # conversation turn can decide: widen-plan / in-place-fix /
+        # keep-and-commit / revert.
+        #
+        # Ordering note (Codex review fix): this branch runs AFTER the
+        # schedule-aware partitioning above. Paths that are declared
+        # in the task's `Files:` list are PRESERVED in
+        # `reconcile_kept_*`; only the genuinely out-of-scope remainder
+        # (`actionable_*`) drives the pause decision. If everything is
+        # in-scope (no actionable remainder), we fall through to the
+        # legacy preservation path which yields `scope_violation_preserved`.
+        if out_of_scope_policy == "pause" and (
+            actionable_tracked or actionable_untracked
+        ):
+            pause_warning: str | None = warning
+            plan_status_updated = False
+            plan_status_error: str | None = None
+            plan_file_basename = schedule_plan_file_by_task.get(task_id)
+            if plans_dir and plan_file_basename:
+                # TASK-008 binding-finding fix: schedule-provided ``plan_file``
+                # is untrusted input (analyst output). Without basename
+                # validation, ``Path(plans_dir) / plan_file_basename`` would
+                # silently follow ``..`` segments and write outside
+                # ``plans_dir`` (path traversal). ``_is_valid_plan_file_basename``
+                # rejects ``/``, ``\``, ``..``, leading dot, NUL, and oversized
+                # values; combined with ``Path(plans_dir).resolve()`` +
+                # containment check below it forms defense in depth.
+                if not _is_valid_plan_file_basename(plan_file_basename):
+                    plan_status_error = (
+                        f"schedule-provided plan_file "
+                        f"{plan_file_basename!r} failed basename "
+                        f"validation; refusing to construct a path under "
+                        f"{plans_dir!s} (path-traversal protection)"
+                    )
+                else:
+                    plans_dir_resolved = Path(plans_dir).resolve()
+                    plan_path = (
+                        plans_dir_resolved / Path(plan_file_basename).name
+                    ).resolve()
+                    # Defense in depth: resolved path must be contained
+                    # in resolved plans_dir. Catches cases the basename
+                    # validator might miss on exotic platforms.
+                    try:
+                        plan_path.relative_to(plans_dir_resolved)
+                    except ValueError:
+                        plan_status_error = (
+                            f"resolved plan_path {plan_path!s} is not "
+                            f"contained in {plans_dir_resolved!s}; "
+                            f"refusing write (path-traversal protection)"
+                        )
+                    else:
+                        try:
+                            plan_text = _load_text(plan_path)
+                            mutated, _prior = mutate_task_status(
+                                plan_text, task_id, "paused",
+                            )
+                            _atomic_write_text(plan_path, mutated)
+                            plan_status_updated = True
+                        except (FileNotFoundError, OSError, ValueError) as e:
+                            plan_status_error = (
+                                f"mutate_task_status failed: {e}"
+                            )
+            elif plan_file_basename and not plans_dir:
+                plan_status_error = (
+                    "plans_dir not provided; cannot resolve "
+                    f"{plan_file_basename!r} for status mutation"
+                )
+            elif not plan_file_basename:
+                plan_status_error = (
+                    "task plan_file not found in schedule; "
+                    "cannot mutate plan status"
+                )
+            entry: dict = {
+                "task_id": task_id,
+                "outcome": "scope_violation_paused",
+                "reconciled_tracked": [],
+                "reconciled_untracked": [],
+                "reconcile_kept_tracked": kept_tracked,
+                "reconcile_kept_untracked": kept_untracked,
+                "skipped_protected": sorted(skipped),
+                "residual_dirty": [],
+                "error": None,
+                "out_of_scope_tracked": actionable_tracked,
+                "out_of_scope_untracked": actionable_untracked,
+                "awaiting_user_options": list(OUT_OF_SCOPE_PAUSE_OPTIONS),
+                "plan_status_updated": plan_status_updated,
+            }
+            if plan_status_error:
+                entry["plan_status_error"] = plan_status_error
+            if pause_warning:
+                entry["warning"] = pause_warning
+            results.append(entry)
+            continue
 
         errors: list[str] = []
         cwd = Path(repo_root)
@@ -3724,15 +3856,27 @@ def cmd_reconcile_batch(args: argparse.Namespace) -> None:
         _die(args, {"error": "envelopes payload must be a JSON array"})
 
     schedule_file = getattr(args, "schedule_file", None)
-    results = reconcile_batch(
-        envelopes,
-        args.repo_root,
-        schedule_file=schedule_file,
-    )
+    plans_dir = getattr(args, "plans_dir", None)
+    out_of_scope_policy = getattr(args, "out_of_scope_policy", "pause")
+    try:
+        results = reconcile_batch(
+            envelopes,
+            args.repo_root,
+            schedule_file=schedule_file,
+            out_of_scope_policy=out_of_scope_policy,
+            plans_dir=plans_dir,
+        )
+    except ValueError as e:
+        _die(args, {"error": str(e)})
     any_failed = any(r["outcome"] == "reconciliation_failed" for r in results)
+    any_paused = any(r["outcome"] == "scope_violation_paused" for r in results)
     _emit(
         args,
-        {"results": results, "reconciliation_failed": any_failed},
+        {
+            "results": results,
+            "reconciliation_failed": any_failed,
+            "paused": any_paused,
+        },
         exit_code=1 if any_failed else 0,
     )
 
@@ -10776,6 +10920,38 @@ def build_parser() -> argparse.ArgumentParser:
             "normalised Files: list and PRESERVES envelope entries that "
             "are in fact in scope (wrapper false-positives). Without it, "
             "the function falls back to restore-everything behaviour."
+        ),
+    )
+    # TASK-008 (G10): default `pause` policy hands control back to the
+    # user with four options (widen-plan, in-place-fix, keep-and-commit,
+    # revert) instead of silently restoring out-of-scope writes. Legacy
+    # behaviour stays available via `reconcile-and-revert` for the
+    # cron/CI case (selected when Phase 0's `--unattended-revert-policy`
+    # is `fail-fast` or `preserve-only`).
+    p_rec.add_argument(
+        "--out-of-scope-policy",
+        required=False,
+        default="pause",
+        choices=list(ALLOWED_OUT_OF_SCOPE_POLICIES),
+        help=(
+            "How to handle envelopes with out_of_scope_observed=true. "
+            "`pause` (default): mark the task `paused` and return four "
+            "options to the user; do NOT touch the working tree. "
+            "`reconcile-and-revert`: legacy behaviour (restore tracked, "
+            "unlink untracked) — used in cron/CI when "
+            "--unattended-revert-policy is fail-fast or preserve-only."
+        ),
+    )
+    p_rec.add_argument(
+        "--plans-dir",
+        required=False,
+        default=None,
+        help=(
+            "Directory containing the per-task plan markdown files. "
+            "Used by --out-of-scope-policy=pause to resolve each task's "
+            "plan_file (from the schedule) and mutate its status to "
+            "`paused`. Without it, the pause path returns the four "
+            "options but leaves plan-status mutation to the caller."
         ),
     )
     _add_json(p_rec)
