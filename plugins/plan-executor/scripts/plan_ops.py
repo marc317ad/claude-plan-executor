@@ -2869,7 +2869,10 @@ def _build_tasks(plans_dir: Path) -> dict:
                 "plan_file": child_name,
                 "message": (
                     f"{child_name} carries {len(h3_blocks)} `### TASK-NNN:` "
-                    "headings; only the matching one is parsed"
+                    "headings; only the matching one is parsed. This chunk "
+                    "MUST be dispatched with `target_task_id` set so the "
+                    "renderer auto-injects the \"Implement specifically "
+                    "`### TASK-NNN:`\" disambiguator (TASK-007)."
                 ),
             })
         raw_id, title, block_text, source_line = matched
@@ -9667,6 +9670,95 @@ def resolve_read_targets(text: str) -> dict:
             })
 
     return {"reads": reads, "symbols": symbols, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# TASK-007: target_task_id auto-injection helper. Used by the Codex wrapper
+# (`plan_codex_dispatch.py:render_implement_prompt` / `render_review_prompt`)
+# AND by the Claude orchestrator's dispatch-template render path. Both
+# entry points share this single function so the heading-count condition
+# and the emitted prefix line stay in lockstep.
+# ---------------------------------------------------------------------------
+
+
+# Pattern matches H3 task headings of the form `### TASK-NNN:` or
+# `### TASK-NNNA:` (numeric id with optional single-letter suffix). Mirrors
+# the grammar used elsewhere in this file (see ``_TASK_HEADING_RE`` etc.).
+_TARGET_TASK_HEADING_COUNT_RE = re.compile(
+    r"^### TASK-\d+[A-Z]?:", re.MULTILINE,
+)
+
+
+class MissingTargetTaskIdError(ValueError):
+    """Raised when a child plan file declares >1 `### TASK-NNN:` H3 heading
+    but the dispatcher did not supply ``target_task_id``. The orchestrator
+    MUST always pass ``target_task_id`` for shared-file children — the
+    error envelope identifies the offending file so the operator can fix
+    the dispatch call site rather than guess at intent (TASK-007)."""
+
+    def __init__(self, plan_file: str | None, heading_count: int) -> None:
+        self.plan_file = plan_file
+        self.heading_count = heading_count
+        label = plan_file if plan_file else "<unknown plan file>"
+        super().__init__(
+            f"target_task_id is required: {label} declares "
+            f"{heading_count} `### TASK-NNN:` H3 headings, but no "
+            "target_task_id was provided. Pass --target-task-id to the "
+            "wrapper (or the equivalent dispatch field) so the agent reads "
+            "the right block."
+        )
+
+
+def count_task_headings(plan_text: str) -> int:
+    """Count `### TASK-NNN:` H3 headings in a plan-file's text. Cheap
+    line-prefix scan; no AST. Used to decide whether the dispatcher must
+    auto-inject the "Implement specifically `### TASK-NNN:`" line
+    (TASK-007). Returns 0 for an empty/None text."""
+    if not plan_text:
+        return 0
+    return len(_TARGET_TASK_HEADING_COUNT_RE.findall(plan_text))
+
+
+def render_target_task_id_injection(
+    plan_text: str,
+    target_task_id: str | None,
+    *,
+    plan_file: str | None = None,
+) -> str:
+    """Return the auto-injection prefix line for a dispatch prompt.
+
+    Rules (TASK-007):
+
+    - >1 heading + target_task_id set  →  emit
+      ``"Implement specifically `### TASK-NNN:` ...\\n\\n"`` so the
+      dispatched agent reads the correct block of a shared-file child.
+    - 1 heading + target_task_id set   →  emit ``""`` (the heading is
+      unambiguous; the injection would only add noise).
+    - 0 or 1 heading + target_task_id None  →  emit ``""`` (single-task
+      plans render unchanged; backward-compat).
+    - >1 heading + target_task_id None  →  raise
+      :class:`MissingTargetTaskIdError`. The orchestrator is contractually
+      required to supply ``target_task_id`` for shared-file children; a
+      missing value is a bug at the dispatch call site, not a runtime
+      ambiguity to paper over.
+
+    The returned string (when non-empty) ends with a trailing blank line
+    so callers can prepend it unconditionally to an existing prompt body
+    without bookkeeping. Returns ``""`` when no injection is warranted.
+    """
+    heading_count = count_task_headings(plan_text)
+    if target_task_id is None:
+        if heading_count > 1:
+            raise MissingTargetTaskIdError(plan_file, heading_count)
+        return ""
+    if heading_count <= 1:
+        return ""
+    normalized = _normalize_task_id(target_task_id)
+    return (
+        f"Implement specifically `### TASK-{normalized}:` (this child "
+        f"plan file declares {heading_count} `### TASK-NNN:` H3 headings; "
+        "read only the matching block).\n\n"
+    )
 
 
 def render_pre_read_excerpts(resolved: dict) -> str:

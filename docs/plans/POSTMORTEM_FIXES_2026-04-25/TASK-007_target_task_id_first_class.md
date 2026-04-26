@@ -45,7 +45,7 @@ Eliminate the manual prompt augmentation that the orchestrator performed nine ti
 
 ### TASK-007: target_task_id first-class field
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit — seven sections)

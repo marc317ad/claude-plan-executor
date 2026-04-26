@@ -290,7 +290,14 @@ def parse_task_block(plan_text: str, task_id_arg: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def render_implement_prompt(task: dict, context: str) -> str:
+def render_implement_prompt(
+    task: dict,
+    context: str,
+    *,
+    plan_text: str | None = None,
+    target_task_id: str | None = None,
+    plan_file: str | None = None,
+) -> str:
     allowed = [normalize_file_path(f) for f in task["files"]]
     impl_notes = task.get("implementation_notes") or (
         "None provided -- follow existing patterns in the target files."
@@ -306,7 +313,19 @@ def render_implement_prompt(task: dict, context: str) -> str:
         resolved = plan_ops.resolve_read_targets(raw_block)
         pre_read_block = plan_ops.render_pre_read_excerpts(resolved)
     pre_read_prefix = f"{pre_read_block}\n" if pre_read_block else ""
+    # TASK-007: auto-inject "Implement specifically `### TASK-NNN:`" as
+    # the first instruction line when the resolved child plan file
+    # declares >1 `### TASK-NNN:` H3 heading. The single shared helper
+    # in `plan_ops` raises MissingTargetTaskIdError when target_task_id
+    # is None AND >1 heading is declared (the orchestrator is required
+    # to supply target_task_id for shared-file children).
+    target_injection = plan_ops.render_target_task_id_injection(
+        plan_text or "",
+        target_task_id,
+        plan_file=plan_file,
+    ) if plan_text is not None else ""
     return (
+        f"{target_injection}"
         f"{pre_read_prefix}"
         f"Implement TASK-{task['task_id']} from the project plan.\n\n"
         f"Objective: {task['title']}\n\n"
@@ -456,6 +475,10 @@ def render_review_prompt(
     diff: str,
     review_focus: str,
     review_files: list[str] | None = None,
+    *,
+    plan_text: str | None = None,
+    target_task_id: str | None = None,
+    plan_file: str | None = None,
 ) -> str:
     allowed = [normalize_file_path(f) for f in task["files"]]
     prompt_files = review_files if review_files is not None else allowed
@@ -474,7 +497,16 @@ def render_review_prompt(
         resolved = plan_ops.resolve_read_targets(raw_block)
         pre_read_block = plan_ops.render_pre_read_excerpts(resolved)
     pre_read_prefix = f"{pre_read_block}\n" if pre_read_block else ""
+    # TASK-007: shared auto-injection rule (same helper as the implement
+    # path) — see `render_target_task_id_injection` for the heading-count
+    # condition + structured-error contract.
+    target_injection = plan_ops.render_target_task_id_injection(
+        plan_text or "",
+        target_task_id,
+        plan_file=plan_file,
+    ) if plan_text is not None else ""
     return (
+        f"{target_injection}"
         f"{pre_read_prefix}"
         f"Review the implementation of TASK-{task['task_id']} in this repository.\n\n"
         f"Task objective: {task['title']}\n\n"
@@ -1149,7 +1181,25 @@ def cmd_implement(args) -> int:
         return 1
 
     context = parse_plan_context(plan_text)
-    prompt = render_implement_prompt(task, context)
+    # TASK-007: forward --target-task-id so the renderer auto-injects the
+    # "Implement specifically `### TASK-NNN:`" line when the child plan
+    # file carries >1 H3 heading. ``getattr`` keeps the attribute optional
+    # for tests that build argparse Namespaces by hand.
+    target_task_id = getattr(args, "target_task_id", None)
+    try:
+        prompt = render_implement_prompt(
+            task, context,
+            plan_text=plan_text,
+            target_task_id=target_task_id,
+            plan_file=str(plan_path),
+        )
+    except plan_ops.MissingTargetTaskIdError as e:
+        emit(make_envelope(
+            args.task_id, "implement", "failure",
+            error=f"Missing target_task_id: {e}",
+            extra={"plan_file": e.plan_file, "heading_count": e.heading_count},
+        ))
+        return 1
     allowed_files = [normalize_file_path(f) for f in task["files"]]
 
     if args.dry_run:
@@ -1462,7 +1512,22 @@ def cmd_review(args) -> int:
         effective_timeout = args.timeout
 
     diff = git_diff_for_files(repo_root, review_files, include_untracked=True)
-    prompt = render_review_prompt(task, diff, args.review_focus, review_files)
+    # TASK-007: forward --target-task-id (shared rule with cmd_implement).
+    target_task_id = getattr(args, "target_task_id", None)
+    try:
+        prompt = render_review_prompt(
+            task, diff, args.review_focus, review_files,
+            plan_text=plan_text,
+            target_task_id=target_task_id,
+            plan_file=str(plan_path),
+        )
+    except plan_ops.MissingTargetTaskIdError as e:
+        emit(make_envelope(
+            args.task_id, "review", "failure",
+            error=f"Missing target_task_id: {e}",
+            extra={"plan_file": e.plan_file, "heading_count": e.heading_count},
+        ))
+        return 1
 
     if args.dry_run:
         emit({
@@ -1885,6 +1950,24 @@ def _build_parser() -> argparse.ArgumentParser:
                              "max(180, 30 * len(files)) for review). "
                              "Pass an explicit value to override the "
                              "wrapper-derived default."))
+        # TASK-007: first-class target_task_id field for shared-file
+        # children. When the resolved child plan file declares >1
+        # `### TASK-NNN:` H3 heading, the renderer auto-injects the
+        # "Implement specifically `### TASK-NNN:`" disambiguator line.
+        # When the file declares exactly 1 heading the field is a no-op.
+        # When the file declares >1 heading AND this flag is absent, the
+        # renderer raises a structured MissingTargetTaskIdError.
+        p.add_argument(
+            "--target-task-id", default=None,
+            help=(
+                "Disambiguator for shared-file children. When the child "
+                "plan file carries >1 `### TASK-NNN:` H3 heading, the "
+                "renderer auto-injects 'Implement specifically `### "
+                "TASK-NNN:`' as the first instruction line. Required "
+                "for shared-file children (omitting it when >1 heading "
+                "is declared raises a structured renderer error)."
+            ),
+        )
 
     impl = subparsers.add_parser(
         "implement", help="Dispatch an implementation task to Codex",

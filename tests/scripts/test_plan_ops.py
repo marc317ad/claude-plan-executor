@@ -20129,3 +20129,155 @@ class TestIndexClosure:
         assert res["closure"] == [], res
         assert res["errors"], res
         assert res["errors"][0]["code"] == "index-not-found", res
+
+
+# ---------------------------------------------------------------------------
+# TASK-007 — target_task_id first-class field for shared-file children.
+# Tests cover (a) >1-heading + target_task_id → injection line emitted,
+# (b) 1-heading + target_task_id → no injection, (c) >1-heading + None
+# target_task_id → MissingTargetTaskIdError, (d) backward compat:
+# single-task plan files render unchanged, plus the build-tasks
+# `extra-task-heading` warning text now names target_task_id as the
+# disambiguator.
+# ---------------------------------------------------------------------------
+
+
+class TestTargetTaskIdInjection:
+    """Direct coverage of plan_ops.render_target_task_id_injection +
+    count_task_headings + MissingTargetTaskIdError. The Codex wrapper
+    and the orchestrator-side Claude render path both call this helper,
+    so testing it once here is the single source of truth for the rule."""
+
+    SHARED = (
+        "# x\n\n"
+        "## Tasks\n\n"
+        "### TASK-027A: a\n\nbody-a\n\n"
+        "### TASK-027B: b\n\nbody-b\n\n"
+        "### TASK-027C: c\n\nbody-c\n"
+    )
+    SOLO = (
+        "# x\n\n"
+        "## Tasks\n\n"
+        "### TASK-001: only\n\nbody\n"
+    )
+
+    def test_count_task_headings_multi(self) -> None:
+        assert plan_ops.count_task_headings(self.SHARED) == 3
+
+    def test_count_task_headings_single(self) -> None:
+        assert plan_ops.count_task_headings(self.SOLO) == 1
+
+    def test_count_task_headings_empty(self) -> None:
+        assert plan_ops.count_task_headings("") == 0
+        assert plan_ops.count_task_headings(None) == 0  # type: ignore[arg-type]
+
+    def test_target_task_id_multi_heading_emits_injection_line(self) -> None:
+        out = plan_ops.render_target_task_id_injection(
+            self.SHARED, "027B", plan_file="shared.md",
+        )
+        assert out.startswith("Implement specifically `### TASK-027B:`"), out
+        # Trailing blank line so callers can prepend unconditionally.
+        assert out.endswith("\n\n"), repr(out[-5:])
+        # The 3-heading count surfaces in the line so operators reading
+        # the dispatched prompt can tell why the line was injected.
+        assert "3 `### TASK-NNN:` H3 headings" in out, out
+
+    def test_target_task_id_single_heading_returns_empty(self) -> None:
+        out = plan_ops.render_target_task_id_injection(
+            self.SOLO, "001", plan_file="solo.md",
+        )
+        assert out == "", repr(out)
+
+    def test_target_task_id_none_single_heading_returns_empty(self) -> None:
+        # Backward-compat (d): pre-TASK-007 dispatchers passed no
+        # target_task_id; single-task plan files MUST render unchanged.
+        out = plan_ops.render_target_task_id_injection(
+            self.SOLO, None, plan_file="solo.md",
+        )
+        assert out == "", repr(out)
+
+    def test_target_task_id_none_multi_heading_raises(self) -> None:
+        try:
+            plan_ops.render_target_task_id_injection(
+                self.SHARED, None, plan_file="shared.md",
+            )
+        except plan_ops.MissingTargetTaskIdError as e:
+            assert e.plan_file == "shared.md"
+            assert e.heading_count == 3
+            # Error message identifies the offending file and names
+            # `target_task_id` so the operator can fix the dispatch
+            # call site.
+            msg = str(e)
+            assert "shared.md" in msg
+            assert "target_task_id" in msg
+        else:
+            raise AssertionError(
+                "MissingTargetTaskIdError not raised for >1 heading + None"
+            )
+
+    def test_target_task_id_normalizes_id(self) -> None:
+        # `_normalize_task_id` accepts `1`, `001`, `TASK-001` etc. The
+        # injection line MUST render the canonical form.
+        out = plan_ops.render_target_task_id_injection(
+            self.SHARED, "TASK-027B", plan_file="shared.md",
+        )
+        assert "TASK-027B" in out, out
+
+
+class TestExtraTaskHeadingWarningNamesTargetTaskId:
+    """`build-tasks` warning text for the `extra-task-heading` warning
+    code MUST name `target_task_id` as the disambiguator the orchestrator
+    is required to set on dispatches for shared-file children (TASK-007)."""
+
+    def test_warning_message_names_target_task_id(self, tmp_path: Path) -> None:
+        plans_dir = tmp_path / "plan_dir"
+        plans_dir.mkdir()
+        # 00_INDEX.json roster pointing at one chunk file that carries
+        # multiple `### TASK-NNN:` H3 headings (shared-file siblings).
+        roster = {
+            "schema_version": 1,
+            "chunks": [
+                {
+                    "task_id": "027A",
+                    "file": "TASK-027_shared.md",
+                    "depends_on": [],
+                    "status": "Pending",
+                    "superseded_by": [],
+                },
+            ],
+        }
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps(roster), encoding="utf-8",
+        )
+        (plans_dir / "TASK-027_shared.md").write_text(
+            "# Shared\n\n"
+            "## Context\n\nC.\n\n"
+            "## Tasks\n\n"
+            "### TASK-027A: a\n\n"
+            "- **Status:** pending\n"
+            "- **Files:**\n  - `foo.py`\n"
+            "- **Test command:** `pytest`\n"
+            "- **Acceptance criteria:**\n  - works\n"
+            "- **Dependencies:** []\n\n"
+            "**Description:**\nDo a.\n\n"
+            "### TASK-027B: b\n\n"
+            "- **Status:** pending\n"
+            "- **Files:**\n  - `bar.py`\n"
+            "- **Test command:** `pytest`\n"
+            "- **Acceptance criteria:**\n  - works\n"
+            "- **Dependencies:** []\n\n"
+            "**Description:**\nDo b.\n",
+            encoding="utf-8",
+        )
+
+        cp = _run(
+            "build-tasks", "--plans-dir", str(plans_dir), "--json",
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        res = _parse_json(cp)
+        warnings = res.get("warnings", [])
+        extra = [w for w in warnings if w.get("code") == "extra-task-heading"]
+        assert extra, f"expected extra-task-heading warning, got {warnings}"
+        msg = extra[0]["message"]
+        assert "target_task_id" in msg, msg
+        assert "TASK-027" in msg or "shared.md" in msg or "TASK-NNN" in msg, msg

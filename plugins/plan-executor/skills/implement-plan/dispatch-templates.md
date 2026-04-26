@@ -6,6 +6,18 @@ All Agent dispatches include the **"You do NOT have the Agent tool"** constraint
 
 **Python interpolation.** Templates reference `{{python_path}}` as a text-level placeholder. The orchestrator substitutes the absolute interpreter path from `plan_ops.py preflight --json`'s `python_path` field at dispatch time (see SKILL.md §"Python interpreter resolution"). Do NOT hardcode a specific interpreter path here; the resolver in `plan_ops.py:_resolve_python` is the single source of truth.
 
+## `target_task_id` auto-injection rule (TASK-007, shared across templates)
+
+`target_task_id` is a **first-class dispatch field** for every section that names a child plan file (Phase A-single, Phase B, Phase D-Codex, Phase D-Claude, Phase D.5, Phase B-rework, Phase B-narrow-remediation). The renderer (Codex wrapper `plan_codex_dispatch.py:render_implement_prompt` / `render_review_prompt`, AND the orchestrator-side Claude render path) MUST apply this rule uniformly:
+
+1. **Detect heading count.** Count `### TASK-NNN:` H3 headings in the resolved child plan file via `plan_ops.count_task_headings(plan_text)`.
+2. **>1 heading + `target_task_id` set →** emit ``Implement specifically `### TASK-NNN:` (this child plan file declares N `### TASK-NNN:` H3 headings; read only the matching block).`` as the **first instruction line** of the dispatch prompt (before any pre-read excerpts and before the implement / review body).
+3. **1 heading + `target_task_id` set →** emit nothing extra. The heading is unambiguous; the injection would only add noise.
+4. **>1 heading + `target_task_id` is `None` →** the renderer raises `plan_ops.MissingTargetTaskIdError`. The error envelope identifies the offending plan file. The orchestrator is contractually required to supply `target_task_id` for shared-file children — a missing value is a bug at the dispatch call site, not a runtime ambiguity for the agent to resolve.
+5. **0 or 1 heading + `target_task_id` is `None` →** emit nothing (single-task plan files render unchanged; backward compatible with pre-TASK-007 dispatchers).
+
+The single shared helper `plan_ops.render_target_task_id_injection(plan_text, target_task_id, plan_file=...)` encodes all four cases. Both the Codex wrapper and the Claude orchestrator-side render path call it; the rule stays in lockstep across the two render mechanisms. `build-tasks` emits an `extra-task-heading` warning whose message names `target_task_id` as the disambiguator the orchestrator MUST set on the chunk's dispatches.
+
 ## Phase A-single — plan-analyst per-child classifier (default)
 
 Default Phase 1 invocation as of the per-task-dispatch refactor (v2). The orchestrator emits one dispatch per child file that did NOT declare `**Agent:**` in its source markdown; when every child already declares an agent, Phase 1 skips this template entirely (see SKILL.md §Analysis (Phase 1) step 2). The orchestrator emits N of these dispatches as **N discrete `Agent` tool-use blocks inside a single assistant turn** — not as an array-prompt wrapped inside one Agent call.
@@ -14,7 +26,7 @@ Agent dispatch, `subagent_type: "plan-analyst"`, `model: "sonnet"` (narrower sco
 
 > Classify exactly one task from the plan at `<absolute child plan path>`. Repo root: `<repo_root>`.
 >
-> Read the child plan file verbatim (it carries a single `### TASK-NNN:` H3 heading plus the standard metadata block — Status, Priority, Files, Dependencies, Test command, Acceptance criteria, Description, Implementation notes, Reversion guidance). Use the `claude` vs `codex` heuristics from your agent spec's classification rubric (scope ≤30 lines and ≤3 files plus a concrete test command → codex; multi-file coordination, async/routing/API contract changes, new module creation, priority `critical`, `Test command: none`, or underspecified acceptance criteria → claude). Do NOT emit a schedule, gaps, risks, or a batch table.
+> Read the child plan file verbatim (it typically carries a single `### TASK-NNN:` H3 heading plus the standard metadata block — Status, Priority, Files, Dependencies, Test command, Acceptance criteria, Description, Implementation notes, Reversion guidance — but **may carry >1 H3 heading** when several sibling sub-tasks share a single child file; in that case the orchestrator passes `target_task_id` as a first-class dispatch field and the renderer auto-injects an "Implement specifically `### TASK-NNN:`" first-instruction line per the §`target_task_id` auto-injection rule above). Use the `claude` vs `codex` heuristics from your agent spec's classification rubric (scope ≤30 lines and ≤3 files plus a concrete test command → codex; multi-file coordination, async/routing/API contract changes, new module creation, priority `critical`, `Test command: none`, or underspecified acceptance criteria → claude). Do NOT emit a schedule, gaps, risks, or a batch table.
 >
 > You are classifying ONE task — return only the minimal JSON below. Do not re-validate structure, do not compute batches, do not surface cross-task gaps (`compute-schedule` handles DAG + file-disjointness downstream).
 >
@@ -366,6 +378,8 @@ The orchestrator pipes the triage subagent's markdown report through `parse-plan
 
 ## Phase B — plan-implementer dispatch (Claude tier)
 
+**`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading (shared-file siblings), the orchestrator's render path prepends ``Implement specifically `### TASK-NNN:` ...`` as the first instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting `target_task_id` for a >1-heading file is a render-time error.
+
 **Pre-read excerpts (TASK-009).** When the task block declares `**Read targets:**` (line ranges) or `**Symbol targets:**` (symbol extraction) optional fields, the orchestrator resolves them up-front and prepends a `## Pre-read excerpts` section to the dispatch prompt. The resolution helper:
 
 ```
@@ -419,14 +433,19 @@ Bash command template — orchestrator issues this directly, wrapper fully owns 
 {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement \
   --plan-file <absolute plan path> \
   --task-id <NNN> \
-  --repo-root <absolute repo root>
+  --repo-root <absolute repo root> \
+  [--target-task-id <NNN>]   # required when child plan declares >1 `### TASK-NNN:` H3 heading (TASK-007)
 ```
+
+**`target_task_id` (TASK-007).** First-class dispatch field for shared-file children. The wrapper's `render_implement_prompt` calls `plan_ops.render_target_task_id_injection(...)` and prepends the disambiguator line per §`target_task_id` auto-injection rule. Single-heading child files render unchanged; omitting the flag for a >1-heading file emits a `failure` envelope with a `MissingTargetTaskIdError`-derived message.
 
 The wrapper derives its internal timeout from `len(task["files"])` per the implement formula in **SKILL.md §Bash-call idioms** (`max(300s, 60 * len(files))`); pass `--timeout N` only when the operator has a concrete reason to override. The wrapper captures a pre-dispatch baseline snapshot immediately before invoking Codex and cleans up only the delta against it (plus a protected-path allowlist) — never repo-wide. The wrapper emits a single JSON envelope on stdout with `outcome ∈ {success, failure, timeout, parse_error, scope_violation, dry_run}`; see `scripts/plan_codex_dispatch.py` for the full schema. The envelope carries `effective_timeout: int` reporting the cap actually used, and on `outcome: "timeout"` it carries `baseline_error: str | null` capturing the `_snapshot_baseline` failure message (truncated to 200 chars) when baseline capture failed. Orchestrator treats any outcome ≠ `success` as a fallback trigger (fallback = re-dispatch to Claude via the Phase B template above).
 
 **Pre-read excerpts (TASK-009).** The Codex wrapper auto-resolves `**Read targets:**` / `**Symbol targets:**` from the task block and embeds the rendered `## Pre-read excerpts` section at the top of Codex's prompt. No orchestrator-side templating is required; the excerpts surface inside the wrapper's prompt construction in `render_implement_prompt`. The same auto-resolution runs for `Phase D-Codex` reviews via `render_review_prompt`.
 
 ## Phase D-Codex — review via wrapper (reviews Claude-implemented work)
+
+**`target_task_id` (TASK-007).** Pass `--target-task-id <NNN>` to the wrapper for shared-file children (child plan declares >1 `### TASK-NNN:` H3 heading). The wrapper's `render_review_prompt` calls `plan_ops.render_target_task_id_injection(plan_text, target_task_id, plan_file=...)` and prepends the disambiguator line per §`target_task_id` auto-injection rule. Omitting `--target-task-id` when the child file carries >1 heading raises `MissingTargetTaskIdError` and the wrapper emits a `failure` envelope.
 
 Bash command template:
 
@@ -436,7 +455,8 @@ Bash command template:
   --task-id <NNN> \
   --repo-root <absolute repo root> \
   --files <comma-separated files_changed from implementer> \
-  --review-focus bugs
+  --review-focus bugs \
+  [--target-task-id <NNN>]   # required when child plan declares >1 `### TASK-NNN:` H3 heading (TASK-007)
 ```
 
 The wrapper derives its internal timeout from `len(files)` per the review formula in **SKILL.md §Bash-call idioms** (`max(180s, 30 * len(files))`); pass `--timeout N` only when the operator has a concrete reason to override. The envelope carries `effective_timeout: int` reporting the cap actually used. Wrapper captures a pre-dispatch baseline and performs delta-bounded post-review cleanup against it; any sandbox escape surfaces in `extra.sandbox_escape_detected` without changing outcome. Wrapper embeds the task-scoped diff (`git diff HEAD -- <files>`) — per-batch interleaving keeps that diff scoped exclusively to this task's work.
@@ -465,6 +485,8 @@ Wrapper returns `parsed.verdict ∈ {clean, minor-findings, needs-rework}` per `
 
 ## Phase D-Claude — code-reviewer on Codex work
 
+**`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading, the orchestrator's render path prepends ``Reviewing specifically `### TASK-NNN:` ...`` as the first instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting the field for a >1-heading file is a render-time error.
+
 **TASK-003 reuse callout.** This is now the **single Claude-cross-review template**, used for both (a) Codex-impl→Claude-review (the original purpose, retained verbatim) AND (b) Claude-impl→Claude-review under `claude_only=true` (new TASK-003 routing — see SKILL.md §Phase D.1's route-switch). The template body is reused as-is on both branches; the orchestrator picks the dispatch via `claude_only`. The verdict vocabulary `{ship, ship-with-fixes, needs-rework}` is preserved on both branches; Codex-side `{clean, minor-findings, needs-rework}` is NOT synthesized when this template is used as the `claude_only=true` cross-review path. No new agent file, no new template — `code-reviewer` (Sonnet) is the sole reviewer for both directions on the Claude path.
 
 Agent dispatch, `model: "sonnet"` (explicit v1 choice — see Open risks 3):
@@ -488,6 +510,8 @@ Agent dispatch, `model: "sonnet"` (explicit v1 choice — see Open risks 3):
 The parallel-tree caveat is a deliberate divergence from design §10 line 889; mirrors `.claude/skills/fix-bugs/dispatch-templates.md` Phase D.1. Do not align back without updating both.
 
 ## Phase D.5 — code-reviewer third opinion (§8.4 escalation)
+
+**`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading, the orchestrator's render path prepends an "Adjudicate specifically `### TASK-NNN:`" first-instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting the field for a >1-heading file is a render-time error.
 
 Dispatched only when Codex reviewing a Claude-implemented task returns `needs-rework` AND the user did not pass `--codex-review-binding`. Agent dispatch, `model: "sonnet"`:
 
@@ -573,6 +597,8 @@ Per design §8.3 line 692: Claude re-implements, Codex re-reviews. One attempt.
 
 ## Phase B-rework — Bounded remediation retry (D.2a.5)
 
+**`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading, the orchestrator's render path prepends ``Apply the narrow remediation specifically to `### TASK-NNN:` ...`` as the first instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting the field for a >1-heading file is a render-time error.
+
 Dispatched only when Codex reviewing Claude-implemented work returns `needs-rework` AND the Phase D.5 third-opinion code-reviewer independently agreed (verdict `needs-rework`). Strictly one attempt. Use `Agent(subagent_type: "plan-implementer", model: "opus")`.
 
 Unlike Phase D.2b, reviewer findings ARE forwarded here — the risk of the implementer blindly doing whatever Codex said is mitigated because D.5 already confirmed the findings are load-bearing. Keep the forwarded prompt structured; do NOT paraphrase into a free-form "fix what Codex flagged".
@@ -622,6 +648,8 @@ Unlike Phase D.2b, reviewer findings ARE forwarded here — the risk of the impl
 After retry success, re-run Phase D-Codex (wrapper review) on the re-implementation. `clean | minor-findings` → D.3 commit with `--remediation-tag`. `needs-rework` on the re-review triggers the D.2a.5 awaiting-user pause (see SKILL.md §D.2a.5 step 6); the orchestrator does NOT call `fail-task`.
 
 ## Phase B-narrow-remediation — Narrow-remediation retry (D.2a.6)
+
+**`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading, the orchestrator's render path prepends ``Apply the narrow-remediation patch specifically to `### TASK-NNN:` ...`` as the first instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting the field for a >1-heading file is a render-time error.
 
 Dispatched only when Codex reviewing Claude-implemented work returns `needs-rework` AND the Phase D.5 third-opinion code-reviewer returned `partial-agreement` (findings split cleanly into load-bearing + dismissed buckets). Strictly one attempt. Use `Agent(subagent_type: "plan-remediator", model: "opus")` — a dedicated subagent role (not `plan-implementer`) so the touch-only-these-lines scope rule is structurally enforced by the agent's system prompt, and the retry is visible in the run log as a distinct dispatch.
 

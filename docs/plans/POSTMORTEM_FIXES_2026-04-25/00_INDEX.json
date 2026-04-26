@@ -78,7 +78,7 @@
         "005",
         "006"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Post-mortem Issue 7 \u2014 Phase A-single + Phase B + Phase D-* templates lack target_task_id for shared-file children; TASK-027A/B/C required manual prompt augmentation."
     },

@@ -1189,3 +1189,312 @@ def test_plan_review_dry_run_envelope_carries_effective_timeout(
     envelope = json.loads(out)
     assert rc == 0, envelope
     assert envelope["effective_timeout"] == 42, envelope
+
+
+# ---------------------------------------------------------------------------
+# TASK-007 — target_task_id first-class field for shared-file children.
+# Tests cover (a) >1-heading + target_task_id → injection, (b) 1-heading
+# + target_task_id → no injection, (c) >1-heading + None target_task_id →
+# structured renderer error, (d) backward compat: single-task plan files
+# render unchanged, (e) cmd_implement / cmd_review forward --target-task-id.
+# ---------------------------------------------------------------------------
+
+
+SHARED_FILE_PLAN = """# Shared-file plan
+
+## Context
+
+Three sibling sub-tasks share one child file (TASK-007 fixture).
+
+## Tasks
+
+### TASK-027A: first sibling
+
+- **Status:** pending
+- **Priority:** high
+- **Files:**
+  - `foo.py`
+- **Test command:** `pytest -q tests/test_foo.py`
+- **Acceptance criteria:**
+  - foo behaviour
+- **Dependencies:** []
+
+**Description:**
+Do the foo work.
+
+### TASK-027B: second sibling
+
+- **Status:** pending
+- **Priority:** high
+- **Files:**
+  - `bar.py`
+- **Test command:** `pytest -q tests/test_bar.py`
+- **Acceptance criteria:**
+  - bar behaviour
+- **Dependencies:** []
+
+**Description:**
+Do the bar work.
+
+### TASK-027C: third sibling
+
+- **Status:** pending
+- **Priority:** high
+- **Files:**
+  - `baz.py`
+- **Test command:** `pytest -q tests/test_baz.py`
+- **Acceptance criteria:**
+  - baz behaviour
+- **Dependencies:** []
+
+**Description:**
+Do the baz work.
+"""
+
+
+SINGLE_TASK_PLAN = """# Single-task plan
+
+## Context
+
+One task, one heading.
+
+## Tasks
+
+### TASK-001: only sibling
+
+- **Status:** pending
+- **Priority:** high
+- **Files:**
+  - `solo.py`
+- **Test command:** `pytest -q tests/test_solo.py`
+- **Acceptance criteria:**
+  - solo behaviour
+- **Dependencies:** []
+
+**Description:**
+Do the solo work.
+"""
+
+
+def test_target_task_id_render_implement_prompt_injects_when_multi_heading(
+    tmp_path,
+):
+    """(a) >1 heading + target_task_id → "Implement specifically `### TASK-NNN:`"
+    is the FIRST instruction line of the rendered prompt."""
+    plan_path = tmp_path / "shared.md"
+    plan_path.write_text(SHARED_FILE_PLAN, encoding="utf-8")
+    plan_text = plan_path.read_text(encoding="utf-8")
+    task = wrapper.parse_task_block(plan_text, "027B")
+    prompt = wrapper.render_implement_prompt(
+        task,
+        context="ctx",
+        plan_text=plan_text,
+        target_task_id="027B",
+        plan_file=str(plan_path),
+    )
+    # The injection MUST be the first non-empty content of the prompt
+    # (no pre-read excerpts in this fixture, so it's literally line 0).
+    assert prompt.startswith("Implement specifically `### TASK-027B:`"), prompt[:200]
+
+
+def test_target_task_id_render_implement_prompt_noop_when_single_heading(
+    tmp_path,
+):
+    """(b) 1 heading + target_task_id → no injection (the heading is
+    unambiguous; the line would only add noise)."""
+    plan_path = tmp_path / "solo.md"
+    plan_path.write_text(SINGLE_TASK_PLAN, encoding="utf-8")
+    plan_text = plan_path.read_text(encoding="utf-8")
+    task = wrapper.parse_task_block(plan_text, "001")
+    prompt = wrapper.render_implement_prompt(
+        task,
+        context="ctx",
+        plan_text=plan_text,
+        target_task_id="001",
+        plan_file=str(plan_path),
+    )
+    assert "Implement specifically `### TASK-" not in prompt, prompt[:200]
+    assert prompt.startswith("Implement TASK-001"), prompt[:200]
+
+
+def test_target_task_id_render_implement_prompt_raises_when_missing(
+    tmp_path,
+):
+    """(c) >1 heading + target_task_id is None → structured renderer
+    error naming the offending plan file."""
+    import plan_ops  # type: ignore  # imported via the wrapper's sys.path
+
+    plan_path = tmp_path / "shared.md"
+    plan_path.write_text(SHARED_FILE_PLAN, encoding="utf-8")
+    plan_text = plan_path.read_text(encoding="utf-8")
+    task = wrapper.parse_task_block(plan_text, "027B")
+    try:
+        wrapper.render_implement_prompt(
+            task,
+            context="ctx",
+            plan_text=plan_text,
+            target_task_id=None,
+            plan_file=str(plan_path),
+        )
+    except plan_ops.MissingTargetTaskIdError as e:
+        assert e.plan_file == str(plan_path)
+        assert e.heading_count == 3, e.heading_count
+        assert "target_task_id" in str(e)
+    else:
+        raise AssertionError(
+            "render_implement_prompt should have raised "
+            "MissingTargetTaskIdError for >1 heading + None target_task_id"
+        )
+
+
+def test_target_task_id_backward_compat_single_task_plan_renders_unchanged(
+    tmp_path,
+):
+    """(d) Backward compat: single-task plan files render unchanged when
+    target_task_id is None (the pre-TASK-007 default for non-shared
+    children). No injection, no error."""
+    plan_path = tmp_path / "solo.md"
+    plan_path.write_text(SINGLE_TASK_PLAN, encoding="utf-8")
+    plan_text = plan_path.read_text(encoding="utf-8")
+    task = wrapper.parse_task_block(plan_text, "001")
+    prompt_with_text = wrapper.render_implement_prompt(
+        task,
+        context="ctx",
+        plan_text=plan_text,
+        target_task_id=None,
+        plan_file=str(plan_path),
+    )
+    # Compare against the pre-TASK-007 call (no plan_text → no injection
+    # path engaged at all). Both must produce identical output.
+    prompt_legacy = wrapper.render_implement_prompt(task, "ctx")
+    assert prompt_with_text == prompt_legacy, (
+        "single-task render with target_task_id=None must equal the "
+        "pre-TASK-007 legacy render"
+    )
+    assert "Implement specifically" not in prompt_with_text
+
+
+def test_target_task_id_render_review_prompt_injects_when_multi_heading(
+    tmp_path,
+):
+    """The review render path applies the same auto-injection rule."""
+    plan_path = tmp_path / "shared.md"
+    plan_path.write_text(SHARED_FILE_PLAN, encoding="utf-8")
+    plan_text = plan_path.read_text(encoding="utf-8")
+    task = wrapper.parse_task_block(plan_text, "027C")
+    prompt = wrapper.render_review_prompt(
+        task,
+        diff="(diff)",
+        review_focus="bugs",
+        review_files=["baz.py"],
+        plan_text=plan_text,
+        target_task_id="027C",
+        plan_file=str(plan_path),
+    )
+    assert prompt.startswith("Implement specifically `### TASK-027C:`"), prompt[:200]
+
+
+def test_target_task_id_render_review_prompt_raises_when_missing(tmp_path):
+    """Review path also raises MissingTargetTaskIdError on a shared-file
+    child with target_task_id=None."""
+    import plan_ops  # type: ignore
+
+    plan_path = tmp_path / "shared.md"
+    plan_path.write_text(SHARED_FILE_PLAN, encoding="utf-8")
+    plan_text = plan_path.read_text(encoding="utf-8")
+    task = wrapper.parse_task_block(plan_text, "027A")
+    try:
+        wrapper.render_review_prompt(
+            task,
+            diff="(diff)",
+            review_focus="bugs",
+            review_files=["foo.py"],
+            plan_text=plan_text,
+            target_task_id=None,
+            plan_file=str(plan_path),
+        )
+    except plan_ops.MissingTargetTaskIdError:
+        pass
+    else:
+        raise AssertionError("review path must raise on missing target_task_id")
+
+
+def test_target_task_id_cmd_implement_dry_run_carries_injection(
+    tmp_path, capsys,
+):
+    """cmd_implement (--target-task-id=NNN, dry-run) emits the
+    auto-injection line at the top of prompt_preview when the plan file
+    declares >1 heading."""
+    plan_path = tmp_path / "shared.md"
+    plan_path.write_text(SHARED_FILE_PLAN, encoding="utf-8")
+    args = argparse.Namespace(
+        plan_file=str(plan_path),
+        task_id="027B",
+        repo_root=str(tmp_path),
+        json=True,
+        dry_run=True,
+        timeout=None,
+        target_task_id="027B",
+    )
+    rc = wrapper.cmd_implement(args)
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 0, envelope
+    preview = envelope["prompt_preview"]
+    assert preview.startswith("Implement specifically `### TASK-027B:`"), preview[:200]
+
+
+def test_target_task_id_cmd_implement_missing_emits_failure_envelope(
+    tmp_path, capsys,
+):
+    """cmd_implement on a >1-heading plan with no --target-task-id emits
+    a `failure` envelope referencing MissingTargetTaskIdError."""
+    plan_path = tmp_path / "shared.md"
+    plan_path.write_text(SHARED_FILE_PLAN, encoding="utf-8")
+    args = argparse.Namespace(
+        plan_file=str(plan_path),
+        task_id="027A",
+        repo_root=str(tmp_path),
+        json=True,
+        dry_run=True,
+        timeout=None,
+        target_task_id=None,
+    )
+    rc = wrapper.cmd_implement(args)
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 1, envelope
+    assert envelope["outcome"] == "failure"
+    assert "target_task_id" in envelope["error"]
+    assert envelope.get("heading_count") == 3
+    assert envelope.get("plan_file") == str(plan_path)
+
+
+def test_target_task_id_argparse_exposes_flag():
+    """`--target-task-id` is accepted on both `implement` and `review`
+    subcommands. argparse default is None (omission ≡ 'no override')."""
+    parser = wrapper._build_parser()
+    impl = parser.parse_args([
+        "implement",
+        "--plan-file", "/tmp/p.md",
+        "--task-id", "001",
+        "--repo-root", "/tmp",
+        "--target-task-id", "027B",
+    ])
+    assert impl.target_task_id == "027B"
+
+    rev = parser.parse_args([
+        "review",
+        "--plan-file", "/tmp/p.md",
+        "--task-id", "001",
+        "--repo-root", "/tmp",
+        "--target-task-id", "027C",
+    ])
+    assert rev.target_task_id == "027C"
+
+    # Default is None when the flag is omitted.
+    impl_default = parser.parse_args([
+        "implement",
+        "--plan-file", "/tmp/p.md",
+        "--task-id", "001",
+        "--repo-root", "/tmp",
+    ])
+    assert impl_default.target_task_id is None
