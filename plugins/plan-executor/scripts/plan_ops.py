@@ -3103,6 +3103,7 @@ def _build_tasks(
     # a `child-file-not-found` error and does NOT abort the remainder of
     # the roster walk — callers want every missing-child error up front.
     seen_ids: set[str] = set()
+    done_ids: set[str] = set()
     for i, chunk in enumerate(chunks):
         chunk_ref = f"chunks[{i}]"
         if not isinstance(chunk, dict):
@@ -3155,6 +3156,7 @@ def _build_tasks(
         # them to implementer agents and produce no-op or conflicting commits.
         chunk_status = chunk.get("status")
         if isinstance(chunk_status, str) and chunk_status.strip() == "Done":
+            done_ids.add(normalized_id)
             continue
         child_name = chunk.get("file")
         if not isinstance(child_name, str) or not child_name.strip():
@@ -3358,6 +3360,7 @@ def _build_tasks(
         # locate the child on disk via the full `child_name` above, but the
         # emitted `plan_file` must be the basename so `_is_valid_plan_file_basename`
         # accepts it.
+        deps = [d for d in deps if d not in done_ids]
         task_entry: dict[str, object] = {
             "id": normalized_id,
             "title": parsed.get("title") or title,

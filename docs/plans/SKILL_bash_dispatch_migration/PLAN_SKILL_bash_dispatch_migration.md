@@ -1,7 +1,7 @@
 # Plan: Migrate SKILL.md Claude-subagent dispatches to `plan_claude_dispatch.py`
 
 **Created:** 2026-04-20
-**Status:** in-progress
+**Status:** complete
 **Base branch:** main
 **Related:**
 - `plugins/plan-executor/skills/implement-plan/SKILL.md`
@@ -295,3 +295,11 @@ Starting SHA: `0f2153a8e9483e0cfec2af60485b4525fb7d0f29`  → Ending SHA: `f68db
 | 004 | claude | codex | clean | c83168b | Phase B implementer migration |
 | 005 | claude | claude | ship-with-fixes [disagreement] | f68dbfe | hand-D.5 dismissal (precedent + contradiction) |
 | 006 | claude | none | paused |  | partial: AC #7 byte-baseline + scope concerns |
+
+## Execution log — 20260426T142719 (success)
+
+Starting SHA: `69102e4167f658d23df213260fb78e9548f6e098`  → Ending SHA: `b40a2e1d450f16420d4deec4feb54c180079ab1f`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 007 | claude | codex | ship-with-fixes [remediation] | b40a2e1 | D.2a.5 bounded remediation + orchestrator hand-fix (D.5 anchor narrow finding) |

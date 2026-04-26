@@ -2,87 +2,6 @@
   "outcome": "needs-enrichment",
   "tasks": [
     {
-      "id": "004",
-      "title": "Migrate Phase B plan-implementer dispatches (default + B-rework + D.2b)",
-      "files": [
-        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (modify \u2014 Phase B default, Phase D.2a.5 rework, Phase D.2b role-swap dispatch paragraphs)",
-        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (modify \u2014 `PhaseB-default`, `PhaseB-rework`, `PhaseD.2b-role-swap` transport sections)",
-        "`tests/scripts/test_skill_dispatch_implementer.py` (create)"
-      ],
-      "dependencies": [],
-      "test_command": "venv/bin/pytest -q tests/scripts/test_skill_dispatch_implementer.py",
-      "priority": "high",
-      "plan_file": "PLAN_SKILL_bash_dispatch_migration.md",
-      "description": "Highest-volume dispatch surface. Three call sites in SKILL.md consolidate to one wrapper subcommand with a template selector \u2014 the consolidation is itself a context-cost reduction.",
-      "acceptance_criteria": [
-        "All three implementer call sites invoke `plan_claude_dispatch.py run --input <payload.json>` where `payload.agent=plan-implementer` and `payload.variant \u2208 {default, rework, role-swap}` carries the template selector. No new subcommand; variant is carried in the payload.",
-        "Implementer outcome vocabulary preserved verbatim: `success | partial | failed | plan-incorrect | blocked | malformed`. Validated via TASK-002 implementer schema. `malformed` must round-trip (it is the existing markdown-parser output for un-parseable reports; the wrapper path emits it when `result` schema-validation fails but transport succeeded).",
-        "Required report sections (`Plan adaptations`, `Concerns for reviewer`, `On-failure revert`) surface inside `.result.report` as structured arrays (`plan_adaptations[]`, `concerns_for_reviewer[]`, `on_failure_revert`). Orchestrator reads only those fields plus commit-scope metadata. It does NOT ingest `.result_raw_truncated` on success.",
-        "`scope.scope_violation_detected` and `scope.scope_misreport_detected` from v3 \u00a77 surface as top-level envelope fields and block commit per existing rules. Wrapper's delta-bounded cleanup is trusted \u2014 orchestrator does not re-compute file deltas.",
-        "D.2b role-swap retains its `retries_used.role_swap` semantics \u2014 budget check happens orchestrator-side before dispatch, not inside the wrapper.",
-        "Fixture tests cover: success commit, partial \u2192 reviewer notes, scope_violation \u2192 fail, plan-incorrect \u2192 halt, role-swap happy path, `malformed` outcome \u2192 fail-task with stage=`implement`.",
-        "**Envelope-size guard (load-bearing):** Test using `implementer_oversized.json` fixture (16 KB `result_raw_truncated` + fully-populated `result.report`) proves all required structured fields are reachable from the envelope even when the raw-result cap is hit. Full envelope size \u2264 80 KB under this fixture (measured: `len(json.dumps(envelope).encode())`).",
-        "`rg -n \"subagent_type.*plan-executor:plan-implementer\"` returns zero hits across `plugins/plan-executor/skills/implement-plan/`.",
-        "Transport/behavior separator `<!-- TRANSPORT BOUNDARY -->` added to each of the three implementer templates; agent-behavior text below the marker is byte-identical to pre-migration."
-      ],
-      "agent": "claude",
-      "classification_reason": "hand-classified: SKILL.md/dispatch-templates.md markdown surgery + plan_ops.py subcommand additions; Claude tier per prior run pattern"
-    },
-    {
-      "id": "005",
-      "title": "Migrate Phase D.2a.6 plan-remediator dispatch",
-      "files": [
-        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (modify \u2014 Phase D.2a.6 dispatch paragraph only)",
-        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (modify \u2014 `PhaseB-narrow-remediation` transport section)",
-        "`tests/scripts/test_skill_dispatch_remediator.py` (create)"
-      ],
-      "dependencies": [],
-      "test_command": "venv/bin/pytest -q tests/scripts/test_skill_dispatch_remediator.py",
-      "priority": "high",
-      "plan_file": "PLAN_SKILL_bash_dispatch_migration.md",
-      "description": "Narrowest remaining call site. Remediator's scope contract is the strictest, so its envelope is the most stateful \u2014 this task proves the wrapper can carry that state faithfully.",
-      "acceptance_criteria": [
-        "D.2a.6 dispatch invokes `plan_claude_dispatch.py run --input <payload.json>` where `payload.agent=plan-remediator` and payload carries `load_bearing_findings[]` and `dismissed_findings[]`.",
-        "Touch-only-these-lines contract preserved: envelope's `scope.declared_files_changed[]` and `scope.observed_delta_tracked[]` must both be subsets of the `(file, line)` union derived from `load_bearing_findings[]`. Wrapper's delta-bounded cleanup enforces file-level scope; line-level enforcement stays orchestrator-side against the existing diff-hunks helper in `plan_ops.py`.",
-        "Remediator outcome vocabulary preserved verbatim: `success | partial | failed | plan-incorrect | blocked | malformed | scope-violation`. The extra `scope-violation` outcome (not present in implementer) and `malformed` both round-trip and are validated by the TASK-002 remediator schema.",
-        "Mandatory \"Dismissed findings noted\" report section surfaces as `.result.report.dismissed_findings_acknowledged[]`; orchestrator's D.5 gate reads from there.",
-        "Fixture test uses `remediator_scope_violation.json` fixture from TASK-002 and asserts the orchestrator halts with `pause_awaiting_user` correctly.",
-        "`rg -n \"subagent_type.*plan-executor:plan-remediator\"` returns zero hits across `plugins/plan-executor/skills/implement-plan/`.",
-        "Transport/behavior separator `<!-- TRANSPORT BOUNDARY -->` added to the remediator template; agent-behavior text below the marker is byte-identical to pre-migration."
-      ],
-      "agent": "claude",
-      "classification_reason": "hand-classified: SKILL.md/dispatch-templates.md markdown surgery + plan_ops.py subcommand additions; Claude tier per prior run pattern"
-    },
-    {
-      "id": "006",
-      "title": "Error-handling consolidation + run-log event alignment",
-      "files": [
-        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (modify \u2014 collapse the per-dispatch error-handling sub-paragraphs into one shared section)",
-        "`plugins/plan-executor/scripts/plan_ops.py` (modify \u2014 `log-event` subcommand accepts new `claude_dispatch_*` event types if any were missing; **add new `claude-envelope-extract` subcommand** per AC #3 \u2014 input: envelope JSON on stdin; args: `--agent {plan-analyst|plan-implementer|plan-remediator}`; output: `{status, outcome, result, scope_violation, scope_misreport, error}`)",
-        "`docs/plans/SKILL_bash_dispatch_migration/run-log-events.md` (create \u2014 enumerate the event types)",
-        "`tests/scripts/test_claude_dispatch_run_log.py` (create)"
-      ],
-      "dependencies": [
-        "004",
-        "005"
-      ],
-      "test_command": "venv/bin/pytest -q tests/scripts/test_claude_dispatch_run_log.py",
-      "priority": "medium",
-      "plan_file": "PLAN_SKILL_bash_dispatch_migration.md",
-      "description": "Where the real context-win lands. Three dispatch sites sharing one error paragraph is the reason this migration reduces SKILL.md size, not just re-routes bytes.",
-      "acceptance_criteria": [
-        "SKILL.md has exactly one \"Dispatch error handling (Claude wrapper)\" paragraph shared by all three migrated call sites; per-site duplication from TASK-003..005 is removed.",
-        "v3 transport `status` values (`schema_invalid | timeout | denied | backend_error | budget_exhausted | depth_exceeded | manifest_invalid | input_invalid | scope_violation`) each map to a deterministic orchestrator action \u2014 commit-blocked for any non-`ok`, and the mapping is stated once, not per-site. Mapping table is in the shared paragraph.",
-        "An extraction shim is consolidated into a single `plan_ops.py claude-envelope-extract` subcommand (replaces the inline jq-style reads added in TASK-003/004/005). Input: envelope JSON on stdin; args: `--agent {plan-analyst|plan-implementer|plan-remediator}`. Output: `{status, outcome, result, scope_violation, scope_misreport, error}` \u2014 normalized across agents. Existing `parse-schedule` / markdown parsers are NOT modified; they continue to consume `result` sub-fields as before.",
-        "Run-log event types covered: `claude_dispatch_start`, `claude_dispatch_done`, `claude_dispatch_failed`. `log-event` accepts these as first-class event types (existing `run_start`/`implement_done`/etc unchanged).",
-        "Test replays a 3-dispatch sequence (analyst \u2192 implementer \u2192 remediator) and asserts the run-log has exactly the expected event ordering and payload shape.",
-        "No regression on existing run-log events (`run_start, implement_done, review_done, commit_done, failed, awaiting_user`).",
-        "After consolidation, the three migrated call sites in SKILL.md each shrink to ~6 lines (invoke + extract + outcome-switch); `wc -c` on SKILL.md shows a net reduction vs the pre-migration baseline (measured and recorded in run-log-events.md)."
-      ],
-      "agent": "claude",
-      "classification_reason": "hand-classified: SKILL.md/dispatch-templates.md markdown surgery + plan_ops.py subcommand additions; Claude tier per prior run pattern"
-    },
-    {
       "id": "007",
       "title": "E2E smoke + rollback documentation",
       "files": [
@@ -90,9 +9,7 @@
         "`tests/scripts/fixtures/claude_dispatch/e2e_plan.md` (create \u2014 minimal 2-task plan)",
         "`docs/plans/SKILL_bash_dispatch_migration/ROLLBACK.md` (create)"
       ],
-      "dependencies": [
-        "006"
-      ],
+      "dependencies": [],
       "test_command": "venv/bin/pytest -q tests/scripts/test_skill_dispatch_e2e.py",
       "priority": "high",
       "plan_file": "PLAN_SKILL_bash_dispatch_migration.md",
@@ -112,40 +29,6 @@
     {
       "index": 1,
       "task_ids": [
-        "004"
-      ],
-      "file_locks": [
-        "plugins/plan-executor/skills/implement-plan/SKILL.md",
-        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
-        "tests/scripts/test_skill_dispatch_implementer.py"
-      ]
-    },
-    {
-      "index": 2,
-      "task_ids": [
-        "005"
-      ],
-      "file_locks": [
-        "plugins/plan-executor/skills/implement-plan/SKILL.md",
-        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
-        "tests/scripts/test_skill_dispatch_remediator.py"
-      ]
-    },
-    {
-      "index": 3,
-      "task_ids": [
-        "006"
-      ],
-      "file_locks": [
-        "docs/plans/SKILL_bash_dispatch_migration/run-log-events.md",
-        "plugins/plan-executor/scripts/plan_ops.py",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md",
-        "tests/scripts/test_claude_dispatch_run_log.py"
-      ]
-    },
-    {
-      "index": 4,
-      "task_ids": [
         "007"
       ],
       "file_locks": [
@@ -156,24 +39,6 @@
     }
   ],
   "gaps": [
-    {
-      "task_id": "004",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_SKILL_bash_dispatch_migration.md carries 7 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
-    {
-      "task_id": "005",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_SKILL_bash_dispatch_migration.md carries 7 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
-    {
-      "task_id": "006",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_SKILL_bash_dispatch_migration.md carries 7 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
     {
       "task_id": "007",
       "type": "extra-task-heading",
