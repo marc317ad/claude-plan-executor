@@ -83,12 +83,12 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 - **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_claude_dispatch_canary.py -k canary`
 - **Acceptance criteria:**
-  1. Probe dispatches `plan-analyst` against a 2-task fixture plan via BOTH paths: (a) `Agent` tool (captured from an orchestrator transcript fixture) and (b) `plan_claude_dispatch.py run --input <payload with agent=plan-analyst>` directly from Bash.
-  2. Parsed schedules are semantically equal (`tasks[*].id`, `batches[*].index`, outcome field). Byte equality not required.
-  3. Envelope transport `status == "ok"`; `result.outcome ∈ {valid, needs-enrichment, invalid}`; `result.schedule` validates against the analyst output schema.
-  4. Envelope size (full stdout JSON) ≤ 64 KB (sanity cap on context-recovery claim).
-  5. `probe_results.md` records: timing delta, envelope size delta vs markdown-report size, any behavioral divergence (and whether it is load-bearing or a report-shape artifact). Also records the exact v3 envelope keys observed so downstream tasks lock against reality, not spec.
-  6. Also probes implementer and remediator one-shot (same `run --input` path) with trivial payloads, asserting `status=="ok"` and the agent's schema validates. This front-loads "wrapper readiness" for TASK-004/005 so their dep on TASK-001 is meaningful.
+  - Probe dispatches `plan-analyst` against a 2-task fixture plan via BOTH paths: (a) `Agent` tool (captured from an orchestrator transcript fixture) and (b) `plan_claude_dispatch.py run --input <payload with agent=plan-analyst>` directly from Bash.
+  - Parsed schedules are semantically equal (`tasks[*].id`, `batches[*].index`, outcome field). Byte equality not required.
+  - Envelope transport `status == "ok"`; `result.outcome ∈ {valid, needs-enrichment, invalid}`; `result.schedule` validates against the analyst output schema.
+  - Envelope size (full stdout JSON) ≤ 64 KB (sanity cap on context-recovery claim).
+  - `probe_results.md` records: timing delta, envelope size delta vs markdown-report size, any behavioral divergence (and whether it is load-bearing or a report-shape artifact). Also records the exact v3 envelope keys observed so downstream tasks lock against reality, not spec.
+  - Also probes implementer and remediator one-shot (same `run --input` path) with trivial payloads, asserting `status=="ok"` and the agent's schema validates. This front-loads "wrapper readiness" for TASK-004/005 so their dep on TASK-001 is meaningful.
 - **Out of scope:** running the probe against implementer or remediator; those are covered by TASK-002 harness.
 
 **Description:** De-risks the core claim. If `claude -p --agent` + wrapper doesn't reproduce analyst behavior, nothing downstream matters.
@@ -107,16 +107,20 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
   - `tests/scripts/fixtures/claude_dispatch/implementer_success.json` (create)
   - `tests/scripts/fixtures/claude_dispatch/implementer_partial.json` (create)
   - `tests/scripts/fixtures/claude_dispatch/remediator_scope_violation.json` (create)
+  - `tests/scripts/fixtures/claude_dispatch/implementer_oversized.json` (create)
+  - `tests/scripts/fixtures/claude_dispatch/schemas/analyst_result.json` (create)
+  - `tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json` (create)
+  - `tests/scripts/fixtures/claude_dispatch/schemas/remediator_result.json` (create)
   - `tests/scripts/test_claude_dispatch_stub.py` (create)
 - **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_claude_dispatch_stub.py`
 - **Acceptance criteria:**
-  1. Stub is selected by setting `PLAN_CLAUDE_DISPATCH_STUB_FIXTURE=<path>`; real wrapper is used when unset.
-  2. Each fixture envelope validates against the v3 envelope keys (`schema_version, status, agent, result, scope, error, trace`) — proves contract parity with the shipped wrapper (not with Codex).
-  3. Per-agent JSON Schemas are added under `tests/scripts/fixtures/claude_dispatch/schemas/` for `result` payloads of each dispatchable agent. Fixtures validate against their agent's schema. Analyst schema asserts `result.outcome ∈ {valid, needs-enrichment, invalid}`; implementer schema asserts `result.outcome ∈ {success, partial, failed, plan-incorrect, blocked, malformed}`; remediator schema asserts `result.outcome ∈ {success, partial, failed, plan-incorrect, blocked, malformed, scope-violation}`.
-  4. Stub records argv + stdin payload to `$PLAN_CLAUDE_DISPATCH_STUB_RECORD_PATH` as one JSON line per invocation (used by downstream tasks' tests).
-  5. Test covers: fixture-not-found error, malformed fixture error, schema-validation failure for each agent, happy path for each of 4 fixtures.
-  6. A 5th fixture `implementer_oversized.json` contains a `result_raw_truncated` at exactly v3's 16 KB cap plus a structured `result.report` with all required sub-fields populated — used by TASK-004's envelope-size acceptance.
+  - Stub is selected by setting `PLAN_CLAUDE_DISPATCH_STUB_FIXTURE=<path>`; real wrapper is used when unset.
+  - Each fixture envelope validates against the v3 envelope keys (`schema_version, status, agent, result, scope, error, trace`) — proves contract parity with the shipped wrapper (not with Codex).
+  - Per-agent JSON Schemas are added under `tests/scripts/fixtures/claude_dispatch/schemas/` for `result` payloads of each dispatchable agent. Fixtures validate against their agent's schema. Analyst schema asserts `result.outcome ∈ {valid, needs-enrichment, invalid}`; implementer schema asserts `result.outcome ∈ {success, partial, failed, plan-incorrect, blocked, malformed}`; remediator schema asserts `result.outcome ∈ {success, partial, failed, plan-incorrect, blocked, malformed, scope-violation}`.
+  - Stub records argv + stdin payload to `$PLAN_CLAUDE_DISPATCH_STUB_RECORD_PATH` as one JSON line per invocation (used by downstream tasks' tests).
+  - Test covers: fixture-not-found error, malformed fixture error, schema-validation failure for each agent, happy path for each of 4 fixtures.
+  - A 5th fixture `implementer_oversized.json` contains a `result_raw_truncated` at exactly v3's 16 KB cap plus a structured `result.report` with all required sub-fields populated — used by TASK-004's envelope-size acceptance.
 - **Out of scope:** integrating the stub with any SKILL.md call site.
 
 **Description:** Enables TASK-003..005 to test migrated dispatches without spawning real Claude CLI. Mirrors the stub pattern already used for Codex wrapper integration tests.
@@ -136,13 +140,13 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 - **Dependencies:** TASK-001, TASK-002
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_skill_dispatch_analyst.py`
 - **Acceptance criteria:**
-  1. Phase 1 in SKILL.md replaces its `Agent(subagent_type="plan-executor:plan-analyst", ...)` block with a Bash invocation of `plan_claude_dispatch.py run --input <payload.json>` where payload sets `agent=plan-analyst` and carries the plan path, run_id, and output schema reference.
-  2. SKILL.md includes a one-line extraction pointer at the replacement site: *"Read stdout as JSON; assert `.status=="ok"`; extract `.result.schedule` and pipe through `plan_ops.py parse-schedule`; treat `.result.outcome in {valid, needs-enrichment, invalid}` per existing rules."* This extraction shim is inline — no new `plan_ops.py` subcommand.
-  3. Analyst outcome vocabulary preserved verbatim (`valid | needs-enrichment | invalid`) and asserted against the analyst `result` schema fixture from TASK-002.
-  4. Orchestrator no longer reads full analyst markdown bodies. Only `.result.schedule`, `.result.outcome`, `.result.gaps[]` are surfaced into the orchestrator's context. `.result_raw_truncated` and `.stderr_tail` are ignored on success; referenced only in error-handling (TASK-006).
-  5. Fixture test drives the stub via envelope `analyst_valid.json` and asserts the extraction shim + existing `parse-schedule` together produce the same schedule object as the prior markdown path on a captured transcript.
-  6. `dispatch-templates.md` analyst **transport header** is updated (how to invoke, output-format JSON instructions). The **agent-behavior body** (the analyst's reasoning rules, gap taxonomy, invalid-condition catalog) is byte-identical to pre-migration. Add a comment marker `<!-- TRANSPORT BOUNDARY - do not edit below in this plan -->` above the behavior section to make the seam explicit for reviewers.
-  7. `rg -n "subagent_type.*plan-executor:plan-analyst"` returns zero hits across `plugins/plan-executor/skills/implement-plan/`.
+  - Phase 1 in SKILL.md replaces its `Agent(subagent_type="plan-executor:plan-analyst", ...)` block with a Bash invocation of `plan_claude_dispatch.py run --input <payload.json>` where payload sets `agent=plan-analyst` and carries the plan path, run_id, and output schema reference.
+  - SKILL.md includes a one-line extraction pointer at the replacement site: *"Read stdout as JSON; assert `.status=="ok"`; extract `.result.schedule` and pipe through `plan_ops.py parse-schedule`; treat `.result.outcome in {valid, needs-enrichment, invalid}` per existing rules."* This extraction shim is inline — no new `plan_ops.py` subcommand.
+  - Analyst outcome vocabulary preserved verbatim (`valid | needs-enrichment | invalid`) and asserted against the analyst `result` schema fixture from TASK-002.
+  - Orchestrator no longer reads full analyst markdown bodies. Only `.result.schedule`, `.result.outcome`, `.result.gaps[]` are surfaced into the orchestrator's context. `.result_raw_truncated` and `.stderr_tail` are ignored on success; referenced only in error-handling (TASK-006).
+  - Fixture test drives the stub via envelope `analyst_valid.json` and asserts the extraction shim + existing `parse-schedule` together produce the same schedule object as the prior markdown path on a captured transcript.
+  - `dispatch-templates.md` analyst **transport header** is updated (how to invoke, output-format JSON instructions). The **agent-behavior body** (the analyst's reasoning rules, gap taxonomy, invalid-condition catalog) is byte-identical to pre-migration. Add a comment marker `<!-- TRANSPORT BOUNDARY - do not edit below in this plan -->` above the behavior section to make the seam explicit for reviewers.
+  - `rg -n "subagent_type.*plan-executor:plan-analyst"` returns zero hits across `plugins/plan-executor/skills/implement-plan/`.
 - **Out of scope:** `review-route` integration; changes to gap-type taxonomy; Phase 1.5 plan-review (already Codex-wrapped).
 
 **Description:** First production call site. Plan-analyst is the cleanest target because its output is already heavily structured (schedule JSON), so the envelope transformation is mostly a wrapper-vs-tool swap.
@@ -162,15 +166,15 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 - **Dependencies:** TASK-002
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_skill_dispatch_implementer.py`
 - **Acceptance criteria:**
-  1. All three implementer call sites invoke `plan_claude_dispatch.py run --input <payload.json>` where `payload.agent=plan-implementer` and `payload.variant ∈ {default, rework, role-swap}` carries the template selector. No new subcommand; variant is carried in the payload.
-  2. Implementer outcome vocabulary preserved verbatim: `success | partial | failed | plan-incorrect | blocked | malformed`. Validated via TASK-002 implementer schema. `malformed` must round-trip (it is the existing markdown-parser output for un-parseable reports; the wrapper path emits it when `result` schema-validation fails but transport succeeded).
-  3. Required report sections (`Plan adaptations`, `Concerns for reviewer`, `On-failure revert`) surface inside `.result.report` as structured arrays (`plan_adaptations[]`, `concerns_for_reviewer[]`, `on_failure_revert`). Orchestrator reads only those fields plus commit-scope metadata. It does NOT ingest `.result_raw_truncated` on success.
-  4. `scope.scope_violation_detected` and `scope.scope_misreport_detected` from v3 §7 surface as top-level envelope fields and block commit per existing rules. Wrapper's delta-bounded cleanup is trusted — orchestrator does not re-compute file deltas.
-  5. D.2b role-swap retains its `retries_used.role_swap` semantics — budget check happens orchestrator-side before dispatch, not inside the wrapper.
-  6. Fixture tests cover: success commit, partial → reviewer notes, scope_violation → fail, plan-incorrect → halt, role-swap happy path, `malformed` outcome → fail-task with stage=`implement`.
-  7. **Envelope-size guard (load-bearing):** Test using `implementer_oversized.json` fixture (16 KB `result_raw_truncated` + fully-populated `result.report`) proves all required structured fields are reachable from the envelope even when the raw-result cap is hit. Full envelope size ≤ 80 KB under this fixture (measured: `len(json.dumps(envelope).encode())`).
-  8. `rg -n "subagent_type.*plan-executor:plan-implementer"` returns zero hits across `plugins/plan-executor/skills/implement-plan/`.
-  9. Transport/behavior separator `<!-- TRANSPORT BOUNDARY -->` added to each of the three implementer templates; agent-behavior text below the marker is byte-identical to pre-migration.
+  - All three implementer call sites invoke `plan_claude_dispatch.py run --input <payload.json>` where `payload.agent=plan-implementer` and `payload.variant ∈ {default, rework, role-swap}` carries the template selector. No new subcommand; variant is carried in the payload.
+  - Implementer outcome vocabulary preserved verbatim: `success | partial | failed | plan-incorrect | blocked | malformed`. Validated via TASK-002 implementer schema. `malformed` must round-trip (it is the existing markdown-parser output for un-parseable reports; the wrapper path emits it when `result` schema-validation fails but transport succeeded).
+  - Required report sections (`Plan adaptations`, `Concerns for reviewer`, `On-failure revert`) surface inside `.result.report` as structured arrays (`plan_adaptations[]`, `concerns_for_reviewer[]`, `on_failure_revert`). Orchestrator reads only those fields plus commit-scope metadata. It does NOT ingest `.result_raw_truncated` on success.
+  - `scope.scope_violation_detected` and `scope.scope_misreport_detected` from v3 §7 surface as top-level envelope fields and block commit per existing rules. Wrapper's delta-bounded cleanup is trusted — orchestrator does not re-compute file deltas.
+  - D.2b role-swap retains its `retries_used.role_swap` semantics — budget check happens orchestrator-side before dispatch, not inside the wrapper.
+  - Fixture tests cover: success commit, partial → reviewer notes, scope_violation → fail, plan-incorrect → halt, role-swap happy path, `malformed` outcome → fail-task with stage=`implement`.
+  - **Envelope-size guard (load-bearing):** Test using `implementer_oversized.json` fixture (16 KB `result_raw_truncated` + fully-populated `result.report`) proves all required structured fields are reachable from the envelope even when the raw-result cap is hit. Full envelope size ≤ 80 KB under this fixture (measured: `len(json.dumps(envelope).encode())`).
+  - `rg -n "subagent_type.*plan-executor:plan-implementer"` returns zero hits across `plugins/plan-executor/skills/implement-plan/`.
+  - Transport/behavior separator `<!-- TRANSPORT BOUNDARY -->` added to each of the three implementer templates; agent-behavior text below the marker is byte-identical to pre-migration.
 - **Out of scope:** changing the implementer agent's own system prompt; adding new outcome codes; changing retry budgets.
 
 **Description:** Highest-volume dispatch surface. Three call sites in SKILL.md consolidate to one wrapper subcommand with a template selector — the consolidation is itself a context-cost reduction.
@@ -190,13 +194,13 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 - **Dependencies:** TASK-002
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_skill_dispatch_remediator.py`
 - **Acceptance criteria:**
-  1. D.2a.6 dispatch invokes `plan_claude_dispatch.py run --input <payload.json>` where `payload.agent=plan-remediator` and payload carries `load_bearing_findings[]` and `dismissed_findings[]`.
-  2. Touch-only-these-lines contract preserved: envelope's `scope.declared_files_changed[]` and `scope.observed_delta_tracked[]` must both be subsets of the `(file, line)` union derived from `load_bearing_findings[]`. Wrapper's delta-bounded cleanup enforces file-level scope; line-level enforcement stays orchestrator-side against the existing diff-hunks helper in `plan_ops.py`.
-  3. Remediator outcome vocabulary preserved verbatim: `success | partial | failed | plan-incorrect | blocked | malformed | scope-violation`. The extra `scope-violation` outcome (not present in implementer) and `malformed` both round-trip and are validated by the TASK-002 remediator schema.
-  4. Mandatory "Dismissed findings noted" report section surfaces as `.result.report.dismissed_findings_acknowledged[]`; orchestrator's D.5 gate reads from there.
-  5. Fixture test uses `remediator_scope_violation.json` fixture from TASK-002 and asserts the orchestrator halts with `pause_awaiting_user` correctly.
-  6. `rg -n "subagent_type.*plan-executor:plan-remediator"` returns zero hits across `plugins/plan-executor/skills/implement-plan/`.
-  7. Transport/behavior separator `<!-- TRANSPORT BOUNDARY -->` added to the remediator template; agent-behavior text below the marker is byte-identical to pre-migration.
+  - D.2a.6 dispatch invokes `plan_claude_dispatch.py run --input <payload.json>` where `payload.agent=plan-remediator` and payload carries `load_bearing_findings[]` and `dismissed_findings[]`.
+  - Touch-only-these-lines contract preserved: envelope's `scope.declared_files_changed[]` and `scope.observed_delta_tracked[]` must both be subsets of the `(file, line)` union derived from `load_bearing_findings[]`. Wrapper's delta-bounded cleanup enforces file-level scope; line-level enforcement stays orchestrator-side against the existing diff-hunks helper in `plan_ops.py`.
+  - Remediator outcome vocabulary preserved verbatim: `success | partial | failed | plan-incorrect | blocked | malformed | scope-violation`. The extra `scope-violation` outcome (not present in implementer) and `malformed` both round-trip and are validated by the TASK-002 remediator schema.
+  - Mandatory "Dismissed findings noted" report section surfaces as `.result.report.dismissed_findings_acknowledged[]`; orchestrator's D.5 gate reads from there.
+  - Fixture test uses `remediator_scope_violation.json` fixture from TASK-002 and asserts the orchestrator halts with `pause_awaiting_user` correctly.
+  - `rg -n "subagent_type.*plan-executor:plan-remediator"` returns zero hits across `plugins/plan-executor/skills/implement-plan/`.
+  - Transport/behavior separator `<!-- TRANSPORT BOUNDARY -->` added to the remediator template; agent-behavior text below the marker is byte-identical to pre-migration.
 - **Out of scope:** changing touch-only semantics; changing D.5 evidence gate rules.
 
 **Description:** Narrowest remaining call site. Remediator's scope contract is the strictest, so its envelope is the most stateful — this task proves the wrapper can carry that state faithfully.
@@ -217,13 +221,13 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 - **Dependencies:** TASK-003, TASK-004, TASK-005
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_claude_dispatch_run_log.py`
 - **Acceptance criteria:**
-  1. SKILL.md has exactly one "Dispatch error handling (Claude wrapper)" paragraph shared by all three migrated call sites; per-site duplication from TASK-003..005 is removed.
-  2. v3 transport `status` values (`schema_invalid | timeout | denied | backend_error | budget_exhausted | depth_exceeded | manifest_invalid | input_invalid | scope_violation`) each map to a deterministic orchestrator action — commit-blocked for any non-`ok`, and the mapping is stated once, not per-site. Mapping table is in the shared paragraph.
-  3. An extraction shim is consolidated into a single `plan_ops.py claude-envelope-extract` subcommand (replaces the inline jq-style reads added in TASK-003/004/005). Input: envelope JSON on stdin; args: `--agent {plan-analyst|plan-implementer|plan-remediator}`. Output: `{status, outcome, result, scope_violation, scope_misreport, error}` — normalized across agents. Existing `parse-schedule` / markdown parsers are NOT modified; they continue to consume `result` sub-fields as before.
-  4. Run-log event types covered: `claude_dispatch_start`, `claude_dispatch_done`, `claude_dispatch_failed`. `log-event` accepts these as first-class event types (existing `run_start`/`implement_done`/etc unchanged).
-  5. Test replays a 3-dispatch sequence (analyst → implementer → remediator) and asserts the run-log has exactly the expected event ordering and payload shape.
-  6. No regression on existing run-log events (`run_start, implement_done, review_done, commit_done, failed, awaiting_user`).
-  7. After consolidation, the three migrated call sites in SKILL.md each shrink to ~6 lines (invoke + extract + outcome-switch); `wc -c` on SKILL.md shows a net reduction vs the pre-migration baseline (measured and recorded in run-log-events.md).
+  - SKILL.md has exactly one "Dispatch error handling (Claude wrapper)" paragraph shared by all three migrated call sites; per-site duplication from TASK-003..005 is removed.
+  - v3 transport `status` values (`schema_invalid | timeout | denied | backend_error | budget_exhausted | depth_exceeded | manifest_invalid | input_invalid | scope_violation`) each map to a deterministic orchestrator action — commit-blocked for any non-`ok`, and the mapping is stated once, not per-site. Mapping table is in the shared paragraph.
+  - An extraction shim is consolidated into a single `plan_ops.py claude-envelope-extract` subcommand (replaces the inline jq-style reads added in TASK-003/004/005). Input: envelope JSON on stdin; args: `--agent {plan-analyst|plan-implementer|plan-remediator}`. Output: `{status, outcome, result, scope_violation, scope_misreport, error}` — normalized across agents. Existing `parse-schedule` / markdown parsers are NOT modified; they continue to consume `result` sub-fields as before.
+  - Run-log event types covered: `claude_dispatch_start`, `claude_dispatch_done`, `claude_dispatch_failed`. `log-event` accepts these as first-class event types (existing `run_start`/`implement_done`/etc unchanged).
+  - Test replays a 3-dispatch sequence (analyst → implementer → remediator) and asserts the run-log has exactly the expected event ordering and payload shape.
+  - No regression on existing run-log events (`run_start, implement_done, review_done, commit_done, failed, awaiting_user`).
+  - After consolidation, the three migrated call sites in SKILL.md each shrink to ~6 lines (invoke + extract + outcome-switch); `wc -c` on SKILL.md shows a net reduction vs the pre-migration baseline (measured and recorded in run-log-events.md).
 - **Out of scope:** changing the Codex wrapper's event names to match (symmetry can be a follow-on); rewriting `finalize-execution-log`.
 
 **Description:** Where the real context-win lands. Three dispatch sites sharing one error paragraph is the reason this migration reduces SKILL.md size, not just re-routes bytes.
@@ -243,11 +247,11 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 - **Dependencies:** TASK-006
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_skill_dispatch_e2e.py`
 - **Acceptance criteria:**
-  1. E2E test drives a full A→E loop (analyst → implementer → D.1 review → commit) on the fixture plan using the stub from TASK-002.
-  2. Matrix covers: analyst `valid` → implementer `success` → Codex review `clean` → commit; analyst `needs-enrichment` → halt; implementer `scope_violation` → fail-task; implementer `success` → Codex `needs-rework` → D.5 `ship` → commit with disagreement-tag (verifies D.1/D.5 reviewer paths were NOT touched).
-  3. Runs in under 30s with no real subprocess spawn to Claude CLI.
-  4. `ROLLBACK.md` documents: (a) per-task revert order (7 → 6 → 5 → 4 → 3 → 2 → 1), (b) the single `git revert` range that undoes all migrated dispatches, (c) the flag to gate the migration behind if a partial rollout becomes necessary (env var `PLAN_EXEC_USE_CLAUDE_WRAPPER=0` → orchestrator falls back to `Agent` tool calls; implementation detail deferred if unused).
-  5. Appendix in ROLLBACK.md lists the `Agent` tool call sites that intentionally remain (D.1 / D.5 reviewer) so future readers do not mistake them for migration misses.
+  - E2E test drives a full A→E loop (analyst → implementer → D.1 review → commit) on the fixture plan using the stub from TASK-002.
+  - Matrix covers: analyst `valid` → implementer `success` → Codex review `clean` → commit; analyst `needs-enrichment` → halt; implementer `scope_violation` → fail-task; implementer `success` → Codex `needs-rework` → D.5 `ship` → commit with disagreement-tag (verifies D.1/D.5 reviewer paths were NOT touched).
+  - Runs in under 30s with no real subprocess spawn to Claude CLI.
+  - `ROLLBACK.md` documents: (a) per-task revert order (7 → 6 → 5 → 4 → 3 → 2 → 1), (b) the single `git revert` range that undoes all migrated dispatches, (c) the flag to gate the migration behind if a partial rollout becomes necessary (env var `PLAN_EXEC_USE_CLAUDE_WRAPPER=0` → orchestrator falls back to `Agent` tool calls; implementation detail deferred if unused).
+  - Appendix in ROLLBACK.md lists the `Agent` tool call sites that intentionally remain (D.1 / D.5 reviewer) so future readers do not mistake them for migration misses.
 - **Out of scope:** the env-var fallback's implementation (acceptance #4 documents it; wiring is only needed if a real rollout hits a snag).
 
 **Description:** The safety net. Locks in the transport contract and documents the exit ramp. Also the only task that exercises the orchestrator-side contract end-to-end, so it's the last line of defense against silent regressions.
