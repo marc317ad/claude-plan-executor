@@ -2756,7 +2756,9 @@ def cmd_decompose_plan(args: argparse.Namespace) -> None:
     _emit(args, result, exit_code=0)
 
 
-def _build_tasks(plans_dir: Path) -> dict:
+def _build_tasks(
+    plans_dir: Path, *, filter_ids: set[str] | None = None,
+) -> dict:
     """Roster-driven fat `tasks[]` synthesis for a decomposed-plan directory.
 
     Reads `00_INDEX.json` + each `chunks[].file` and returns a schedule-
@@ -2780,10 +2782,27 @@ def _build_tasks(plans_dir: Path) -> dict:
     well-formed child are non-fatal — the task is still emitted with
     `description: ""` / `acceptance_criteria: []` and a structured warning
     is recorded so downstream plan-review can flag it.
+
+    When `filter_ids` is non-None (TASK-002, narrow_run_filter_ids), the
+    walk is scoped to the transitive-prereq closure of `filter_ids`
+    computed via `_compute_index_closure`. Out-of-closure chunks are
+    skipped before any child markdown is read — they contribute zero
+    tasks, warnings, or errors. In-closure chunks whose body
+    `**Dependencies:**` prose fails to parse are routed around: the
+    well-formed roster `depends_on` (already validated by the closure
+    helper) is trusted instead, and a non-fatal `body-deps-unparseable`
+    warning is recorded so the operator can fix the prose. The result
+    grows a top-level `scope` key carrying the requested ids, the full
+    closure, and the count of skipped chunks. With `filter_ids=None`
+    the helper is byte-for-byte identical to its prior behavior — the
+    `scope` key is absent (not None) so consumers can use
+    `"scope" in result` as a clean predicate.
     """
     errors: list[dict] = []
     warnings: list[dict] = []
     tasks: list[dict] = []
+    closure_ids: set[str] | None = None
+    skipped_chunk_count = 0
     index_path = plans_dir / "00_INDEX.json"
     if not plans_dir.is_dir():
         errors.append({
@@ -2852,6 +2871,30 @@ def _build_tasks(plans_dir: Path) -> dict:
             "tasks": tasks, "batches": [],
             "warnings": warnings, "errors": errors,
         }
+    # When `filter_ids` is set, compute the transitive-prereq closure via
+    # the roster-only helper FIRST. Closure-level errors (unknown id,
+    # closure-malformed-dep, duplicate-roster-id) halt before any child
+    # markdown is read. Out-of-closure chunks contribute zero work in the
+    # per-chunk loop below; their child files are never opened. Any cycle
+    # that crosses the closure boundary is by definition closure-internal
+    # once the dep is walked, so skipped-side cycles are silenced
+    # structurally rather than by an extra check.
+    if filter_ids is not None:
+        closure_set, closure_errors = _compute_index_closure(
+            chunks, filter_ids,
+        )
+        closure_ids = closure_set
+        if closure_errors:
+            return {
+                "ok": False, "outcome": "invalid",
+                "tasks": [], "batches": [],
+                "warnings": [], "errors": closure_errors,
+                "scope": {
+                    "filter_ids": sorted(filter_ids),
+                    "closure": sorted(closure_ids),
+                    "skipped_chunk_count": 0,
+                },
+            }
     # Collect per-chunk data, surfacing structural errors before trying to
     # parse individual child task blocks. A single missing child surfaces as
     # a `child-file-not-found` error and does NOT abort the remainder of
@@ -2860,6 +2903,12 @@ def _build_tasks(plans_dir: Path) -> dict:
     for i, chunk in enumerate(chunks):
         chunk_ref = f"chunks[{i}]"
         if not isinstance(chunk, dict):
+            # A non-dict chunk has no task_id, so it cannot be proven
+            # outside the closure in scoped mode. Per TASK-002 AC,
+            # silencing is only allowed for chunks whose normalized id
+            # is verified-not-in-closure; malformed-roster entries must
+            # surface in BOTH default and scoped modes so genuine
+            # roster malformations are never hidden.
             errors.append({
                 "code": "malformed-roster",
                 "message": f"{chunk_ref} must be an object in {index_path}",
@@ -2871,6 +2920,10 @@ def _build_tasks(plans_dir: Path) -> dict:
             if isinstance(raw_task_id, str) else None
         )
         if normalized_id is None:
+            # Same rationale as the non-dict branch: an un-normalizable
+            # task_id has no canonical id to test against the closure,
+            # so it cannot be proven outside-closure. Surface in both
+            # default and scoped modes.
             errors.append({
                 "code": "malformed-roster",
                 "message": (
@@ -2878,6 +2931,12 @@ def _build_tasks(plans_dir: Path) -> dict:
                     "normalized task id"
                 ),
             })
+            continue
+        # In scoped mode, skip out-of-closure chunks before any
+        # validation, file IO, or markdown parsing — they contribute
+        # zero tasks, warnings, or errors.
+        if filter_ids is not None and normalized_id not in (closure_ids or set()):
+            skipped_chunk_count += 1
             continue
         if normalized_id in seen_ids:
             errors.append({
@@ -3004,10 +3063,92 @@ def _build_tasks(plans_dir: Path) -> dict:
         # Schedule wire format uses `dependencies` (plural), not
         # `depends_on`. Normalize ids here (already normalized by
         # `_parse_task_block`, but filter to keep canonical form).
+        body_deps_raw = list(parsed.get("depends_on") or [])
         deps: list[str] = []
-        for d in parsed.get("depends_on") or []:
+        for d in body_deps_raw:
             nd = _normalize_task_id(d)
             deps.append(nd if nd is not None else str(d))
+        # In scoped mode, when the body deps contain entries that fail
+        # to normalize (typical authoring mistake: trailing parentheticals
+        # like `**Dependencies:** TASK-001 (schema)`), trust the roster's
+        # `depends_on` instead of the parser. Closure-validated roster
+        # deps are guaranteed normalizable + in-closure, so the resulting
+        # batches are coherent. The malformed body line is surfaced as a
+        # non-fatal `body-deps-unparseable` warning so the operator can
+        # tidy the prose. A body that DOES normalize but resolves to an
+        # id the roster doesn't carry is still routed through the
+        # existing `unresolvable-dep` error path below.
+        if filter_ids is not None and any(
+            _normalize_task_id(d) is None for d in body_deps_raw
+        ):
+            roster_deps_raw = chunk.get("depends_on")
+            if isinstance(roster_deps_raw, list):
+                roster_deps_norm = [
+                    _normalize_task_id(rd)
+                    for rd in roster_deps_raw
+                    if isinstance(rd, str)
+                ]
+                # TASK-002 binding-finding fix: the trust-roster
+                # fallback must only fire when the roster's normalized
+                # `depends_on` contains at least one id in
+                # ``closure_ids`` (i.e., resolves to an in-closure task).
+                # ``all(rd is not None for rd in [])`` is vacuously True,
+                # so without this guard an empty roster deps list would
+                # still trigger the fallback, replacing the body's
+                # malformed dep with an empty list and silently swallowing
+                # the dep error. Per spec, when the roster offers no
+                # in-closure resolution, leave the body-derived unparseable
+                # dep in ``deps`` so the existing ``unresolvable-dep``
+                # error path fires (the malformed dep still won't resolve,
+                # surfacing the right error to the operator).
+                roster_resolves_in_closure = bool(
+                    closure_ids is not None
+                    and any(
+                        rd in closure_ids
+                        for rd in roster_deps_norm
+                        if rd
+                    )
+                )
+                if (
+                    all(rd is not None for rd in roster_deps_norm)
+                    and roster_resolves_in_closure
+                ):
+                    # Replace deps with the roster-side, sorted for
+                    # deterministic batch output.
+                    deps = sorted(rd for rd in roster_deps_norm if rd)
+                    # Surface the OFFENDING raw `**Dependencies:**` line
+                    # from the child block as `message` so operators (and
+                    # tests) can grep for the exact malformed text. The
+                    # inline form (`- **Dependencies:** TASK-001 (schema)`)
+                    # is captured by `DEPENDENCIES_BULLET_RE`. The
+                    # standalone form (`- **Dependencies:**` with bullet
+                    # children, e.g. a child that fails to normalize) is
+                    # captured via a fallback regex on the bare heading
+                    # bullet. `roster_deps` (sorted) carries the
+                    # canonical replacement.
+                    raw_deps_match = DEPENDENCIES_BULLET_RE.search(
+                        block_text,
+                    )
+                    if raw_deps_match is not None:
+                        offending_line = raw_deps_match.group(0).strip()
+                    else:
+                        standalone_match = re.search(
+                            r"^\s*-\s*\*\*Dependencies:\*\*\s*$",
+                            block_text,
+                            re.MULTILINE,
+                        )
+                        offending_line = (
+                            standalone_match.group(0).strip()
+                            if standalone_match is not None
+                            else "- **Dependencies:**"
+                        )
+                    warnings.append({
+                        "code": "body-deps-unparseable",
+                        "task_id": normalized_id,
+                        "plan_file": Path(child_name).name,
+                        "message": offending_line,
+                        "roster_deps": deps,
+                    })
         # `plan_file` is consumed downstream (parse-schedule, apply-review,
         # plan-file routing) as a basename-only field. When a roster entry
         # points into a subdirectory (e.g. `subdir/TASK-001_a.md`), we still
@@ -3076,7 +3217,7 @@ def _build_tasks(plans_dir: Path) -> dict:
         else:
             batches = roster_batches
     outcome = "valid" if not errors else "invalid"
-    return {
+    result: dict[str, object] = {
         "ok": not errors,
         "outcome": outcome,
         "tasks": tasks,
@@ -3084,6 +3225,17 @@ def _build_tasks(plans_dir: Path) -> dict:
         "warnings": warnings,
         "errors": errors,
     }
+    # `scope` is present iff `filter_ids` was supplied so consumers can
+    # use `"scope" in result` as a clean predicate. We deliberately do
+    # NOT emit `scope: None` on full-roster runs (key absence carries
+    # the negative).
+    if filter_ids is not None:
+        result["scope"] = {
+            "filter_ids": sorted(filter_ids),
+            "closure": sorted(closure_ids or set()),
+            "skipped_chunk_count": skipped_chunk_count,
+        }
+    return result
 
 
 def cmd_build_tasks(args: argparse.Namespace) -> None:
@@ -3101,9 +3253,45 @@ def cmd_build_tasks(args: argparse.Namespace) -> None:
     non-zero exit. Missing `**Description:**` or `**Acceptance criteria:**`
     in an individual child surfaces as `warnings[*]` with the task id and
     the child basename; the task is still emitted (non-fatal).
+
+    `--filter-ids <csv>` narrows the walk to the transitive-prereq
+    closure of the supplied ids (TASK-002, narrow_run_filter_ids). The
+    csv accepts plain (`9`), zero-padded (`009`), or `TASK-NNN`
+    (`TASK-009`) forms; each token is normalized via
+    `_normalize_task_id`. The result grows a top-level `scope` key
+    carrying the requested ids, the full closure, and the count of
+    skipped chunks.
     """
     plans_dir = Path(args.plans_dir).resolve()
-    result = _build_tasks(plans_dir)
+    # `--filter-ids` is empty by default → full-roster mode (byte-for-byte
+    # identical to today). Empty fragments (`"1,,3"`) are tolerated;
+    # a token that fails to normalize halts as an `invalid-filter-ids`
+    # error before any roster IO. This mirrors `filter-schedule`'s
+    # `--task-ids` parsing convention.
+    raw_filter = (getattr(args, "filter_ids", "") or "").strip()
+    filter_ids: set[str] | None = None
+    if raw_filter:
+        normalized: set[str] = set()
+        for token in raw_filter.split(","):
+            stripped = token.strip()
+            if not stripped:
+                continue
+            norm = _normalize_task_id(stripped)
+            if norm is None:
+                _die(args, {
+                    "ok": False, "outcome": "invalid",
+                    "tasks": [], "batches": [], "warnings": [],
+                    "errors": [{
+                        "code": "invalid-filter-ids",
+                        "message": (
+                            f"could not normalize filter id {stripped!r}"
+                        ),
+                    }],
+                })
+            normalized.add(norm)
+        if normalized:
+            filter_ids = normalized
+    result = _build_tasks(plans_dir, filter_ids=filter_ids)
     if not result["ok"]:
         _die(args, result)
     _emit(args, result, exit_code=0)
@@ -10527,6 +10715,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument(
         "--plans-dir", required=True,
         help="Path to a decomposed-plan directory (contains 00_INDEX.json)",
+    )
+    # TASK-002 (narrow_run_filter_ids): scope build-tasks to the
+    # transitive-prereq closure of the supplied ids. Accepts plain,
+    # zero-padded, or `TASK-NNN` forms (mixed). Empty omits scoping
+    # (full-roster default-mode is byte-for-byte unchanged).
+    p_build.add_argument(
+        "--filter-ids", default="",
+        help=(
+            "CSV of task ids to scope the build to (any of `9`, `009`, "
+            "`TASK-009` accepted; each is normalized before lookup). The "
+            "transitive-prereq closure is computed via "
+            "`_compute_index_closure`; out-of-closure chunks are silently "
+            "skipped. Empty (default) preserves full-roster behavior."
+        ),
     )
     _add_json(p_build)
 

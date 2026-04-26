@@ -20571,6 +20571,612 @@ class TestBuildTasks:
             f"  compute-sched : {cs_batches_json}"
         )
 
+    # ------------------------------------------------------------------
+    # TASK-002 (narrow_run_filter_ids): `_build_tasks` `filter_ids=`
+    # parameter and `build-tasks --filter-ids` CLI surface. The fixture
+    # below seeds an in-memory roster with broken siblings so a scoped
+    # build can pass in spite of the breakage. Inline-string fixtures
+    # are used here so the suite has no cross-task fixture dependency.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _well_formed_child(
+        tid: str, deps_inline: str = "[]", agent: str = "claude",
+    ) -> str:
+        """Render a minimal H3 TASK child with the given deps inline."""
+        return (
+            f"# TASK-{tid} — child {tid}\n\n"
+            "## Goal\n\nGoal\n\n## Context\n\nctx\n\n"
+            "## Verification\n\n- v\n\n## Tasks\n\n"
+            f"### TASK-{tid}: child {tid}\n\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            f"- **Agent:** {agent}\n"
+            "- **Files:**\n"
+            f"  - src/t{tid}.py\n"
+            f"- **Dependencies:** {deps_inline}\n"
+            f"- **Test command:** `test -f src/t{tid}.py`\n"
+            "- **Acceptance criteria:**\n"
+            f"  - t{tid} exists\n"
+            "- **Reversion guidance:** none\n"
+            f"\n**Description:**\nDesc {tid}.\n"
+        )
+
+    @staticmethod
+    def _broken_siblings_layout(plans_dir: Path) -> None:
+        """Write a 4-chunk roster: 001/002/009 in-closure; 099 broken sibling.
+
+        Closure rooted at TASK-009 covers TASK-001 + TASK-002 (transitive)
+        + TASK-009. TASK-099 is a sibling outside the closure with a body
+        that REFERENCES A MISSING file on disk (would error in default
+        mode); the scoped run must skip it silently.
+        """
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001", "file": "TASK-001_a.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        "task_id": "002", "file": "TASK-002_b.md",
+                        "depends_on": ["001"], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        "task_id": "009", "file": "TASK-009_c.md",
+                        "depends_on": ["002"], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        # Out-of-closure sibling: file is intentionally
+                        # MISSING on disk so default-mode `build-tasks`
+                        # would surface a `child-file-not-found` error.
+                        # Scoped mode must skip it silently.
+                        "task_id": "099", "file": "TASK-099_ghost.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }, indent=2),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-001_a.md").write_text(
+            TestBuildTasks._well_formed_child("001"), encoding="utf-8",
+        )
+        (plans_dir / "TASK-002_b.md").write_text(
+            TestBuildTasks._well_formed_child("002", deps_inline="[001]"),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-009_c.md").write_text(
+            TestBuildTasks._well_formed_child("009", deps_inline="[002]"),
+            encoding="utf-8",
+        )
+        # Note: TASK-099_ghost.md deliberately not written.
+
+    def test_build_tasks_filter_ids_default_mode_byte_identical(
+        self, tmp_path: Path,
+    ) -> None:
+        """V1: `filter_ids=None` is byte-for-byte identical to today.
+
+        The `_build_tasks` helper called without the keyword is the
+        default-mode regression guard: result must NOT contain a
+        `scope` key, and the rest of the payload mirrors the no-flag
+        CLI invocation exactly.
+        """
+        # Use the shipped directory_mode_plan fixture as the baseline:
+        # it is the same fixture the rest of TestBuildTasks asserts on.
+        in_proc = plan_ops._build_tasks(DIRECTORY_MODE_FIXTURE_PATH)
+        # `scope` MUST be absent (not None) so callers can use
+        # `"scope" in result` cleanly.
+        assert "scope" not in in_proc, in_proc
+        assert in_proc["ok"] is True, in_proc
+        assert in_proc["outcome"] == "valid", in_proc
+        assert in_proc["errors"] == [], in_proc
+        # Sanity: same task ids as the existing fixture-pinned test.
+        assert [t["id"] for t in in_proc["tasks"]] == [
+            "001", "002", "003",
+        ], in_proc
+
+    def test_build_tasks_filter_ids_happy_path(
+        self, tmp_path: Path,
+    ) -> None:
+        """V2: scoped build returns ok with closure tasks only.
+
+        Filtering to {009} pulls in TASK-001 + TASK-002 transitively;
+        the broken sibling TASK-099 is silently skipped.
+        """
+        plans_dir = tmp_path / "plan"
+        self._broken_siblings_layout(plans_dir)
+        res = plan_ops._build_tasks(plans_dir, filter_ids={"009"})
+        assert res["ok"] is True, res
+        assert res["outcome"] == "valid", res
+        assert res["errors"] == [], res
+        # Tasks contain only the closure: 001, 002, 009.
+        assert sorted(t["id"] for t in res["tasks"]) == [
+            "001", "002", "009",
+        ], res
+
+    def test_build_tasks_filter_ids_scope_key_shape(
+        self, tmp_path: Path,
+    ) -> None:
+        """V3: `scope` carries sorted filter_ids + closure + skip count.
+
+        Filtering to {009} on the 4-chunk fixture: closure has 3 ids and
+        the sibling TASK-099 is the lone skipped chunk.
+        """
+        plans_dir = tmp_path / "plan"
+        self._broken_siblings_layout(plans_dir)
+        res = plan_ops._build_tasks(plans_dir, filter_ids={"009"})
+        assert "scope" in res, res
+        scope = res["scope"]
+        assert scope["filter_ids"] == ["009"], scope
+        assert scope["closure"] == ["001", "002", "009"], scope
+        # 4 chunks total, 3 in closure → 1 skipped (TASK-099).
+        assert scope["skipped_chunk_count"] == 1, scope
+
+    def test_build_tasks_filter_ids_scope_absent_on_full_roster(
+        self, tmp_path: Path,
+    ) -> None:
+        """`scope` is absent (not None) on full-roster runs.
+
+        Consumers can predicate on `"scope" in result`; emitting
+        `scope: None` would defeat the point.
+        """
+        plans_dir = tmp_path / "plan"
+        # Use a clean 2-chunk layout with both children present so the
+        # full-roster build succeeds.
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001", "file": "TASK-001_a.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        "task_id": "002", "file": "TASK-002_b.md",
+                        "depends_on": ["001"], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-001_a.md").write_text(
+            self._well_formed_child("001"), encoding="utf-8",
+        )
+        (plans_dir / "TASK-002_b.md").write_text(
+            self._well_formed_child("002", deps_inline="[001]"),
+            encoding="utf-8",
+        )
+        res = plan_ops._build_tasks(plans_dir)
+        assert "scope" not in res, res
+
+    def test_build_tasks_filter_ids_body_deps_unparseable_warning(
+        self, tmp_path: Path,
+    ) -> None:
+        """V4: malformed body deps + well-formed in-closure roster → warn.
+
+        TASK-002 body has `**Dependencies:**` prose that fails to parse
+        (a non-bracketed natural-language reference), but the roster
+        says depends_on=["001"]. Scoped build trusts the roster, emits
+        a `body-deps-unparseable` warning, and the build succeeds.
+        """
+        plans_dir = tmp_path / "plan"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001", "file": "TASK-001_a.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        "task_id": "002", "file": "TASK-002_b.md",
+                        "depends_on": ["001"], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-001_a.md").write_text(
+            self._well_formed_child("001"), encoding="utf-8",
+        )
+        # Body: `Dependencies:` line that the parser can't normalize.
+        # `_extract_bullet_list` falls back to inline form and yields
+        # the raw token; `_normalize_task_id` rejects the trailing
+        # parenthetical, so the body deps list has a non-normalized
+        # entry.
+        broken_body = (
+            "# TASK-002 — child\n\n"
+            "## Goal\n\nGoal\n\n## Context\n\nctx\n\n"
+            "## Verification\n\n- v\n\n## Tasks\n\n"
+            "### TASK-002: child\n\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - src/t002.py\n"
+            "- **Dependencies:** TASK-001 (schema)\n"
+            "- **Test command:** `test -f src/t002.py`\n"
+            "- **Acceptance criteria:**\n"
+            "  - t002 exists\n"
+            "- **Reversion guidance:** none\n"
+            "\n**Description:**\nDesc 002.\n"
+        )
+        (plans_dir / "TASK-002_b.md").write_text(
+            broken_body, encoding="utf-8",
+        )
+        res = plan_ops._build_tasks(plans_dir, filter_ids={"002"})
+        assert res["ok"] is True, res
+        assert res["outcome"] == "valid", res
+        assert res["errors"] == [], res
+        warns = [
+            w for w in res["warnings"]
+            if w.get("code") == "body-deps-unparseable"
+        ]
+        assert warns, res["warnings"]
+        w = warns[0]
+        assert w["task_id"] == "002", w
+        assert w["plan_file"] == "TASK-002_b.md", w
+        assert w["roster_deps"] == ["001"], w
+        # `message` MUST carry the raw offending `**Dependencies:**`
+        # line (per plan AC: `message: "<offending Dependencies line>"`)
+        # so operators can grep their plan for the exact malformed text.
+        assert w["message"] == "- **Dependencies:** TASK-001 (schema)", w
+        # The emitted task entry MUST carry the roster-derived deps
+        # (else downstream batching would still flag unresolvable-dep).
+        t2 = next(t for t in res["tasks"] if t["id"] == "002")
+        assert t2["dependencies"] == ["001"], t2
+
+    def test_build_tasks_filter_ids_broken_task_itself_halts(
+        self, tmp_path: Path,
+    ) -> None:
+        """V5: TASK-002 body deps reference an unresolvable id → halts.
+
+        The body of TASK-002 lists `[999]` (well-formed normalized id
+        but absent from the roster). The roster's depends_on for
+        TASK-002 is `[]` so the trust-the-roster fallback does NOT
+        apply (body deps normalize). Downstream batching surfaces
+        `unresolvable-dep` and the build halts.
+        """
+        plans_dir = tmp_path / "plan"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "002", "file": "TASK-002_b.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        # Body has a well-formed dep on a missing id → unresolvable.
+        (plans_dir / "TASK-002_b.md").write_text(
+            self._well_formed_child("002", deps_inline="[999]"),
+            encoding="utf-8",
+        )
+        res = plan_ops._build_tasks(plans_dir, filter_ids={"002"})
+        assert res["ok"] is False, res
+        assert res["outcome"] == "invalid", res
+        unresolved = [
+            e for e in res["errors"]
+            if e.get("code") == "unresolvable-dep"
+        ]
+        assert unresolved, res["errors"]
+        assert unresolved[0]["task_id"] == "002", unresolved[0]
+        assert unresolved[0]["dep_id"] == "999", unresolved[0]
+        # `scope` is still emitted (filter_ids was supplied).
+        assert "scope" in res, res
+
+    def test_build_tasks_filter_ids_unknown_id_halts(
+        self, tmp_path: Path,
+    ) -> None:
+        """V6: unknown filter id halts via closure-level `unknown-requested-id`.
+
+        No child markdown is read because the closure check fires first.
+        """
+        plans_dir = tmp_path / "plan"
+        self._broken_siblings_layout(plans_dir)
+        res = plan_ops._build_tasks(plans_dir, filter_ids={"888"})
+        assert res["ok"] is False, res
+        assert res["outcome"] == "invalid", res
+        unknown = [
+            e for e in res["errors"]
+            if e.get("code") == "unknown-requested-id"
+        ]
+        assert unknown, res["errors"]
+        assert unknown[0]["task_id"] == "888", unknown[0]
+        # No tasks emitted (halted before per-chunk loop).
+        assert res["tasks"] == [], res
+        # `scope` is still surfaced on the halt path.
+        assert "scope" in res, res
+        assert res["scope"]["filter_ids"] == ["888"], res["scope"]
+
+    def test_build_tasks_filter_ids_cli_v7(self, tmp_path: Path) -> None:
+        """V7: CLI `build-tasks --filter-ids 009,017 --json` returns scoped.
+
+        End-to-end via subprocess. Closure rooted at {009, 017} pulls
+        in TASK-001 (transitive prereq of both); TASK-099 is the lone
+        out-of-closure sibling and is skipped silently.
+        """
+        plans_dir = tmp_path / "plan"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001", "file": "TASK-001_a.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        "task_id": "009", "file": "TASK-009_c.md",
+                        "depends_on": ["001"], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        "task_id": "017", "file": "TASK-017_d.md",
+                        "depends_on": ["001"], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        # Out-of-closure sibling: missing file on disk.
+                        "task_id": "099", "file": "TASK-099_ghost.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-001_a.md").write_text(
+            self._well_formed_child("001"), encoding="utf-8",
+        )
+        (plans_dir / "TASK-009_c.md").write_text(
+            self._well_formed_child("009", deps_inline="[001]"),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-017_d.md").write_text(
+            self._well_formed_child("017", deps_inline="[001]"),
+            encoding="utf-8",
+        )
+        cp = _run(
+            "build-tasks",
+            "--plans-dir", str(plans_dir),
+            "--filter-ids", "009,017",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        assert res["ok"] is True, res
+        assert res["outcome"] == "valid", res
+        assert sorted(t["id"] for t in res["tasks"]) == [
+            "001", "009", "017",
+        ], res
+        assert "scope" in res, res
+        scope = res["scope"]
+        assert scope["filter_ids"] == ["009", "017"], scope
+        assert scope["closure"] == ["001", "009", "017"], scope
+        assert scope["skipped_chunk_count"] == 1, scope
+
+    def test_build_tasks_filter_ids_cli_accepts_mixed_id_forms(
+        self, tmp_path: Path,
+    ) -> None:
+        """CLI csv accepts plain (`9`), zero-padded (`009`), and TASK-NNN."""
+        plans_dir = tmp_path / "plan"
+        self._broken_siblings_layout(plans_dir)
+        cp = _run(
+            "build-tasks",
+            "--plans-dir", str(plans_dir),
+            "--filter-ids", "9,TASK-002",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        assert "scope" in res, res
+        # Both ids normalize and 002 is a transitive prereq of 009 anyway,
+        # so the closure is {001, 002, 009}; filter_ids in the scope is
+        # the sorted normalized seed set.
+        assert res["scope"]["filter_ids"] == ["002", "009"], res["scope"]
+        assert res["scope"]["closure"] == ["001", "002", "009"], res["scope"]
+
+    def test_build_tasks_filter_ids_cli_invalid_token_halts(
+        self, tmp_path: Path,
+    ) -> None:
+        """An un-normalizable token in the csv halts with `invalid-filter-ids`."""
+        plans_dir = tmp_path / "plan"
+        self._broken_siblings_layout(plans_dir)
+        cp = _run(
+            "build-tasks",
+            "--plans-dir", str(plans_dir),
+            "--filter-ids", "not-a-task-id",
+            "--json",
+        )
+        assert cp.returncode == 1
+        res = _parse_json(cp)
+        assert res["ok"] is False, res
+        codes = [e.get("code") for e in res.get("errors") or []]
+        assert "invalid-filter-ids" in codes, res
+
+    def test_build_tasks_filter_ids_in_closure_cycle_surfaces(
+        self, tmp_path: Path,
+    ) -> None:
+        """V8: closure-internal cycle still surfaces under scoped mode.
+
+        Two chunks 001 ↔ 002 are mutually dependent; the body deps are
+        well-formed (so the trust-the-roster path doesn't trigger).
+        Filter to {002} pulls 001 in transitively; downstream batching
+        surfaces the cycle.
+        """
+        plans_dir = tmp_path / "plan"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001", "file": "TASK-001_a.md",
+                        # Roster-side cycle: 001 depends on 002.
+                        "depends_on": ["002"], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        "task_id": "002", "file": "TASK-002_b.md",
+                        "depends_on": ["001"], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-001_a.md").write_text(
+            self._well_formed_child("001", deps_inline="[002]"),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-002_b.md").write_text(
+            self._well_formed_child("002", deps_inline="[001]"),
+            encoding="utf-8",
+        )
+        res = plan_ops._build_tasks(plans_dir, filter_ids={"002"})
+        assert res["ok"] is False, res
+        cycles = [
+            e for e in res["errors"]
+            if e.get("code") == "cyclic-dependency"
+        ]
+        assert cycles, res["errors"]
+        # The cycle members are exactly the in-closure pair.
+        assert set(cycles[0].get("task_ids") or []) == {"001", "002"}, (
+            cycles[0]
+        )
+
+    def test_build_tasks_filter_ids_skipped_chunk_not_opened(
+        self, tmp_path: Path,
+    ) -> None:
+        """Out-of-closure chunks contribute zero tasks/warnings/errors.
+
+        The `_broken_siblings_layout` deliberately omits TASK-099_ghost.md
+        on disk. Default-mode `build-tasks` would surface a
+        `child-file-not-found` error; the scoped run silences it.
+        """
+        plans_dir = tmp_path / "plan"
+        self._broken_siblings_layout(plans_dir)
+        # Default mode → loud failure on the missing sibling.
+        default = plan_ops._build_tasks(plans_dir)
+        assert default["ok"] is False, default
+        missing = [
+            e for e in default["errors"]
+            if e.get("code") == "child-file-not-found"
+            and e.get("task_id") == "099"
+        ]
+        assert missing, default["errors"]
+        # Scoped mode → silent skip.
+        scoped = plan_ops._build_tasks(plans_dir, filter_ids={"009"})
+        assert scoped["ok"] is True, scoped
+        assert scoped["errors"] == [], scoped
+        # No 099-targeted warnings either.
+        assert all(
+            (w.get("task_id") != "099") for w in scoped["warnings"]
+        ), scoped["warnings"]
+
+    def test_build_tasks_filter_ids_non_dict_chunk_surfaces_malformed_roster(
+        self, tmp_path: Path,
+    ) -> None:
+        """Scoped mode MUST still surface malformed-roster on non-dict chunks.
+
+        A non-dict chunk has no task_id, so it cannot be proven outside
+        the closure. Silencing it would hide genuine roster malformations
+        from scoped runs; per the plan AC, only chunks whose normalized
+        id is verified-not-in-closure may be silenced.
+        """
+        plans_dir = tmp_path / "plan"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001", "file": "TASK-001_a.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    # Non-dict chunk: cannot be classified in/out of
+                    # closure because there is no task_id to test.
+                    "not-a-dict-chunk",
+                ],
+            }),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-001_a.md").write_text(
+            self._well_formed_child("001"), encoding="utf-8",
+        )
+        res = plan_ops._build_tasks(plans_dir, filter_ids={"001"})
+        assert res["ok"] is False, res
+        malformed = [
+            e for e in res["errors"]
+            if e.get("code") == "malformed-roster"
+        ]
+        assert malformed, res["errors"]
+        # The error message pins to the offending chunk index.
+        assert any("chunks[1]" in e["message"] for e in malformed), malformed
+
+    def test_build_tasks_filter_ids_unnormalizable_task_id_surfaces_malformed_roster(
+        self, tmp_path: Path,
+    ) -> None:
+        """Scoped mode MUST still surface malformed-roster on un-normalizable ids.
+
+        A chunk whose `task_id` does not normalize has no canonical id
+        to test against the closure, so it cannot be proven outside-
+        closure. Per the plan AC, malformations of this kind must
+        surface in BOTH default and scoped modes.
+        """
+        plans_dir = tmp_path / "plan"
+        plans_dir.mkdir()
+        (plans_dir / "00_INDEX.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "chunks": [
+                    {
+                        "task_id": "001", "file": "TASK-001_a.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                    {
+                        # Un-normalizable: not a TASK-NNN form.
+                        "task_id": "garbage-id", "file": "ghost.md",
+                        "depends_on": [], "status": "Pending",
+                        "superseded_by": [],
+                    },
+                ],
+            }),
+            encoding="utf-8",
+        )
+        (plans_dir / "TASK-001_a.md").write_text(
+            self._well_formed_child("001"), encoding="utf-8",
+        )
+        res = plan_ops._build_tasks(plans_dir, filter_ids={"001"})
+        assert res["ok"] is False, res
+        malformed = [
+            e for e in res["errors"]
+            if e.get("code") == "malformed-roster"
+            and "garbage-id" in e["message"]
+        ]
+        assert malformed, res["errors"]
+
 
 # ---------------------------------------------------------------------------
 # TASK-009: resolve-read-targets / pre-read excerpts

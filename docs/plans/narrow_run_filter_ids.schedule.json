@@ -1,0 +1,198 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Roster-aware closure helper in `plan_ops.py`",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"index_closure or IndexClosure\"",
+      "priority": "high",
+      "plan_file": "TASK-001_index_closure_helper.md",
+      "description": "The helper signature is `_compute_index_closure(chunks: list[dict], requested_ids: set[str]) -> tuple[set[str], list[dict]]`. It returns `(closure_ids, errors)` where `closure_ids` is the transitive-closure ID set (including the requested IDs themselves) and `errors` is a list of `{code, ...}` dicts. Closure walking uses a BFS frontier seeded with normalized requested IDs; for each id, look up the chunk by normalized `task_id` (build a `{normalized_id: chunk}` map once), enqueue its `depends_on` entries (after normalizing each), and continue until the frontier drains. Cycles are naturally handled by the visited-set guard.\n\nErrors are surfaced when (a) a `requested_id` doesn't resolve to a chunk (`unknown-requested-id`), (b) a `depends_on` entry inside the closure doesn't normalize or doesn't resolve (`closure-malformed-dep`), or (c) the roster has duplicate `task_id` values (`duplicate-roster-id`). Errors outside the closure are NEVER surfaced \u2014 if a sibling chunk has malformed `depends_on` but isn't reached, the helper doesn't even look at it.\n\nThe CLI subcommand `index-closure` is a thin wrapper: parse `--plans-dir` + `--task-ids`, load chunks, call the helper, emit JSON. Exit code 0 if `errors == []`, exit code 1 otherwise. The JSON shape is `{closure: [<sorted ids>], skipped_chunk_count: <int>, errors: [...]}`.",
+      "acceptance_criteria": [
+        "V1\u2013V7 pass.",
+        "`_compute_index_closure` is pure-roster: never reads any `*.md` child.",
+        "Closure is computed via iterative BFS starting from `requested_ids`, walking `chunks[].depends_on` only via structured JSON. No regex parsing.",
+        "Each `requested_id` is normalized via `_normalize_task_id` before lookup (so callers can pass `\"9\"`, `\"009\"`, or `\"TASK-009\"` interchangeably).",
+        "Errors are returned in source order (chunk-declaration order in `00_INDEX.json`); within a chunk, errors are returned in `depends_on` index order.",
+        "New `cmd_index_closure` registered in `build_parser()` and the `main()` dispatch table.",
+        "`--json` is the only output mode (no human-readable mode); the orchestrator is the only consumer.",
+        "At least 8 unit tests in `TestIndexClosure` covering: happy path, transitive 4-deep, unknown id (single + mixed-with-known), malformed dep inside closure, malformed dep outside closure (silent), duplicate `task_id`, empty `requested_ids` (returns empty closure + empty errors), self-referential `depends_on` (cycle of length 1 \u2014 error)."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file wiring, new module/test creation"
+    },
+    {
+      "id": "002",
+      "title": "`build-tasks --filter-ids` and scoped roster validation",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"BuildTasks\"",
+      "priority": "high",
+      "plan_file": "TASK-002_build_tasks_filter_ids.md",
+      "description": "The shape of `_build_tasks` after this change:\n\n```python\ndef _build_tasks(plans_dir: Path, *, filter_ids: set[str] | None = None) -> dict:\n    chunks = _load_index_chunks(plans_dir)\n    if filter_ids is not None:\n        closure_ids, closure_errors = _compute_index_closure(chunks, filter_ids)\n        if closure_errors:\n            return {\"ok\": False, \"errors\": closure_errors, ...}  # halt\n        chunks_in_scope = [c for c in chunks if _normalize_task_id(c[\"task_id\"]) in closure_ids]\n        skipped = len(chunks) - len(chunks_in_scope)\n    else:\n        chunks_in_scope = chunks\n        closure_ids = None\n        skipped = 0\n\n    # ... existing _parse_task_block walk over chunks_in_scope only ...\n    # ... existing closing _validate_dependencies block, but trust roster deps when filter_ids is set ...\n\n    result = {\"ok\": ..., \"tasks\": [...], \"warnings\": [...], \"errors\": [...], \"batches\": [...]}\n    if filter_ids is not None:\n        result[\"scope\"] = {\n            \"filter_ids\": sorted(filter_ids),\n            \"closure\": sorted(closure_ids),\n            \"skipped_chunk_count\": skipped,\n        }\n    return result\n```\n\nThe trust-the-roster behavior on in-closure deps: when scoring a dep that doesn't normalize from the body's `**Dependencies:**` line, check if the chunk's roster-side `depends_on` contains anything that resolves to an in-closure task. If yes, the dep is satisfied via the roster \u2014 surface as `body-deps-unparseable` warning. If no, the dep is genuinely unresolvable \u2014 surface as `unresolvable-dep` error.",
+      "acceptance_criteria": [
+        "V1\u2013V8 pass.",
+        "`_build_tasks` keyword-only `filter_ids` parameter; default `None` preserves today's behavior verbatim.",
+        "When `filter_ids` is set, `_build_tasks` first calls `_compute_index_closure` from TASK-001; closure errors halt before any child markdown is read.",
+        "Skipped chunks (those outside the closure) contribute zero tasks, zero warnings, zero errors. Their child files are never opened.",
+        "In-closure deps are validated against the **closure set** (which is derived from the roster). A dep that resolves via the roster but cannot be parsed from the body becomes a `body-deps-unparseable` warning; a dep that doesn't resolve via the roster is still a hard `unresolvable-dep` error.",
+        "The `scope` key is present on the result iff `filter_ids` is non-None.",
+        "Cycle detection: closure-internal cycles surface; cycles touching skipped chunks do not (a cycle that crosses the closure boundary is by definition closure-internal once you walk the dep, so this case is structurally rare; document the edge case in a one-line code comment).",
+        "Argparse registers `--filter-ids` (csv-of-task-ids) on `build-tasks` only. Reuse the same csv-parsing helper that `--task-ids` uses on `filter-schedule`.",
+        "At least 6 new tests in `TestBuildTasks`: happy filter, transitive filter, broken-sibling-outside-closure (silent), malformed-body-deps-inside-closure (warning), broken-task-itself (halt), unknown filter id (halt). The fixture from TASK-003 powers the end-to-end smoke; inline string fixtures power the unit cases that don't need it."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file wiring, new module/test creation"
+    },
+    {
+      "id": "003",
+      "title": "Broken-sibling fixture and regression tests",
+      "files": [
+        "`tests/fixtures/directory_mode_plan_broken_siblings/00_INDEX.json` (create)",
+        "`tests/fixtures/directory_mode_plan_broken_siblings/TASK-001_<slug>.md` (create)",
+        "`tests/fixtures/directory_mode_plan_broken_siblings/TASK-002_<slug>.md` (create)",
+        "`tests/fixtures/directory_mode_plan_broken_siblings/TASK-003_<slug>.md` (create)",
+        "`tests/fixtures/directory_mode_plan_broken_siblings/TASK-004_<slug>.md` (create)",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [
+        "002"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"BrokenSiblings or broken_sibling\"",
+      "priority": "medium",
+      "plan_file": "TASK-003_broken_sibling_fixture.md",
+      "description": "This task ships test infrastructure, not behavior. The unit tests in TASK-002 use inline string fixtures to exercise `_build_tasks` and `_compute_index_closure` directly; the end-to-end tests here exercise the CLI subcommands against an on-disk directory shaped like a real plan. Together they bracket the change at both the function and the subcommand boundaries.",
+      "acceptance_criteria": [
+        "V1\u2013V6 pass.",
+        "Each child file in the fixture is a complete, parseable task block aside from the deliberate `**Dependencies:**` defect on TASK-002 + TASK-004 (i.e., they have valid `### TASK-NNN:` H3, `**Status:**`, `**Priority:**`, `**Files:**`, `**Test command:**`, `**Acceptance criteria:**`, `**Description:**`). The defect is isolated to the deps line; everything else parses.",
+        "Body-deps prose for TASK-002 + TASK-004 is copied in style from real defects in `docs/plans/DUAL_AGENT_Plans/TASK-009_scale_aware_reads.md:176` and similar \u2014 no synthetic strings, the fixture documents the real bug.",
+        "The shipped `tests/fixtures/directory_mode_plan/` is unchanged.",
+        "`_gate_fixture_valid` continues to pass against the canonical sample."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file wiring, new module/test creation"
+    },
+    {
+      "id": "004",
+      "title": "Orchestrator narrow-run wiring",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`plugins/plan-executor/scripts/plan_ops.py` (single-line `ALLOWED_LOG_EVENTS` append)",
+        "`tests/scripts/test_implement_plan_directory_smoke.py` (or the closest existing smoke-test file)"
+      ],
+      "dependencies": [
+        "002",
+        "003"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_implement_plan_directory_smoke.py -k \"narrow or scoped\"",
+      "priority": "high",
+      "plan_file": "TASK-004_orchestrator_narrow_run.md",
+      "description": "This is a wiring task. The actual semantic change is in TASK-002; this task makes the orchestrator USE it. The SKILL.md edits are surgical \u2014 preserve existing prose, add `**When `--task-ids` is set:**` sub-paragraphs that override the default invocation. Concrete addition under Phase 1 Step 1:\n\n> **When `--task-ids <csv>` is set:** before invoking `build-tasks`, capture the closure:\n>\n> ```bash\n> $PYTHON \"${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py\" index-closure \\\n>   --plans-dir <plans_dir> --task-ids <csv> --json\n> ```\n>\n> Halt on closure errors (`unknown-requested-id`, `closure-malformed-dep`, `duplicate-roster-id`). Then invoke `build-tasks` with `--filter-ids <closure-csv>` (NOT `<requested-csv>` \u2014 the closure includes transitive prereqs):\n>\n> ```bash\n> $PYTHON \"${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py\" build-tasks \\\n>   --plans-dir <plans_dir> --filter-ids <closure-csv> --json\n> ```\n>\n> Capture the `scope` key from the result and emit `build_tasks_scoped`:\n>\n> ```bash\n> $PYTHON \"${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py\" log-event \\\n>   --event build_tasks_scoped \\\n>   --fields-json '{\"run_id\":\"<id>\",\"plan_file\":\"<dir-basename>\",\"filter_ids\":[...],\"closure\":[...],\"skipped_chunk_count\":<N>}' --json\n> ```\n>\n> Validation behavior on the scoped path: in-closure children parse strictly (today's behavior); skipped chunks contribute zero tasks/warnings/errors. `--allow-gaps` and `--analyst-binding` apply only to in-closure warnings.\n\nThe Phase 0 schema-valid loop edit is similarly conditional:\n\n> **When `--task-ids <csv>` is set:** iterate the closure (computed once via `index-closure` and reused) instead of `chunks[].file`. The narrow run should not halt on a sibling's schema breach if the sibling is outside scope.",
+      "acceptance_criteria": [
+        "V1\u2013V6 pass.",
+        "SKILL.md edits are localized to Phase 0 (~lines 236-246) and Phase 1 (~lines 268-356). No other phase prose touched.",
+        "The new prose explicitly addresses the four open design questions from `00_INDEX.md` with the chosen defaults (silent skip, flag-based, no relaxed mode, no triage scope-aware metadata).",
+        "`ALLOWED_LOG_EVENTS` gains exactly one entry: `\"build_tasks_scoped\"`. No reordering of existing entries.",
+        "The smoke test materializes the broken-siblings fixture (TASK-003), invokes `/implement-plan` via the same harness as existing smoke tests, and asserts (a) the dry-run exit success, (b) the printed schedule includes the closure tasks only, (c) the run-log written to a temp dir contains a `build_tasks_scoped` event.",
+        "SKILL.md edits avoid changes to surrounding line numbers \u2014 append new conditional branches inside the existing Phase prose blocks rather than restructuring them, so future skill diffs stay reviewable."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file wiring, new module/test creation"
+    },
+    {
+      "id": "005",
+      "title": "`body-deps-unparseable` warnings + `body_deps_canonical` audit check",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [
+        "002"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"body_deps or BodyDepsCanonical\"",
+      "priority": "low",
+      "plan_file": "TASK-005_audit_body_deps_canonical.md",
+      "description": "The drift this task makes visible is real: `docs/plans/DUAL_AGENT_Plans/TASK-009_scale_aware_reads.md:176` says `**Dependencies:** TASK-001 (schema) and TASK-007 (audit can then verify new fields are documented, not required).` while the roster (`00_INDEX.json` chunk for `task_id: \"009\"`) declares `\"depends_on\": [\"002\"]`. The body says 001 + 007; the roster says 002. Today the executor parses the body and ignores the roster-side deps; under TASK-002's scoped path it does the inverse. Either way, the drift was invisible before this audit check.\n\nThe check is intentionally cheap \u2014 no schema changes, no rewrites, just a registered-with-the-audit standing finding so an operator running `python plan_ops.py audit --json` before a refactor sees a count of plans that need prose cleanup.",
+      "acceptance_criteria": [
+        "V1\u2013V6 pass.",
+        "The audit check is registered with `tier: \"advisory\"`. The default verdict (no `--strict`) does not include this check; `--strict` does.",
+        "The check iterates every plan dir under `<plan_dir>` (i.e., every directory containing `00_INDEX.json`). For each plan, it parses each child markdown's `**Dependencies:**` line and compares the parsed-and-normalized result against the chunk's roster `depends_on`. A mismatch (parse failure, missing entry, extra entry) surfaces as a finding.",
+        "Findings carry per-child detail: `{task_id, plan_file, body_message, roster_deps, mismatch_type}` where `mismatch_type \u2208 {unparseable, drift, extra}`.",
+        "The check skips plans whose `00_INDEX.json` is missing or malformed (returns `status: \"not_applicable\"` for that plan with a per-plan reason; does not halt the audit).",
+        "The `body-deps-unparseable` warning shape is consumed by `_build_tasks` exactly as TASK-002 specifies: a per-task warning, not an error.",
+        "At least 3 new audit tests covering: clean roster + clean bodies (pass), clean roster + malformed body (advisory fail with `unparseable`), clean roster + body deps drifted from roster (advisory fail with `drift`)."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file wiring, new module/test creation"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "tests/fixtures/directory_mode_plan_broken_siblings/00_INDEX.json",
+        "tests/fixtures/directory_mode_plan_broken_siblings/TASK-001_<slug>.md",
+        "tests/fixtures/directory_mode_plan_broken_siblings/TASK-002_<slug>.md",
+        "tests/fixtures/directory_mode_plan_broken_siblings/TASK-003_<slug>.md",
+        "tests/fixtures/directory_mode_plan_broken_siblings/TASK-004_<slug>.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 5,
+      "task_ids": [
+        "004"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_implement_plan_directory_smoke.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

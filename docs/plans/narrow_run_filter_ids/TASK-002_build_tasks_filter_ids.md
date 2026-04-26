@@ -53,7 +53,7 @@ This is the load-bearing behavior change. When `filter_ids` is set:
 
 ### TASK-002: `build-tasks --filter-ids` and scoped roster validation
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`
