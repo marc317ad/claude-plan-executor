@@ -2944,6 +2944,94 @@ class TestParseImplementerReport:
         codes = [d["code"] for d in body.get("diagnostics") or []]
         assert "missing-concerns-for-reviewer" in codes, body
 
+    def test_coupling_check_block_round_trips(self) -> None:
+        # TASK-002 (POSTMORTEM_FIXES): a report carrying the new
+        # **Coupling check:** block (mandatory when an AC names a
+        # regex/header/symbol pattern family) must round-trip through
+        # `parse-implementer-report` without surfacing a parser error
+        # or losing any of the canonical fields. The block itself is
+        # opaque to the parser today (extracted as fenced text inside
+        # the report `raw`); this test pins that the parser does not
+        # choke on the new section header.
+        report = (
+            "**Outcome:** success\n"
+            "**Files changed:**\n- plugins/plan-executor/scripts/plan_ops.py\n"
+            "**Diff summary:** loosen `_READ_TARGETS_HEADER_RE`, "
+            "`_SYMBOL_TARGETS_HEADER_RE`, and the `_iter_target_bullets` "
+            "section-boundary detector uniformly.\n"
+            "**Test outcome:** passed\n"
+            "**Coupling check:**\n"
+            "```yaml\n"
+            'pattern_family: "\\\\*\\\\*[^*]+:\\\\*\\\\*\\\\s*$"\n'
+            "siblings_checked:\n"
+            '  - file: "plugins/plan-executor/scripts/plan_ops.py"\n'
+            "    line: 9300\n"
+            "    disposition: uniformly_applied\n"
+            '  - file: "plugins/plan-executor/scripts/plan_ops.py"\n'
+            "    line: 9320\n"
+            "    disposition: uniformly_applied\n"
+            '  - file: "plugins/plan-executor/scripts/plan_ops.py"\n'
+            "    line: 8420\n"
+            "    disposition: uniformly_applied\n"
+            "```\n"
+            "**Concerns for reviewer:**\n- none\n"
+            "**Plan adaptations:**\n- none\n"
+            "**Reversion guidance:** revert the three regex loosenings.\n"
+        )
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-implementer-report", "--stdin", "--json"],
+            input=report,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        # Canonical fields still parse correctly despite the new block.
+        assert body["outcome"] == "success"
+        assert body["files_changed"] == [
+            "plugins/plan-executor/scripts/plan_ops.py",
+        ]
+        assert body["test_outcome"] == "passed"
+        assert body["concerns"] == ["none"]
+        assert body["plan_adaptations"] == ["none"]
+        # No mandatory-header diagnostics — Plan adaptations + Concerns
+        # for reviewer headers are both present.
+        codes = [d["code"] for d in body.get("diagnostics") or []]
+        assert "missing-plan-adaptations" not in codes, body
+        assert "missing-concerns-for-reviewer" not in codes, body
+        # The Coupling check block is preserved verbatim in `raw` so
+        # downstream cross-reviewer dispatch can read it.
+        assert "**Coupling check:**" in body["raw"]
+        assert "pattern_family" in body["raw"]
+        assert "siblings_checked" in body["raw"]
+
+    def test_coupling_check_not_applicable_form_round_trips(self) -> None:
+        # TASK-002: when no Step 4.5 trigger fires, the implementer
+        # emits a one-line `not applicable` form instead of the
+        # structured fenced block. Verify the parser tolerates this
+        # form too.
+        report = (
+            "**Outcome:** success\n"
+            "**Files changed:**\n- a.txt\n"
+            "**Diff summary:** noop\n"
+            "**Test outcome:** not_run\n"
+            "**Coupling check:** not applicable — AC names no regex/header/symbol pattern.\n"
+            "**Concerns for reviewer:**\n- none\n"
+            "**Plan adaptations:**\n- none\n"
+        )
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT), "parse-implementer-report", "--stdin", "--json"],
+            input=report,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["outcome"] == "success"
+        assert "not applicable" in body["raw"]
+
 
 # ---------------------------------------------------------------------------
 # commit-task + fail-task — smoke tests against a fresh git repo

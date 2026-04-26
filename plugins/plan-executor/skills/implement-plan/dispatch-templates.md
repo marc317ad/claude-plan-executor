@@ -403,6 +403,8 @@ emits `{reads, symbols, errors}`. The orchestrator either renders the structured
 >
 > The `## Pre-read excerpts` block above (when present) is a seed, not a gag — you MAY issue additional `Read` calls with different offsets when the excerpts are insufficient.
 >
+> **Coupling check (TASK-002, mandatory).** Before declaring complete, run the Step 4.5 coupling-detector grep from your agent spec when the AC mentions any of: a `_RE`-suffixed regex name, an `ALLOWED_`-prefixed allowlist constant, a `**...**` markdown-header pattern, or any symbol that appears ≥2 times in the touched files. Report the result in the mandatory `**Coupling check:**` block of your report. When no trigger fires, emit `**Coupling check:** not applicable — <one-line reason>` so the cross-reviewer can confirm the check was considered. The block carries `pattern_family`, `siblings_checked` (list of `{file, line, disposition}`), with `disposition ∈ {uniformly_applied, excluded_with_reason, not_applicable}`.
+>
 > **Parallel-mode caveat:** other implementers may be running concurrently on disjoint files. Trust the diff when classifying test failures; do NOT use `git stash` (it would collide).
 >
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.

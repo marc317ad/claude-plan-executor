@@ -23,7 +23,7 @@
       "file": "TASK-002_coupling_detector_prompt.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Post-mortem Issue 2 + 9 \u2014 _iter_target_bullets sibling regex missed during D.2a.5 remediation; protocol-mandated halt fired on what was effectively a 'you missed one'."
     },

@@ -69,6 +69,26 @@ If `Test command: none`, skip execution but record `Test outcome: not-run` with 
 
 Walk each bullet under `Acceptance criteria:`. For each one, either provide concrete evidence that the change satisfies it (file + line reference, test assertion, behavior description) or acknowledge the gap honestly. Mark satisfied criteria `[x]` and unmet criteria `[!]`.
 
+### Step 4.5 — Coupling check (mandatory before declaring complete)
+
+This step closes a friction class where a single AC names a regex/header/symbol pattern but a sibling site using the same pattern slips past the implementer and is caught only by the cross-reviewer. Run the check whenever ANY of the following triggers fire:
+
+- The AC text mentions an identifier ending in `_RE` (a regex constant — e.g., `_READ_TARGETS_HEADER_RE`).
+- The AC text mentions an identifier prefixed with `ALLOWED_` (an allowlist constant — e.g., `ALLOWED_VERDICTS`).
+- The AC text quotes a markdown header pattern wrapped in `**...**` (e.g., `**Read targets:**`, `**Concerns for reviewer:**`).
+- A symbol named in the AC OR in the `Files:` block appears ≥2 times (exact-string match) across the touched files.
+
+When at least one trigger fires, you MUST:
+
+1. **Identify the pattern family** — the regex shape, header literal, or symbol the AC pivots on. Name it explicitly in the report's `coupling_check.pattern_family` field.
+2. **Grep across the touched files for that family.** Use `Grep` with the family pattern (regex literal for `_RE` triggers, the bracketed string for `**...**` headers, the symbol name for `ALLOWED_*` and ≥2-hit triggers). The grep scope is the union of the `Files:` list — you do NOT need to grep the whole repo.
+3. **Classify each hit.** Each hit must be either (a) `uniformly_applied` — modified in a way consistent with the AC's intent, (b) `excluded_with_reason` — intentionally untouched, with a one-line justification, or (c) `not_applicable` — the hit is a string match on an unrelated symbol (e.g., a comment that happens to mention the pattern). Record `file:line` for each sibling.
+4. **Report the result** in the `**Coupling check:**` block of your report (schema below). The cross-reviewer uses this block to verify uniform application without re-doing the grep.
+
+**Worked example (TASK-009 sibling-regex case).** During run 20260425T041800, TASK-009's first review correctly flagged that `_READ_TARGETS_HEADER_RE` and `_SYMBOL_TARGETS_HEADER_RE` over-restricted the bold-field-label match. The remediator fixed those two regexes but missed a third sibling: the section-boundary detector inside `_iter_target_bullets` at `plan_ops.py:8420`, which used the same restrictive pattern. A coupling check on the family pattern `\*\*[^*]+:\*\*\s*$` across the touched file would have surfaced all three sites in a single grep, and the implementer would have either uniformly applied the loosening or recorded `excluded_with_reason: "loop-internal regex serves a different purpose"` — either way, the second-review failure would have been avoided.
+
+When NO trigger fires, emit `**Coupling check:** not applicable — <one-line reason, e.g., "AC does not name a regex/constant/header pattern">`. Do not omit the field.
+
 ### Step 5 — Report
 
 Emit the report using the exact shape below.
@@ -96,6 +116,18 @@ Emit the report using the exact shape below.
 **Acceptance criteria check:**
 - [x] Criterion 1 — <evidence>
 - [!] Criterion 2 — <gap explanation>
+
+**Coupling check:**
+<Mandatory block. When a Step 4.5 trigger fired, emit the structured form below as a fenced ```yaml or ```json block (parser-agnostic — `parse-implementer-report` extracts it as opaque text). When no trigger fired, emit a single line `not applicable — <one-line reason>`. The cross-reviewer uses this block to verify uniform application of the pattern family without re-greping.>
+
+```yaml
+pattern_family: "<regex literal, header string, or symbol name>"
+siblings_checked:
+  - file: "<path>"
+    line: <line number>
+    disposition: uniformly_applied | excluded_with_reason | not_applicable
+    note: "<one-line reason — required when disposition is excluded_with_reason>"
+```
 
 **Plan adaptations:**
 <Any places where you had to deviate from the plan's recommended change because the live code differed or the analyst annotations required it. "None" if you followed the plan verbatim. Emit as a bulleted list (one `- ` entry per adaptation); `plan_ops.py parse-implementer-report` extracts this as a list of strings. If this section header is omitted, `parse-implementer-report` emits a `missing-plan-adaptations` diagnostic; the orchestrator surfaces this to the reviewer but does not halt. Same for `**Concerns for reviewer:**`. This includes literal-wording substitutions where you used an equivalent mechanism (e.g., plan says `foo.py subcommand` but you called an internal helper that produces the same output); such cases MUST be flagged even when the emitted behavior is identical.>

@@ -28,7 +28,7 @@ When an AC names a regex, header, or symbol pattern that appears as part of a si
 
 ### TASK-002: Coupling-detector prompt step
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/agents/plan-implementer.md` (edit — add Coupling check subsection + report schema field)
