@@ -1770,3 +1770,142 @@ def test_implement_schema_declares_sandbox_divergence_fields_optional_but_requir
 
     # The structural invariant from CODEX_FRICTION TASK-001 still holds.
     assert required == set(properties.keys())
+
+
+# ---------------------------------------------------------------------------
+# TASK-009 (POSTMORTEM_FIXES): canonical verdict allowlists embedded in Codex
+# review + plan-review prompts. Tests assert (a) the allowlist section is
+# present, (b) all four role names appear, (c) the role-disambiguation
+# paragraph is present, (d) for plan-review the per-task ownership block is
+# present, and (e) the renderer reads the canonical constants dynamically
+# (load-bearing — without this guarantee a future module could embed a
+# snapshot at import time).
+# ---------------------------------------------------------------------------
+
+
+SHARED_PLAN_FOR_VERDICT_TEST = (
+    "### TASK-005: Verdict allowlist render fixture\n"
+    "- **Status:** pending\n"
+    "- **Priority:** P1\n"
+    "- **Files:**\n"
+    "  - foo.py\n"
+    "\n"
+    "**Description:**\n"
+    "Fixture for verdict-allowlist tests.\n"
+    "\n"
+)
+
+
+def _render_review_prompt_for_verdict_tests():
+    task = wrapper.parse_task_block(SHARED_PLAN_FOR_VERDICT_TEST, "005")
+    return wrapper.render_review_prompt(
+        task,
+        diff="(diff)",
+        review_focus="bugs",
+        review_files=["foo.py"],
+    )
+
+
+def _render_plan_review_prompt_for_verdict_tests(tasks=None):
+    schedule = {
+        "outcome": "valid",
+        "tasks": tasks if tasks is not None else [
+            {"task_id": "001", "files": ["a.py", "b.py"]},
+            {"task_id": "002", "files": ["c.py"]},
+        ],
+        "batches": [],
+        "gaps": [],
+    }
+    return wrapper.render_plan_review_prompt(json.dumps(schedule))
+
+
+def _assert_canonical_verdict_section(prompt: str) -> None:
+    """All four role names + the disambiguation paragraph must appear."""
+    assert "## Canonical verdict allowlists" in prompt, prompt[:500]
+    assert "Codex review" in prompt
+    assert "Codex plan-review" in prompt
+    assert "Claude review" in prompt
+    assert "D.5 third opinion" in prompt
+    # Role-disambiguation paragraph (load-bearing per the post-mortem).
+    assert (
+        "Do NOT flag a plan-text reference to another role's verdict as "
+        "invalid"
+    ) in prompt
+
+
+def test_verdict_allowlist_in_review_prompt_contains_all_four_roles():
+    prompt = _render_review_prompt_for_verdict_tests()
+    _assert_canonical_verdict_section(prompt)
+    # The allowlist text uses the canonical constants directly — verify a
+    # representative verdict from each set appears.
+    assert "needs-rework" in prompt
+    assert "minor-findings" in prompt
+    assert "ship-with-fixes" in prompt
+    assert "approved-with-notes" in prompt
+
+
+def test_verdict_allowlist_in_plan_review_prompt_contains_all_four_roles():
+    prompt = _render_plan_review_prompt_for_verdict_tests()
+    _assert_canonical_verdict_section(prompt)
+
+
+def test_verdict_allowlist_in_plan_review_prompt_embeds_task_file_ownership():
+    """Plan-review must embed a `Task-level file ownership` subsection
+    enumerating each `tasks[].files[]` entry, one bullet per task."""
+    prompt = _render_plan_review_prompt_for_verdict_tests(
+        tasks=[
+            {"task_id": "001", "files": ["a.py", "b.py"]},
+            {"task_id": "002", "files": ["c.py"]},
+        ],
+    )
+    assert "## Task-level file ownership" in prompt
+    assert "TASK-001" in prompt
+    assert "a.py" in prompt and "b.py" in prompt
+    assert "TASK-002" in prompt
+    assert "c.py" in prompt
+
+
+def test_verdict_allowlist_review_prompt_dynamic_read_from_canonical_constants(
+    monkeypatch,
+):
+    """LOAD-BEARING dynamic-read assertion: temporarily extend
+    `ALLOWED_CODEX_REVIEW_VERDICTS` with a synthetic verdict and re-render
+    the prompt. The synthetic verdict MUST appear in the rendered text —
+    this pins that the renderer reads the constants at render time rather
+    than embedding a snapshot at module-import time. Override is reverted
+    automatically by monkeypatch."""
+    import plan_ops  # type: ignore
+
+    synthetic = "synthetic-test-verdict"
+    extended = set(plan_ops.ALLOWED_CODEX_REVIEW_VERDICTS) | {synthetic}
+    monkeypatch.setattr(plan_ops, "ALLOWED_CODEX_REVIEW_VERDICTS", extended)
+
+    prompt = _render_review_prompt_for_verdict_tests()
+    assert synthetic in prompt, (
+        "renderer must read ALLOWED_CODEX_REVIEW_VERDICTS dynamically"
+    )
+
+
+def test_verdict_allowlist_plan_review_prompt_dynamic_read_from_constants(
+    monkeypatch,
+):
+    """Same dynamic-read guarantee on the plan-review render path, against
+    `ALLOWED_PLAN_REVIEW_VERDICTS`."""
+    import plan_ops  # type: ignore
+
+    synthetic = "synthetic-plan-review-verdict"
+    extended = set(plan_ops.ALLOWED_PLAN_REVIEW_VERDICTS) | {synthetic}
+    monkeypatch.setattr(plan_ops, "ALLOWED_PLAN_REVIEW_VERDICTS", extended)
+
+    prompt = _render_plan_review_prompt_for_verdict_tests()
+    assert synthetic in prompt, (
+        "renderer must read ALLOWED_PLAN_REVIEW_VERDICTS dynamically"
+    )
+
+
+def test_canonical_verdicts_d5_alias_matches_claude_review_set():
+    """`ALLOWED_D5_VERDICTS` is the named alias for the D.5 third-opinion
+    role and resolves to the same vocabulary as the Claude reviewer."""
+    import plan_ops  # type: ignore
+
+    assert plan_ops.ALLOWED_D5_VERDICTS == plan_ops.ALLOWED_CLAUDE_REVIEW_VERDICTS

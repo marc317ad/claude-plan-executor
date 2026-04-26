@@ -102,7 +102,7 @@
       "depends_on": [
         "008"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": [],
       "origin_note": "Post-mortem cross-cutting observation 1 \u2014 three Codex review false positives in this run; one was vocabulary confusion between Codex-reviewer verdicts and D.5 verdicts."
     },

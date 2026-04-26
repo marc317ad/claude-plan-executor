@@ -46,7 +46,7 @@ When the plan or task content references verdicts from another role's allowlist,
 
 ### TASK-009: Verdict allowlist embed in Codex prompts
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** low
 - **Files:**
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit — `cmd_review` and `cmd_plan_review` prompt-render paths; reads canonical constants)

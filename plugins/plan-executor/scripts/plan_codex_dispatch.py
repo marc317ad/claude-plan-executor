@@ -374,7 +374,22 @@ def render_plan_review_prompt(
     """
     plan_label = plan_basename if plan_basename else "(schedule-only; no plan file)"
     demotion_clause = ALLOW_GAPS_DEMOTION_CLAUSE if allow_gaps_demotion else ""
+    # TASK-009 (POSTMORTEM_FIXES): embed the canonical verdict allowlists +
+    # per-task ownership block so Codex stops conflating role allowlists and
+    # stops misreading batch-level file aggregates.
+    allowlist_block = plan_ops.render_canonical_verdict_allowlists(
+        "codex-plan-review"
+    )
+    ownership_block = ""
+    try:
+        schedule_obj = json.loads(schedule_json)
+    except (TypeError, ValueError):
+        schedule_obj = None
+    if isinstance(schedule_obj, dict):
+        ownership_block = plan_ops.render_task_file_ownership(schedule_obj)
     return (
+        f"{allowlist_block}"
+        f"{ownership_block}"
         f"Review the persisted schedule for this plan. The plan was authored "
         f"by a peer analyst and decomposed into a fat manifest by "
         f"`plan_ops.py build-tasks`; you are an independent pre-dispatch "
@@ -505,9 +520,16 @@ def render_review_prompt(
         target_task_id,
         plan_file=plan_file,
     ) if plan_text is not None else ""
+    # TASK-009 (POSTMORTEM_FIXES): embed the canonical verdict allowlists so
+    # Codex stops conflating role-specific verdict sets. Read dynamically
+    # from plan_ops module-level constants — no string duplication.
+    allowlist_block = plan_ops.render_canonical_verdict_allowlists(
+        "codex-review"
+    )
     return (
         f"{target_injection}"
         f"{pre_read_prefix}"
+        f"{allowlist_block}"
         f"Review the implementation of TASK-{task['task_id']} in this repository.\n\n"
         f"Task objective: {task['title']}\n\n"
         f"Task requirements:\n{ac_bullets}\n\n"

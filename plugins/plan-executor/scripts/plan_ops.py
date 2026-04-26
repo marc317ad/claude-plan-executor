@@ -122,6 +122,12 @@ ALLOWED_PLAN_REVIEW_TRIAGE_SOURCES = {
 # markdown + schedule JSON, not a diff, and drives a different routing table
 # (see SKILL.md §Phase 1.5).
 ALLOWED_PLAN_REVIEW_VERDICTS = {"approved", "approved-with-notes", "needs-replan"}
+# TASK-009 (POSTMORTEM_FIXES): D.5 third-opinion adjudicators draw from the
+# same vocabulary as the Claude reviewer (ship | ship-with-fixes |
+# partial-agreement | needs-rework). Exposed as a named alias so
+# prompt-render paths and external callers can reference the D.5 role
+# explicitly without re-deriving the relationship.
+ALLOWED_D5_VERDICTS = ALLOWED_CLAUDE_REVIEW_VERDICTS
 ALLOWED_PLAN_REVIEW_FINDING_SEVERITIES = {"critical", "important", "minor"}
 # TASK-019: reviewer-minor-finding optional disposition vocabulary. Allows the
 # D.5 adjudicator to attach a structured "what happened to this finding"
@@ -9775,6 +9781,76 @@ def render_target_task_id_injection(
         f"plan file declares {heading_count} `### TASK-NNN:` H3 headings; "
         "read only the matching block).\n\n"
     )
+
+
+def render_canonical_verdict_allowlists(role: str) -> str:
+    """TASK-009 (POSTMORTEM_FIXES): render the four canonical verdict
+    allowlists as a prompt section keyed off the active reviewer role.
+
+    Reads the canonical sets dynamically each call (not at import time) so
+    callers see updates if a constant is patched in-process. Module-level
+    lookups (rather than a captured local) are load-bearing for the
+    dynamic-read assertion in the regression tests.
+    """
+    bullets = [
+        (
+            "- Codex review (your verdict in `review`): "
+            + " | ".join(sorted(ALLOWED_CODEX_REVIEW_VERDICTS))
+        ),
+        (
+            "- Codex plan-review (your verdict in `plan-review`): "
+            + " | ".join(sorted(ALLOWED_PLAN_REVIEW_VERDICTS))
+        ),
+        (
+            "- Claude review (NOT YOUR ROLE): "
+            + " | ".join(sorted(ALLOWED_CLAUDE_REVIEW_VERDICTS))
+        ),
+        (
+            "- D.5 third opinion (NOT YOUR ROLE): "
+            + " | ".join(sorted(ALLOWED_D5_VERDICTS))
+        ),
+    ]
+    return (
+        "## Canonical verdict allowlists\n"
+        "\n"
+        f"You are running as the {role}. Your verdict MUST come from your "
+        "role's allowlist below. Do NOT confuse role allowlists.\n"
+        "\n"
+        + "\n".join(bullets)
+        + "\n\n"
+        "When the plan or task content references verdicts from another "
+        "role's allowlist, treat that as expected (the plan documents the "
+        "cross-role mapping). Do NOT flag a plan-text reference to another "
+        "role's verdict as invalid — it is valid in another role's set.\n"
+        "\n"
+    )
+
+
+def render_task_file_ownership(schedule_obj: dict) -> str:
+    """TASK-009 (POSTMORTEM_FIXES): render a per-task `tasks[].files[]`
+    ownership block for plan-review prompts. Returns an empty string when
+    the schedule has no tasks (so callers can append unconditionally).
+    """
+    tasks = (schedule_obj or {}).get("tasks") or []
+    if not tasks:
+        return ""
+    out = [
+        "## Task-level file ownership",
+        "",
+        (
+            "Per-task `files[]` ownership from the persisted schedule. "
+            "Verify per-task ownership directly against this list rather "
+            "than inferring from any batch-level aggregate."
+        ),
+        "",
+    ]
+    for task in tasks:
+        tid = task.get("task_id") or task.get("id") or "?"
+        files = task.get("files") or []
+        files_str = ", ".join(files) if files else "(none declared)"
+        out.append(f"- TASK-{tid}: {files_str}")
+    out.append("")
+    return "\n".join(out) + "\n"
 
 
 def render_pre_read_excerpts(resolved: dict) -> str:
