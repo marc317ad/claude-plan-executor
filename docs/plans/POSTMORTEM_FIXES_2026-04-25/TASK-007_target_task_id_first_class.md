@@ -53,7 +53,7 @@ Eliminate the manual prompt augmentation that the orchestrator performed nine ti
   - `plugins/plan-executor/scripts/plan_ops.py` (edit — Claude template renderer, `build-tasks` warning text, any `dispatch-prompt` subcommands)
   - `tests/scripts/test_plan_codex_dispatch.py` (regression tests)
   - `tests/scripts/test_plan_ops.py` (regression tests)
-- **Dependencies:** []
+- **Dependencies:** [002, 005, 006]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py tests/scripts/test_plan_ops.py -k "target_task_id or extra_task_heading"`
 - **Read targets:**
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` — full file

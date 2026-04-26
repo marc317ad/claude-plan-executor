@@ -35,7 +35,7 @@ Both are cheap; ship both. The lint catches the future-self error; the SoT remov
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (edit — `CANONICAL_CONTRACT` constant + `_gate_fixture_valid` read site + new audit-check `_check_canonical_fixture_not_archived`)
   - `tests/scripts/test_plan_ops.py` (regression tests)
-- **Dependencies:** []
+- **Dependencies:** [003]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py -k "fixture_valid or canonical_fixture"`
 - **Symbol targets:**
   - `plugins/plan-executor/scripts/plan_ops.py::CANONICAL_CONTRACT`

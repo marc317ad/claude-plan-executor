@@ -32,7 +32,7 @@ Reduce the friction class behind the post-mortem's Issue 6 (TASK-028 D-Codex nee
   - `plugins/plan-executor/agents/plan-implementer.md` (edit — N-state subsection + optional report-schema field)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit — surface `outcome_states` field in §Phase B report shape)
   - `tests/scripts/test_plan_ops.py` (round-trip test for the new report field)
-- **Dependencies:** []
+- **Dependencies:** [002]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py -k outcome_states`
 - **Read targets:**
   - `plugins/plan-executor/agents/plan-implementer.md` — full file

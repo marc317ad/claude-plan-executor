@@ -35,7 +35,7 @@ End-of-run `gates --certify --plan-file <plan-dir>` should succeed when the plan
   - `plugins/plan-executor/scripts/plan_ops.py` (edit — `cmd_gates --certify` directory-mode resolution; helpers shared with existing `_resolve_directory_plan_file`-style sites if present)
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (small edit — anchor 99–106 mention `gates --certify` alongside `commit-task` etc.)
   - `tests/scripts/test_plan_ops.py` (regression tests for directory-mode certify)
-- **Dependencies:** []
+- **Dependencies:** [004]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py -k certify`
 - **Read targets:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md:90-120`

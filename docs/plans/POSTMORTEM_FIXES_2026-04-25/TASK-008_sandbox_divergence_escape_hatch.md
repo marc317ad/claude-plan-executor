@@ -52,7 +52,7 @@ This task ships two complementary mechanisms:
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (edit — document the escape hatch in the failure-routing section)
   - `tests/scripts/test_plan_codex_dispatch.py` (regression tests for envelope schema)
   - `tests/scripts/test_plan_ops.py` (regression tests for auto-validate branch)
-- **Dependencies:** ["001"]
+- **Dependencies:** [001, 005, 007]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py tests/scripts/test_plan_ops.py -k "sandbox_divergence or independent_test_run"`
 - **Read targets:**
   - `plugins/plan-executor/scripts/codex_implement_schema.json`

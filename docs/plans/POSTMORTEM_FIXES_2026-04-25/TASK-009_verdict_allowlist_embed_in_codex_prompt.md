@@ -52,7 +52,7 @@ When the plan or task content references verdicts from another role's allowlist,
   - `plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit — `cmd_review` and `cmd_plan_review` prompt-render paths; reads canonical constants)
   - `plugins/plan-executor/scripts/plan_ops.py` (light edit — expose canonical allowlists if not already module-level; optional helper to format them)
   - `tests/scripts/test_plan_codex_dispatch.py` (regression tests)
-- **Dependencies:** []
+- **Dependencies:** [008]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py -k "verdict_allowlist or canonical_verdicts"`
 - **Symbol targets:**
   - `plugins/plan-executor/scripts/plan_ops.py::ALLOWED_CODEX_REVIEW_VERDICTS`
