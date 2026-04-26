@@ -266,7 +266,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-006: Drift guard — SKILL ↔ argparse parity test
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - tests/scripts/test_skill_cli_reference_drift.py (create)
