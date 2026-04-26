@@ -33,6 +33,7 @@ When an AC names a regex, header, or symbol pattern that appears as part of a si
 - **Files:**
   - `plugins/plan-executor/agents/plan-implementer.md` (edit — add Coupling check subsection + report schema field)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit — surface the new report field in §Phase B)
+  - `tests/scripts/test_plan_ops.py` (edit — round-trip test for the `coupling_check` report block)
 - **Dependencies:** []
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py -k coupling_check`
 - **Read targets:**
