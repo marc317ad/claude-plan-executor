@@ -76,6 +76,14 @@ One-line purpose per subcommand. All accept `--json`. **Run `$PYTHON plan_ops.py
 | Command | Purpose |
 |---|---|
 | `preflight` | Dirty-tree + codex probe + starting_sha + run_id + base-branch check. |
+| `check-plan-deps` | Mandatory cross-plan dependency gate (Phase 0). |
+| `decompose-plan` | Auto-promote a single-file plan to a directory of per-task children. |
+| `filter-schedule` | Trim a schedule to a `--task-ids` subset preserving topo + transitive deps. |
+| `index-closure` | Compute the dependency closure of a chunk in `00_INDEX.json`. |
+| `list-global-lock-paths` | Emit the canonical `<run_log>` / `<run_lock>` / `<plan_dir>` paths. |
+| `order-triage-findings` | Order plan-review-triage findings by `blocking` then `severity`. |
+| `parse-plan-review-triage-report` | Validate Phase 1-triage / Phase 1.5.5 triage output envelope. |
+| `resolve-read-targets` | Resolve a task's `Read targets:` / `Symbol targets:` into pre-read excerpts. |
 | `parse-schedule` | Validate analyst JSON shape. |
 | `compute-schedule` | Recompute file-disjoint + topo-respecting batches (standalone). |
 | `write-schedule` | Atomically persist analyst schedule JSON. |
