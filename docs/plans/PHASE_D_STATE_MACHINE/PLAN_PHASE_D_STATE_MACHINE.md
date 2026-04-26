@@ -12,11 +12,11 @@
 
 ---
 
-## 1. Goal
+## Goal
 
 Move Phase D routing and orchestrator-tracked state out of the `implement-plan` SKILL prompt into `plan_ops.py`. Harden the Codex wrapper against prompt injection at the envelope boundary instead of asking the orchestrator LLM to triage untrusted content. Trim the SKILL to match the reduced orchestrator role and codify the three duties the LLM retains. No behavioral regressions on happy path or documented failure paths.
 
-## 2. Why
+## Context
 
 The SKILL (~500 lines) asks the orchestrator to (a) maintain state (`ready`, `done`, `failed`, `locked_files`, `committed`, `review_notes`, retry budgets) across long turns, and (b) navigate nested routing: D.2 → D.2a → D.5 → {D.2a.5, D.2a.6} → pause. LLMs drift under this load. The routing is deterministic given structured inputs — it belongs in Python.
 
@@ -116,7 +116,7 @@ Codified in SKILL and enforced by the absence of a Python path for them:
 - Run-resumption across crashes (schedule-state enables it but end-to-end resume is out of scope).
 - Removing the `plan_ops.py` CLI surface. Bash dispatch stays until a future MCP migration.
 
-## 5. Verification
+## Verification
 
 - Per-task unit tests cover new subcommands and module boundaries.
 - TASK-006 drift guard fails CI if `plan_ops.py` argparse and SKILL.md's CLI table diverge.

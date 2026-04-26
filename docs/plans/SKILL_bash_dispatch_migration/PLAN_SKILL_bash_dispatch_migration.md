@@ -12,11 +12,11 @@
 
 ---
 
-## 1. Goal
+## Goal
 
 Replace every `Agent` tool invocation of a `plan-executor:*` subagent in `SKILL.md` / `dispatch-templates.md` with a bounded-envelope Bash call to `plan_claude_dispatch.py`, mirroring the existing Codex dispatch pattern. The orchestrator stops ingesting full subagent markdown reports; it parses a size-capped JSON envelope like it already does for Codex. Net effect: orchestrator context per iteration drops materially and the two dispatch surfaces become symmetric.
 
-## 2. Scope
+## Scoped Context
 
 **In scope:**
 - Phase 1 plan-analyst dispatch.
@@ -62,7 +62,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 
 ---
 
-## 5. Verification commands (global)
+## Verification
 
 - **V-GLOBAL-1:** `venv/bin/pytest -q tests/scripts/test_plan_claude_dispatch_*.py` — wrapper unit tests (from v3) continue to pass.
 - **V-GLOBAL-2:** `venv/bin/pytest -q tests/scripts/test_plan_ops.py` — orchestrator-side helpers unchanged (guard against accidental drift).
