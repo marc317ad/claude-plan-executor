@@ -72,3 +72,11 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 Implements G10, the flagship case: when the Codex implementer wrote files outside the task's declared `Files:` list, the wrapper-bounded cleanup is replaced by a per-task pause that gives the user four explicit options (widen the plan, fix-in-place, keep-and-commit, or revert). This directly matches the user's framing — "doesn't matter how 'out of scope' the necessary changes might be, we need to try to fix them in place to preserve effort". The legacy reconcile-and-revert behavior remains available via the new `--out-of-scope-policy reconcile-and-revert` flag for the cron/CI case (when `--unattended-revert-policy` is `fail-fast` or `preserve-only`). Other tasks in the same batch proceed independently — the pause is per-task, not per-batch, so a single out-of-scope write doesn't stall the whole batch.
 
 **Implementation notes.** `reconcile_batch` is a Python function that returns a results list; the per-task `mutate_task_status` mutation requires knowing the task's plan_file. The current signature takes `batch_envelopes` and `repo_root`; extend it with `plans_dir` (or per-envelope `plan_file` references) so the mutation can target the right file in directory mode. Inspect the existing code to determine the cleanest extension.
+
+## Execution log — 20260426T062115 (paused)
+
+Starting SHA: `321251f3434e600abae8e021802ebe8ceb1df976`  → Ending SHA: `021ff7f8cf73829ed93de3f236b9116fef2d5a75`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-008 | claude | codex | needs-rework (binding 2nd pass: path-traversal) | (paused — work in tree) | D.2a.5 awaiting-user halt |

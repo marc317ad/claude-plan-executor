@@ -79,7 +79,8 @@
       "id": "004",
       "title": "Completed-Work Preservation Principle text + shared awaiting-user pause subroutine",
       "files": [
-        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/scripts/plan_ops.py"
       ],
       "dependencies": [
         "001",
@@ -120,7 +121,7 @@
       "plan_file": "TASK-005_phase_d_4_rescue.md",
       "description": "Implements the highest-value behavior change: D.4 stops being a destructive seam and becomes a try-rescue-then-pause seam. The rescue is single-shot and terminal \u2014 the structural protection against infinite loops Gemini flagged. The new commit-tag (`[d4-rescue]`) and event types (`d4_rescue_start` / `d4_rescue_done`) are deliberately distinct from D.2a.6's narrow-remediation machinery so audit trails stay legible. `plan-remediator` accepts both input modes via a key-based discriminator (`load_bearing_findings[]` vs `rescue_findings[]`), keeping the agent's contract explicit rather than overloading the existing key.\n\n**Scope boundary.** This task does NOT touch Phase C (TASK-006), D.2a binding-mode (TASK-007), or `reconcile_batch` (TASK-008). It does NOT add `--d4-rescue-tag` cross-references in `dispatch-templates.md` outside the new Phase D.4-rescue template subsection.",
       "acceptance_criteria": [
-        "`cmd_commit_task` argparse adds `--d4-rescue-tag` (boolean flag). Argparse / post-parse validation enforces the following XOR rules:",
+        "`cmd_commit_task` argparse adds `--d4-rescue-tag` (boolean flag). Argparse / post-parse validation enforces the following XOR rules (see existing rules at `plan_ops.py:9715-9758` and `plan_ops.py:10110-10130` for the analogous `--remediation-tag` / `--narrow-remediation-tag` / `--disagreement-tag` / `--dismissed-finding-ids` precedent):",
         "On successful commit with `--d4-rescue-tag`, the commit body carries a `[d4-rescue]` line (separate from `[remediation]` and `[narrow-remediation]`). The `commit_done` run-log event gains `d4_rescue_tag: true` (new key alongside existing `disagreement_tag`, `remediation_tag`, `narrow_remediation_tag`).",
         "`ALLOWED_LOG_EVENTS` (search by name) gains `d4_rescue_start` and `d4_rescue_done`. The existing per-event field validators (if any) accept the new event names.",
         "`cmd_fail_task` `--authorization-source` enum extends with `phase-d4-rescue-failed` (alongside the TASK-001 initial set).",
@@ -255,30 +256,12 @@
     {
       "index": 1,
       "task_ids": [
-        "001",
-        "004",
-        "005",
-        "007",
-        "009"
+        "001"
       ],
       "file_locks": [
-        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md (propagate principle text)",
-        "plugins/plan-executor/agents/plan-implementer.md (NEW Phase B-rework preservation clause)",
-        "plugins/plan-executor/agents/plan-remediator.md (dual input mode: `load_bearing_findings[] + dismissed_findings[] + d5_summary` OR `rescue_findings[] + dismissed_findings: []`)",
         "plugins/plan-executor/scripts/plan_ops.py",
-        "plugins/plan-executor/scripts/plan_ops.py (`audit` subcommand: new `fail_task_authorization_source` and `principle_referenced` strict checks)",
-        "plugins/plan-executor/scripts/plan_ops.py (`cmd_commit_task` argparse: new `--d4-rescue-tag` + XOR rules; `event_fields` extension for new tag; `ALLOWED_LOG_EVENTS` adds `d4_rescue_start` / `d4_rescue_done`; `cmd_fail_task` enum extends with `phase-d4-rescue-failed`)",
-        "plugins/plan-executor/scripts/plan_ops.py (`cmd_fail_task` enum extends with `binding-mode-user-instruction` if needed; otherwise no plan_ops.py changes)",
         "plugins/plan-executor/skills/implement-plan/SKILL.md",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md (CLI help line 137\u2013138; D.2a routing prose around line 626; D.2a.6 exemption phrasing around line 666)",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md (Phase D.4 prose rewrite; new D.4 rescue protocol subsection; cross-reference to dispatch-templates)",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md (only the existing `fail-task` invocation lines in Phase C ~555 and Phase D.4 ~757; no other prose changes)",
-        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md (NEW Phase D.4-rescue dispatch template)",
-        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md (Phase B-rework template ~line 416 reinforcement; Phase B-narrow-remediation template ~line 466 reinforcement)",
-        "tests/scripts/test_plan_ops.py",
-        "tests/scripts/test_plan_ops.py (audit-check coverage)",
-        "tests/scripts/test_plan_ops.py (commit-task tag, argparse XOR, run-log event allowlist)",
-        "tests/scripts/test_plan_ops.py (rewrite `test_section_documents_binding_mode_exemption` at lines ~8513\u20138524)"
+        "tests/scripts/test_plan_ops.py"
       ]
     },
     {
@@ -298,29 +281,76 @@
       ],
       "file_locks": [
         "plugins/plan-executor/scripts/plan_ops.py",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md (Phase 0 preflight section; pin reference)",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
         "tests/scripts/test_plan_ops.py"
       ]
     },
     {
       "index": 4,
       "task_ids": [
-        "006"
+        "004"
       ],
       "file_locks": [
-        "plugins/plan-executor/scripts/plan_ops.py (`cmd_fail_task` enum extends with `phase-c-empty-diff`; remove `phase-c-impl-failure` placeholder once unused)",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md (Phase C section rewrite, lines ~551\u2013575)",
-        "tests/scripts/test_plan_ops.py"
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
       ]
     },
     {
       "index": 5,
       "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-remediator.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 6,
+      "task_ids": [
+        "006"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 7,
+      "task_ids": [
+        "007"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 8,
+      "task_ids": [
         "008"
       ],
       "file_locks": [
-        "plugins/plan-executor/scripts/plan_ops.py (`reconcile_batch` function lines ~1882\u20131958; new outcome value; `cmd_fail_task` enum extends with `reconcile-out-of-scope-user-instruction`; `ALLOWED_LOG_EVENTS` if needed; new flag `--out-of-scope-policy` on the `reconcile-batch` subcommand)",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md (Phase B reconciliation section, currently around line 549; orchestrator integration)",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 9,
+      "task_ids": [
+        "009"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "plugins/plan-executor/agents/plan-implementer.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
         "tests/scripts/test_plan_ops.py"
       ]
     }
