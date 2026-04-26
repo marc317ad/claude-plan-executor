@@ -287,7 +287,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-007: Dispatch-templates alignment
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/dispatch-templates.md (modify)

@@ -603,6 +603,8 @@ Dispatched only when Codex reviewing Claude-implemented work returns `needs-rewo
 
 Unlike Phase D.2b, reviewer findings ARE forwarded here — the risk of the implementer blindly doing whatever Codex said is mitigated because D.5 already confirmed the findings are load-bearing. Keep the forwarded prompt structured; do NOT paraphrase into a free-form "fix what Codex flagged".
 
+The `<findings_for_retry>` and `<d5_summary>` placeholders below are received from `review-route`'s `dispatch_context` payload (TASK-001) — the orchestrator no longer composes the JSON inline; it forwards the values verbatim. These names match the `dispatch_context` shape `review-route` emits.
+
 > Apply a narrow remediation patch to this task's existing implementation at `<absolute plan path>`. The prior attempt is **still in the working tree** — it was NOT reverted. Codex (peer reviewer) returned `needs-rework` and the third-opinion code-reviewer independently agreed that the findings below are load-bearing. Your job is to patch the current working-tree edits with a minimal, surgical fix that addresses each finding. Do NOT rebuild from the base commit; do NOT re-do the work that is already correct; only edit what is necessary to resolve the findings.
 >
 > Plan context:
@@ -619,10 +621,10 @@ Unlike Phase D.2b, reviewer findings ARE forwarded here — the risk of the impl
 >
 > Base commit SHA: `<starting_sha>`
 >
-> Codex findings (verbatim from `parsed.findings` of the wrapper envelope):
+> Codex findings (verbatim from `parsed.findings` of the wrapper envelope, forwarded as `dispatch_context.findings_for_retry`):
 >
 > ```json
-> <codex_findings_json>
+> <findings_for_retry>
 > ```
 >
 > Third-opinion (D.5) summary — why these findings are load-bearing:
@@ -655,6 +657,8 @@ Dispatched only when Codex reviewing Claude-implemented work returns `needs-rewo
 
 Unlike Phase B-rework, the forwarded findings are **filtered** to the load-bearing subset only. The dismissed subset is supplied separately as context-only, explicitly labeled "DO NOT fix — context only"; the remediator acknowledges them in a `**Dismissed findings noted:**` report section but MUST NOT act on them. The `(file, line)` union of the load-bearing findings is the remediator's permitted edit region; unjustified edits outside that region return outcome `scope-violation`.
 
+The `<findings_for_retry>`, `<dismissed_for_context>`, and `<d5_summary>` placeholders below are received from `review-route`'s `dispatch_context` payload (TASK-001) — the orchestrator no longer composes the JSON inline; it forwards the values verbatim. These names match the `dispatch_context` shape `review-route` emits.
+
 > Apply a narrow remediation patch to this task's existing implementation at `<absolute plan path>`. The prior attempt is **still in the working tree** — it was NOT reverted. Codex (peer reviewer) returned `needs-rework` and the third-opinion code-reviewer (Phase D.5) adjudicated the findings into two buckets: `load_bearing` (ship-blockers you MUST fix) and `dismissed` (non-blockers you MUST NOT fix). Patch the current working-tree edits with a minimal, surgical fix that addresses each load-bearing finding only. Do NOT rebuild from the base commit; do NOT re-do work that is already correct; do NOT act on dismissed findings even if you notice them along the way.
 >
 > Plan context:
@@ -671,16 +675,16 @@ Unlike Phase B-rework, the forwarded findings are **filtered** to the load-beari
 >
 > Base commit SHA: `<starting_sha>`
 >
-> Load-bearing findings (D.5 ruled these ship-blockers — fix each one):
+> Load-bearing findings (D.5 ruled these ship-blockers — fix each one; forwarded as `dispatch_context.findings_for_retry`):
 >
 > ```json
-> <load_bearing_findings_json>
+> <findings_for_retry>
 > ```
 >
-> Dismissed findings — **DO NOT fix — context only**. D.5 ruled these non-load-bearing; acting on them silently re-inflates the retry's scope. Echo each in the mandatory `**Dismissed findings noted:**` report section without acting on it:
+> Dismissed findings — **DO NOT fix — context only**. D.5 ruled these non-load-bearing; acting on them silently re-inflates the retry's scope. Echo each in the mandatory `**Dismissed findings noted:**` report section without acting on it (forwarded as `dispatch_context.dismissed_for_context`):
 >
 > ```json
-> <dismissed_findings_json>
+> <dismissed_for_context>
 > ```
 >
 > Third-opinion (D.5) summary — why the load-bearing findings are load-bearing:
