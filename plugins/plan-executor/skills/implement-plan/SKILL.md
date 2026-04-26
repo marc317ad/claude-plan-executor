@@ -688,6 +688,7 @@ For each non-success task:
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
   --plan-file <abs> --task-id NNN --run-id <id> \
   --files <touched files> --stage implement --reason "<short>" \
+  --authorization-source phase-c-impl-failure \
   [--reversion-guidance "<from implementer report>"] --json
 ```
 
@@ -915,6 +916,7 @@ Shell-injection surface: `shell=True` is intentional — plans must not be edite
 $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" fail-task \
   --plan-file <abs> --task-id NNN --run-id <id> \
   --files <files> --stage review --reason "..." \
+  --authorization-source phase-d4-review-failure \
   --reviewer-findings '<json>' --json
 ```
 

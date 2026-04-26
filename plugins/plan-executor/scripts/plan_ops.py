@@ -106,6 +106,28 @@ STATUS_ALIASES: dict[str, str] = {}
 SCHEDULE_FIELD_ALIASES: dict[str, str] = {}
 ALLOWED_PLAN_STATUSES = {"in-progress", "complete", "partial"}
 ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
+# ALLOWED_FAIL_AUTHORIZATION_SOURCES — closed enum of authorized paths that
+# may legitimately invoke ``fail-task`` (and its silent-revert side effects:
+# ``git restore`` of touched files + plan-status flip to ``failed``). Every
+# value here corresponds to a documented `/implement-plan` code path; future
+# tasks (TASK-005, TASK-006, TASK-007, TASK-008) extend this set as new
+# authorized paths are introduced. Adding a value here is a load-bearing
+# audit decision: it sanctions a new place where completed work may be
+# destroyed. Each value authorizes:
+#   - "phase-c-impl-failure": Phase C implementer-failure path (the
+#     orchestrator detected an implementer outcome != success and is
+#     reverting touched files before halting/blocking dependents).
+#   - "phase-d4-review-failure": Phase D.4 review-stage failure path
+#     (reviewer verdict requires a halt; the implementation succeeded but
+#     review found the work unshippable).
+#   - "user-instruction": the user's next conversation turn after a paused
+#     run explicitly instructed the orchestrator to revert (the only
+#     sanctioned post-pause revert path).
+ALLOWED_FAIL_AUTHORIZATION_SOURCES = {
+    "phase-c-impl-failure",
+    "phase-d4-review-failure",
+    "user-instruction",
+}
 ALLOWED_CODEX_REVIEW_VERDICTS = {"clean", "minor-findings", "needs-rework"}
 ALLOWED_CLAUDE_REVIEW_VERDICTS = {
     "ship",
@@ -6448,6 +6470,41 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
 
 
 def cmd_fail_task(args: argparse.Namespace) -> None:
+    # ``--authorization-source`` is logically required (see argparse
+    # declaration). Missing flag emits the structured envelope so
+    # consumers can branch on ``errors[*].code`` rather than parsing
+    # argparse's stderr text. This is the audit gate that closes the
+    # silent-revert regression vector: every future contributor adding a
+    # ``fail-task`` call MUST consciously declare the authorized path.
+    auth_source = getattr(args, "authorization_source", None)
+    if not auth_source:
+        if getattr(args, "json", False):
+            json.dump(
+                {"errors": [{
+                    "code": "authorization-source-required",
+                    "message": (
+                        "--authorization-source is required. Allowed values: "
+                        + ", ".join(sorted(ALLOWED_FAIL_AUTHORIZATION_SOURCES))
+                        + ". Each value corresponds to a documented authorized "
+                        "path in /implement-plan; see ALLOWED_FAIL_AUTHORIZATION_SOURCES "
+                        "in plan_ops.py for what each value sanctions."
+                    ),
+                }]},
+                sys.stdout,
+                indent=2,
+                sort_keys=False,
+            )
+            sys.stdout.write("\n")
+        else:
+            print(
+                "ERROR: --authorization-source is required "
+                "(code=authorization-source-required). Allowed values: "
+                + ", ".join(sorted(ALLOWED_FAIL_AUTHORIZATION_SOURCES))
+                + ".",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+
     tid = _normalize_task_id(args.task_id)
     if not tid:
         _die(args, {"error": f"bad --task-id: {args.task_id!r}"})
@@ -6540,6 +6597,7 @@ def cmd_fail_task(args: argparse.Namespace) -> None:
         "stage": args.stage,
         "reason": args.reason,
     }
+    event_fields["authorization_source"] = auth_source
     if args.reversion_guidance:
         event_fields["reversion_guidance"] = args.reversion_guidance
     if args.reviewer_findings:
@@ -10241,6 +10299,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_fail.add_argument("--files", default="", help="Comma-separated files to git restore")
     p_fail.add_argument("--stage", required=True, choices=sorted(ALLOWED_FAIL_STAGES))
     p_fail.add_argument("--reason", required=True)
+    # ``--authorization-source`` is logically required: every ``fail-task``
+    # invocation MUST consciously declare which authorized path is
+    # sanctioning the silent revert + status-flip side effects. argparse's
+    # built-in ``required=True`` is intentionally NOT used here: it would
+    # short-circuit to argparse's stderr error format and prevent
+    # ``cmd_fail_task`` from emitting the structured
+    # ``{"errors":[{"code":"authorization-source-required",...}]}`` envelope
+    # that downstream consumers (orchestrator, audit) rely on. The runtime
+    # check inside ``cmd_fail_task`` enforces presence and emits the
+    # structured envelope. ``choices`` is enforced by argparse as usual; an
+    # unknown value still produces argparse's standard rejection. The closed
+    # enum lives in ``ALLOWED_FAIL_AUTHORIZATION_SOURCES`` above; subsequent
+    # tasks (TASK-005..TASK-008) extend that set when they introduce new
+    # authorized paths.
+    p_fail.add_argument(
+        "--authorization-source",
+        default=None,
+        choices=sorted(ALLOWED_FAIL_AUTHORIZATION_SOURCES),
+        help=(
+            "Authorized path that sanctions this fail-task invocation. "
+            "Required. See ALLOWED_FAIL_AUTHORIZATION_SOURCES in plan_ops.py."
+        ),
+    )
     p_fail.add_argument("--reviewer-findings", default="",
                         help="JSON blob of reviewer findings (stage=review)")
     p_fail.add_argument("--reversion-guidance", default="",

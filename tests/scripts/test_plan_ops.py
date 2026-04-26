@@ -3207,6 +3207,7 @@ class TestFailTask:
             "--files", "src/foo.py",
             "--stage", "implement",
             "--reason", "malformed_report",
+            "--authorization-source", "phase-c-impl-failure",
             "--json",
             cwd=tmp_git_repo,
         )
@@ -3218,6 +3219,90 @@ class TestFailTask:
         assert (tmp_git_repo / "src" / "foo.py").read_text(encoding="utf-8") == "x = 1\n"
         text = plan.read_text(encoding="utf-8")
         assert "### TASK-001: First task\n\n- **Status:** failed" in text
+
+    # ------------------------------------------------------------------
+    # TASK-001 (prohibit_silent_revert): --authorization-source enforcement
+    # ------------------------------------------------------------------
+    def test_fail_task_requires_authorization_source(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """Missing ``--authorization-source`` exits non-zero with a
+        structured ``errors[*].code = "authorization-source-required"``
+        envelope on stdout under ``--json`` mode."""
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "fail-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--stage", "implement",
+            "--reason", "malformed_report",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "authorization-source-required" in codes
+        # Helpful message enumerates the allowed values.
+        msg = body["errors"][0]["message"]
+        assert "phase-c-impl-failure" in msg
+        assert "phase-d4-review-failure" in msg
+        assert "user-instruction" in msg
+
+    def test_fail_task_authorization_source_round_trips_in_event(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """``--authorization-source user-instruction`` appears in the
+        ``failed`` run-log event under key ``authorization_source``."""
+        (tmp_git_repo / "src" / "foo.py").write_text("BROKEN\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "fail-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--stage", "implement",
+            "--reason", "user_revert",
+            "--authorization-source", "user-instruction",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        run_log = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        assert run_log.exists()
+        events = [
+            json.loads(line)
+            for line in run_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        failed_events = [e for e in events if e.get("event") == "failed"]
+        assert failed_events, f"no failed event in run log: {events!r}"
+        assert failed_events[-1].get("authorization_source") == "user-instruction"
+
+    def test_fail_task_authorization_source_rejects_unknown_value(
+        self, tmp_git_repo: Path
+    ) -> None:
+        """``--authorization-source bogus-value`` is rejected by argparse's
+        ``choices`` machinery (non-zero exit)."""
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "fail-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--stage", "implement",
+            "--reason", "malformed_report",
+            "--authorization-source", "bogus-value",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode != 0
+        # argparse's choices rejection writes its complaint to stderr.
+        assert "bogus-value" in cp.stderr or "invalid choice" in cp.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -3258,6 +3343,7 @@ def _fail_task_run(
     cwd: Path | None = None,
     stage: str = "implement",
     reason: str = "test_reason",
+    authorization_source: str | None = "user-instruction",
 ) -> subprocess.CompletedProcess:
     plan = repo / "docs" / "plans" / plan_name
     args = [
@@ -3270,6 +3356,8 @@ def _fail_task_run(
         "--reason", reason,
         "--json",
     ]
+    if authorization_source is not None:
+        args.extend(["--authorization-source", authorization_source])
     if repo_root == "__SELF__":
         args.extend(["--repo-root", str(repo)])
     elif repo_root is not None:
@@ -5857,6 +5945,7 @@ class TestReviewerSeamValidation:
             "--run-id", "R1",
             "--stage", "review",
             "--reason", "needs_rework",
+            "--authorization-source", "phase-d4-review-failure",
             "--reviewer-findings", '{"task_id":"001","verdict":"needs-rework","findings":[],"scope_ok":"yes","acceptance_met":false,"summary":"nope"}',
             "--json",
             cwd=tmp_git_repo,
@@ -8172,6 +8261,7 @@ class TestRosterAutoUpdate:
             "--files", "src/foo.py",
             "--stage", "implement",
             "--reason", "malformed_report",
+            "--authorization-source", "phase-c-impl-failure",
             "--json",
             cwd=tmp_git_repo,
         )

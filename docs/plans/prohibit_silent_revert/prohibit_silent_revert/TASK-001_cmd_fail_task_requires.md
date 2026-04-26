@@ -46,7 +46,7 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 
 ### TASK-001: `cmd_fail_task` requires `--authorization-source` + initial enum + SKILL co-updates
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** claude
 - **Files:**
