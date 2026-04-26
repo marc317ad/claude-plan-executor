@@ -32,7 +32,7 @@ This task does NOT re-implement the backtick fix. CODEX_FRICTION TASK-002 unifie
 
 ### TASK-001: Verify unified normalizer eliminates TASK-027B false positive
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_plan_codex_dispatch.py` (regression test only — no production code touched)

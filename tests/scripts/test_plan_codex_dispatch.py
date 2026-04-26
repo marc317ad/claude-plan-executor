@@ -337,6 +337,86 @@ def test_cmd_review_dry_run_prompt_includes_untracked_file_diff(
 
 
 # ---------------------------------------------------------------------------
+# TASK-001: TASK-027B backticked Files entries reach scope checks normalized.
+# ---------------------------------------------------------------------------
+
+
+def test_scope_check_accepts_backticked_declared_files_with_bare_observed_writes(
+    monkeypatch,
+):
+    """Regression for post-mortem Issue 1 from run 20260425T041800.
+
+    Depends on CODEX_FRICTION TASK-002: wrapper declarations must flow
+    through the shared ``_plan_paths.normalize_files_entry`` helper before
+    ``validate_scope`` compares them with git's bare observed paths.
+    """
+    declared = [
+        "`plugins/plan-executor/agents/plan-implementer.md`",
+        "`tests/scripts/test_plan_implementer_spec.py` (new)",
+    ]
+    observed = [
+        "plugins/plan-executor/agents/plan-implementer.md",
+        "tests/scripts/test_plan_implementer_spec.py",
+    ]
+
+    monkeypatch.setattr(
+        wrapper,
+        "git_changed_files",
+        lambda repo_root: {"tracked": observed, "untracked": []},
+    )
+
+    scope = wrapper.validate_scope(
+        "/unused",
+        [wrapper.normalize_file_path(path) for path in declared],
+        {"captured": True, "tracked": [], "untracked": []},
+    )
+
+    assert scope["out_of_scope_observed"] is False
+    assert scope["out_of_scope_tracked"] == []
+    assert scope["out_of_scope_untracked"] == []
+    assert scope["changed_in_scope_new"] == observed
+
+
+def test_scope_check_rejects_unallowed_bare_path_under_backticked_declarations(
+    monkeypatch,
+):
+    """Negative control for post-mortem Issue 1 from run 20260425T041800.
+
+    Depends on CODEX_FRICTION TASK-002: normalized backticked declarations
+    must not make ``validate_scope`` trivially accept unrelated bare paths.
+    """
+    declared = [
+        "`plugins/plan-executor/agents/plan-implementer.md`",
+        "`tests/scripts/test_plan_implementer_spec.py` (new)",
+    ]
+    allowed_observed = [
+        "plugins/plan-executor/agents/plan-implementer.md",
+        "tests/scripts/test_plan_implementer_spec.py",
+    ]
+    unallowed = "tests/scripts/test_unallowed_scope_escape.py"
+
+    monkeypatch.setattr(
+        wrapper,
+        "git_changed_files",
+        lambda repo_root: {
+            "tracked": allowed_observed + [unallowed],
+            "untracked": [],
+        },
+    )
+
+    scope = wrapper.validate_scope(
+        "/unused",
+        [wrapper.normalize_file_path(path) for path in declared],
+        {"captured": True, "tracked": [], "untracked": []},
+    )
+
+    assert scope["out_of_scope_observed"] is True
+    assert scope["out_of_scope_tracked"] == [unallowed]
+    assert scope["out_of_scope_untracked"] == []
+    assert scope["changed_in_scope_new"] == allowed_observed
+
+
+# ---------------------------------------------------------------------------
 # 1. Fixture schedule → approved verdict, no critical findings.
 # ---------------------------------------------------------------------------
 
