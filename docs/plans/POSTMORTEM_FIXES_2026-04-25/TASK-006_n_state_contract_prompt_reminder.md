@@ -53,3 +53,11 @@ Add a brief, concrete reminder to the plan-implementer prompt that an AC enumera
 - Resist the temptation to generalize the rule beyond return shapes; the specific failure mode is "collapsed N states into a sentinel," not "ignored the spec."
 - The `outcome_states` report block should be optional (emitted only when triggered) so non-triggered tasks don't carry the field.
 - One worked example is enough — two would make the prompt section disproportionately long for the value it provides.
+
+## Execution log — 20260426T032452 (success)
+
+Starting SHA: `4220c0aa16b60579f826d4d8a8ed3150cc7d39a4`  → Ending SHA: `5d5a0637e945998fe546965c0f7764ebf3b53b71`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 006 | claude | codex | ship-with-fixes [disagreement] | 347f14e5 | D.5 dismissed Codex finding — outcome_states block round-trips via body[raw], same pattern as TASK-002 coupling_check. |

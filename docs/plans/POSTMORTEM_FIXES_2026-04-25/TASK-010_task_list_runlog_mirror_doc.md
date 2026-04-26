@@ -51,3 +51,11 @@ Document explicitly that `_run_log.jsonl` is the source of truth for run state a
 **Implementation notes:**
 - Keep the new subsection short — a tight rule lands better than a long explanation. ~5–8 lines is the right size.
 - Resist scope creep into specifying mirror frequency, retry behavior, or harness internals. The rule is operational guidance, not a protocol clause.
+
+## Execution log — 20260426T032452 (success)
+
+Starting SHA: `4220c0aa16b60579f826d4d8a8ed3150cc7d39a4`  → Ending SHA: `5d5a0637e945998fe546965c0f7764ebf3b53b71`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 010 | claude (codex fallback) | codex | clean | 50cf4afa |  |

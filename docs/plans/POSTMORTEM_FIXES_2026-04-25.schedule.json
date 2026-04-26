@@ -1,0 +1,367 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Verify unified normalizer eliminates TASK-027B false positive",
+      "files": [
+        "`tests/scripts/test_plan_codex_dispatch.py` (regression test only \u2014 no production code touched)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py -k \"scope_check or out_of_scope_observed\"",
+      "priority": "high",
+      "plan_file": "TASK-001_normalize_file_path_backticks.md",
+      "description": "Pin the post-mortem's specific TASK-027B scope-rejection scenario as a regression test against the unified path normalizer that CODEX_FRICTION TASK-002 lands. The test exercises the integration site (`validate_scope` / `_handle_timeout_cleanup`), not just the helper output, complementing TASK-002's parameterized parsing tests.",
+      "acceptance_criteria": [
+        "**Pre-flight check:** the implementer's report names the merge SHA (or commit short-hash) of CODEX_FRICTION TASK-002 and confirms the unified `_plan_paths.normalize_files_entry` helper is in place. If TASK-002 has NOT merged, the implementer fails with a structured `dependency_not_merged` report and does not proceed.",
+        "New test `test_validate_scope_accepts_backticked_declared_files_with_bare_observed_writes` (or similarly named) that exercises the wrapper's post-write scope check against the post-mortem's exact bullet shape (backtick-wrapped declared, bare-path observed) and asserts `out_of_scope_observed: false`.",
+        "Negative control: `test_validate_scope_rejects_unallowed_bare_path_under_backticked_declarations` confirms the test isn't trivially true \u2014 an unallowed bare-path write yields `out_of_scope_observed: true`.",
+        "Both tests' docstrings cite the post-mortem and the CODEX_FRICTION TASK-002 dependency.",
+        "No production code is modified by this task. The implementer's report explicitly states \"no production code touched\" if the unified helper already passes the test.",
+        "If the test FAILS against the merged TASK-002 helper (i.e., TASK-002's unification didn't cover the integration site), the implementer escalates with a `coverage_gap` finding rather than fixing it under this task \u2014 the fix belongs in a TASK-002 follow-up."
+      ],
+      "agent": "codex",
+      "classification_reason": "single test file, concrete acceptance criteria, explicit test command"
+    },
+    {
+      "id": "002",
+      "title": "Coupling-detector prompt step",
+      "files": [
+        "`plugins/plan-executor/agents/plan-implementer.md` (edit \u2014 add Coupling check subsection + report schema field)",
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit \u2014 surface the new report field in \u00a7Phase B)",
+        "`tests/scripts/test_plan_ops.py` (edit \u2014 round-trip test for the `coupling_check` report block)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k coupling_check",
+      "priority": "high",
+      "plan_file": "TASK-002_coupling_detector_prompt.md",
+      "description": "Add a mandatory \"Coupling check\" step to the plan-implementer prompt that fires when an AC names a regex/constant/header pattern. The implementer greps for the pattern family across touched files and reports each sibling hit's disposition. Surface a `coupling_check` block in the implementer report so the cross-reviewer (Codex) can verify uniform application.",
+      "acceptance_criteria": [
+        "`plan-implementer.md` gains a \"Coupling check\" step. The step is mandatory when the AC mentions any of: a regex name (suffix `_RE`), an allowlist constant (prefix `ALLOWED_`), a markdown header pattern (text inside `**...**`), or any symbol that appears \u22652 times in the touched files.",
+        "The step names the grep command shape and how to interpret hits (\"each hit must be either uniformly modified OR excluded with a one-line reason in the report\").",
+        "The implementer report schema (in `dispatch-templates.md` \u00a7Phase B and in `plan-implementer.md`) gains a `coupling_check` block with fields `pattern_family`, `siblings_checked` (list of `file:line`), `disposition` per sibling (`uniformly_applied | excluded_with_reason | not_applicable`).",
+        "A worked example in the prompt cites the TASK-009 sibling-regex case so the trigger shape is concrete.",
+        "A unit test (or fixture-driven smoke test) under `tests/scripts/test_plan_ops.py` parses the implementer report and asserts the `coupling_check` block round-trips through the report parser without error.",
+        "The new prompt step does NOT change the existing implementer verdict allowlist or D.2a routing."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, new report schema, design decisions"
+    },
+    {
+      "id": "003",
+      "title": "commit-task verdict-mapping hint + sugar form",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py` (edit \u2014 `_validate_reviewer_payload` error message; optional `cmd_commit_task` sugar branch)",
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (edit \u2014 anchor at line ~802 if any wording is sharpened)",
+        "`tests/scripts/test_plan_ops.py` (regression tests)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k commit_task",
+      "priority": "medium",
+      "plan_file": "TASK-003_commit_task_verdict_mapping_hint.md",
+      "description": "Surface the D.5 / D.2a binding-reviewer rule inline in `commit-task` error output so the next operator who hits the rejection knows the canonical form without chasing cross-references. Optionally accept the natural-but-rejected form as a sugar input that internally remaps to the canonical binding form.",
+      "acceptance_criteria": [
+        "When `_validate_reviewer_payload` rejects `--reviewer codex --reviewer-verdict needs-rework` with `uncommittable-reviewer-verdict`, the error message includes a `hint:` key naming the canonical form (`--reviewer claude --reviewer-verdict ship-with-fixes` or `ship`) AND citing the SKILL.md anchor (`\u00a7D.2a routing` or equivalent line reference).",
+        "The hint is structured (`hint` field in the JSON error envelope) AND human-readable (suffixed to the stderr message).",
+        "(Optional, scope-gated) `commit-task` accepts `--reviewer codex --reviewer-verdict needs-rework --disagreement-tag --d5-verdict {ship|ship-with-fixes}` as a sugar form. The sugar form internally remaps to the canonical binding form and records the Codex `needs-rework` in the finding ledger as `disposition: dismissed`. If the implementer ships the sugar form, all existing commit-task tests continue to pass and a new test covers the sugar\u2192canonical equivalence (same commit body, same finding ledger, same plan-file status update).",
+        "If the sugar form is NOT shipped (scope deferral), the AC is satisfied by the hint alone \u2014 the implementer records the deferral in the report.",
+        "`commit-task --help` text gains a one-line \"see also: SKILL.md \u00a7D.2a for D.5-verdict-driven binding-reviewer mapping\" pointer."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file, optional sugar branch, design decisions needed"
+    },
+    {
+      "id": "004",
+      "title": "Fixture path canonicalization + pre-archive lint",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py` (edit \u2014 `CANONICAL_CONTRACT` constant + `_gate_fixture_valid` read site + new audit-check `_check_canonical_fixture_not_archived`)",
+        "`tests/scripts/test_plan_ops.py` (regression tests)"
+      ],
+      "dependencies": [
+        "003"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"fixture_valid or canonical_fixture\"",
+      "priority": "medium",
+      "plan_file": "TASK-004_fixture_path_canonical.md",
+      "description": "Hoist the fixture path to a single source of truth and add a pre-archive lint. Neither the gate nor the audit will silently break the next time the fixture moves.",
+      "acceptance_criteria": [
+        "`CANONICAL_CONTRACT` (or a clearly-named adjacent constant) gains a `fixture_path` field whose value is `'docs/plans/sample_phase4.md'`. Optional: also `fixture_schedule_path` for the sidecar.",
+        "`_gate_fixture_valid` reads the path from this field rather than from a string literal. The literal does not appear elsewhere in `plan_ops.py`.",
+        "The gate's failure-message JSON envelope adds an `expected_from` key naming the constant (`\"expected_from\": \"CANONICAL_CONTRACT.fixture_path\"`).",
+        "A new audit check `_check_canonical_fixture_not_archived` registers in `AUDIT_CHECKS` (tier `default`). It resolves the SoT path; if the path begins with `docs/plans/archive/`, the check returns a violation with a one-line remediation tip (\"update `CANONICAL_CONTRACT.fixture_path` to point at the live fixture before archiving\").",
+        "Tests: gate-success, gate-failure-with-SoT-attribution, archive-lint-fires, all green.",
+        "Existing fixture-valid tests pass unmodified (or are updated to assert the new `expected_from` key \u2014 the implementer chooses, but the choice is recorded in the report)."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-symbol edits plus new audit-check wiring"
+    },
+    {
+      "id": "005",
+      "title": "Directory-mode certify resolution",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py` (edit \u2014 `cmd_gates --certify` directory-mode resolution; helpers shared with existing `_resolve_directory_plan_file`-style sites if present)",
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (small edit \u2014 anchor 99\u2013106 mention `gates --certify` alongside `commit-task` etc.)",
+        "`tests/scripts/test_plan_ops.py` (regression tests for directory-mode certify)"
+      ],
+      "dependencies": [
+        "004"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k certify",
+      "priority": "medium",
+      "plan_file": "TASK-005_gates_certify_directory_mode.md",
+      "description": "Make `gates --certify` directory-aware. Aggregate per-chunk `schema-valid` and per-event `commit-safe` re-checks under one self-describing report shape. Update the SKILL.md directory-mode resolution rule to include certify.",
+      "acceptance_criteria": [
+        "`cmd_gates --certify` detects when `--plan-file` is a directory containing `00_INDEX.json` and applies the directory-mode resolution rule documented in SKILL.md \u00a799\u2013106.",
+        "For `schema-valid`: every chunk in `00_INDEX.json` is schema-validated; the aggregate result is `pass` iff every chunk passes; per-chunk results are emitted in the report.",
+        "For `commit-safe`: every event of type `commit-task` (or equivalent) in `_run_log.jsonl` for the run is re-validated against its child plan file (per-event `plan_file` field). Aggregate result is `pass` iff every per-event re-check passes.",
+        "The certify report JSON shape gains a top-level `mode: \"single-file\" | \"directory\"` and per-check `subresults` array when in directory mode (single-file mode is unchanged).",
+        "SKILL.md \u00a799\u2013106 is amended to list `gates --certify` alongside `commit-task` / `fail-task` / `block-dependents` as commands honouring directory-mode `<plan-file>` resolution.",
+        "Existing single-file certify tests pass unmodified.",
+        "New tests cover the success path AND the per-child-failure attribution path."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, new directory-mode logic, API contract changes"
+    },
+    {
+      "id": "006",
+      "title": "N-state contract reminder",
+      "files": [
+        "`plugins/plan-executor/agents/plan-implementer.md` (edit \u2014 N-state subsection + optional report-schema field)",
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit \u2014 surface `outcome_states` field in \u00a7Phase B report shape)",
+        "`tests/scripts/test_plan_ops.py` (round-trip test for the new report field)"
+      ],
+      "dependencies": [
+        "002"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k outcome_states",
+      "priority": "medium",
+      "plan_file": "TASK-006_n_state_contract_prompt_reminder.md",
+      "description": "Add a brief, concrete reminder to the plan-implementer prompt that an AC enumerating \u22653 outcome states demands a return shape distinguishing all N. Include one worked example so the trigger shape is recognizable.",
+      "acceptance_criteria": [
+        "`plan-implementer.md` gains an \"N-state contract\" subsection that fires when the AC enumerates \u22653 outcome states for a helper, function, or test set.",
+        "The rule is one sentence: \"the return shape must distinguish all N enumerated states; do not collapse failure states into a single sentinel.\"",
+        "One worked example cites the TASK-028 case (`_unwrap_cli_envelope` 3-state vs `_classify_cli_envelope` tuple-shape) \u2014 abbreviated to the essential motif.",
+        "The implementer report schema gains an optional `outcome_states` block with `count` (int) and `branches` (list of `{name, return_value, condition}`). Absent when not triggered.",
+        "The round-trip test confirms a sample report with the block parses cleanly and surfaces the count + branches in the orchestrator-side report parser.",
+        "The new prompt section does NOT change implementer verdict allowlist or D.2a routing.",
+        "The reminder is placed adjacent to (or in the same group as) the TASK-002 \"Coupling check\" subsection so both AC-reading-heuristic prompts live together."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, new schema field, design decisions"
+    },
+    {
+      "id": "007",
+      "title": "target_task_id first-class field",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit \u2014 seven sections)",
+        "`plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit \u2014 `cmd_implement` / `cmd_review` render path; `parse_task_block` already accepts the arg)",
+        "`plugins/plan-executor/scripts/plan_ops.py` (edit \u2014 Claude template renderer, `build-tasks` warning text, any `dispatch-prompt` subcommands)",
+        "`tests/scripts/test_plan_codex_dispatch.py` (regression tests)",
+        "`tests/scripts/test_plan_ops.py` (regression tests)"
+      ],
+      "dependencies": [
+        "002",
+        "005",
+        "006"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py tests/scripts/test_plan_ops.py -k \"target_task_id or extra_task_heading\"",
+      "priority": "high",
+      "plan_file": "TASK-007_target_task_id_first_class.md",
+      "description": "Make `target_task_id` a first-class dispatch field for shared-file children. The renderer auto-injects \"Implement specifically `### TASK-XXX:`\" when the child file carries multiple H3 headings. This eliminates the orchestrator-side manual prose injection that ran nine times during run 20260425T041800.",
+      "acceptance_criteria": [
+        "Each of the seven dispatch-template sections (Phase A-single, Phase B, Phase D-Codex, Phase D-Claude, Phase D.5, Phase B-rework, Phase B-narrow-remediation) names `target_task_id` as a first-class field and documents the auto-injection rule (heading count condition + first-instruction-line emission).",
+        "`plan_codex_dispatch.py` `cmd_implement` and `cmd_review` (and any other dispatch entry points) accept and forward `--target-task-id` and emit the auto-injection line when the conditions fire.",
+        "The Claude-side render path in `plan_ops.py` (or its current home) does the same.",
+        "Renderer raises `MissingTargetTaskIdError` (or named-equivalent) when `target_task_id` is None AND the resolved child file declares >1 heading. The error envelope identifies the offending file.",
+        "`build-tasks` warning text for `extra-task-heading` names `target_task_id` as the disambiguator.",
+        "Tests cover: (a) >1-heading + target_task_id \u2192 injection; (b) 1-heading + target_task_id \u2192 no injection; (c) >1-heading + None target_task_id \u2192 structured renderer error; (d) backward compat: single-task plan files render unchanged.",
+        "SKILL.md (or the dispatch-templates section that documents Phase A-single onwards) states the rule plainly so the orchestrator reads it on-protocol."
+      ],
+      "agent": "claude",
+      "classification_reason": "five files, multi-file wiring, new error type, high priority"
+    },
+    {
+      "id": "008",
+      "title": "Sandbox-divergence escape hatch",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit \u2014 `cmd_implement` failure-path envelope construction + sandbox stdout/stderr capture)",
+        "`plugins/plan-executor/scripts/codex_implement_schema.json` (edit \u2014 add the five new optional failure-path fields)",
+        "`plugins/plan-executor/scripts/plan_ops.py` (edit \u2014 auto-validate branch in the orchestrator dispatch handler; `commit-task --sandbox-divergence-tag` plumbing; run-summary subsection)",
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (edit \u2014 document the escape hatch in the failure-routing section)",
+        "`tests/scripts/test_plan_codex_dispatch.py` (regression tests for envelope schema)",
+        "`tests/scripts/test_plan_ops.py` (regression tests for auto-validate branch)"
+      ],
+      "dependencies": [
+        "001",
+        "005",
+        "007"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py tests/scripts/test_plan_ops.py -k \"sandbox_divergence or independent_test_run\"",
+      "priority": "high",
+      "plan_file": "TASK-008_sandbox_divergence_escape_hatch.md",
+      "description": "Surface the Codex wrapper's sandbox test stdout/stderr in the failure envelope and add an orchestrator auto-validate branch so target-env-passing test runs are no longer mistaken for real failures. Tag affected commits `[sandbox-divergence]`.",
+      "acceptance_criteria": [
+        "Codex wrapper `implement` envelope (failure path with `cause: independent_test_run_failed`) carries `sandbox_test_stdout`, `sandbox_test_stderr`, `sandbox_test_command`, `sandbox_test_exit_code`, `sandbox_test_attempt_count`. Each stdout/stderr is capped at 32 KB with a `truncated_to` marker if exceeded.",
+        "`codex_implement_schema.json` declares the five new fields as optional and structurally valid for OpenAI strict structured-output (paired with `required` exactly matching `properties.keys()` per the existing invariant).",
+        "Orchestrator auto-validate branch: on the matching failure cause, re-runs the task's `Test command:` in the target env (cwd = repo root, env = inherited). Target-passes \u2192 run-log event gains a `sandbox_divergence` block AND the next `commit-task` invocation passes `--sandbox-divergence-tag`. Target-fails \u2192 existing failure path (Codex\u2192Claude fallback OR task-fail) runs unchanged.",
+        "`commit-task --sandbox-divergence-tag` writes `[sandbox-divergence]` in the commit body in the canonical tag position. The tag does NOT change the reviewer-verdict whitelist.",
+        "End-of-run summary (`gates --certify` or the equivalent run-summary path) surfaces a \"Sandbox divergences\" list when any task hit the auto-validate branch.",
+        "SKILL.md gains a \"Sandbox divergence escape hatch\" subsection explaining the auto-validate branch + commit tag + the constraint that `--reviewer none` remains the final-resort override (not the default for this case).",
+        "Tests: wrapper envelope schema (success/failure/cap), orchestrator auto-validate target-passes path, target-fails path, no-divergence baseline.",
+        "All four wrapper schemas (incl. the edited `codex_implement_schema.json`) pass the structural-fixture test from `tests/scripts/test_plan_codex_dispatch_schema.py` (the test landed by CODEX_FRICTION_2026-04-25 TASK-001 \u2014 `set(node['required']) == set(node['properties'].keys())` at every `additionalProperties: false` node). The five new fields are declared `\"type\": [\"string\", \"integer\", \"null\"]` as appropriate AND listed in `required`."
+      ],
+      "agent": "claude",
+      "classification_reason": "six files, multi-file coordination, new orchestrator branch"
+    },
+    {
+      "id": "009",
+      "title": "Verdict allowlist embed in Codex prompts",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_codex_dispatch.py` (edit \u2014 `cmd_review` and `cmd_plan_review` prompt-render paths; reads canonical constants)",
+        "`plugins/plan-executor/scripts/plan_ops.py` (light edit \u2014 expose canonical allowlists if not already module-level; optional helper to format them)",
+        "`tests/scripts/test_plan_codex_dispatch.py` (regression tests)"
+      ],
+      "dependencies": [
+        "008"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_codex_dispatch.py -k \"verdict_allowlist or canonical_verdicts\"",
+      "priority": "low",
+      "plan_file": "TASK-009_verdict_allowlist_embed_in_codex_prompt.md",
+      "description": "Embed the canonical verdict allowlists in Codex review/plan-review prompts so Codex stops conflating role-specific verdict sets. Optionally embed per-task `tasks[].files[]` ownership in plan-review prompts to prevent batch-aggregate misreads.",
+      "acceptance_criteria": [
+        "Codex `review` prompt rendering injects a \"Canonical verdict allowlists\" section listing all four role allowlists. The four lists read from the canonical `plan_ops.py` constants.",
+        "Codex `plan-review` prompt rendering injects the same section AND, when a schedule sidecar is available, a \"Task-level file ownership\" subsection enumerating each `tasks[].files[]` entry (one bullet per task).",
+        "The role-disambiguation paragraph (\"Do NOT flag a plan-text reference to another role's verdict as invalid\") is present in both prompts.",
+        "Tests assert the rendered prompt contains the allowlist section + all four role names + the disambiguation paragraph.",
+        "**Dynamic-read assertion (load-bearing):** at least one test uses `unittest.mock.patch` (or equivalent) to temporarily override one of the canonical allowlist constants (e.g. add a synthetic verdict like `\"synthetic-test-verdict\"` to `ALLOWED_CODEX_REVIEW_VERDICTS`), re-renders the prompt, and asserts the synthetic verdict appears in the rendered text. This pins that the renderer reads the constants dynamically rather than embedding a snapshot at module-import time. The override is reverted after the test.",
+        "The allowlist text uses the constants directly \u2014 no string duplication that could drift.",
+        "The injected section is bounded (one short paragraph + four bullet lists); no nested explanations beyond the role-disambiguation note."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, new test with mock patching"
+    },
+    {
+      "id": "010",
+      "title": "Document run-log as source of truth",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (edit \u2014 new subsection + end-of-run summary documentation update)",
+        "`docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` (edit \u2014 one-line cross-reference)"
+      ],
+      "dependencies": [],
+      "test_command": "grep -nE 'source of truth|run_log\\.jsonl' plugins/plan-executor/skills/implement-plan/SKILL.md docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+      "priority": "low",
+      "plan_file": "TASK-010_task_list_runlog_mirror_doc.md",
+      "description": "Document explicitly that `_run_log.jsonl` is the source of truth for run state and the harness TaskList is a visibility mirror. This captures the post-mortem lesson without committing to the heavier \"task-list-mirror\" helper option (deferred unless drift recurs).",
+      "acceptance_criteria": [
+        "`SKILL.md` gains a \"Run-state source of truth\" subsection (heading text MAY differ if a more idiomatic phrasing exists in the doc) stating: (a) `_run_log.jsonl` is authoritative for run state; (b) the harness `TaskList` is a visibility mirror; (c) the orchestrator MUST mirror run-log state into TaskList on phase transitions, but mirror failures do not block run progress.",
+        "`DUAL_AGENT_PLAN_EXECUTOR.md` adds a one-line cross-reference to the SKILL anchor.",
+        "The SKILL.md `## End of run` section, step 4 (\"Print summary: counts {done, failed}, failures with reasons, disagreement-tagged commits, per-task minor-findings digest...\") gains a `TaskList mirror state: {synced | drifted}` bullet. The location is exact: `plugins/plan-executor/skills/implement-plan/SKILL.md` step 4 of `## End of run` (currently at line 857; pin by the step content, not the line number, since other tasks may shift it).",
+        "No code, schema, or test changes.",
+        "The grep test command surfaces the new content (>=2 hits)."
+      ],
+      "agent": "codex",
+      "classification_reason": "two doc files, small edits, concrete grep test command"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001",
+        "002",
+        "010"
+      ],
+      "file_locks": [
+        "docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md",
+        "plugins/plan-executor/agents/plan-implementer.md",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_codex_dispatch.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "004"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": [
+        "006"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/agents/plan-implementer.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 5,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 6,
+      "task_ids": [
+        "007"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_codex_dispatch.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 7,
+      "task_ids": [
+        "008"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/codex_implement_schema.json",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_codex_dispatch.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 8,
+      "task_ids": [
+        "009"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_codex_dispatch.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

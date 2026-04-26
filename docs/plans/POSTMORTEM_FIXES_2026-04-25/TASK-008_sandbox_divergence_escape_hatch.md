@@ -78,3 +78,11 @@ Surface the Codex wrapper's sandbox test stdout/stderr in the failure envelope a
 - The auto-validate target-env re-run MUST use the task's declared `Test command:` field — do NOT infer from the wrapper's recorded sandbox command (which may have an environment-specific prefix).
 - Resist scope creep: do NOT change Codex→Claude fallback behavior in this task. If target-env also fails, the existing fallback fires.
 - The `[sandbox-divergence]` tag is informational; downstream consumers (audit, certify) should treat it as a soft signal for human review, not a verdict modifier.
+
+## Execution log — 20260426T032452 (success)
+
+Starting SHA: `4220c0aa16b60579f826d4d8a8ed3150cc7d39a4`  → Ending SHA: `5d5a0637e945998fe546965c0f7764ebf3b53b71`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 008 | claude | codex | ship-with-fixes [disagreement] | 183509dd | D.5 dismissed both Codex findings — _emit calls sys.exit (no fall-through); make_envelope flattens extra to top-level. |

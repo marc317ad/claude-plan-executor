@@ -57,3 +57,11 @@ Hoist the fixture path to a single source of truth and add a pre-archive lint. N
 - Prefer a single field under `CANONICAL_CONTRACT` over a sibling top-level constant — the contract is the natural home.
 - The archive-lint audit-check belongs in the `default` tier (always run) so a failed lint surfaces in every Phase 0 audit cycle.
 - Don't add the lint as a Phase 0 gate predicate (which would halt preflight) — it's an audit (advisory) so a deliberate archival isn't blocked. The remediation tip in the violation message is the user-facing affordance.
+
+## Execution log — 20260426T032452 (success)
+
+Starting SHA: `4220c0aa16b60579f826d4d8a8ed3150cc7d39a4`  → Ending SHA: `5d5a0637e945998fe546965c0f7764ebf3b53b71`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | codex | ship-with-fixes [disagreement] | 9655ceae | D.5 dismissed Codex hypothesis — _audit_finding defaults tier=default. |

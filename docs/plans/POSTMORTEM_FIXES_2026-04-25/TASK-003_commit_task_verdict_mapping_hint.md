@@ -56,3 +56,11 @@ Surface the D.5 / D.2a binding-reviewer rule inline in `commit-task` error outpu
 - The sugar form's `--d5-verdict` requirement is non-negotiable: without it, the remap is ambiguous.
 - Resist the temptation to silently coerce the rejection without the `--d5-verdict` argument; that would mask cases where the operator genuinely meant the canonical form.
 - If the sugar form expands the test surface uncomfortably, ship the hint alone — it captures most of the friction-reduction value.
+
+## Execution log — 20260426T032452 (success)
+
+Starting SHA: `4220c0aa16b60579f826d4d8a8ed3150cc7d39a4`  → Ending SHA: `5d5a0637e945998fe546965c0f7764ebf3b53b71`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | codex | clean | a877371e |  |

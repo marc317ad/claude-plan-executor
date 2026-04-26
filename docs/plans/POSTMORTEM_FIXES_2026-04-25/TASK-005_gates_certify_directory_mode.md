@@ -58,3 +58,11 @@ Make `gates --certify` directory-aware. Aggregate per-chunk `schema-valid` and p
 - If `_resolve_directory_plan_file` (or a similarly-named helper) already exists for `commit-task`, reuse it — don't fork a parallel resolver.
 - The per-event `plan_file` lookup is the source of truth for directory-mode `commit-safe`; do NOT scan the directory tree for `TASK-NNN_*.md` files independently.
 - The aggregate "AND of subchecks" rule is the simple correct choice; resist the temptation to weight or partially credit.
+
+## Execution log — 20260426T032452 (success)
+
+Starting SHA: `4220c0aa16b60579f826d4d8a8ed3150cc7d39a4`  → Ending SHA: `5d5a0637e945998fe546965c0f7764ebf3b53b71`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | claude | codex | ship-with-fixes [disagreement] | b8b67d3f | D.5 spec-deference: existing mode field carries dry-run|execute; plan_mode is the new directory|single-file discriminator. |

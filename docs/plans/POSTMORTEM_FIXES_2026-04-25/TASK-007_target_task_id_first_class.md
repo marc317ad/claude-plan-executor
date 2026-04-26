@@ -78,3 +78,11 @@ Make `target_task_id` a first-class dispatch field for shared-file children. The
 - The seven sections share enough structure that a single canonical "auto-injection rule" paragraph in `dispatch-templates.md` referenced by each section is the cheapest spec form.
 - The renderer should detect heading count by parsing the child file's H3 headings (cheap line-prefix scan, no AST needed).
 - Resist the temptation to ALWAYS emit the line — when the file has exactly one heading, the injection adds noise. The condition is the load-bearing part.
+
+## Execution log — 20260426T032452 (success)
+
+Starting SHA: `4220c0aa16b60579f826d4d8a8ed3150cc7d39a4`  → Ending SHA: `5d5a0637e945998fe546965c0f7764ebf3b53b71`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 007 | claude | codex | ship-with-fixes [disagreement] | 21720e73 | D.5 dismissed Codex follow-up suggestion — AC scopes renderer error to None+multi-heading; supplied-id existence validation is forward-looking. |

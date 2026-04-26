@@ -77,3 +77,11 @@ Embed the canonical verdict allowlists in Codex review/plan-review prompts so Co
 - Read the constants once at render time; do not hardcode the verdict strings in the prompt template — they would drift when the constants change.
 - The role-disambiguation paragraph is the load-bearing sentence; the bullet lists alone proved insufficient (Codex still misread on TASK-017 even though the lists existed in `plan_ops.py`).
 - Resist scope creep: do NOT add allowlist embeds to Claude reviewer prompts in this task. Claude has not exhibited the same vocabulary confusion.
+
+## Execution log — 20260426T032452 (success)
+
+Starting SHA: `4220c0aa16b60579f826d4d8a8ed3150cc7d39a4`  → Ending SHA: `5d5a0637e945998fe546965c0f7764ebf3b53b71`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 009 | claude | codex | clean | 5d5a0637 |  |

@@ -60,3 +60,11 @@ Pin the post-mortem's specific TASK-027B scope-rejection scenario as a regressio
 - Resist the urge to re-fix `normalize_file_path` if the test fails. The fix path is CODEX_FRICTION TASK-002 (or a follow-up to it). This task's lane is verification.
 - The negative-control assertion is load-bearing — without it the test could pass tautologically if `validate_scope` returns `false` unconditionally.
 - Keep the test small and direct. One success case + one negative control is sufficient; broader matrix coverage is TASK-002's lane.
+
+## Execution log — 20260426T032452 (success)
+
+Starting SHA: `4220c0aa16b60579f826d4d8a8ed3150cc7d39a4`  → Ending SHA: `5d5a0637e945998fe546965c0f7764ebf3b53b71`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude (codex fallback) | codex | ship-with-fixes [disagreement] | 8f25b174 | D.5 dismissed Codex finding — wrapper.normalize_file_path is the unified _plan_paths.normalize_files_entry alias. |
