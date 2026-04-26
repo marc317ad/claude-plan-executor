@@ -1,0 +1,249 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Add `_dependency_aware_batches(tasks, ordered_task_ids)` helper + direct unit tests",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"TestDependencyAwareBatches\"",
+      "priority": "high",
+      "plan_file": "TASK-001_extract_dependency_aware_batches_helper.md",
+      "description": "Lift the dep-aware batching logic that already lives inside `_build_tasks` (`plan_ops.py:2786-2825`) into a free-standing module-level helper `_dependency_aware_batches(tasks, ordered_task_ids)`, and pin its behavior with a focused unit-test class in `tests/scripts/test_plan_ops.py::TestDependencyAwareBatches`. The helper combines `_compute_decompose_batches` (Kahn's topo layering) with the existing greedy file-disjoint packer and the `_is_global_lock_path` solitary-batch carve-out, returning the canonical schedule wire shape `[{index, task_ids, file_locks}, ...]` plus a structured `errors[]` for orphans/cycles. This task is a pure addition \u2014 no existing batcher is rewritten yet; TASK-002 and TASK-003 do that wiring once the helper is independently verified. The unit tests carry the regression cases that would have caught the bug if they had existed pre-strip: serial chain with disjoint files, diamond dependency, mixed-priority layer, global-lock solitary placement.",
+      "acceptance_criteria": [
+        "New module-level helper `_dependency_aware_batches(tasks, ordered_task_ids)` is added to `plan_ops.py` near the existing batchers (recommended: directly above `_compute_schedule_batches`).",
+        "Helper input contract: `tasks` is a list of dicts each carrying `id`, `files`, `dependencies` (optional, defaults `[]`), `priority` (optional, defaults `\"low\"`); `ordered_task_ids` is the priority-sorted id list (caller's responsibility to pre-sort).",
+        "Helper output contract: `(batches: list[dict], errors: list[dict])`. On error, `batches` is `[]`. Error codes used: `unresolvable-dep` (orphan dep) and `cyclic-dependency` (cycle detected).",
+        "Helper internals: (a) collect `deps_map` from `tasks[]`; (b) call `_compute_decompose_batches(ordered_task_ids, deps_map)` to obtain topo layers; (c) for each topo layer, partition into file-disjoint sub-batches using the packing rule from `_build_tasks:2807-2818` (greedy first-fit), with global-lock tasks (`_is_global_lock_path` over the task's files) forced into solitary sub-batches; (d) flatten sub-batches across layers into the canonical wire shape with monotonically increasing 1-based `index`.",
+        "Helper does NOT mutate its inputs.",
+        "Helper does NOT call `_die`, write files, or print \u2014 pure function.",
+        "At least 8 new unit tests in `TestDependencyAwareBatches` covering the cases enumerated under \u00a7Verification.",
+        "The serial-chain regression test (e.g. `test_serial_chain_disjoint_files_yields_n_batches`) constructs three tasks with files `[\"a.py\"]`, `[\"b.py\"]`, `[\"c.py\"]` and dependencies `[]`, `[\"001\"]`, `[\"002\"]`, then asserts `len(batches) == 3` and the order `[[\"001\"], [\"002\"], [\"003\"]]`.",
+        "The diamond test (e.g. `test_diamond_dependency_yields_three_batches`) constructs A (no deps), B and C (both depend on A, file-disjoint), D (depends on B and C), then asserts batches `[[\"A\"], [\"B\",\"C\"], [\"D\"]]`.",
+        "All existing tests in `tests/scripts/test_plan_ops.py` pass unchanged. `_compute_schedule_batches` and `_build_tasks` are not modified by this task \u2014 call-site refactors land in TASK-002 and TASK-003.",
+        "The helper's docstring names the regression it prevents (one-line reference to the post-mortem file path is sufficient)."
+      ],
+      "agent": "claude",
+      "classification_reason": "new module creation, multi-file, complex batching logic"
+    },
+    {
+      "id": "002",
+      "title": "Route `_compute_schedule_batches` through `_dependency_aware_batches` + add dep validation + rewrite the regression-pinning test",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"TestComputeSchedule or TestDependencyAwareBatches\"",
+      "priority": "high",
+      "plan_file": "TASK-002_compute_schedule_uses_shared_helper.md",
+      "description": "Replace the broken in-loop packer in `_compute_schedule_batches` with a delegation to `_dependency_aware_batches` (TASK-001's shared helper), preserving the existing input-validation surface and CLI error envelope. Add `dependencies[]` shape validation to the input-normalization pass, since the helper now consumes it. Rewrite the test that pins the bug (`test_disjoint_files_single_batch`) so it asserts the corrected multi-batch output, and add three regression tests (serial chain, orphan dep, cycle) that name the post-mortem. After this task lands, the `compute-schedule --stdin` CLI subcommand returns topo-respecting batches, and the orchestrator's Phase 1 step 3 recompute is provably a no-op (TASK-001's idempotence test confirms this; TASK-004 then deletes the redundant pipe altogether).",
+      "acceptance_criteria": [
+        "`_compute_schedule_batches` retains its existing input-validation surface (id normalization, duplicate-id check, file-array shape check, priority defaulting). The validation loop at `plan_ops.py:441-485` is preserved verbatim for those existing checks.",
+        "A new validation step is added: `tasks[i].dependencies` (when present) must be a list; non-list value emits a structured `invalid-type` error at `$.tasks[i].dependencies` with the same envelope shape as the existing `files` `invalid-type` error.",
+        "When `dependencies[]` is present, each entry is normalized via `_normalize_task_id`. The normalized list is added to the `normalized_tasks` entry under `\"dependencies\"` for the helper consumer.",
+        "The existing batch-packing loop at `plan_ops.py:498-545` is replaced with a single call to `_dependency_aware_batches(normalized_tasks, ordered_task_ids)`. The helper's returned `batches[]` becomes the function's `batches` return value.",
+        "The helper's `errors[]` (`unresolvable-dep`, `cyclic-dependency`) are appended to the function's existing `errors` list and returned via the existing third tuple position. CLI envelope shape (via `cmd_compute_schedule`) is preserved byte-for-byte for these new error codes (same `errors[*].path` / `code` / `message` keys).",
+        "The function's signature `(tasks: list) -> tuple[list[str], list[dict], list[dict]]` is unchanged; no caller signature breaks.",
+        "`tests/scripts/test_plan_ops.py:1650-1664` (`test_disjoint_files_single_batch`) is rewritten in place: assertion now claims three batches in topo order. The function name MAY be renamed to `test_serial_chain_with_disjoint_files_yields_n_batches` if the rewriter prefers; if renamed, leave a one-line breadcrumb comment at the original line citing the post-mortem.",
+        "Three new tests in `TestComputeSchedule`: (a) `test_serial_chain_with_disjoint_files_respects_dependencies` (regression pin), (b) `test_orphan_dep_returns_unresolvable_dep_error`, (c) `test_cycle_returns_cyclic_dependency_error`.",
+        "Existing tests `test_parallel_disjoint_files`, `test_file_conflict_forces_split`, `test_priority_ordering`, `test_alnum_suffix_ordering`, `test_compute_batches_defaults_missing_priority_to_low`, `test_accepts_analyst_json_wrapper` remain green without rewrites \u2014 none of them encode a dep-chain shape, so the topo change does not affect their assertions.",
+        "The global-lock test triplet (`test_compute_schedule_serializes_global_lock_task`, `test_compute_schedule_serializes_two_global_lock_tasks`, `test_compute_schedule_global_lock_respects_dependency_ordering`, `test_compute_schedule_glob_match_serializes`) at `tests/scripts/test_plan_ops.py:1863-1970` remains green."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, complex logic rewrite"
+    },
+    {
+      "id": "003",
+      "title": "Route `_build_tasks` through `_dependency_aware_batches` + idempotence test + global-lock regression test",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"build_tasks\"",
+      "priority": "high",
+      "plan_file": "TASK-003_build_tasks_uses_shared_helper.md",
+      "description": "Swap `_build_tasks`'s in-loop dep-aware batcher (`plan_ops.py:2786-2825`) for a single call to TASK-001's shared `_dependency_aware_batches` helper, preserving the operator-facing roster error message for `unresolvable-dep` via post-processing of the helper's error list. Add a regression test that pins the global-lock solitary-batch behavior (which `_build_tasks` previously omitted) and an idempotence test that runs `build-tasks` and `compute-schedule` over the canonical `directory_mode_plan` fixture and asserts the two `batches[]` arrays are byte-identical. The idempotence test is the load-bearing pin \u2014 it converts the SKILL.md recompute from \"presumed no-op\" to \"machine-checked no-op,\" which is what authorizes TASK-004 to delete the recompute pipe with confidence.",
+      "acceptance_criteria": [
+        "`_build_tasks`'s body at `plan_ops.py:2761-2825` (the cycle-detection block + the in-loop batcher) is replaced with a single call to `_dependency_aware_batches(tasks, [str(t[\"id\"]) for t in tasks])`. Both topo+file-disjoint batching AND cycle/orphan detection are handled by the helper.",
+        "The helper's `errors[]` are appended to `_build_tasks`'s own `errors` list. Before appending, any error with `code == \"unresolvable-dep\"` has its `message` rewritten to the roster-specific form: `f\"TASK-{e['task_id']} depends on TASK-{e['dep_id']} which is not declared in the roster\"`. (This preserves the operator-facing message contract that pre-existed inside `_build_tasks`.)",
+        "The function's return shape `{ok, outcome, tasks, batches, warnings, errors}` is unchanged.",
+        "Global-lock tasks are now placed in solitary batches inside `_build_tasks`'s output (behavior-change improvement aligned with `_compute_schedule_batches`).",
+        "The existing test `test_build_tasks_batches_respect_dependencies` passes WITHOUT modification.",
+        "New test `test_build_tasks_global_lock_task_is_solitary_in_batch` constructs a small fixture (preferred: synthesize via `tmp_path` + `decompose-plan` rather than committing a new on-disk fixture) with one task whose `Files:` includes `requirements.txt` and asserts the task is alone in its batch.",
+        "New test `test_build_tasks_then_compute_schedule_is_no_op_on_batches` runs both CLIs against the existing `tests/fixtures/directory_mode_plan/` fixture and asserts `build_result[\"batches\"] == compute_result[\"batches\"]` (where the comparison uses canonical JSON serialization for byte-equality).",
+        "`venv/bin/pytest -q tests/scripts/test_plan_ops.py` (full file) returns 0."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, complex logic rewrite, new tests"
+    },
+    {
+      "id": "004",
+      "title": "Delete `compute-schedule --stdin` from SKILL.md Phase 1 step 3 (default + filter branch) + add a regression fence test + update related prose in `dispatch-templates.md` and `plan_ops_cheatsheet.md`",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md`",
+        "`plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md`",
+        "`tests/scripts/test_skill_md_invariants.py`"
+      ],
+      "dependencies": [
+        "002",
+        "003"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_skill_md_invariants.py",
+      "priority": "high",
+      "plan_file": "TASK-004_drop_redundant_skill_recompute.md",
+      "description": "Remove the `compute-schedule --stdin` recompute pipe from SKILL.md Phase 1 step 3 (both default + `--task-ids` filter branches), update every other SKILL.md and `dispatch-templates.md` mention of the `build-tasks \u2192 ... \u2192 compute-schedule \u2192 ... \u2192 write-schedule` chain to reflect the new (no-recompute) sequence, refresh the cheatsheet entry to clarify `compute-schedule` is now a standalone-only helper, and add a fence test file (`tests/scripts/test_skill_md_invariants.py`) that fails if a future edit re-introduces the recompute pipe in Phase 1 step 3. The fence test is cheap insurance: this exact recompute regressed before in the `Fix_Depenency_Gate_Plans` plan, and the plan-author auto-revise path is structurally invitation-prone for re-introduction. Note: `compute-schedule` itself stays as a CLI subcommand for direct callers \u2014 TASK-002 leaves the function dep-aware regardless of caller, so it's safe.",
+      "acceptance_criteria": [
+        "`SKILL.md` Phase 1 step 3 contains no `compute-schedule --stdin` invocation. The two code blocks at lines ~321-324 and ~343 are deleted; the prose around them is rewritten to describe `build-tasks` \u2192 filter (in-memory) \u2192 step 4 directly. The \"Shape-shift\" paragraph is preserved with `compute-schedule` references removed.",
+        "The Phase 1 protocol overview at SKILL.md:264-291 is updated where it lists \"build-tasks + compute-schedule + write-schedule\" / \"build-tasks + classifier + compute-schedule + write-schedule\" \u2014 those phrases become \"build-tasks + write-schedule\" / \"build-tasks + classifier + write-schedule\" respectively.",
+        "Phase 1-triage routing table (SKILL.md:391-398), Phase 1.5.5 re-run prose (SKILL.md:529), re-source-verdict rule (SKILL.md:885), and `dispatch-templates.md:89,197` re-run prose are updated to drop `compute-schedule` from the `build-tasks \u2192 classifier \u2192 compute-schedule \u2192 write-schedule` sequence (which becomes `build-tasks \u2192 classifier \u2192 write-schedule`).",
+        "The CLI table entry for `compute-schedule` at SKILL.md:80 is updated to: \"Recompute file-disjoint + topo-respecting batches from `tasks[]`; standalone helper, not invoked by `/implement-plan` Phase 1.\" (Or similarly accurate phrasing.)",
+        "`plan_ops_cheatsheet.md:30-33` gains a one-line note that `compute-schedule` is a standalone helper, not part of `/implement-plan` Phase 1.",
+        "A new test file `tests/scripts/test_skill_md_invariants.py` is created with at least three tests: 1. `test_skill_md_no_compute_schedule_pipe_in_phase1_step3` \u2014 reads SKILL.md, slices the region between the `### Step 3 ` header and the next `###` header, asserts no occurrence of `compute-schedule --stdin` (or `compute-schedule\\s*\\\\` to catch line-continuation variants). 2. `test_skill_md_phase1_overview_does_not_chain_compute_schedule` \u2014 asserts that no line in SKILL.md describes the Phase 1 sequence as `build-tasks \u2192 ... \u2192 compute-schedule \u2192 ... \u2192 write-schedule` (regex match on the chain). 3. `test_dispatch_templates_no_compute_schedule_in_phase1_rerun` \u2014 asserts the same for `dispatch-templates.md`.",
+        "The new test file imports `pathlib.Path` and reads SKILL.md via `Path(__file__).resolve().parents[2] / \"plugins/plan-executor/skills/implement-plan/SKILL.md\"` (or the convention used by neighbor tests in the file \u2014 match the dominant pattern in the directory).",
+        "`venv/bin/pytest -q tests/scripts/test_skill_md_invariants.py` returns 0.",
+        "`venv/bin/pytest -q tests/scripts/test_plan_ops.py` (full file) returns 0 \u2014 no skill-text-related test breaks."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, new test module creation"
+    },
+    {
+      "id": "005",
+      "title": "Remove `parallel_batches` from `_decompose_plan` (manifest + return), update live rosters + fixtures + tests, add back-compat parse test",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`tests/scripts/test_plan_ops.py`",
+        "`tests/fixtures/directory_mode_plan/00_INDEX.json`",
+        "`docs/plans/POSTMORTEM_FIXES_2026-04-25/00_INDEX.json`",
+        "`docs/plans/CODEX_FRICTION_2026-04-25/00_INDEX.json`",
+        "`docs/plans/PLAN_NESTED_DISPATCH/00_INDEX.json`",
+        "`docs/plans/PLAN_GEMINI_INTEGRATION_2026-04-25/00_INDEX.json`",
+        "`docs/plans/PHASE_D_STATE_MACHINE/00_INDEX.json`",
+        "`docs/plans/CLAUDE_ONLY_FIX_2026-04-24/00_INDEX.json`",
+        "`docs/plans/prohibit_silent_revert/prohibit_silent_revert/00_INDEX.json`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"decompose\"",
+      "priority": "medium",
+      "plan_file": "TASK-005_remove_dead_parallel_batches_field.md",
+      "description": "Delete the dead `parallel_batches` emission from `_decompose_plan` and strip the field from all live (non-archive) roster `00_INDEX.json` files plus the `directory_mode_plan` fixture. Remove the two existing test assertions that pin the field's value/shape. Add a negative pin (`\"parallel_batches\" not in manifest` after a fresh decompose) and a back-compat parse test (old rosters in the wild that still carry the field must continue to parse without error). Archive rosters are left untouched \u2014 they're historical records and the field's removal there would be needless churn. After this task, the schedule's `batches[]` (emitted by `compute-schedule` / `build-tasks` and persisted by `write-schedule`) is the single batch source-of-truth, with no shadow advisory roster field to confuse operators.",
+      "acceptance_criteria": [
+        "`_decompose_plan` no longer carries the `\"parallel_batches\": batches` line in either the manifest dict (line ~2425) or the return dict (line ~2457).",
+        "The variable `batches` inside `_decompose_plan` is also removed if it has no other consumer after the emit deletion. Verify by reading the function: cycle-detection at lines 2302-2316 still requires the variable for `batch_errors`, so the variable stays \u2014 it's just no longer emitted. Don't get clever and chop more than necessary.",
+        "All eight 00_INDEX.json files listed under \u00a7Files lose their `parallel_batches` key. The remaining JSON shape stays valid (no trailing comma, no key ordering disruption).",
+        "Existing test assertions at `test_plan_ops.py:16270` and `:16531` are removed (not commented out \u2014 actually deleted).",
+        "A new test (recommended location: in the same `TestDecomposePlan` class containing the existing tests at lines ~16260+) asserts `\"parallel_batches\" not in manifest` after a fresh `decompose-plan` run. This is the negative pin against re-introduction.",
+        "A new test asserts back-compat: read a synthetic roster JSON that still carries `parallel_batches`, run it through `_parse_index_roster`, assert no error and assert the parsed roster's task ids match expectations. (This is the cheap belt-and-braces fence \u2014 old rosters in the wild remain parseable.)",
+        "`archive/` rosters are NOT modified. The implementer must explicitly avoid touching `docs/plans/archive/**/00_INDEX.json` files.",
+        "`venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"decompose\"` returns 0; full file (`venv/bin/pytest -q tests/scripts/test_plan_ops.py`) returns 0."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file coordination, many JSON fixtures, new tests"
+    },
+    {
+      "id": "006",
+      "title": "Add `dependency-batch-violation` check to `_validate_schedule_dag` + tests",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [
+        "002",
+        "003"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"validate_schedule_dag or schedule_valid\"",
+      "priority": "medium",
+      "plan_file": "TASK-006_topo_batch_validator_defense.md",
+      "description": "Extend `_validate_schedule_dag` with a structural check that emits `dependency-batch-violation` when `batches[]` places a dependent task in the same or earlier batch as a prereq. The check runs after orphan-dep detection (orphans take precedence) and before cycle detection (cycles are the fallback). It walks every `tasks[i].dependencies[j]` edge and emits one error per violation \u2014 never short-circuits, never skips. Adds six tests pinning the positive (rejects bad schedules), negative (accepts good ones), precedence (orphan-dep first), and edge-case (unbatched tasks don't trigger phantoms) behaviors. After this task, any schedule that survives `parse-schedule --strict` / `write-schedule` / `schedule-valid` gate is provably topo-correct at the batch level, even if a future bug in either batcher re-introduces the regression. This is the third independent line of defense against the topo bug; TASK-002 (compute-schedule), TASK-003 (build-tasks), and now TASK-006 (validator) form a triangle of safeguards.",
+      "acceptance_criteria": [
+        "A new code path inside `_validate_schedule_dag` detects when a `tasks[i].dependencies[j]` edge `(dependent, prereq)` is placed such that `batch_of(prereq) >= batch_of(dependent)`. Emits one error per offending edge with code `dependency-batch-violation`.",
+        "The error path is `$.tasks[i].dependencies[j]` (matching the orphan-dependency error path convention at lines 693-697).",
+        "The error message names both task ids and both batch indexes: `f\"TASK-{dependent} (batch {b_dep}) depends on TASK-{prereq} which is in batch {b_pre}; dependent must run in a strictly later batch\"`.",
+        "Emit ALL violations in a single pass \u2014 do not short-circuit. The function's `errors[]` may carry both orphan-dep entries (from the existing pass) and the new batch-violation entries; both are surfaced.",
+        "Order of validations inside `_validate_schedule_dag`: orphan-dep first (existing), then batch-topo-violation (NEW), then cycle (existing). Inside the new batch-topo block, orphan-dep edges are SKIPPED (the orphan-dep error already names them; emitting `dependency-batch-violation` for an edge whose `prereq` doesn't exist would be redundant noise).",
+        "When two tasks share a batch and have a cyclic dep between them (`A in batch 1 deps=[B]`, `B in batch 1 deps=[A]`), the existing cycle-detection emits `cyclic-dependency` AND the new check emits two `dependency-batch-violation` entries (one for each edge). Both are surfaced; the operator sees both signals.",
+        "At least 6 new tests, listed in \u00a7Verification, all passing.",
+        "Existing tests (`tests/scripts/test_plan_ops.py` for `_validate_schedule_dag` orphan-dep + cycle behavior) pass unchanged.",
+        "The `parse-schedule --strict --stdin` CLI envelope returns non-zero exit + the new error code when fed a synthetic schedule whose batches violate deps. Verify via a subprocess test."
+      ],
+      "agent": "claude",
+      "classification_reason": "multi-file, complex logic, 6+ new tests required"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "docs/plans/CLAUDE_ONLY_FIX_2026-04-24/00_INDEX.json",
+        "docs/plans/CODEX_FRICTION_2026-04-25/00_INDEX.json",
+        "docs/plans/PHASE_D_STATE_MACHINE/00_INDEX.json",
+        "docs/plans/PLAN_GEMINI_INTEGRATION_2026-04-25/00_INDEX.json",
+        "docs/plans/PLAN_NESTED_DISPATCH/00_INDEX.json",
+        "docs/plans/POSTMORTEM_FIXES_2026-04-25/00_INDEX.json",
+        "docs/plans/prohibit_silent_revert/prohibit_silent_revert/00_INDEX.json",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/fixtures/directory_mode_plan/00_INDEX.json",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 5,
+      "task_ids": [
+        "004",
+        "006"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md",
+        "tests/scripts/test_plan_ops.py",
+        "tests/scripts/test_skill_md_invariants.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}
