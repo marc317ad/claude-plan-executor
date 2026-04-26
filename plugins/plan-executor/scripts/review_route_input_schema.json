@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "review-route input",
+  "description": "Input envelope consumed by `plan_ops.py review-route`. Encodes the parsed Phase D review state for one task: who implemented, the reviewer envelope, the optional D.5 third-opinion envelope, retry budget consumed so far on this task, and routing flags. The subcommand maps this to one routing directive — see review_route_output_schema.json.",
+  "type": "object",
+  "required": ["task_id", "implementer", "reviewer_envelope", "retries_used", "flags"],
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "Three-digit task id (`NNN` or `NNN<A-Z>`). Round-tripped into the directive so dispatch templates have it."
+    },
+    "implementer": {
+      "type": "string",
+      "enum": ["claude", "codex"],
+      "description": "Which implementer produced the work under review. Drives D.2 / D.2a vs D.2b dispatch (Claude-impl → Codex-review escalates via D.5; Codex-impl → Claude-review escalates via role-swap)."
+    },
+    "reviewer_envelope": {
+      "type": "object",
+      "description": "Parsed review envelope. `verdict` vocabulary depends on reviewer: Codex reviewer emits `clean|minor-findings|needs-rework`; Claude reviewer emits `ship|ship-with-fixes|needs-rework`.",
+      "required": ["verdict"],
+      "properties": {
+        "verdict": {"type": "string"},
+        "findings": {"type": "array"},
+        "summary": {"type": "string"}
+      }
+    },
+    "d5_envelope": {
+      "description": "Phase D.5 third-opinion envelope when D.2a fired; `null` when no D.5 dispatch happened. `verdict` is one of `ship|ship-with-fixes|partial-agreement|needs-rework`. `load_bearing` and `dismissed` carry the index split for the `partial-agreement` path.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["verdict"],
+          "properties": {
+            "verdict": {"type": "string"},
+            "load_bearing": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+            "dismissed": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+            "summary": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "retries_used": {
+      "type": "object",
+      "description": "Per-task retry budget consumed prior to this routing call. Each is one-shot; `true` means the budget is exhausted.",
+      "additionalProperties": false,
+      "properties": {
+        "bounded_remediation": {"type": "boolean", "default": false},
+        "narrow_remediation": {"type": "boolean", "default": false},
+        "role_swap": {"type": "boolean", "default": false},
+        "codex_fallback": {"type": "boolean", "default": false}
+      }
+    },
+    "flags": {
+      "type": "object",
+      "description": "Routing-affecting flags surfaced from CLI / SKILL state.",
+      "additionalProperties": false,
+      "properties": {
+        "codex_review_binding": {
+          "type": "boolean",
+          "default": false,
+          "description": "When `true` and reviewer is Codex on Claude work with `needs-rework`, route straight to `fail` — no D.5, no remediation."
+        },
+        "skip_cross_review": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reserved; reviewer envelope still drives routing in v1."
+        }
+      }
+    }
+  }
+}

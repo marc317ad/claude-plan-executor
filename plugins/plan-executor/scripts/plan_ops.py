@@ -9944,6 +9944,19 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Halt if any dirty file lies within the plan's declared scope")
     _add_json(p_pre)
 
+    p_rr = sub.add_parser(
+        "review-route",
+        help=(
+            "Route a parsed Phase D review envelope to one orchestrator "
+            "directive (TASK-001 PHASE_D_STATE_MACHINE). Reads the input "
+            "envelope from stdin per review_route_input_schema.json; emits "
+            "one directive per review_route_output_schema.json."
+        ),
+    )
+    p_rr.add_argument("--stdin", action="store_true", required=True,
+                      help="Read review-route input JSON from stdin")
+    _add_json(p_rr)
+
     p_sched = sub.add_parser("parse-schedule", help="Validate analyst JSON shape")
     p_sched.add_argument("--stdin", action="store_true", required=True,
                          help="Read JSON schedule from stdin")
@@ -10865,6 +10878,379 @@ def cmd_run_summary(args: argparse.Namespace) -> None:
     })
 
 
+# ---------------------------------------------------------------------------
+# TASK-001 (PHASE_D_STATE_MACHINE): review-route subcommand.
+#
+# Pure deterministic router for the SKILL Phase D verdict tables. Inputs are
+# the parsed reviewer envelope, optional D.5 third-opinion envelope, per-task
+# retry budget, and a tiny `flags` block. Output is one `action` directive
+# the orchestrator executes verbatim. Every D.2 / D.2a / D.2a.5 / D.2a.6 /
+# D.2b cell collapses to one `action` value; `unknown_state` is the escape
+# hatch on input that does not match a known cell.
+#
+# Routing logic lives in `route()`; `cmd_review_route` is a thin stdin/_emit
+# shim. Tests call `route()` directly — no subprocess, no stdin monkey-patch.
+# ---------------------------------------------------------------------------
+
+
+_REVIEW_ROUTE_ACTIONS = {
+    "commit",
+    "fail",
+    "dispatch_d5",
+    "dispatch_bounded_remediation",
+    "dispatch_narrow_remediation",
+    "dispatch_role_swap",
+    "pause_awaiting_user",
+    "unknown_state",
+}
+
+# Codex reviewer verdict vocabulary (review of Claude work).
+_CODEX_VERDICTS = {"clean", "minor-findings", "needs-rework"}
+# Claude reviewer verdict vocabulary (review of Codex work, or claude_only).
+_CLAUDE_VERDICTS = {"ship", "ship-with-fixes", "needs-rework"}
+# D.5 third-opinion verdict vocabulary.
+_D5_VERDICTS = {"ship", "ship-with-fixes", "partial-agreement", "needs-rework"}
+
+
+def _validate_review_route_input(payload: object) -> list[dict]:
+    """Structural input validation for `route()`.
+
+    Returns a list of structured error dicts; empty list = valid. Used by
+    `cmd_review_route` to fail with non-zero exit on schema violations.
+    The `route()` function itself tolerates unknown enum values and routes
+    them to `unknown_state` so the orchestrator can pause and return to the
+    user; the validator only catches structural breakage (missing required
+    keys, wrong types).
+    """
+    errors: list[dict] = []
+    if not isinstance(payload, dict):
+        return [{"path": "$", "message": "input must be a JSON object"}]
+
+    required = ("task_id", "implementer", "reviewer_envelope", "retries_used", "flags")
+    for key in required:
+        if key not in payload:
+            errors.append({"path": f"$.{key}", "message": "required field missing"})
+
+    if "task_id" in payload and not isinstance(payload["task_id"], str):
+        errors.append({"path": "$.task_id", "message": "must be a string"})
+    if "implementer" in payload and not isinstance(payload["implementer"], str):
+        errors.append({"path": "$.implementer", "message": "must be a string"})
+
+    rev = payload.get("reviewer_envelope")
+    if "reviewer_envelope" in payload:
+        if not isinstance(rev, dict):
+            errors.append({"path": "$.reviewer_envelope", "message": "must be an object"})
+        elif "verdict" not in rev:
+            errors.append({"path": "$.reviewer_envelope.verdict", "message": "required field missing"})
+        elif not isinstance(rev["verdict"], str):
+            errors.append({"path": "$.reviewer_envelope.verdict", "message": "must be a string"})
+
+    d5 = payload.get("d5_envelope", None)
+    if d5 is not None and not isinstance(d5, dict):
+        errors.append({"path": "$.d5_envelope", "message": "must be null or an object"})
+    elif isinstance(d5, dict):
+        if "verdict" not in d5:
+            errors.append({"path": "$.d5_envelope.verdict", "message": "required field missing"})
+        elif not isinstance(d5["verdict"], str):
+            errors.append({"path": "$.d5_envelope.verdict", "message": "must be a string"})
+
+    retries = payload.get("retries_used")
+    if "retries_used" in payload and not isinstance(retries, dict):
+        errors.append({"path": "$.retries_used", "message": "must be an object"})
+
+    flags = payload.get("flags")
+    if "flags" in payload and not isinstance(flags, dict):
+        errors.append({"path": "$.flags", "message": "must be an object"})
+
+    return errors
+
+
+def _unknown(reason: str, *, task_id: str | None = None,
+             stage: str = "unknown_state") -> dict:
+    """Build an `unknown_state` directive. The orchestrator pauses on this."""
+    args: dict = {}
+    if task_id is not None:
+        args["task_id"] = task_id
+    args["pause_payload"] = {"stage": stage, "reason": reason}
+    return {"action": "unknown_state", "reason": reason, "args": args}
+
+
+def route(payload: dict) -> dict:
+    """Pure routing function for SKILL Phase D.
+
+    Maps `(implementer, reviewer_verdict, d5_verdict, retries_used, flags)`
+    to one of the eight `action` values. Tests should call this directly.
+
+    `unknown_state` is the escape hatch: any verdict outside the documented
+    enum, or any combination not enumerated in §§D.2 / D.2a / D.2b, returns
+    `action: "unknown_state"` with a human-readable `reason`. The
+    orchestrator pauses on that value and returns to the user.
+    """
+    if not isinstance(payload, dict):
+        return _unknown("input must be a JSON object")
+
+    task_id = payload.get("task_id")
+    implementer = payload.get("implementer")
+    rev = payload.get("reviewer_envelope") or {}
+    rev_verdict = rev.get("verdict") if isinstance(rev, dict) else None
+    rev_findings = rev.get("findings", []) if isinstance(rev, dict) else []
+    rev_summary = rev.get("summary", "") if isinstance(rev, dict) else ""
+
+    d5 = payload.get("d5_envelope")
+    d5_verdict = d5.get("verdict") if isinstance(d5, dict) else None
+    d5_load_bearing = d5.get("load_bearing", []) if isinstance(d5, dict) else []
+    d5_dismissed = d5.get("dismissed", []) if isinstance(d5, dict) else []
+    d5_summary = d5.get("summary", "") if isinstance(d5, dict) else ""
+
+    retries = payload.get("retries_used") or {}
+    bounded_used = bool(retries.get("bounded_remediation", False))
+    narrow_used = bool(retries.get("narrow_remediation", False))
+    role_swap_used = bool(retries.get("role_swap", False))
+
+    flags = payload.get("flags") or {}
+    codex_binding = bool(flags.get("codex_review_binding", False))
+
+    if implementer not in ("claude", "codex"):
+        return _unknown(
+            f"unrecognized implementer {implementer!r}; expected 'claude' or 'codex'",
+            task_id=task_id,
+        )
+
+    # ---- Branch 1: Claude implementer, Codex reviewer (D.2 + D.2a ladder) ----
+    if implementer == "claude":
+        if rev_verdict not in _CODEX_VERDICTS:
+            return _unknown(
+                f"unrecognized Codex reviewer verdict {rev_verdict!r}; "
+                f"expected one of {sorted(_CODEX_VERDICTS)!r}",
+                task_id=task_id,
+            )
+        if rev_verdict in ("clean", "minor-findings"):
+            # D.2 happy path → D.3 commit, no tags.
+            return {
+                "action": "commit",
+                "args": {
+                    "task_id": task_id,
+                    "commit_flags": {
+                        "disagreement_tag": False,
+                        "remediation_tag": False,
+                        "narrow_remediation_tag": False,
+                        "dismissed_finding_ids": [],
+                    },
+                },
+            }
+
+        # rev_verdict == "needs-rework"
+        # Binding-mode short-circuit: skip D.2a entirely.
+        if codex_binding:
+            return {
+                "action": "fail",
+                "args": {
+                    "task_id": task_id,
+                    "fail_stage": "review",
+                    "fail_reason": (
+                        "codex-review-binding: Codex needs-rework on Claude work; "
+                        "no D.5 / D.2a.5 / D.2a.6 escalation"
+                    ),
+                },
+            }
+
+        # No D.5 yet → escalate to D.5 third-opinion.
+        if d5 is None:
+            return {
+                "action": "dispatch_d5",
+                "args": {
+                    "task_id": task_id,
+                    "dispatch_context": {
+                        "template": "PhaseD5",
+                        "findings_for_retry": list(rev_findings),
+                        "wrapper_checks": rev.get("wrapper_checks", {"symbol_warnings": []})
+                        if isinstance(rev, dict) else {"symbol_warnings": []},
+                    },
+                },
+            }
+
+        # D.5 envelope present → consult §D.2a verdict cross-table.
+        if d5_verdict not in _D5_VERDICTS:
+            return _unknown(
+                f"unrecognized D.5 verdict {d5_verdict!r}; "
+                f"expected one of {sorted(_D5_VERDICTS)!r}",
+                task_id=task_id,
+            )
+
+        if d5_verdict in ("ship", "ship-with-fixes"):
+            # D.5 disagreed with Codex → commit with --disagreement-tag.
+            return {
+                "action": "commit",
+                "args": {
+                    "task_id": task_id,
+                    "commit_flags": {
+                        "disagreement_tag": True,
+                        "remediation_tag": False,
+                        "narrow_remediation_tag": False,
+                        "dismissed_finding_ids": [],
+                    },
+                },
+            }
+
+        if d5_verdict == "partial-agreement":
+            # D.2a.6 narrow-remediation path.
+            if narrow_used:
+                # Second-review failure on narrow path → pause.
+                return {
+                    "action": "pause_awaiting_user",
+                    "args": {
+                        "task_id": task_id,
+                        "pause_payload": {
+                            "stage": "post_narrow_remediation_review",
+                            "codex_findings": list(rev_findings),
+                            "d5_summary": d5_summary,
+                            "dismissed_finding_indices": list(d5_dismissed),
+                        },
+                    },
+                }
+            # First narrow attempt → dispatch.
+            load_bearing_findings = [
+                rev_findings[i] for i in d5_load_bearing
+                if isinstance(i, int) and 0 <= i < len(rev_findings)
+            ]
+            dismissed_findings = [
+                rev_findings[i] for i in d5_dismissed
+                if isinstance(i, int) and 0 <= i < len(rev_findings)
+            ]
+            return {
+                "action": "dispatch_narrow_remediation",
+                "args": {
+                    "task_id": task_id,
+                    "dispatch_context": {
+                        "template": "PhaseB-narrow-remediation",
+                        "findings_for_retry": load_bearing_findings,
+                        "dismissed_for_context": dismissed_findings,
+                        "d5_summary": d5_summary,
+                    },
+                },
+            }
+
+        if d5_verdict == "needs-rework":
+            # D.2a.5 bounded-remediation path.
+            if bounded_used:
+                # Second-review failure on bounded path → pause.
+                return {
+                    "action": "pause_awaiting_user",
+                    "args": {
+                        "task_id": task_id,
+                        "pause_payload": {
+                            "stage": "post_remediation_review",
+                            "codex_findings": list(rev_findings),
+                            "d5_summary": d5_summary,
+                        },
+                    },
+                }
+            # First bounded attempt → dispatch.
+            return {
+                "action": "dispatch_bounded_remediation",
+                "args": {
+                    "task_id": task_id,
+                    "dispatch_context": {
+                        "template": "PhaseB-rework",
+                        "findings_for_retry": list(rev_findings),
+                        "d5_summary": d5_summary,
+                    },
+                },
+            }
+
+        # Defensive: unreachable given enum guard above.
+        return _unknown(
+            f"unhandled Claude→Codex routing cell "
+            f"(reviewer={rev_verdict!r}, d5={d5_verdict!r})",
+            task_id=task_id,
+        )
+
+    # ---- Branch 2: Codex implementer, Claude reviewer (D.2 + D.2b) ----
+    # (also covers the claude_only=true Claude-impl→Claude-review collapse if
+    # the orchestrator labels the implementer as claude with Claude verdicts;
+    # but the current SKILL contract is that Claude reviewers always use the
+    # ship/ship-with-fixes vocabulary, so we route on verdict shape.)
+    assert implementer == "codex"
+    if rev_verdict not in _CLAUDE_VERDICTS:
+        return _unknown(
+            f"unrecognized Claude reviewer verdict {rev_verdict!r}; "
+            f"expected one of {sorted(_CLAUDE_VERDICTS)!r}",
+            task_id=task_id,
+        )
+
+    if rev_verdict in ("ship", "ship-with-fixes"):
+        return {
+            "action": "commit",
+            "args": {
+                "task_id": task_id,
+                "commit_flags": {
+                    "disagreement_tag": False,
+                    "remediation_tag": False,
+                    "narrow_remediation_tag": False,
+                    "dismissed_finding_ids": [],
+                },
+            },
+        }
+
+    # rev_verdict == "needs-rework"
+    # D.2b role-swap: one attempt. If already used, fail.
+    if role_swap_used:
+        return {
+            "action": "fail",
+            "args": {
+                "task_id": task_id,
+                "fail_stage": "review",
+                "fail_reason": (
+                    "role-swap retry exhausted; Claude reviewer needs-rework on "
+                    "Codex work after one role-swap attempt"
+                ),
+            },
+        }
+    return {
+        "action": "dispatch_role_swap",
+        "args": {
+            "task_id": task_id,
+            "dispatch_context": {
+                "template": "PhaseB-rework",
+                "findings_for_retry": list(rev_findings),
+                "d5_summary": rev_summary,
+            },
+        },
+    }
+
+
+def cmd_review_route(args: argparse.Namespace) -> None:
+    """Thin stdin/_emit shim around `route()`.
+
+    Reads the review-route input envelope from stdin, validates structure,
+    and emits the routing directive on stdout. Schema violations exit
+    non-zero with a structured `errors[*]` payload. Unrecognized enum
+    values (verdicts outside the documented vocabularies) are routed to
+    `action: unknown_state` by `route()` itself with exit 0 — the
+    orchestrator pauses and returns to the user on that output.
+    """
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw) if raw.strip() else None
+    except json.JSONDecodeError as exc:
+        _die(args, {
+            "error": "invalid JSON on stdin",
+            "errors": [{"path": "$", "message": str(exc)}],
+        })
+        return
+
+    errors = _validate_review_route_input(payload)
+    if errors:
+        _die(args, {
+            "error": "review-route input schema violation",
+            "errors": errors,
+        })
+        return
+
+    directive = route(payload)  # type: ignore[arg-type]
+    _emit(args, directive)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -10921,6 +11307,7 @@ def main(argv: list[str] | None = None) -> None:
         args.dismissed_finding_ids = dismissed_parsed
     handlers = {
         "preflight": cmd_preflight,
+        "review-route": cmd_review_route,
         "parse-schedule": cmd_parse_schedule,
         "decompose-plan": cmd_decompose_plan,
         "build-tasks": cmd_build_tasks,

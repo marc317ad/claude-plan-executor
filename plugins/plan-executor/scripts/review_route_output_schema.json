@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "review-route output",
+  "description": "One routing directive emitted by `plan_ops.py review-route`. Every Phase D cell from SKILL.md §§D.2 / D.2a / D.2a.5 / D.2a.6 / D.2b collapses to one `action` value. The orchestrator executes the directive verbatim. `unknown_state` is the escape hatch — the orchestrator pauses and returns to the user instead of guessing.",
+  "type": "object",
+  "required": ["action", "args"],
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "commit",
+        "fail",
+        "dispatch_d5",
+        "dispatch_bounded_remediation",
+        "dispatch_narrow_remediation",
+        "dispatch_role_swap",
+        "pause_awaiting_user",
+        "unknown_state"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "description": "Human-readable explanation. Always present on `unknown_state`; optional otherwise."
+    },
+    "args": {
+      "type": "object",
+      "description": "Action-specific arguments. Fields not relevant to the action MAY be absent.",
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {"type": "string"},
+        "commit_flags": {
+          "type": "object",
+          "description": "Flag composition for `plan_ops.py commit-task`. Respects argparse XOR constraints: narrow_remediation_tag XOR remediation_tag; dismissed_finding_ids requires narrow_remediation_tag; narrow_remediation_tag requires non-empty dismissed_finding_ids.",
+          "additionalProperties": false,
+          "properties": {
+            "disagreement_tag": {"type": "boolean", "default": false},
+            "remediation_tag": {"type": "boolean", "default": false},
+            "narrow_remediation_tag": {"type": "boolean", "default": false},
+            "dismissed_finding_ids": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+          }
+        },
+        "fail_stage": {"type": "string", "enum": ["implement", "review", "commit"]},
+        "fail_reason": {"type": "string"},
+        "pause_payload": {
+          "type": "object",
+          "description": "Payload for the `awaiting_user` log event. `stage` enumerates the canonical pause points.",
+          "properties": {
+            "stage": {
+              "type": "string",
+              "enum": [
+                "post_remediation_review",
+                "post_remediation_implement",
+                "post_narrow_remediation_review",
+                "post_narrow_remediation_implement",
+                "unknown_state"
+              ]
+            }
+          }
+        },
+        "dispatch_context": {
+          "type": "object",
+          "description": "Context for re-dispatch templates (PhaseB-rework / PhaseB-narrow-remediation / PhaseD5).",
+          "additionalProperties": false,
+          "properties": {
+            "template": {"type": "string"},
+            "findings_for_retry": {"type": "array"},
+            "dismissed_for_context": {"type": "array"},
+            "d5_summary": {"type": "string"},
+            "wrapper_checks": {"type": "object"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -14,7 +14,7 @@
       "file": "PLAN_PHASE_D_STATE_MACHINE.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -37,7 +37,9 @@
       "task_id": "004",
       "file": "PLAN_PHASE_D_STATE_MACHINE.md",
       "priority": "medium",
-      "depends_on": ["003"],
+      "depends_on": [
+        "003"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -45,7 +47,11 @@
       "task_id": "005",
       "file": "PLAN_PHASE_D_STATE_MACHINE.md",
       "priority": "high",
-      "depends_on": ["001", "002", "003"],
+      "depends_on": [
+        "001",
+        "002",
+        "003"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -53,7 +59,9 @@
       "task_id": "006",
       "file": "PLAN_PHASE_D_STATE_MACHINE.md",
       "priority": "medium",
-      "depends_on": ["005"],
+      "depends_on": [
+        "005"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -61,7 +69,10 @@
       "task_id": "007",
       "file": "PLAN_PHASE_D_STATE_MACHINE.md",
       "priority": "medium",
-      "depends_on": ["001", "005"],
+      "depends_on": [
+        "001",
+        "005"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -69,7 +80,13 @@
       "task_id": "008",
       "file": "PLAN_PHASE_D_STATE_MACHINE.md",
       "priority": "high",
-      "depends_on": ["001", "002", "003", "005", "007"],
+      "depends_on": [
+        "001",
+        "002",
+        "003",
+        "005",
+        "007"
+      ],
       "status": "Pending",
       "superseded_by": []
     }
