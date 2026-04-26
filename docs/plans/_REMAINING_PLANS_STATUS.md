@@ -78,6 +78,14 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 
 ---
 
+### 7. SKILL_bash_dispatch_migration (7 tasks)
+- Status: **HALTED — author pass required** (schema-valid pre-checked, same pattern as PHASE_D)
+- Same root cause as PHASE_D_STATE_MACHINE: `## 1. Goal` / `## 2. Scope` / `## 5. Verification` numbered headings; schema-valid wants bare `## Goal` / `## Context` (or `## Scoped Context`) / `## Verification`. "Scope" → "Context" or "Scoped Context" needed.
+- Pre-checked via `plan_ops.py gates --check schema-valid` (no run_id consumed, no lock acquired, no commits).
+- **User: rename top-level headings** (`## 1. Goal` → `## Goal`, `## 2. Scope` → `## Scoped Context` is the natural fit, `## 5. Verification` → `## Verification`). Then `/implement-plan docs/plans/SKILL_bash_dispatch_migration`.
+
+---
+
 ### 6. PHASE_D_STATE_MACHINE (8 tasks)
 - Status: **HALTED — author pass required** (schema-valid gate fails preflight)
 - Run id: `20260426T015900` → `failed` reason `preflight_gates_failed`
