@@ -63,10 +63,8 @@
       "task_id": "007",
       "file": "PLAN_SKILL_bash_dispatch_migration.md",
       "priority": "high",
-      "depends_on": [
-        "006"
-      ],
-      "status": "Pending",
+      "depends_on": [],
+      "status": "Done",
       "superseded_by": []
     }
   ]

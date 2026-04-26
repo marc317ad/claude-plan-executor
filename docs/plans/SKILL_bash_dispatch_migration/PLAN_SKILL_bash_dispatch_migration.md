@@ -239,7 +239,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 
 ### TASK-007: E2E smoke + rollback documentation
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_skill_dispatch_e2e.py` (create)
