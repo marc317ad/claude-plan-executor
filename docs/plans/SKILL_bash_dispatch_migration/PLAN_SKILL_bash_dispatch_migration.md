@@ -158,7 +158,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 
 ### TASK-004: Migrate Phase B plan-implementer dispatches (default + B-rework + D.2b)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (modify — Phase B default, Phase D.2a.5 rework, Phase D.2b role-swap dispatch paragraphs)
@@ -219,7 +219,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
   - `plugins/plan-executor/scripts/plan_ops.py` (modify — `log-event` subcommand accepts new `claude_dispatch_*` event types if any were missing; **add new `claude-envelope-extract` subcommand** per AC #3 — input: envelope JSON on stdin; args: `--agent {plan-analyst|plan-implementer|plan-remediator}`; output: `{status, outcome, result, scope_violation, scope_misreport, error}`)
   - `docs/plans/SKILL_bash_dispatch_migration/run-log-events.md` (create — enumerate the event types)
   - `tests/scripts/test_claude_dispatch_run_log.py` (create)
-- **Dependencies:** TASK-003, TASK-004, TASK-005
+- **Dependencies:** TASK-004, TASK-005
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_claude_dispatch_run_log.py`
 - **Acceptance criteria:**
   - SKILL.md has exactly one "Dispatch error handling (Claude wrapper)" paragraph shared by all three migrated call sites; per-site duplication from TASK-003..005 is removed.

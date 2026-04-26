@@ -37,7 +37,7 @@
       "file": "PLAN_SKILL_bash_dispatch_migration.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -53,7 +53,6 @@
       "file": "PLAN_SKILL_bash_dispatch_migration.md",
       "priority": "medium",
       "depends_on": [
-        "003",
         "004",
         "005"
       ],

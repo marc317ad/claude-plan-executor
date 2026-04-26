@@ -425,6 +425,61 @@ The orchestrator pipes the triage subagent's markdown report through `parse-plan
 
 ## Phase B — plan-implementer dispatch (Claude tier)
 
+Default Phase B implementer dispatch, migrated to the v3 wrapper as of TASK-004 (`SKILL_bash_dispatch_migration`). The orchestrator emits the dispatch as a `Bash` tool-use block invoking `plan_claude_dispatch.py run --input <payload.json>` (formerly `Agent(subagent_type: "plan-implementer", model: "opus", ...)`). The wrapper returns a v3 envelope on stdout `{schema_version, status, status_reason, agent, model, session_id, duration_ms, cost_usd, tokens, result, result_raw_truncated, stderr_tail, permission_denials, scope, trace, error}`; the orchestrator asserts `.status == "ok"` and reads the implementer outcome + report from `.result` per the **Phase B classify** extraction shim in `SKILL.md`. Implementer outcome vocabulary (`success | partial | failed | plan-incorrect | blocked | malformed`) is preserved verbatim; `malformed` is emitted by the wrapper when transport succeeded but `.result` failed schema validation against the implementer result schema.
+
+Bash command template:
+
+```
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload.json>
+```
+
+Payload skeleton (`<payload.json>`, conforming to `plugins/plan-executor/scripts/schemas/claude_dispatch_input.json`):
+
+```json
+{
+  "schema_version": 1,
+  "agent": "plan-implementer",
+  "variant": "default",
+  "payload": {
+    "plan_path": "<absolute child plan path>",
+    "repo_root": "<repo_root>",
+    "task_id": "<NNN>",
+    "target_task_id": "<NNN-or-null>",
+    "starting_sha": "<orchestrator starting_sha>",
+    "analyst_annotations": "<analyst_annotations_json-or-null>",
+    "pre_read_excerpts": "<rendered pre-read excerpts-or-null>"
+  },
+  "output_instructions": {
+    "format": "json",
+    "schema_path": "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json",
+    "schema_inline": null,
+    "max_bytes": 65536
+  },
+  "overrides": {
+    "model": "opus",
+    "timeout_sec": null,
+    "tools_allowed_extra": null,
+    "tools_disallowed_extra": null,
+    "cwd": null
+  },
+  "guardrails": {
+    "max_depth": 1,
+    "cost_cap_usd": null,
+    "network": "deny"
+  },
+  "trace": {
+    "run_id": "<orchestrator run_id>",
+    "parent_span_id": null,
+    "depth": 0,
+    "call_chain": ["orchestrator"]
+  }
+}
+```
+
+`payload.variant="default"` is the template selector; `"rework"` selects the Phase B-rework body, `"role-swap"` selects the Phase D.2b body. No new wrapper subcommand — the variant is carried in the payload. The wrapper extracts `.scope.scope_violation_detected` and `.scope.scope_misreport_detected` from the v3 §7 scope sub-object; both surface as top-level envelope fields the orchestrator reads directly to gate commits (existing rules apply). The required report sections (`Plan adaptations`, `Concerns for reviewer`, `On-failure revert`) surface inside `.result.report` as structured arrays (`plan_adaptations[]`, `concerns_for_reviewer[]`, `on_failure_revert`); the orchestrator reads only those fields plus commit-scope metadata and does NOT ingest `.result_raw_truncated` on the success path. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording — only the transport header above (how to invoke + envelope handling) was rewritten by TASK-004.
+
+<!-- TRANSPORT BOUNDARY - do not edit below in this plan -->
+
 **`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading (shared-file siblings), the orchestrator's render path prepends ``Implement specifically `### TASK-NNN:` ...`` as the first instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting `target_task_id` for a >1-heading file is a render-time error.
 
 **Pre-read excerpts (TASK-009).** When the task block declares `**Read targets:**` (line ranges) or `**Symbol targets:**` (symbol extraction) optional fields, the orchestrator resolves them up-front and prepends a `## Pre-read excerpts` section to the dispatch prompt. The resolution helper:
@@ -638,15 +693,27 @@ Same deliberate parallel-tree divergence from §10 as Phase D-Claude. Call out i
 
 ## Phase D.2b — Role-swap retry (Codex-implements + Claude-reviews needs-rework)
 
+Role-swap retry dispatch, migrated to the v3 wrapper as of TASK-004. The orchestrator emits the dispatch as a `Bash` tool-use block invoking `plan_claude_dispatch.py run --input <payload.json>` with `payload.agent="plan-implementer"`, `payload.variant="role-swap"` (template selector), `overrides.model="opus"` — replacing the prior `Agent(subagent_type: "plan-implementer", ...)` call. The wrapper returns a v3 envelope on stdout; orchestrator asserts `.status=="ok"` and reads `.result` per the Phase B classify shim. The `retries_used.role_swap` budget check happens orchestrator-side BEFORE this dispatch — it is not enforced inside the wrapper.
+
+The dispatch payload mirrors the Phase B skeleton above; substitute `payload.variant="role-swap"`. Reviewer findings are NOT forwarded (Open risks 1). Required report sections surface as structured arrays inside `.result.report`; `.scope.scope_violation_detected` and `.scope.scope_misreport_detected` are read directly from the envelope. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
+
+<!-- TRANSPORT BOUNDARY - do not edit below in this plan -->
+
 Per design §8.3 line 692: Claude re-implements, Codex re-reviews. One attempt.
 
 **Retry implement** — re-use the Phase B template above verbatim with the same TASK-NNN block. Reviewer findings are NOT forwarded in v1 (see Open risks 1); Claude re-implements from the plan spec. After retry success, re-run Phase D-Codex (wrapper review) on the re-implementation. `needs-rework` on the re-review is terminal for this task — no further retries.
 
 ## Phase B-rework — Bounded remediation retry (D.2a.5)
 
+Bounded-remediation dispatch, migrated to the v3 wrapper as of TASK-004. The orchestrator emits the dispatch as a `Bash` tool-use block invoking `plan_claude_dispatch.py run --input <payload.json>` with `payload.agent="plan-implementer"`, `payload.variant="rework"` (template selector), `overrides.model="opus"` — replacing the prior `Agent(subagent_type: "plan-implementer", model: "opus")` call. Strictly one attempt. The wrapper returns a v3 envelope on stdout; the orchestrator asserts `.status=="ok"` and reads `.result.outcome` + `.result.report.{plan_adaptations,concerns_for_reviewer,on_failure_revert}` per the Phase B classify shim. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
+
+The dispatch payload mirrors the Phase B skeleton above; substitute `payload.variant="rework"` and add `payload.dispatch_context: {findings_for_retry, d5_summary}` (forwarded verbatim from `review-route`'s `dispatch_context`). The required report sections (`Plan adaptations`, `Concerns for reviewer`, `On-failure revert`) surface inside `.result.report` as structured arrays. `.scope.scope_violation_detected` is read directly from the envelope. `malformed` outcomes — emitted when transport succeeded but `.result` failed schema validation — route the same as `failed` for D.2a.5 stage `implement`.
+
+<!-- TRANSPORT BOUNDARY - do not edit below in this plan -->
+
 **`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading, the orchestrator's render path prepends ``Apply the narrow remediation specifically to `### TASK-NNN:` ...`` as the first instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting the field for a >1-heading file is a render-time error.
 
-Dispatched only when Codex reviewing Claude-implemented work returns `needs-rework` AND the Phase D.5 third-opinion code-reviewer independently agreed (verdict `needs-rework`). Strictly one attempt. Use `Agent(subagent_type: "plan-implementer", model: "opus")`.
+Dispatched only when Codex reviewing Claude-implemented work returns `needs-rework` AND the Phase D.5 third-opinion code-reviewer independently agreed (verdict `needs-rework`). Strictly one attempt.
 
 Unlike Phase D.2b, reviewer findings ARE forwarded here — the risk of the implementer blindly doing whatever Codex said is mitigated because D.5 already confirmed the findings are load-bearing. Keep the forwarded prompt structured; do NOT paraphrase into a free-form "fix what Codex flagged".
 
