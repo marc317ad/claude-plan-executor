@@ -186,7 +186,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 
 ### TASK-005: Migrate Phase D.2a.6 plan-remediator dispatch
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (modify — Phase D.2a.6 dispatch paragraph only)
