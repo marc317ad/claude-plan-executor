@@ -51,12 +51,21 @@ ANALYST_RESULT_SCHEMA = FIXTURES_DIR / "schemas" / "analyst_result.json"
 
 ALLOWED_ANALYST_OUTCOMES = {"valid", "needs-enrichment", "invalid"}
 
+# TASK-006 collapsed the per-site extraction shims into one shared
+# section + a `plan_ops.py claude-envelope-extract` subcommand. The AC
+# is now satisfied by either (a) the verbatim pre-TASK-006 shim text OR
+# (b) a per-site reference to `claude-envelope-extract --agent
+# plan-analyst` plus the shared `Dispatch error handling (Claude
+# wrapper)` section header. Test accepts either form so the migration
+# can land without breaking pre-consolidation invariants.
 EXTRACTION_SHIM = (
     'Read stdout as JSON; assert `.status=="ok"`; extract '
     "`.result.schedule` and pipe through `plan_ops.py parse-schedule`; "
     "treat `.result.outcome in {valid, needs-enrichment, invalid}` per "
     "existing rules."
 )
+EXTRACTION_SHIM_CONSOLIDATED_SUBCOMMAND = "claude-envelope-extract --agent plan-analyst"
+EXTRACTION_SHIM_SHARED_SECTION = "Dispatch error handling (Claude wrapper)"
 
 TRANSPORT_BOUNDARY_MARKER = (
     "<!-- TRANSPORT BOUNDARY - do not edit below in this plan -->"
@@ -100,15 +109,30 @@ def test_skill_md_phase1_invokes_wrapper_run_subcommand() -> None:
 
 
 def test_skill_md_phase1_carries_extraction_shim_pointer() -> None:
-    """AC literal: a one-line extraction pointer at the replacement site."""
+    """AC literal: a one-line extraction pointer at the replacement site.
+
+    Post-TASK-006 the per-site shim was collapsed into the shared
+    `## Dispatch error handling (Claude wrapper)` section + a
+    `plan_ops.py claude-envelope-extract` subcommand. This test accepts
+    either the original verbatim shim text OR the consolidated form
+    (per-site `claude-envelope-extract --agent plan-analyst` reference
+    plus the shared section header), so the consolidation can land
+    without amending TASK-003's invariant.
+    """
     text = SKILL_MD.read_text(encoding="utf-8")
-    # Compare on whitespace-collapsed text so quote/backtick rendering
-    # differences don't break the match.
     norm = " ".join(text.split())
-    norm_shim = " ".join(EXTRACTION_SHIM.split())
-    assert norm_shim in norm, (
-        "SKILL.md does not carry the verbatim extraction-shim pointer "
-        f"required by TASK-003 AC. Expected substring: {EXTRACTION_SHIM!r}"
+    if " ".join(EXTRACTION_SHIM.split()) in norm:
+        return
+    consolidated_present = (
+        EXTRACTION_SHIM_CONSOLIDATED_SUBCOMMAND in norm
+        and EXTRACTION_SHIM_SHARED_SECTION in norm
+    )
+    assert consolidated_present, (
+        "SKILL.md does not carry the extraction-shim pointer required by "
+        "TASK-003 AC nor the TASK-006 consolidated form. Expected either "
+        f"the verbatim shim {EXTRACTION_SHIM!r} OR a per-site "
+        f"{EXTRACTION_SHIM_CONSOLIDATED_SUBCOMMAND!r} reference plus the "
+        f"shared section header {EXTRACTION_SHIM_SHARED_SECTION!r}."
     )
 
 

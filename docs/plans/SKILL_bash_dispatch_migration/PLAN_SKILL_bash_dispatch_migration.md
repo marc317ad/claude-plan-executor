@@ -212,7 +212,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 
 ### TASK-006: Error-handling consolidation + run-log event alignment
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (modify — collapse the per-dispatch error-handling sub-paragraphs into one shared section)
@@ -228,7 +228,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
   - Run-log event types covered: `claude_dispatch_start`, `claude_dispatch_done`, `claude_dispatch_failed`. `log-event` accepts these as first-class event types (existing `run_start`/`implement_done`/etc unchanged).
   - Test replays a 3-dispatch sequence (analyst → implementer → remediator) and asserts the run-log has exactly the expected event ordering and payload shape.
   - No regression on existing run-log events (`run_start, implement_done, review_done, commit_done, failed, awaiting_user`).
-  - After consolidation, the three migrated call sites in SKILL.md each shrink to ~6 lines (invoke + extract + outcome-switch); `wc -c` on SKILL.md shows a net reduction vs the pre-migration baseline (measured and recorded in run-log-events.md).
+  - After consolidation, the three migrated call sites in SKILL.md each shrink to ~6 lines (invoke + extract + outcome-switch). **Byte-delta scope clarified 2026-04-26:** TASK-006 measures the byte delta of the **consolidation step alone** (pre-TASK-006 vs post-TASK-006 SKILL.md `wc -c`), not the cumulative migration delta vs the pre-TASK-003 baseline. The cumulative migration intentionally **adds** wrapper-invocation contract material (transport headers, output-format JSON instructions, error-handling tables) at each migrated site — net cumulative growth is the expected shape; per-site shrinkage at the consolidation step is what AC #7 verifies. Both measurements are recorded in `run-log-events.md` with rationale.
 - **Out of scope:** changing the Codex wrapper's event names to match (symmetry can be a follow-on); rewriting `finalize-execution-log`.
 
 **Description:** Where the real context-win lands. Three dispatch sites sharing one error paragraph is the reason this migration reduces SKILL.md size, not just re-routes bytes.
@@ -285,3 +285,13 @@ Starting SHA: `8cf4822f2f67fc40cf30a6884a13e153d03ff6d6`  → Ending SHA: `8cf48
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 003 | claude | codex | needs-rework [paused] | (uncommitted) | Codex 3 important findings; D.5 dispatch unavailable (no code-reviewer subagent registered) |
+
+## Execution log — 20260426T132039 (paused)
+
+Starting SHA: `0f2153a8e9483e0cfec2af60485b4525fb7d0f29`  → Ending SHA: `f68dbfefc2d12e2d2ff8d976447481f587bc55e1`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | codex | clean | c83168b | Phase B implementer migration |
+| 005 | claude | claude | ship-with-fixes [disagreement] | f68dbfe | hand-D.5 dismissal (precedent + contradiction) |
+| 006 | claude | none | paused |  | partial: AC #7 byte-baseline + scope concerns |

@@ -12,6 +12,7 @@ Example invocations (resolve $PYTHON via `preflight --json`'s python_path):
     $PYTHON scripts/plan_ops.py batch-next --schedule-file <path> ...
     $PYTHON scripts/plan_ops.py parse-implementer-report --stdin
     $PYTHON scripts/plan_ops.py parse-plan-review-report --stdin
+    $PYTHON scripts/plan_ops.py claude-envelope-extract --stdin --agent <plan-analyst|plan-implementer|plan-remediator>
     $PYTHON scripts/plan_ops.py commit-task --plan-file <abs> --task-id NNN ...
     $PYTHON scripts/plan_ops.py fail-task --plan-file <abs> --task-id NNN ...
     $PYTHON scripts/plan_ops.py update-plan-header --plan-file <abs> --status <s>
@@ -291,6 +292,15 @@ ALLOWED_LOG_EVENTS = {
     # task_count}`. The produced directory is treated identically to a
     # user-authored decomposed directory after this event.
     "decompose_auto_promote",
+    # TASK-006 (SKILL_bash_dispatch_migration). Per-dispatch lifecycle events
+    # for the v3 Claude wrapper (`plan_claude_dispatch.py run`). Emitted at
+    # every analyst / implementer / remediator dispatch site so the run-log
+    # captures the wrapper transport status alongside the existing
+    # implement_done / review_done semantic events. `claude_dispatch_failed`
+    # carries the wrapper's `status_reason` + truncated diagnostics.
+    "claude_dispatch_start",
+    "claude_dispatch_done",
+    "claude_dispatch_failed",
 }
 # Accepted values for `finalize-execution-log --outcome`. `paused` is added
 # per TASK-014A for the D.2a.5 awaiting-user pause — the run halted mid-flight
@@ -418,6 +428,7 @@ CANONICAL_CONTRACT: dict[str, object] = {
         "filter-schedule",
         "parse-implementer-report",
         "parse-plan-review-report",
+        "claude-envelope-extract",
         "order-triage-findings",
         "parse-plan-review-triage-report",
         "commit-task",
@@ -6077,6 +6088,107 @@ def order_triage_findings(findings: list[dict]) -> list[dict]:
     return ordered
 
 
+# TASK-006 (SKILL_bash_dispatch_migration). Consolidated extraction shim
+# for the v3 Claude wrapper envelope. Replaces the per-site inline jq-style
+# reads added in TASK-003/004/005. Input on stdin: full wrapper envelope
+# JSON `{schema_version, status, status_reason, agent, model, ...,
+# result, result_raw_truncated, stderr_tail, scope, ...}`. Args:
+# `--agent {plan-analyst|plan-implementer|plan-remediator}`. Output is
+# normalized across agents: `{status, outcome, result, scope_violation,
+# scope_misreport, error}` where:
+#   * `status`           — verbatim wrapper `status` (e.g., `ok`,
+#                          `schema_invalid`, `timeout`, ...).
+#   * `outcome`          — for `plan-implementer` / `plan-remediator`,
+#                          `result.outcome` when status==ok and result is
+#                          a dict carrying `outcome`; for `plan-analyst`,
+#                          `result.outcome` if present (whole-plan analyst
+#                          path) else `null` (per-child classifier path
+#                          where `result` is `{agent, classification_reason}`).
+#                          When status != ok, `outcome` is the literal
+#                          string `"malformed"` so the orchestrator's
+#                          existing routing (`partial | failed |
+#                          plan-incorrect | blocked | malformed`) treats
+#                          a transport failure as the same routing class.
+#   * `result`           — verbatim `envelope.result` (sub-fields are
+#                          consumed by `parse-schedule` / markdown
+#                          parsers downstream — this subcommand does NOT
+#                          re-parse them).
+#   * `scope_violation`  — `envelope.scope.scope_violation_detected` when
+#                          present; `false` otherwise.
+#   * `scope_misreport`  — `envelope.scope.scope_misreport_detected`
+#                          when present; `false` otherwise.
+#   * `error`            — diagnostic string composed from
+#                          `status_reason` + `result_raw_truncated` +
+#                          `stderr_tail` when status != ok; `null`
+#                          otherwise.
+_CLAUDE_ENVELOPE_AGENTS = {"plan-analyst", "plan-implementer", "plan-remediator"}
+
+
+def cmd_claude_envelope_extract(args: argparse.Namespace) -> None:
+    raw = sys.stdin.read()
+    try:
+        env = json.loads(raw)
+    except json.JSONDecodeError as e:
+        _die(args, {"error": f"stdin is not valid JSON: {e}"})
+    if not isinstance(env, dict):
+        _die(args, {"error": "envelope must be a JSON object"})
+    agent = args.agent
+    if agent not in _CLAUDE_ENVELOPE_AGENTS:
+        _die(args, {
+            "error": (
+                f"--agent must be one of {sorted(_CLAUDE_ENVELOPE_AGENTS)}; "
+                f"got {agent!r}"
+            ),
+        })
+
+    status = env.get("status")
+    result = env.get("result")
+    scope = env.get("scope") if isinstance(env.get("scope"), dict) else {}
+    scope_violation = bool(scope.get("scope_violation_detected", False))
+    scope_misreport = bool(scope.get("scope_misreport_detected", False))
+
+    # Compose the outcome the orchestrator routes on. When transport failed
+    # (status != "ok"), every agent collapses to "malformed" so the
+    # orchestrator's existing per-stage rules fire on the same vocabulary.
+    if status != "ok":
+        outcome: object = "malformed"
+    else:
+        if isinstance(result, dict) and isinstance(result.get("outcome"), str):
+            outcome = result["outcome"]
+        else:
+            # Per-child classifier seam (plan-analyst): result is
+            # `{agent, classification_reason}` and carries no `outcome`.
+            outcome = None
+
+    # Diagnostic string composed only on transport failure. Truncated
+    # fields are forwarded verbatim — the wrapper already bounded them.
+    error: object = None
+    if status != "ok":
+        parts: list[str] = []
+        sr = env.get("status_reason")
+        if isinstance(sr, str) and sr:
+            parts.append(f"status_reason={sr}")
+        rrt = env.get("result_raw_truncated")
+        if isinstance(rrt, str) and rrt:
+            parts.append(f"result_raw_truncated={rrt}")
+        st = env.get("stderr_tail")
+        if isinstance(st, str) and st:
+            parts.append(f"stderr_tail={st}")
+        err_obj = env.get("error")
+        if isinstance(err_obj, (str, dict, list)) and err_obj:
+            parts.append(f"error={json.dumps(err_obj) if not isinstance(err_obj, str) else err_obj}")
+        error = " | ".join(parts) if parts else f"wrapper status={status!r}"
+
+    _emit(args, {
+        "status": status,
+        "outcome": outcome,
+        "result": result,
+        "scope_violation": scope_violation,
+        "scope_misreport": scope_misreport,
+        "error": error,
+    })
+
+
 def cmd_order_triage_findings(args: argparse.Namespace) -> None:
     """Order-and-annotate triage findings for the Phase 1.5.5 dispatch.
 
@@ -11102,6 +11214,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_prr)
 
+    p_cee = sub.add_parser(
+        "claude-envelope-extract",
+        help=(
+            "TASK-006: extract a normalized routing payload from a v3 "
+            "Claude wrapper envelope on stdin. Replaces the per-dispatch "
+            "inline jq-style reads added in TASK-003/004/005."
+        ),
+    )
+    p_cee.add_argument("--stdin", action="store_true", required=True,
+                       help="Read wrapper envelope JSON from stdin")
+    p_cee.add_argument(
+        "--agent", required=True,
+        choices=sorted(_CLAUDE_ENVELOPE_AGENTS),
+        help="Dispatch site: which agent the envelope is from",
+    )
+    _add_json(p_cee)
+
     p_otf = sub.add_parser(
         "order-triage-findings",
         help=(
@@ -12482,6 +12611,7 @@ def main(argv: list[str] | None = None) -> None:
         "filter-schedule": cmd_filter_schedule,
         "parse-implementer-report": cmd_parse_implementer_report,
         "parse-plan-review-report": cmd_parse_plan_review_report,
+        "claude-envelope-extract": cmd_claude_envelope_extract,
         "order-triage-findings": cmd_order_triage_findings,
         "parse-plan-review-triage-report": cmd_parse_plan_review_triage_report,
         "parse-d5-adjudication": cmd_parse_d5_adjudication,
