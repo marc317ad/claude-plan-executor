@@ -52,6 +52,10 @@ PLAN_REVIEW_SCHEMA = SCRIPT_DIR / "codex_plan_review_schema.json"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from _codex_envelope_sanitizer import (  # noqa: E402
+    sanitize as _sanitize_envelope,
+    trim_stdout_to_envelope as _trim_stdout_to_envelope,
+)
 from _plan_paths import (  # noqa: E402
     ALLOW_GAPS_DEMOTION_CLAUSE,
     PROTECTED_EXACT_PATHS,
@@ -844,19 +848,28 @@ def invoke_codex(
         }
 
     elapsed = time.monotonic() - start
-    stdout_text = proc.stdout.decode(errors="replace")
+    raw_stdout_text = proc.stdout.decode(errors="replace")
     stderr_text = proc.stderr.decode(errors="replace")
 
-    # Parse JSONL for file_change events (Appendix D B2)
+    # TASK-003 (Phase D, layer 1): trim bytes outside the JSON envelope
+    # BEFORE returning. The returned ``stdout`` is the source of
+    # ``codex_output_raw`` in downstream envelopes — leaving non-JSON
+    # bytes in violates the sanitizer perimeter (a downstream envelope
+    # carrying ``codex_output_raw`` would re-emit the dropped bytes).
+    # ``_trim_stdout_to_envelope`` keeps only lines that parse as JSON
+    # and returns the dropped byte count for ``extra.dropped_bytes``.
+    stdout_text, dropped_bytes = _trim_stdout_to_envelope(raw_stdout_text)
+
+    # Parse JSONL for file_change events (Appendix D B2). The trimmed
+    # stdout excludes non-JSON lines by construction, so the JSON parse
+    # below cannot raise; we keep the explicit isinstance/key guards
+    # because trimming filters by parseability, not event shape.
     file_changes: list[str] = []
     for line in stdout_text.splitlines():
-        line = line.strip()
-        if not line:
+        stripped = line.strip()
+        if not stripped:
             continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        event = json.loads(stripped)
         if isinstance(event, dict) and event.get("type") == "file_change":
             path = event.get("path")
             if path and isinstance(path, str):
@@ -869,6 +882,7 @@ def invoke_codex(
         "stderr": stderr_text,
         "file_changes": file_changes,
         "wall_seconds": elapsed,
+        "dropped_bytes": dropped_bytes,
     }
 
 
@@ -1228,8 +1242,58 @@ def make_envelope(
     return envelope
 
 
+# TASK-003 (Phase D, layer 1): the layer-1 outer-boundary trim happens
+# inside ``invoke_codex`` (non-JSON lines on Codex stdout are dropped and
+# the byte count is returned). The most recent count is held here so
+# ``emit()`` can stamp ``extra.dropped_bytes`` on every envelope emitted
+# during the same dispatch turn — sanitizer audit lives next to the
+# envelope it audits, regardless of which control-flow branch produced it.
+_LAST_DROPPED_BYTES: int | None = None
+
+
+def _record_dropped_bytes(count: int | None) -> None:
+    global _LAST_DROPPED_BYTES
+    _LAST_DROPPED_BYTES = count
+
+
 def emit(envelope: dict) -> None:
-    print(json.dumps(envelope, indent=2, default=str))
+    # TASK-003 (Phase D): wrapper-side envelope sanitizer perimeter.
+    # All envelopes routed through ``sanitize()`` before stdout emission so
+    # the orchestrator never sees raw injection shapes in free-text fields.
+    # The pre-redaction payload is recorded once to the run-log as a
+    # ``sanitizer_redaction`` event (sha256 only) by the sanitizer; the raw
+    # payload is never re-emitted downstream.
+    try:
+        sanitized, _flagged = _sanitize_envelope(envelope)
+    except Exception as exc:
+        # Fail-closed: a sanitizer bug MUST NOT cause the original (raw)
+        # envelope to reach stdout — that would violate the perimeter
+        # invariant ("raw payload is never re-emitted downstream").
+        # Strip every known free-text field, replace with a redaction
+        # marker, and stamp ``extra.sanitizer_flags`` so the orchestrator
+        # can detect the failure.
+        sanitized = {
+            "task_id": envelope.get("task_id"),
+            "subcommand": envelope.get("subcommand"),
+            "outcome": envelope.get("outcome"),
+            "codex_exit_code": envelope.get("codex_exit_code"),
+            "codex_output_raw": "[redacted:sanitizer-error]",
+            "parsed": None,
+            "error": "[redacted:sanitizer-error]",
+            "extra": {
+                "sanitizer_flags": [{
+                    "shape": "sanitizer_error",
+                    "field": "<envelope>",
+                    "count": 1,
+                    "error_type": type(exc).__name__,
+                }],
+            },
+        }
+    if _LAST_DROPPED_BYTES is not None:
+        extra = sanitized.setdefault("extra", {})
+        if isinstance(extra, dict):
+            extra.setdefault("dropped_bytes", _LAST_DROPPED_BYTES)
+    print(json.dumps(sanitized, indent=2, default=str))
 
 
 # ---------------------------------------------------------------------------
@@ -1326,6 +1390,7 @@ def cmd_implement(args) -> int:
             timeout_sec=effective_timeout,
             sandbox=None,
         )
+        _record_dropped_bytes(codex.get("dropped_bytes"))
 
         # Timeout handling (Appendix D F1): in-scope cleanup only; anything
         # outside allowed_files is observed for orchestrator reconciliation.
@@ -1669,6 +1734,7 @@ def cmd_review(args) -> int:
             timeout_sec=effective_timeout,
             sandbox="read-only",  # Advisory (Appendix D F2)
         )
+        _record_dropped_bytes(codex.get("dropped_bytes"))
 
         if codex["status"] == "timeout":
             cleanup_details = _handle_timeout_cleanup(
@@ -1911,6 +1977,7 @@ def cmd_plan_review(args) -> int:
             timeout_sec=effective_timeout,
             sandbox="read-only",  # Advisory (Appendix D F2); plan review reads only
         )
+        _record_dropped_bytes(codex.get("dropped_bytes"))
 
         if codex["status"] == "timeout":
             # No allowed-files list for plan review — pass empty list so any
