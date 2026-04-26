@@ -20,9 +20,56 @@ The single shared helper `plan_ops.render_target_task_id_injection(plan_text, ta
 
 ## Phase A-single — plan-analyst per-child classifier (default)
 
-Default Phase 1 invocation as of the per-task-dispatch refactor (v2). The orchestrator emits one dispatch per child file that did NOT declare `**Agent:**` in its source markdown; when every child already declares an agent, Phase 1 skips this template entirely (see SKILL.md §Analysis (Phase 1) step 2). The orchestrator emits N of these dispatches as **N discrete `Agent` tool-use blocks inside a single assistant turn** — not as an array-prompt wrapped inside one Agent call.
+Default Phase 1 invocation as of the per-task-dispatch refactor (v2), now dispatched via the v3 wrapper as of TASK-003 (`SKILL_bash_dispatch_migration`). The orchestrator emits one dispatch per child file that did NOT declare `**Agent:**` in its source markdown; when every child already declares an agent, Phase 1 skips this template entirely (see SKILL.md §Analysis (Phase 1) step 2). The orchestrator emits N of these dispatches as **N discrete `Bash` tool-use blocks inside a single assistant turn** — each invoking `plan_claude_dispatch.py run --input <payload.json>` — not as an array-prompt wrapped inside one tool call.
 
-Agent dispatch, `subagent_type: "plan-analyst"`, `model: "sonnet"` (narrower scope than the retired whole-plan opus dispatch — a single-child classification is within Sonnet's reliable envelope).
+Wrapper dispatch, `agent: "plan-analyst"`, `overrides.model: "sonnet"` (narrower scope than the retired whole-plan opus dispatch — a single-child classification is within Sonnet's reliable envelope). The wrapper returns the v3 envelope on stdout `{schema_version, status, status_reason, agent, model, session_id, duration_ms, cost_usd, tokens, result, result_raw_truncated, stderr_tail, permission_denials, scope, trace, error}`; the orchestrator asserts `.status == "ok"` and reads the classifier reply from `.result`. Status `!= "ok"` halts with `run_end reason=analyst_invalid` (see SKILL.md §Step 2 malformed-reply handling).
+
+Bash command template:
+
+```
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload.json>
+```
+
+Payload skeleton (`<payload.json>`, conforming to `plugins/plan-executor/scripts/schemas/claude_dispatch_input.json`):
+
+```json
+{
+  "schema_version": 1,
+  "agent": "plan-analyst",
+  "payload": {
+    "plan_path": "<absolute child plan path>",
+    "repo_root": "<repo_root>"
+  },
+  "output_instructions": {
+    "format": "json",
+    "schema_path": "plugins/plan-executor/scripts/schemas/claude_dispatch_output.json",
+    "schema_inline": null,
+    "max_bytes": 65536
+  },
+  "overrides": {
+    "model": "sonnet",
+    "timeout_sec": null,
+    "tools_allowed_extra": null,
+    "tools_disallowed_extra": null,
+    "cwd": null
+  },
+  "guardrails": {
+    "max_depth": 1,
+    "cost_cap_usd": null,
+    "network": "deny"
+  },
+  "trace": {
+    "run_id": "<orchestrator run_id>",
+    "parent_span_id": null,
+    "depth": 0,
+    "call_chain": ["orchestrator"]
+  }
+}
+```
+
+The agent-behavior body below is byte-identical to the pre-migration wording — only the **transport header** above (how to invoke + envelope handling) was rewritten by TASK-003.
+
+<!-- TRANSPORT BOUNDARY - do not edit below in this plan -->
 
 > Classify exactly one task from the plan at `<absolute child plan path>`. Repo root: `<repo_root>`.
 >

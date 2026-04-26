@@ -314,25 +314,27 @@ Inspect the in-memory `tasks[]` array. Let `missing_agent_children = [t for t in
 
 **Fan-out case.** If `missing_agent_children` is non-empty, emit **N discrete `Agent` tool calls in a single assistant turn** — one per missing-agent child. The fan-out is N parallel tool-use blocks inside one response, NOT an array-prompt wrapped inside a single Agent tool call; this matches the existing Agent-tool contract in the parent agent's API and introduces no new tool-call shape.
 
-Pseudo-syntax (for illustration; the actual tool-call shape is the standard Agent tool, one per child):
+Pseudo-syntax (for illustration; the actual tool-call shape is N parallel Bash invocations of `plan_claude_dispatch.py run --input <payload.json>`, one per child — the v3 wrapper replaces the in-process Agent tool dispatch as of TASK-003):
 
 ```
-# Inside ONE assistant turn, the orchestrator emits N separate tool-use blocks:
+# Inside ONE assistant turn, the orchestrator emits N separate Bash tool-use blocks:
 [
-  Agent(subagent_type: "plan-analyst", model: "sonnet", prompt: render(templates.PhaseASingle, child=missing_agent_children[0])),
-  Agent(subagent_type: "plan-analyst", model: "sonnet", prompt: render(templates.PhaseASingle, child=missing_agent_children[1])),
+  Bash($PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload_0.json>),
+  Bash($PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload_1.json>),
   ...
-  Agent(subagent_type: "plan-analyst", model: "sonnet", prompt: render(templates.PhaseASingle, child=missing_agent_children[N-1])),
+  Bash($PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload_{N-1}.json>),
 ]
-# ^ N discrete Agent tool calls, emitted together in one response. The Agent-tool
-#   runtime dispatches them in parallel; the orchestrator receives N replies.
+# ^ N discrete Bash tool calls, emitted together in one response. The wrapper
+#   dispatches them in parallel; the orchestrator receives N v3 envelopes on stdout.
 ```
 
-Each dispatch uses the **Phase A-single** template from `dispatch-templates.md` (subagent_type `plan-analyst`, model `sonnet` — narrower scope than the retired whole-plan opus dispatch). Each child agent reads exactly its one child file and returns minimal JSON `{agent: "claude"|"codex", classification_reason: "<one-line justification>"}`.
+Each payload sets `agent="plan-analyst"`, carries the absolute child plan path under `payload.plan_path`, the orchestrator-known `trace.run_id`, and an `output_instructions.schema_path` reference to the analyst result schema (`plugins/plan-executor/scripts/schemas/claude_dispatch_output.json`'s inner `result` shape — see `dispatch-templates.md` §Phase A-single transport header for the canonical payload skeleton). Each dispatch uses the **Phase A-single** template from `dispatch-templates.md` (agent `plan-analyst`, model `sonnet` — narrower scope than the retired whole-plan opus dispatch); the per-child agent reads exactly its one child file and the wrapper returns a v3 envelope whose inner `result` is `{agent: "claude"|"codex", classification_reason: "<one-line justification>"}`.
+
+**Extraction shim (inline — no new `plan_ops.py` subcommand):** *Read stdout as JSON; assert `.status=="ok"`; extract `.result.schedule` and pipe through `plan_ops.py parse-schedule`; treat `.result.outcome in {valid, needs-enrichment, invalid}` per existing rules.* On the per-child classifier seam the wrapper's inner `result` is the classifier reply (`{agent, classification_reason}`) rather than a full schedule — there is no `parse-schedule` round-trip on this path; the shim text above is the canonical extraction pointer for any analyst dispatch (whole-plan or per-child) and the orchestrator selects which fields to surface based on the dispatch's payload shape. `.result_raw_truncated` and `.stderr_tail` are ignored on success; they are referenced only by error-handling consolidation (TASK-006).
 
 Parse each reply and merge into the in-memory `tasks[]` array: for each child reply, set `tasks[i].agent = reply.agent` and `tasks[i].classification_reason = reply.classification_reason` on the matching entry (match by `plan_file` basename — the orchestrator knows which dispatch corresponds to which child).
 
-Malformed reply handling — a reply that does not parse as `{agent, classification_reason}` is treated the same as the analyst's historical malformed-report path: halt with `run_end reason=analyst_invalid`; surface the offending child basename + raw reply; release lock.
+Malformed reply handling — a wrapper envelope whose `.status != "ok"`, OR whose `.result` does not parse as `{agent, classification_reason}`, is treated the same as the analyst's historical malformed-report path: halt with `run_end reason=analyst_invalid`; surface the offending child basename + `.status` + `.result_raw_truncated` (and `.stderr_tail` if present); release lock. Detailed error-status routing is consolidated in TASK-006.
 
 Apply the `codex_available=false` preflight override here too — if the preflight flag was false, rewrite every `tasks[i].agent` to `"claude"` in the merged manifest before step 3 (consistent with the retired whole-plan analyst override, which the orchestrator used to apply after parsing the whole-plan JSON).
 

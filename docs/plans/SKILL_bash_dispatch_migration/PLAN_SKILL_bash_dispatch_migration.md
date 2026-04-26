@@ -131,7 +131,7 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 
 ### TASK-003: Migrate Phase 1 plan-analyst dispatch
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (modify — Phase 1 dispatch paragraph only)
@@ -140,11 +140,12 @@ The orchestrator's Phase-B/Phase-D decision logic does not change. Only the tran
 - **Dependencies:** none
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_skill_dispatch_analyst.py`
 - **Acceptance criteria:**
-  - Phase 1 in SKILL.md replaces its `Agent(subagent_type="plan-executor:plan-analyst", ...)` block with a Bash invocation of `plan_claude_dispatch.py run --input <payload.json>` where payload sets `agent=plan-analyst` and carries the plan path, run_id, and output schema reference.
-  - SKILL.md includes a one-line extraction pointer at the replacement site: *"Read stdout as JSON; assert `.status=="ok"`; extract `.result.schedule` and pipe through `plan_ops.py parse-schedule`; treat `.result.outcome in {valid, needs-enrichment, invalid}` per existing rules."* This extraction shim is inline — no new `plan_ops.py` subcommand.
-  - Analyst outcome vocabulary preserved verbatim (`valid | needs-enrichment | invalid`) and asserted against the analyst `result` schema fixture from TASK-002.
-  - Orchestrator no longer reads full analyst markdown bodies. Only `.result.schedule`, `.result.outcome`, `.result.gaps[]` are surfaced into the orchestrator's context. `.result_raw_truncated` and `.stderr_tail` are ignored on success; referenced only in error-handling (TASK-006).
-  - Fixture test drives the stub via envelope `analyst_valid.json` and asserts the extraction shim + existing `parse-schedule` together produce the same schedule object as the prior markdown path on a captured transcript.
+  - **AC realignment 2026-04-26:** the original AC text below was authored against a now-retired whole-plan analyst flow (`Agent(subagent_type="plan-executor:plan-analyst", ...)` returning `{schedule, outcome, gaps}`). The live Phase 1 since the directory-mode + per-task-dispatch refactors uses (a) `build-tasks` for whole-plan schedule synthesis and (b) a per-child classifier dispatch (`subagent_type="plan-executor:plan-analyst"` returning `{agent, classification_reason}`) for tier routing. **The migration target is the per-child classifier dispatch site**, not a whole-plan analyst. The bullets below are kept verbatim for traceability; treat the wording about `.result.schedule` as the *transport-shape* contract (extract `.result`, schema-validate, surface only the structured fields), not a literal claim that the classifier emits a schedule.
+  - Phase 1 in SKILL.md replaces its `Agent(subagent_type="plan-executor:plan-analyst", ...)` block with a Bash invocation of `plan_claude_dispatch.py run --input <payload.json>` where payload sets `agent=plan-analyst` and carries the plan path, run_id, and output schema reference. **Realigned:** target is the per-child classifier dispatch; payload carries the child task block instead of the plan path.
+  - SKILL.md includes a one-line extraction pointer at the replacement site: *"Read stdout as JSON; assert `.status=="ok"`; extract `.result.schedule` and pipe through `plan_ops.py parse-schedule`; treat `.result.outcome in {valid, needs-enrichment, invalid}` per existing rules."* This extraction shim is inline — no new `plan_ops.py` subcommand. **Realigned:** the live extraction reads `.result.{agent, classification_reason}` and feeds the existing classifier-fan-out aggregation; no `parse-schedule` call at this site.
+  - Analyst outcome vocabulary preserved verbatim (`valid | needs-enrichment | invalid`) and asserted against the analyst `result` schema fixture from TASK-002. **Realigned:** the classifier's outcome vocabulary is `{agent: claude|codex, classification_reason: str}`; the historical `valid|needs-enrichment|invalid` triad now lives on `build-tasks`'s output, not the per-child classifier.
+  - Orchestrator no longer reads full analyst markdown bodies. Only `.result.schedule`, `.result.outcome`, `.result.gaps[]` are surfaced into the orchestrator's context. `.result_raw_truncated` and `.stderr_tail` are ignored on success; referenced only in error-handling (TASK-006). **Realigned:** orchestrator surfaces only `.result.{agent, classification_reason}` into per-task context; `result_raw_truncated`/`stderr_tail` handling is unchanged.
+  - Fixture test drives the stub via envelope `analyst_valid.json` and asserts the extraction shim + existing `parse-schedule` together produce the same schedule object as the prior markdown path on a captured transcript. **Realigned:** the TASK-003 test fixture should encode a classifier envelope shape `{agent, classification_reason}`, not a schedule. The TASK-002 `analyst_valid.json` fixture is retained for whole-plan analyst tests elsewhere.
   - `dispatch-templates.md` analyst **transport header** is updated (how to invoke, output-format JSON instructions). The **agent-behavior body** (the analyst's reasoning rules, gap taxonomy, invalid-condition catalog) is byte-identical to pre-migration. Add a comment marker `<!-- TRANSPORT BOUNDARY - do not edit below in this plan -->` above the behavior section to make the seam explicit for reviewers.
   - `rg -n "subagent_type.*plan-executor:plan-analyst"` returns zero hits across `plugins/plan-executor/skills/implement-plan/`.
 - **Out of scope:** `review-route` integration; changes to gap-type taxonomy; Phase 1.5 plan-review (already Codex-wrapped).
@@ -276,3 +277,11 @@ Starting SHA: `21f2082ef554fe1b4b4cf40ad96a29c885aab03e`  → Ending SHA: `3d342
 |---|---|---|---|---|---|
 | 002 | claude | codex | clean | 3d342cd | [remediation] post-D.2a.5 |
 | 001 | claude | codex | needs-rework (binding 2nd pass) | - | awaiting_user post_remediation_review |
+
+## Execution log — 20260426T125800 (paused)
+
+Starting SHA: `8cf4822f2f67fc40cf30a6884a13e153d03ff6d6`  → Ending SHA: `8cf4822f2f67fc40cf30a6884a13e153d03ff6d6`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | codex | needs-rework [paused] | (uncommitted) | Codex 3 important findings; D.5 dispatch unavailable (no code-reviewer subagent registered) |
