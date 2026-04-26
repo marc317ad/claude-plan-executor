@@ -307,7 +307,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-008: End-to-end smoke — full A→E loop with fakes
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - tests/scripts/test_phase_d_e2e.py (create)
