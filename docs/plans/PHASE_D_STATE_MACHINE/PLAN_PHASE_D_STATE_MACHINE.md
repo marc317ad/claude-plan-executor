@@ -1,7 +1,7 @@
 # Plan: Phase D State Machine + Injection Hardening
 
 **Created:** 2026-04-20
-**Status:** draft — Codex review 2026-04-20 (`needs-replan`, important finding on TASK-003 sanitizer contract addressed below)
+**Status:** complete
 **Base branch:** main
 **Related:**
 - `plugins/plan-executor/skills/implement-plan/SKILL.md`
@@ -335,3 +335,16 @@ Starting SHA: `51e6ec627c7481059e4279d2c052688375832bd8`  → Ending SHA: `f0ad0
 |---|---|---|---|---|---|
 | 001 | claude | codex | clean | f0ad0ad5cb78 |  |
 | 003 | claude | codex | needs-rework (D.2a.5 binding second review) | - | PAUSED: layer-1 invoke_codex stdout-trim missing |
+
+## Execution log — 20260426T112743 (success)
+
+Starting SHA: `fea65da24c0852d5a2ea0263cf84a96926ee6b69`  → Ending SHA: `c8726e33dd7a67dc0c3869ad6409e9253e20b6f4`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | claude | codex | needs-rework→D.5+remediation→hand-fix | cb70d4b | [remediation] (override) |
+| 004 | claude | codex | needs-rework→D.5 ship | cb98544 | [disagreement] stub OK per AC |
+| 005 | claude | codex | needs-rework→D.5 ship-with-fixes | a3543eb | [disagreement] +9327d7e fixup for 8 missing CLI rows |
+| 006 | codex→claude(test passes after SKILL fix) | claude | ship | 5042a77 | drift guard caught TASK-005 omission |
+| 007 | codex→claude(fallback) | codex | clean | 12cafcc | codex sandbox file-visibility issue |
+| 008 | claude | codex | needs-rework→D.5 ship | c8726e3 | [disagreement] both findings dismissed |

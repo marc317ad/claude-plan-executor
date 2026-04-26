@@ -1,34 +1,6 @@
 {
-  "outcome": "needs-enrichment",
+  "outcome": "valid",
   "tasks": [
-    {
-      "id": "001",
-      "title": "Add `plan_ops.py review-route` subcommand",
-      "files": [
-        "plugins/plan-executor/scripts/plan_ops.py (modify)",
-        "plugins/plan-executor/scripts/review_route_input_schema.json (create)",
-        "plugins/plan-executor/scripts/review_route_output_schema.json (create)",
-        "tests/scripts/test_plan_ops_review_route.py (create)"
-      ],
-      "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops_review_route.py",
-      "priority": "high",
-      "plan_file": "PLAN_PHASE_D_STATE_MACHINE.md",
-      "description": "The core routing move. After this lands the orchestrator stops reading D.2 / D.2a / D.2a.5 / D.2a.6 tables and starts piping envelopes to Python. TASK-005's SKILL edits are only safe after this ships.",
-      "acceptance_criteria": [
-        "`plan_ops.py review-route --stdin --json` consumes the \u00a73.1 input and emits the \u00a73.1 output.",
-        "Every current SKILL Phase D cell is reachable through one `action` value: `commit`, `fail`, `dispatch_d5`, `dispatch_bounded_remediation`, `dispatch_narrow_remediation`, `dispatch_role_swap`, `pause_awaiting_user`, `unknown_state`.",
-        "`args.commit_flags` composition respects `commit-task`'s existing XOR constraints (narrow-remediation-tag XOR remediation-tag; dismissed-finding-ids requires narrow-remediation-tag).",
-        "`flags.codex_review_binding=true` + Codex `needs-rework` on Claude work \u2192 `action: fail`, no `dispatch_d5`.",
-        "`retries_used.bounded_remediation=true` + Codex `needs-rework` \u2192 `pause_awaiting_user` with `pause_payload.stage=\"post_remediation_review\"`.",
-        "Input schema violation \u2192 non-zero exit + structured `errors[*]`.",
-        "Any unrecognized input (e.g., verdict outside the enum) \u2192 `action: unknown_state` + human-readable `reason`.",
-        "Routing exposed as pure function `route(payload: dict) -> dict`; `cmd_review_route` is a thin stdin/`_emit` shim. Tests call `route()` directly \u2014 no subprocess, no stdin monkey-patching. Preserves the option of an in-process MCP wrap later.",
-        "Tests cover every routing cell plus \u22651 `unknown_state` branch."
-      ],
-      "agent": "claude",
-      "classification_reason": "new routing module, 4 files, complex decision-tree logic"
-    },
     {
       "id": "002",
       "title": "Persist orchestrator state in `.schedule.json`",
@@ -52,33 +24,7 @@
         "State helpers are pure functions: `read_schedule_state(path) -> dict`, `apply_commit_state_transition(state, task_id, sha, files) -> dict`, `apply_fail_state_transition(state, task_id, retries) -> dict`, `apply_blocked_state_transition(state, blocked_ids) -> dict`. The `--update-schedule-state` / `--from-schedule-state` flags are thin file-IO shims. Tests call the pure functions against in-memory dicts \u2014 no subprocess, no tempfile for routing logic."
       ],
       "agent": "claude",
-      "classification_reason": "multi-file, new pure helpers, state schema design"
-    },
-    {
-      "id": "003",
-      "title": "Wrapper envelope sanitizer perimeter",
-      "files": [
-        "plugins/plan-executor/scripts/plan_codex_dispatch.py (modify)",
-        "plugins/plan-executor/scripts/_codex_envelope_sanitizer.py (create)",
-        "tests/scripts/test_codex_envelope_sanitizer.py (create)"
-      ],
-      "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_codex_envelope_sanitizer.py",
-      "priority": "high",
-      "plan_file": "PLAN_PHASE_D_STATE_MACHINE.md",
-      "description": "Closes the injection gap the architectural review identified. Moves defense to the wrapper instead of trusting the orchestrator to self-police.",
-      "acceptance_criteria": [
-        "`_codex_envelope_sanitizer.sanitize(envelope: dict) -> (sanitized: dict, flags: list[str])` implements \u00a73.3 layers 2 and 3.",
-        "Length cap (default 8000 chars per free-text field); truncation appends `\" \u2026[truncated]\"` and increments `extra.truncated_fields[]`.",
-        "Code fences (triple backticks), ATX headers (`^#{1,6}\\s`), leading `>` blockquotes stripped from `findings[].message`, `summary`, `diff_summary`.",
-        "Known-shape matches (`<system>|<user>|<assistant>` tags, `<tool_calls>` / `<function_calls>` blocks, JSON-looking `\"tool\":\"\u2026\"` payloads, literal `Ignore (previous|prior|above) instructions`) are **replaced in-place** with the marker `[redacted:<shape>]` in the returned `sanitized` dict, and each match appends `{shape, field, count}` to `sanitizer_flags[]`.",
-        "For each redacted match, `sanitize()` emits one run-log event `sanitizer_redaction{shape, field, sha256}` capturing the sha256 of the pre-redaction payload. The raw payload is never returned in `sanitized` and never re-emitted downstream.",
-        "Bytes outside the envelope on Codex stdout are dropped with a counter in `extra.dropped_bytes`; never reach stdout.",
-        "`plan_codex_dispatch.py implement|review|plan-review` all route through `sanitize()` before emit.",
-        "Tests include a malicious fixture envelope (injected `<tool_calls>` + fake `<system>` instructions); sanitized output contains `[redacted:<shape>]` markers in place of the original shapes, `sanitizer_flags[]` lists each shape/field/count, and the pre-redaction sha256 appears in the captured run-log stream."
-      ],
-      "agent": "claude",
-      "classification_reason": "new module creation with complex multi-layer logic"
+      "classification_reason": "multi-file, new schema, multiple CLI command additions"
     },
     {
       "id": "004",
@@ -88,9 +34,7 @@
         "plugins/plan-executor/scripts/plan_codex_dispatch.py (modify)",
         "tests/scripts/test_content_sanitizer_integration.py (create)"
       ],
-      "dependencies": [
-        "003"
-      ],
+      "dependencies": [],
       "test_command": "venv/bin/python -m pytest tests/scripts/test_content_sanitizer_integration.py",
       "priority": "medium",
       "plan_file": "PLAN_PHASE_D_STATE_MACHINE.md",
@@ -103,7 +47,7 @@
         "Integration test uses a stubbed sanitizer (not a real Claude call) and exercises `clean|suspicious|malicious|error` paths."
       ],
       "agent": "claude",
-      "classification_reason": "new module creation, multi-file, design decisions needed"
+      "classification_reason": "new module creation, multi-file, new architectural subagent"
     },
     {
       "id": "005",
@@ -112,9 +56,7 @@
         "plugins/plan-executor/skills/implement-plan/SKILL.md (modify)"
       ],
       "dependencies": [
-        "001",
-        "002",
-        "003"
+        "002"
       ],
       "test_command": "deferred (TASK-006)",
       "priority": "high",
@@ -130,7 +72,7 @@
         "Hard rules in the \"Rules\" section are preserved verbatim or strengthened; no behavior silently dropped."
       ],
       "agent": "claude",
-      "classification_reason": "large file edit, deferred test command, multi-task dependency"
+      "classification_reason": "Test command deferred, document rewrite with design decisions"
     },
     {
       "id": "006",
@@ -153,7 +95,7 @@
         "Explicitly excludes internal/hidden subcommands (define a `_cmd_internal_*` prefix convention if needed; none currently)."
       ],
       "agent": "codex",
-      "classification_reason": "single new file, mechanical parity test, concrete test command"
+      "classification_reason": "single new test file, concrete assertions, explicit test command"
     },
     {
       "id": "007",
@@ -162,7 +104,6 @@
         "plugins/plan-executor/skills/implement-plan/dispatch-templates.md (modify)"
       ],
       "dependencies": [
-        "001",
         "005"
       ],
       "test_command": "deferred (TASK-008)",
@@ -175,8 +116,8 @@
         "Phase B default template unchanged (does not depend on Phase D routing).",
         "Phase A analyst template unchanged."
       ],
-      "agent": "claude",
-      "classification_reason": "Test command deferred; single file but underspecified variable alignment"
+      "agent": "codex",
+      "classification_reason": "single file, mechanical variable rename, deferred test"
     },
     {
       "id": "008",
@@ -186,9 +127,7 @@
         "tests/scripts/fixtures/phase_d_plan.md (create)"
       ],
       "dependencies": [
-        "001",
         "002",
-        "003",
         "005",
         "007"
       ],
@@ -204,51 +143,35 @@
         "Runs in under 30s (no real subprocess spawn)."
       ],
       "agent": "claude",
-      "classification_reason": "new test module, multi-scenario matrix, underspecified stubs"
+      "classification_reason": "new file creation, multi-scenario matrix, underspecified wiring"
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "001",
-        "003"
-      ],
-      "file_locks": [
-        "plugins/plan-executor/scripts/_codex_envelope_sanitizer.py",
-        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
-        "plugins/plan-executor/scripts/plan_ops.py",
-        "plugins/plan-executor/scripts/review_route_input_schema.json",
-        "plugins/plan-executor/scripts/review_route_output_schema.json",
-        "tests/scripts/test_codex_envelope_sanitizer.py",
-        "tests/scripts/test_plan_ops_review_route.py"
-      ]
-    },
-    {
-      "index": 2,
-      "task_ids": [
-        "002"
-      ],
-      "file_locks": [
-        "plugins/plan-executor/scripts/plan_ops.py",
-        "tests/scripts/test_schedule_state.py"
-      ]
-    },
-    {
-      "index": 3,
-      "task_ids": [
-        "005",
+        "002",
         "004"
       ],
       "file_locks": [
         "plugins/plan-executor/agents/content-sanitizer.md",
         "plugins/plan-executor/scripts/plan_codex_dispatch.py",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md",
-        "tests/scripts/test_content_sanitizer_integration.py"
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_content_sanitizer_integration.py",
+        "tests/scripts/test_schedule_state.py"
       ]
     },
     {
-      "index": 4,
+      "index": 2,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
+      ]
+    },
+    {
+      "index": 3,
       "task_ids": [
         "006",
         "007"
@@ -259,7 +182,7 @@
       ]
     },
     {
-      "index": 5,
+      "index": 4,
       "task_ids": [
         "008"
       ],
@@ -269,55 +192,6 @@
       ]
     }
   ],
-  "gaps": [
-    {
-      "task_id": "001",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE.md carries 8 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
-    {
-      "task_id": "002",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE.md carries 8 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
-    {
-      "task_id": "003",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE.md carries 8 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
-    {
-      "task_id": "004",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE.md carries 8 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
-    {
-      "task_id": "005",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE.md carries 8 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
-    {
-      "task_id": "006",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE.md carries 8 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
-    {
-      "task_id": "007",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE.md carries 8 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    },
-    {
-      "task_id": "008",
-      "type": "extra-task-heading",
-      "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE.md carries 8 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
-    }
-  ],
+  "gaps": [],
   "risks": []
 }
