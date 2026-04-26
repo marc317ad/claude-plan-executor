@@ -78,9 +78,23 @@ Each plan gets its own `plan/<short-name>` topic branch off `main`. On success: 
 
 ---
 
+### 4. CLAUDE_ONLY_FIX_2026-04-24 (3 tasks)
+- Status: **MERGED to main**; branch `plan/claude-only-fix` retained for history
+- Branch: `plan/claude-only-fix` merged via `--no-ff`
+- Run id: `20260426T010342` → `success` (3 done, 0 failed, 0 disagreements, 0 remediations)
+- Commits (in order):
+  - `281c6fb` feat(TASK-001) `claude_only` routing flag and mutex prose plumbing — codex implement timed out 300s; claude fallback succeeded; codex review clean
+  - `0e6c005` feat(TASK-002) Phase 1.5 Claude plan-review path + new `plan-reviewer` Sonnet agent + `--from-claude` parser flag + 13 new parser tests — claude implement; codex review clean
+  - `4817f6f` feat(TASK-003) Phase D.1 cross-review Claude route-switch + D.2 ladder collapse + run-summary banner — claude implement; codex review clean
+  - `242416b` chore(implement-plan) bookkeeping (run 20260426T010342)
+- All 3 Codex reviews returned `clean` — no findings, no D.5 escalations, no remediation cycles
+- Bundle certify: 5/6 gates pass; `commit-safe` certify hit directory-mode limitation (only validates one child file per call); per-commit `commit-safe` was verified inline for all 3 commits (all passed)
+- 10 pre-existing test failures persist (`TestAudit*`, `TestGlobalLockPaths`, `TestBatchNextBatchFidelity`, `TestTask007PlanReviewSchemaTargetTaskIdOptional`); follow-up: rewrite to point at archive path or update fixtures
+
+---
+
 ## Remaining queue (run via `/implement-plan` Skill invocation per plan)
 
-4. `CLAUDE_ONLY_FIX_2026-04-24` (3 tasks)
 5. `POSTMORTEM_FIXES_2026-04-25` (10 tasks)
 6. `PHASE_D_STATE_MACHINE` (8 tasks)
 7. `SKILL_bash_dispatch_migration` (7 tasks)
