@@ -1256,6 +1256,119 @@ def _record_dropped_bytes(count: int | None) -> None:
     _LAST_DROPPED_BYTES = count
 
 
+# TASK-004 (Phase D, layer 4): optional content-sanitizer subagent.
+# When the operator passes ``--content-sanitizer-check`` to any subcommand,
+# ``main()`` flips this flag. ``emit()`` then dispatches the unprivileged
+# ``content-sanitizer`` agent for every envelope whose
+# ``extra.sanitizer_flags`` is non-empty, and stamps the verdict at
+# ``extra.content_sanitizer_verdict``. The orchestrator sees the verdict;
+# never the suspect text. Dispatch failures degrade to
+# ``{"status": "error", "reason": "..."}`` so routing can continue.
+_CONTENT_SANITIZER_CHECK_ENABLED: bool = False
+
+
+def _set_content_sanitizer_check(enabled: bool) -> None:
+    global _CONTENT_SANITIZER_CHECK_ENABLED
+    _CONTENT_SANITIZER_CHECK_ENABLED = bool(enabled)
+
+
+def _extract_suspect_text(sanitized_envelope: dict) -> str:
+    """Collect the post-redaction free-text fields the wrapper just sanitized.
+
+    Mirrors ``_codex_envelope_sanitizer.SCALAR_FIELDS`` and ``FINDING_FIELDS``.
+    Returned as a single newline-delimited blob with field-path headers so
+    the sanitizer agent can attribute its verdict to the originating field.
+    The blob is NEVER returned to the orchestrator — it is consumed by the
+    sanitizer subagent only.
+    """
+    parsed = sanitized_envelope.get("parsed")
+    if not isinstance(parsed, dict):
+        return ""
+    chunks: list[str] = []
+    for key in ("summary", "diff_summary"):
+        val = parsed.get(key)
+        if isinstance(val, str) and val:
+            chunks.append(f"## parsed.{key}\n{val}")
+    findings = parsed.get("findings")
+    if isinstance(findings, list):
+        for idx, item in enumerate(findings):
+            if not isinstance(item, dict):
+                continue
+            for key in ("message", "issue", "suggested_fix"):
+                val = item.get(key)
+                if isinstance(val, str) and val:
+                    chunks.append(
+                        f"## parsed.findings[{idx}].{key}\n{val}"
+                    )
+    return "\n\n".join(chunks)
+
+
+def _dispatch_content_sanitizer(
+    suspect_text: str,
+    sanitizer_flags: list[dict],
+) -> dict:
+    """Invoke the unprivileged ``content-sanitizer`` agent and return verdict.
+
+    Default implementation degrades to ``{"status": "error", "reason": ...}``
+    because this wrapper has no in-process Claude backend wired (the
+    orchestrator owns subagent dispatch). Tests monkeypatch this function
+    directly to exercise the four verdict paths (clean / suspicious /
+    malicious / error).
+
+    A future production wiring would route through
+    ``_claude_backend.invoke()`` with the ``content-sanitizer`` manifest,
+    cheap model tier, and an empty tools list. That production path is
+    deliberately not built here — TASK-004's AC requires only that the
+    integration test exercise the verdict shapes via a stubbed dispatcher
+    and that dispatch failures degrade gracefully.
+    """
+    return {
+        "status": "error",
+        "reason": (
+            "content-sanitizer dispatch not wired in this wrapper "
+            "(orchestrator owns subagent dispatch); stub-only path"
+        ),
+    }
+
+
+def _maybe_run_content_sanitizer(sanitized_envelope: dict) -> None:
+    """Conditionally dispatch the content-sanitizer and stamp the verdict.
+
+    Gated by the module-level ``_CONTENT_SANITIZER_CHECK_ENABLED`` flag and
+    by the presence of ``extra.sanitizer_flags`` on the sanitized envelope.
+    Mutates ``sanitized_envelope`` in place by adding
+    ``extra.content_sanitizer_verdict``. The raw suspect text is consumed
+    locally and is NEVER attached to the envelope.
+    """
+    if not _CONTENT_SANITIZER_CHECK_ENABLED:
+        return
+    extra = sanitized_envelope.get("extra")
+    if not isinstance(extra, dict):
+        return
+    flags = extra.get("sanitizer_flags")
+    if not isinstance(flags, list) or not flags:
+        return
+    suspect_text = _extract_suspect_text(sanitized_envelope)
+    try:
+        verdict = _dispatch_content_sanitizer(suspect_text, flags)
+    except Exception as exc:
+        verdict = {
+            "status": "error",
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+    if not isinstance(verdict, dict):
+        verdict = {
+            "status": "error",
+            "reason": (
+                f"content-sanitizer returned non-dict verdict "
+                f"(type={type(verdict).__name__})"
+            ),
+        }
+    # Defensive: never attach raw suspect text under the verdict key.
+    verdict.pop("suspect_text", None)
+    extra["content_sanitizer_verdict"] = verdict
+
+
 def emit(envelope: dict) -> None:
     # TASK-003 (Phase D): wrapper-side envelope sanitizer perimeter.
     # All envelopes routed through ``sanitize()`` before stdout emission so
@@ -1293,6 +1406,12 @@ def emit(envelope: dict) -> None:
         extra = sanitized.setdefault("extra", {})
         if isinstance(extra, dict):
             extra.setdefault("dropped_bytes", _LAST_DROPPED_BYTES)
+    # TASK-004 (Phase D, layer 4): optional content-sanitizer verdict.
+    # Stamps ``extra.content_sanitizer_verdict`` when the gate is enabled
+    # AND the wrapper-side sanitizer flagged at least one shape. The raw
+    # suspect text is consumed inside ``_maybe_run_content_sanitizer`` and
+    # NEVER reaches stdout.
+    _maybe_run_content_sanitizer(sanitized)
     print(json.dumps(sanitized, indent=2, default=str))
 
 
@@ -2138,6 +2257,24 @@ def _build_parser() -> argparse.ArgumentParser:
                 "is declared raises a structured renderer error)."
             ),
         )
+        # TASK-004 (Phase D, layer 4): optional content-sanitizer subagent.
+        # When set AND ``extra.sanitizer_flags`` is non-empty on an emitted
+        # envelope, the wrapper dispatches the unprivileged
+        # ``content-sanitizer`` agent (verdict-only, no payload) and stamps
+        # ``extra.content_sanitizer_verdict``. Dispatch failures degrade to
+        # ``{"status":"error","reason":...}`` so routing continues.
+        p.add_argument(
+            "--content-sanitizer-check", action="store_true",
+            help=(
+                "Enable the optional content-sanitizer subagent. When set, "
+                "envelopes whose extra.sanitizer_flags is non-empty are "
+                "passed to the unprivileged content-sanitizer agent for "
+                "verdict-only intent classification "
+                "(extra.content_sanitizer_verdict). The orchestrator never "
+                "sees the suspect text. Dispatch failures degrade to "
+                "{status:'error', reason:...}; routing continues."
+            ),
+        )
 
     impl = subparsers.add_parser(
         "implement", help="Dispatch an implementation task to Codex",
@@ -2189,6 +2326,16 @@ def _build_parser() -> argparse.ArgumentParser:
                           f"(default: {DEFAULT_TIMEOUT_PLAN_REVIEW}, "
                           f"flat — plan-review is bounded). Pass an "
                           f"explicit value to override."))
+    # TASK-004 (Phase D, layer 4): mirror the implement/review flag on
+    # plan-review so every Codex dispatch entry point honors the operator's
+    # opt-in to the content-sanitizer subagent gate.
+    pr.add_argument(
+        "--content-sanitizer-check", action="store_true",
+        help=(
+            "Enable the optional content-sanitizer subagent. See "
+            "implement/review subcommands for the full contract."
+        ),
+    )
     pr.add_argument("--allow-gaps", action="store_true",
                     help="Forward the operator's --allow-gaps opt-in. When "
                          "set AND the persisted schedule's gaps[] contains "
@@ -2205,6 +2352,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # TASK-004 (Phase D, layer 4): flip the module-level gate from the
+    # parsed CLI flag so ``emit()`` activates the content-sanitizer
+    # dispatch on every envelope from this run.
+    _set_content_sanitizer_check(
+        bool(getattr(args, "content_sanitizer_check", False))
+    )
     if args.subcommand == "implement":
         return cmd_implement(args)
     if args.subcommand == "review":

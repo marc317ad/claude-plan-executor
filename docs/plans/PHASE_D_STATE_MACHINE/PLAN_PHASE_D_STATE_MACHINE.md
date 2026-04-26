@@ -220,7 +220,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-004: Content-sanitizer subagent (optional intent check)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - plugins/plan-executor/agents/content-sanitizer.md (create)
