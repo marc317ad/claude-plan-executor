@@ -132,8 +132,12 @@ Optional:
   --skip-plan-review      Skip Phase 1.5 Codex plan review (loud banner in summary);
                           parallel-safe with --skip-cross-review
   --no-auto-revise        Disable auto-revise on needs-replan — halt instead of dispatching plan-author.
-  --codex-review-binding  Codex critical on Claude goes straight to fail-task;
-                          no §8.4 third-opinion escalation
+  --codex-review-binding  Codex `needs-rework` on Claude code is binding for
+                          the commit decision (no §8.4 third-opinion
+                          escalation, no D.2a.5/D.2a.6 retry); orchestrator
+                          marks the task `paused` and halts for user
+                          instruction. Use `--unattended-revert-policy
+                          fail-fast` to opt into auto-fail-task instead.
   --codex-plan-review-binding
                           Codex `needs-replan` on plan review goes straight to halt;
                           no plan-review-triage third-opinion escalation.
@@ -797,7 +801,7 @@ Minor findings in either direction → commit; record in run summary AND commit 
 | `needs-rework` | `partial-agreement` | → **D.2a.6** narrow-remediation retry | D.5 split Codex's findings into load-bearing and dismissed buckets; retry is scoped to the load-bearing subset only. Dismissed indices are recorded in the commit trailer. |
 | `needs-rework` | `needs-rework` | → **D.2a.5** bounded remediation retry | Two independent reviewers agree the finding is load-bearing; give the implementer one chance to fix it narrowly. |
 
-`--codex-review-binding` skips D.2a entirely — binding mode means `needs-rework` → immediate `fail-task` with NO D.5, NO D.2a.5, and NO D.2a.6. (This flag is mutually exclusive with `--claude-only` per TASK-001's mutex prose; under `claude_only=true` the ladder collapse documented above subsumes the binding mode's effect.) See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
+`--codex-review-binding` skips D.2a third-opinion + retries — binding mode means `needs-rework` is binding for the commit decision and the orchestrator MUST mark the task `paused` and call **Awaiting-user pause** subroutine with `stage=post_binding_block` (NO D.5, NO D.2a.5, NO D.2a.6). User decides disposition in next turn (revert / hand-fix / accept-as-is via `commit-task` with override rationale). Under `--unattended-revert-policy fail-fast`, the orchestrator calls `fail-task --authorization-source unattended-fail-fast --stage review --reason 'codex-review-binding fail-fast'` instead of pausing. (This flag is mutually exclusive with `--claude-only` per TASK-001's mutex prose; under `claude_only=true` the ladder collapse documented above subsumes the binding mode's effect.) See **Completed-Work Preservation Principle** in §Rules — destructive paths require explicit user instruction in the next turn.
 
 #### D.2a.5 — Bounded remediation retry (default, non-binding path only)
 
@@ -837,7 +841,7 @@ Fires when Codex's `needs-rework` is independently confirmed by the D.5 code-rev
 
 #### D.2a.6 — Narrow-remediation retry (partial-agreement path)
 
-Fires when Codex's `needs-rework` verdict is split by the D.5 third-opinion reviewer into load-bearing + dismissed buckets (`partial-agreement`). Strictly one attempt — same bounding as D.2a.5. `--codex-review-binding` skips this entire section: binding mode means `needs-rework` → immediate `fail-task` with NO D.5, NO D.2a.5, and NO D.2a.6.
+Fires when Codex's `needs-rework` verdict is split by the D.5 third-opinion reviewer into load-bearing + dismissed buckets (`partial-agreement`). Strictly one attempt — same bounding as D.2a.5. `--codex-review-binding` skips this entire section: binding mode means `needs-rework` is binding for commit and the orchestrator pauses for user instruction (NO D.5, NO D.2a.5, NO D.2a.6). Under `--unattended-revert-policy fail-fast`, fail-task fires instead of pausing.
 
 1. Log `narrow_remediation_start {task_id, load_bearing_count, dismissed_count, d5_summary}`. The `narrow_remediation_start` / `narrow_remediation_done` events are distinct from D.2a.5's `remediation_start` / `remediation_done`; the run log is the audit source of truth for which retry path fired.
 2. Re-dispatch `plan-remediator` (Agent, `subagent_type: "plan-remediator"`, `model: "opus"`) using the **Phase B-narrow-remediation** template from `dispatch-templates.md`. The template embeds `load_bearing_findings_json` (filtered subset of Codex findings where the array index ∈ D.5's `load_bearing`), `dismissed_findings_json` (the complement, labeled "DO NOT fix — context only"), and `d5_summary`. The file:line touch-only scope rule in `plan-remediator.md` structurally bounds the retry; "fix narrowly, do not scope-inflate" remains a prompt-level hint.

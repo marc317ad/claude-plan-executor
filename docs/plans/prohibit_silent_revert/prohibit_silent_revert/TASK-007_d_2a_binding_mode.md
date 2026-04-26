@@ -46,7 +46,7 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 
 ### TASK-007: D.2a binding-mode reinterpretation (no escape hatch)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**

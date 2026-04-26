@@ -11782,21 +11782,138 @@ class TestD2a6SkillMdSection:
 
     def test_section_documents_binding_mode_exemption(self) -> None:
         body = self._d2a6_section()
-        # --codex-review-binding skips D.2a.6 entirely per the
-        # non-goals in the plan's Scoped Context.
+        # TASK-007: --codex-review-binding contract changed in place from
+        # "auto-fail-task" to "binding for the commit decision; pause for
+        # user instruction". The D.2a.6 exemption prose must reflect the
+        # new behavior:
+        #   (a) names the flag,
+        #   (b) skips D.2a.6 (and D.5/D.2a.5),
+        #   (c) pauses for user instruction by default,
+        #   (d) cron/CI workaround is `--unattended-revert-policy fail-fast`.
         assert "codex-review-binding" in body
-        # The exemption must be unambiguous — either explicit "skip" or
-        # "NO D.2a.6".
+        # The exemption must be unambiguous — explicit "skip" / "NO D.2a.6"
+        # / "not entered".
         assert (
             "skip" in body.lower()
             or "NO D.2a.6" in body
             or "not entered" in body.lower()
+        )
+        # New contract assertions: pause-by-default + fail-fast workaround.
+        assert "pause" in body.lower(), (
+            "binding-mode prose must convey the pause-by-default behavior"
+        )
+        assert "unattended-revert-policy fail-fast" in body, (
+            "binding-mode prose must point cron/CI users at the "
+            "--unattended-revert-policy fail-fast workaround"
+        )
+        # The legacy "immediate fail-task" wording MUST be gone — that
+        # was the pre-TASK-007 contract.
+        assert "immediate `fail-task`" not in body, (
+            "legacy auto-fail-task wording must be removed"
         )
 
     def test_section_commit_uses_narrow_flags(self) -> None:
         body = self._d2a6_section()
         assert "--narrow-remediation-tag" in body
         assert "--dismissed-finding-ids" in body
+
+
+class TestD2aBindingModeContract:
+    """TASK-007 — --codex-review-binding reinterpretation. The flag's
+    contract changed in place: from auto-fail-task on Codex needs-rework
+    to binding-for-commit + pause-for-user-instruction. The three
+    SKILL.md sites (CLI help, D.2a routing, D.2a.6 exemption) and the
+    auth-source enum extension are co-updated to prevent doc-drift.
+    """
+
+    SKILL = (
+        REPO_ROOT / "plugins" / "plan-executor"
+        / "skills" / "implement-plan" / "SKILL.md"
+    )
+
+    def _skill_text(self) -> str:
+        return self.SKILL.read_text(encoding="utf-8")
+
+    def test_cli_help_documents_new_binding_contract(self) -> None:
+        import re
+        text = self._skill_text()
+        # Find the CLI help block region for --codex-review-binding.
+        idx = text.find("--codex-review-binding")
+        assert idx >= 0, "SKILL.md missing --codex-review-binding CLI entry"
+        # Take a generous window so multi-line help text is captured.
+        window = text[idx:idx + 800]
+        # Collapse the help-table line-wrapping/indentation so substring
+        # checks work regardless of where the column-wrap happens.
+        flat = re.sub(r"\s+", " ", window)
+        # New contract: binding for the commit decision; pause for user.
+        assert "binding for the commit decision" in flat
+        assert "paused" in flat.lower() or "pause" in flat.lower()
+        # Cron/CI workaround.
+        assert "--unattended-revert-policy fail-fast" in flat
+        # Legacy "goes straight to fail-task" wording must be gone.
+        assert "goes straight to fail-task" not in flat
+
+    def test_d2a_routing_prose_uses_post_binding_block_stage(self) -> None:
+        text = self._skill_text()
+        # The D.2a routing prose lives in §Phase D / D.2a.
+        assert "stage=post_binding_block" in text, (
+            "D.2a routing prose must name the new awaiting-user stage label"
+        )
+        assert "Awaiting-user pause" in text
+        # Fail-fast fall-through under unattended-revert-policy.
+        assert (
+            "unattended-fail-fast --stage review" in text
+            or "--authorization-source unattended-fail-fast" in text
+        ), "D.2a routing prose must spell the unattended-fail-fast fall-through"
+
+    def test_no_codex_review_binding_destructive_flag(self) -> None:
+        text = self._skill_text()
+        # Per the plan: there is NO new flag. The contract changes in place.
+        assert "--codex-review-binding-destructive" not in text
+
+
+class TestBindingModeAuthorizationSource:
+    """TASK-007 — `unattended-fail-fast` enters the
+    ALLOWED_FAIL_AUTHORIZATION_SOURCES enum to authorize the cron/CI
+    fail-fast fall-through under `--codex-review-binding +
+    --unattended-revert-policy fail-fast`. This is also the value used
+    by Phase C non-empty-diff fail-fast (TASK-003).
+    """
+
+    def test_unattended_fail_fast_in_enum(self) -> None:
+        assert (
+            "unattended-fail-fast"
+            in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+        )
+
+    def test_existing_user_instruction_still_enumerated(self) -> None:
+        # Binding-mode pause uses `user-instruction` for the user-revert
+        # path; ensure it still exists.
+        assert (
+            "user-instruction"
+            in plan_ops.ALLOWED_FAIL_AUTHORIZATION_SOURCES
+        )
+
+    def test_fail_task_accepts_unattended_fail_fast(
+        self, tmp_git_repo: Path
+    ) -> None:
+        (tmp_git_repo / "src" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+        plan = tmp_git_repo / "docs" / "plans" / "sample.md"
+        cp = _run(
+            "fail-task",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--run-id", "R1",
+            "--files", "src/foo.py",
+            "--stage", "review",
+            "--reason", "codex-review-binding fail-fast",
+            "--authorization-source", "unattended-fail-fast",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["status_updated"] is True
 
 
 class TestD5AdjudicationFollowups:

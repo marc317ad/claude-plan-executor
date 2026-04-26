@@ -155,11 +155,25 @@ ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 #   - "user-instruction": the user's next conversation turn after a paused
 #     run explicitly instructed the orchestrator to revert (the only
 #     sanctioned post-pause revert path).
+#   - "unattended-fail-fast": cron/CI runs that opted into auto-fail-task
+#     via `--unattended-revert-policy fail-fast` (TASK-003) — covers both
+#     the Phase C non-empty-diff fail-fast branch AND the D.2a binding-mode
+#     fail-fast fall-through (TASK-007). When `--codex-review-binding` is
+#     active and the unattended-revert policy is `fail-fast`, the
+#     orchestrator skips the awaiting-user pause and authorizes the revert
+#     under this value.
+# Binding-mode pause note: `--codex-review-binding` (TASK-007) pauses by
+# default and does NOT call `fail-task`. If the user instructs a revert in
+# the next turn, that revert authorizes under `user-instruction` (NOT a
+# dedicated binding-mode value). The `unattended-fail-fast` value above
+# covers the cron/CI fail-fast fall-through; no separate binding-mode enum
+# value exists.
 ALLOWED_FAIL_AUTHORIZATION_SOURCES = {
     "phase-c-empty-diff",
     "phase-d4-review-failure",
     "phase-d4-rescue-failed",
     "user-instruction",
+    "unattended-fail-fast",
 }
 ALLOWED_CODEX_REVIEW_VERDICTS = {"clean", "minor-findings", "needs-rework"}
 ALLOWED_CLAUDE_REVIEW_VERDICTS = {
