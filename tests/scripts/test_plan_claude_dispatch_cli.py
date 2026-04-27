@@ -1247,3 +1247,60 @@ def test_run_invokes_backend_with_scrubbed_env(
     # Per-hop bookkeeping always overwrites.
     assert guardrails.PER_HOP_DEPTH in env_passed
     assert guardrails.PER_HOP_PARENT_RUN_ID in env_passed
+
+
+# ---------------------------------------------------------------------------
+# TASK-001 (wrapper_autoclean_authorization) — `declared_files_changed`
+# is REQUIRED at the top level of the wrapper input schema.
+# ---------------------------------------------------------------------------
+
+
+class TestDeclaredFilesChangedRequired:
+    """Wrapper input schema makes top-level `declared_files_changed`
+    REQUIRED (TASK-001 of wrapper_autoclean_authorization). Omitting the
+    field returns ``status: input_invalid`` BEFORE any backend dispatch —
+    the wrapper refuses to spawn the agent. Fail-fast beats silent
+    destruction."""
+
+    def test_run_emits_input_invalid_when_declared_files_changed_omitted(
+        self, tmp_path, good_input_obj, capsys,
+    ) -> None:
+        bad = dict(good_input_obj)
+        del bad["declared_files_changed"]
+        input_path = tmp_path / "input.json"
+        input_path.write_text(json.dumps(bad), encoding="utf-8")
+
+        code, out, _err = _run_cli(
+            ["run", "--input", str(input_path), "--output", "-",
+             "--repo-root", str(tmp_path)],
+            capsys=capsys,
+        )
+
+        assert code == cli.EXIT_CODE_WRAPPER_FAILURE
+        envelope = _parse_envelope(out)
+        assert envelope["status"] == "input_invalid"
+        assert envelope["error"]["code"] == "input_invalid"
+        assert "declared_files_changed" in envelope["error"]["message"]
+
+    def test_run_accepts_explicit_empty_declared_files_changed_for_plan_analyst(
+        self, tmp_path, good_input_obj, patch_manifest, patch_cleanup_noop,
+        monkeypatch, capsys,
+    ) -> None:
+        analyst = dict(good_input_obj)
+        analyst["agent"] = "plan-analyst"
+        analyst["declared_files_changed"] = []
+        input_path = tmp_path / "input.json"
+        input_path.write_text(json.dumps(analyst), encoding="utf-8")
+
+        _patch_backend_returning(monkeypatch, _ok_envelope(agent="plan-analyst"))
+
+        code, out, _err = _run_cli(
+            ["run", "--input", str(input_path), "--output", "-",
+             "--repo-root", str(tmp_path)],
+            capsys=capsys,
+        )
+
+        envelope = _parse_envelope(out)
+        # The empty-but-present case is legal for read-only agents: the
+        # wrapper does NOT emit input_invalid here.
+        assert envelope["status"] != "input_invalid"

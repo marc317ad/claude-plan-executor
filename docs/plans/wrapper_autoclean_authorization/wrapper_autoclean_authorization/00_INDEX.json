@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source": "decompose-plan",
-  "plan_title": "Wrapper-Autoclean Authorization — Extend the Completed-Work Preservation Principle into the Dispatch Wrapper Layer",
+  "plan_title": "Wrapper-Autoclean Authorization \u2014 Extend the Completed-Work Preservation Principle into the Dispatch Wrapper Layer",
   "source_plan_file": "wrapper_autoclean_authorization.md",
   "created": "2026-04-27",
   "base_branch": "main",
@@ -15,7 +15,7 @@
       "file": "TASK-001_build_claude_dispatch_input.md",
       "priority": "critical",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {

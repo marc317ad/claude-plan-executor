@@ -22644,3 +22644,161 @@ class TestLintPlansPaused:
         )
         body = _parse_json(cp)
         assert body["findings"] == []
+
+
+# ---------------------------------------------------------------------------
+# build-claude-dispatch-input — TASK-001 wrapper_autoclean_authorization
+# ---------------------------------------------------------------------------
+
+
+_BCDI_PLAN_TEMPLATE = """# TASK-001 — fixture
+
+## Goal
+
+Stub fixture for build-claude-dispatch-input tests.
+
+## Tasks
+
+### TASK-001: stub
+
+- **Status:** pending
+- **Priority:** critical
+- **Agent:** claude
+- **Files:**
+  - plugins/foo.py
+  - plugins/bar.py
+- **Dependencies:** []
+- **Test command:** `python3 -m pytest tests/foo`
+- **Acceptance criteria:**
+  - stub
+"""
+
+
+@pytest.fixture
+def bcdi_plan(tmp_path: Path) -> Path:
+    p = tmp_path / "TASK-001_stub.md"
+    p.write_text(_BCDI_PLAN_TEMPLATE, encoding="utf-8")
+    return p
+
+
+class TestBuildClaudeDispatchInput:
+    """TASK-001 (wrapper_autoclean_authorization) — canonical wrapper-input
+    builder. Validates schema-required `declared_files_changed`, per-variant
+    agent / model / payload selection, and error envelopes."""
+
+    def _input_schema(self):
+        # Re-load the wrapper's input schema for validation.
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        import plan_claude_dispatch as pcd  # noqa: WPS433
+        return pcd._load_schema(pcd.INPUT_SCHEMA_PATH), pcd
+
+    def test_build_claude_dispatch_input_default_variant_populates_declared_files(
+        self, bcdi_plan: Path,
+    ) -> None:
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "001",
+            "--variant", "default",
+            "--starting-sha", "abc123",
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = _parse_json(cp)
+        assert envelope["agent"] == "plan-implementer"
+        assert envelope["overrides"]["model"] == "opus"
+        assert envelope["declared_files_changed"] == [
+            "plugins/foo.py", "plugins/bar.py",
+        ]
+        assert envelope["payload"]["task_id"] == "001"
+        assert envelope["payload"]["starting_sha"] == "abc123"
+
+    def test_build_claude_dispatch_input_analyst_variant_emits_empty_declared(
+        self, bcdi_plan: Path,
+    ) -> None:
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "001",
+            "--variant", "analyst",
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = _parse_json(cp)
+        assert envelope["declared_files_changed"] == []
+        assert envelope["agent"] == "plan-analyst"
+        assert envelope["overrides"]["model"] == "sonnet"
+
+    def test_build_claude_dispatch_input_unknown_task_id_errors(
+        self, bcdi_plan: Path,
+    ) -> None:
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "999",
+            "--variant", "default",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body["errors"]]
+        assert "task-not-found" in codes
+
+    def test_build_claude_dispatch_input_validates_against_input_schema(
+        self, bcdi_plan: Path, tmp_path: Path,
+    ) -> None:
+        schema, pcd = self._input_schema()
+        ctx = tmp_path / "ctx.json"
+        ctx.write_text('{"findings_for_retry": [], "d5_summary": "stub"}', encoding="utf-8")
+
+        for variant in ("default", "rework", "role-swap", "narrow-remediation", "analyst"):
+            extra = []
+            if variant in ("rework", "narrow-remediation"):
+                extra = ["--dispatch-context", str(ctx)]
+            cp = _run(
+                "build-claude-dispatch-input",
+                "--plan-file", str(bcdi_plan),
+                "--task-id", "001",
+                "--variant", variant,
+                *extra,
+            )
+            assert cp.returncode == 0, (variant, cp.stderr)
+            envelope = _parse_json(cp)
+            err = pcd._validate_against_schema(envelope, schema)
+            assert err is None, (variant, err)
+
+    def test_build_claude_dispatch_input_rework_variant_threads_dispatch_context(
+        self, bcdi_plan: Path, tmp_path: Path,
+    ) -> None:
+        ctx = tmp_path / "ctx.json"
+        ctx.write_text(
+            '{"findings_for_retry": [{"file": "plugins/foo.py"}], '
+            '"d5_summary": "load-bearing"}',
+            encoding="utf-8",
+        )
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "001",
+            "--variant", "rework",
+            "--dispatch-context", str(ctx),
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = _parse_json(cp)
+        ctx_obj = envelope["payload"]["dispatch_context"]
+        assert ctx_obj["d5_summary"] == "load-bearing"
+        assert ctx_obj["findings_for_retry"][0]["file"] == "plugins/foo.py"
+
+    def test_build_claude_dispatch_input_narrow_remediation_variant_selects_remediator_agent(
+        self, bcdi_plan: Path, tmp_path: Path,
+    ) -> None:
+        ctx = tmp_path / "ctx.json"
+        ctx.write_text('{"load_bearing_findings": []}', encoding="utf-8")
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "001",
+            "--variant", "narrow-remediation",
+            "--dispatch-context", str(ctx),
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = _parse_json(cp)
+        assert envelope["agent"] == "plan-remediator"
+        assert envelope["overrides"]["model"] == "opus"

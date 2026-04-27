@@ -117,7 +117,7 @@
     },
     "declared_files_changed": {
       "type": "array",
-      "description": "Trusted cleanup-scope authority populated by the orchestrator (TASK-001 sandbox-escape fix). Cleanup reverts any post-dispatch write outside this set. Cleanup MUST be gated by this field; omitting it defaults to denial of all writes.",
+      "description": "Trusted cleanup-scope authority populated by the orchestrator (TASK-001 sandbox-escape fix; TASK-001 of wrapper_autoclean_authorization made this required). Cleanup reverts any post-dispatch write outside this set. REQUIRED — every dispatch site MUST populate this. Read-only agents (e.g., plan-analyst) emit `[]` explicitly. Build via `plan_ops.py build-claude-dispatch-input` to ensure correct population per task variant.",
       "items": {
         "type": "string"
       }

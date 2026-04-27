@@ -24,13 +24,16 @@ Default Phase 1 invocation as of the per-task-dispatch refactor (v2), now dispat
 
 Wrapper dispatch, `agent: "plan-analyst"`, `overrides.model: "sonnet"` (narrower scope than the retired whole-plan opus dispatch — a single-child classification is within Sonnet's reliable envelope). The wrapper returns the v3 envelope on stdout `{schema_version, status, status_reason, agent, model, session_id, duration_ms, cost_usd, tokens, result, result_raw_truncated, stderr_tail, permission_denials, scope, trace, error}`; the orchestrator asserts `.status == "ok"` and reads the classifier reply from `.result`. Status `!= "ok"` halts with `run_end reason=analyst_invalid` (see SKILL.md §Step 2 malformed-reply handling).
 
-Bash command template:
+Bash command template — the orchestrator builds the canonical wrapper input via `plan_ops.py build-claude-dispatch-input` (TASK-001 of `wrapper_autoclean_authorization`) and pipes its stdout into the wrapper:
 
 ```
-{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload.json>
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" build-claude-dispatch-input \
+  --plan-file <absolute child plan path> --task-id NNN --variant analyst \
+  --repo-root <repo_root> --run-id <orchestrator run_id> \
+| {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input -
 ```
 
-Payload skeleton (`<payload.json>`, conforming to `plugins/plan-executor/scripts/schemas/claude_dispatch_input.json`):
+Payload skeleton (emitted by `build-claude-dispatch-input --variant analyst`, conforming to `plugins/plan-executor/scripts/schemas/claude_dispatch_input.json`):
 
 ```json
 {
@@ -64,9 +67,11 @@ Payload skeleton (`<payload.json>`, conforming to `plugins/plan-executor/scripts
     "depth": 0,
     "call_chain": ["orchestrator"]
   },
-  "declared_files_changed": ["<comma-separated files from task.files>"]
+  "declared_files_changed": []
 }
 ```
+
+The top-level `declared_files_changed` is `[]` for the read-only `plan-analyst` agent (explicit empty per the wrapper's authorization gate). The wrapper input schema makes this field REQUIRED at the top level — omitting it returns `status: input_invalid` and refuses to spawn the agent. Direct CLI callers can also use `plan_ops.py build-claude-dispatch-input --variant analyst` to construct this payload.
 
 The agent-behavior body below is byte-identical to the pre-migration wording — only the **transport header** above (how to invoke + envelope handling) was rewritten by TASK-003.
 
@@ -428,27 +433,32 @@ The orchestrator pipes the triage subagent's markdown report through `parse-plan
 
 Default Phase B implementer dispatch, migrated to the v3 wrapper as of TASK-004 (`SKILL_bash_dispatch_migration`). The orchestrator emits the dispatch as a `Bash` tool-use block invoking `plan_claude_dispatch.py run --input <payload.json>` (formerly `Agent(subagent_type: "plan-implementer", model: "opus", ...)`). The wrapper returns a v3 envelope on stdout `{schema_version, status, status_reason, agent, model, session_id, duration_ms, cost_usd, tokens, result, result_raw_truncated, stderr_tail, permission_denials, scope, trace, error}`; the orchestrator asserts `.status == "ok"` and reads the implementer outcome + report from `.result` per the **Phase B classify** extraction shim in `SKILL.md`. Implementer outcome vocabulary (`success | partial | failed | plan-incorrect | blocked | malformed`) is preserved verbatim; `malformed` is emitted by the wrapper when transport succeeded but `.result` failed schema validation against the implementer result schema.
 
-Bash command template:
+Bash command template — the orchestrator builds the canonical wrapper input via `plan_ops.py build-claude-dispatch-input` (TASK-001 of `wrapper_autoclean_authorization`) and pipes its stdout into the wrapper. Per-variant arg list: `--variant default` (Phase B), `--variant rework --dispatch-context <findings_for_retry+d5_summary.json>` (Phase B-rework), `--variant role-swap` (Phase D.2b), `--variant narrow-remediation --dispatch-context <load_bearing+dismissed+d5_summary.json>` (Phase B-narrow-remediation):
 
 ```
-{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload.json>
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" build-claude-dispatch-input \
+  --plan-file <absolute child plan path> --task-id NNN --variant default \
+  --repo-root <repo_root> --starting-sha <orchestrator starting_sha> \
+  [--target-task-id NNN] [--analyst-annotations <path>] \
+  --run-id <orchestrator run_id> \
+| {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input -
 ```
 
-Payload skeleton (`<payload.json>`, conforming to `plugins/plan-executor/scripts/schemas/claude_dispatch_input.json`):
+The top-level `declared_files_changed` is populated from the task's `Files:` list via `_extract_task_files_from_plan` — the same canonical helper `_gate_commit_safe` uses. **Invariant:** every dispatch site MUST be threaded through this builder; do NOT hand-craft the input JSON. The wrapper's input schema makes `declared_files_changed` REQUIRED at the top level — omitting it returns `status: input_invalid` and refuses to spawn the agent.
+
+Payload skeleton (emitted by `build-claude-dispatch-input --variant default`, conforming to `plugins/plan-executor/scripts/schemas/claude_dispatch_input.json`):
 
 ```json
 {
   "schema_version": 1,
   "agent": "plan-implementer",
-  "variant": "default",
   "payload": {
     "plan_path": "<absolute child plan path>",
     "repo_root": "<repo_root>",
     "task_id": "<NNN>",
     "target_task_id": "<NNN-or-null>",
     "starting_sha": "<orchestrator starting_sha>",
-    "analyst_annotations": "<analyst_annotations_json-or-null>",
-    "pre_read_excerpts": "<rendered pre-read excerpts-or-null>"
+    "analyst_annotations": "<analyst_annotations_json-or-null>"
   },
   "output_instructions": {
     "format": "json",
@@ -474,11 +484,11 @@ Payload skeleton (`<payload.json>`, conforming to `plugins/plan-executor/scripts
     "depth": 0,
     "call_chain": ["orchestrator"]
   },
-  "declared_files_changed": ["<comma-separated files from task.files>"]
+  "declared_files_changed": ["<files from task.Files: list, normalized>"]
 }
 ```
 
-`payload.variant="default"` is the template selector; `"rework"` selects the Phase B-rework body, `"role-swap"` selects the Phase D.2b body. No new wrapper subcommand — the variant is carried in the payload. The wrapper extracts `.scope.scope_violation_detected` and `.scope.scope_misreport_detected` from the v3 §7 scope sub-object; both surface as top-level envelope fields the orchestrator reads directly to gate commits (existing rules apply). The required report sections (`Plan adaptations`, `Concerns for reviewer`, `On-failure revert`) surface inside `.result.report` as structured arrays (`plan_adaptations[]`, `concerns_for_reviewer[]`, `on_failure_revert`); the orchestrator reads only those fields plus commit-scope metadata and does NOT ingest `.result_raw_truncated` on the success path. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording — only the transport header above (how to invoke + envelope handling) was rewritten by TASK-004.
+The variant selector lives in the builder's `--variant` flag (was `payload.variant` in the legacy hand-built skeleton); the variant-specific payload differences are documented per Phase below. `"rework"` selects the Phase B-rework body, `"role-swap"` selects the Phase D.2b body. No new wrapper subcommand — the variant is carried in the payload. The wrapper extracts `.scope.scope_violation_detected` and `.scope.scope_misreport_detected` from the v3 §7 scope sub-object; both surface as top-level envelope fields the orchestrator reads directly to gate commits (existing rules apply). The required report sections (`Plan adaptations`, `Concerns for reviewer`, `On-failure revert`) surface inside `.result.report` as structured arrays (`plan_adaptations[]`, `concerns_for_reviewer[]`, `on_failure_revert`); the orchestrator reads only those fields plus commit-scope metadata and does NOT ingest `.result_raw_truncated` on the success path. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording — only the transport header above (how to invoke + envelope handling) was rewritten by TASK-004.
 
 <!-- TRANSPORT BOUNDARY - do not edit below in this plan -->
 
@@ -695,9 +705,9 @@ Same deliberate parallel-tree divergence from §10 as Phase D-Claude. Call out i
 
 ## Phase D.2b — Role-swap retry (Codex-implements + Claude-reviews needs-rework)
 
-Role-swap retry dispatch, migrated to the v3 wrapper as of TASK-004. The orchestrator emits the dispatch as a `Bash` tool-use block invoking `plan_claude_dispatch.py run --input <payload.json>` with `payload.agent="plan-implementer"`, `payload.variant="role-swap"` (template selector), `overrides.model="opus"` — replacing the prior `Agent(subagent_type: "plan-implementer", ...)` call. The wrapper returns a v3 envelope on stdout; orchestrator asserts `.status=="ok"` and reads `.result` per the Phase B classify shim. The `retries_used.role_swap` budget check happens orchestrator-side BEFORE this dispatch — it is not enforced inside the wrapper.
+Role-swap retry dispatch, migrated to the v3 wrapper as of TASK-004. The orchestrator builds the canonical wrapper input via `plan_ops.py build-claude-dispatch-input --variant role-swap` (TASK-001 of `wrapper_autoclean_authorization`) and pipes its stdout into `plan_claude_dispatch.py run --input -`. The subcommand emits `agent: "plan-implementer"`, `overrides.model: "opus"`, and the schema-required top-level `declared_files_changed` populated from the task's `Files:` list — replacing the prior hand-built JSON skeleton. The wrapper returns a v3 envelope on stdout; orchestrator asserts `.status=="ok"` and reads `.result` per the Phase B classify shim. The `retries_used.role_swap` budget check happens orchestrator-side BEFORE this dispatch — it is not enforced inside the wrapper.
 
-The dispatch payload mirrors the Phase B skeleton above; substitute `payload.variant="role-swap"`. Reviewer findings are NOT forwarded (Open risks 1). Required report sections surface as structured arrays inside `.result.report`; `.scope.scope_violation_detected` and `.scope.scope_misreport_detected` are read directly from the envelope. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
+**Invariant:** every dispatch site MUST be threaded through `build-claude-dispatch-input`; do NOT hand-craft the input JSON. The wrapper's input schema makes `declared_files_changed` REQUIRED at the top level — omitting it returns `status: input_invalid` and refuses to spawn the agent. The dispatch payload mirrors the Phase B skeleton above (`--variant role-swap` selects the Phase D.2b body). Reviewer findings are NOT forwarded (Open risks 1). Required report sections surface as structured arrays inside `.result.report`; `.scope.scope_violation_detected` and `.scope.scope_misreport_detected` are read directly from the envelope. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
 
 <!-- TRANSPORT BOUNDARY - do not edit below in this plan -->
 
@@ -707,9 +717,9 @@ Per design §8.3 line 692: Claude re-implements, Codex re-reviews. One attempt.
 
 ## Phase B-rework — Bounded remediation retry (D.2a.5)
 
-Bounded-remediation dispatch, migrated to the v3 wrapper as of TASK-004. The orchestrator emits the dispatch as a `Bash` tool-use block invoking `plan_claude_dispatch.py run --input <payload.json>` with `payload.agent="plan-implementer"`, `payload.variant="rework"` (template selector), `overrides.model="opus"` — replacing the prior `Agent(subagent_type: "plan-implementer", model: "opus")` call. Strictly one attempt. The wrapper returns a v3 envelope on stdout; the orchestrator asserts `.status=="ok"` and reads `.result.outcome` + `.result.report.{plan_adaptations,concerns_for_reviewer,on_failure_revert}` per the Phase B classify shim. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
+Bounded-remediation dispatch, migrated to the v3 wrapper as of TASK-004. The orchestrator builds the canonical wrapper input via `plan_ops.py build-claude-dispatch-input --variant rework --dispatch-context <findings_for_retry+d5_summary.json>` (TASK-001 of `wrapper_autoclean_authorization`) and pipes its stdout into `plan_claude_dispatch.py run --input -`. The subcommand emits `agent: "plan-implementer"`, `overrides.model: "opus"`, the schema-required top-level `declared_files_changed` populated from the task's `Files:` list, and `payload.dispatch_context: {findings_for_retry, d5_summary}` (forwarded verbatim from `review-route`'s `dispatch_context`) — replacing the prior hand-built JSON skeleton. Strictly one attempt. The wrapper returns a v3 envelope on stdout; the orchestrator asserts `.status=="ok"` and reads `.result.outcome` + `.result.report.{plan_adaptations,concerns_for_reviewer,on_failure_revert}` per the Phase B classify shim. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
 
-The dispatch payload mirrors the Phase B skeleton above; substitute `payload.variant="rework"` and add `payload.dispatch_context: {findings_for_retry, d5_summary}` (forwarded verbatim from `review-route`'s `dispatch_context`). The required report sections (`Plan adaptations`, `Concerns for reviewer`, `On-failure revert`) surface inside `.result.report` as structured arrays. `.scope.scope_violation_detected` is read directly from the envelope. `malformed` outcomes — emitted when transport succeeded but `.result` failed schema validation — route the same as `failed` for D.2a.5 stage `implement`.
+**Invariant:** every dispatch site MUST be threaded through `build-claude-dispatch-input`; do NOT hand-craft the input JSON. The wrapper's input schema makes `declared_files_changed` REQUIRED at the top level — omitting it returns `status: input_invalid` and refuses to spawn the agent. The required report sections (`Plan adaptations`, `Concerns for reviewer`, `On-failure revert`) surface inside `.result.report` as structured arrays. `.scope.scope_violation_detected` is read directly from the envelope. `malformed` outcomes — emitted when transport succeeded but `.result` failed schema validation — route the same as `failed` for D.2a.5 stage `implement`.
 
 <!-- TRANSPORT BOUNDARY - do not edit below in this plan -->
 
@@ -767,9 +777,9 @@ After retry success, re-run Phase D-Codex (wrapper review) on the re-implementat
 
 ## Phase B-narrow-remediation — Narrow-remediation retry (D.2a.6)
 
-Narrow-remediation dispatch, migrated to the v3 wrapper as of TASK-005. The orchestrator emits the dispatch as a `Bash` tool-use block invoking `plan_claude_dispatch.py run --input <payload.json>` with `payload.agent="plan-remediator"`, `overrides.model="opus"` — replacing the prior `Agent(subagent_type: "plan-remediator", model: "opus")` call. Strictly one attempt. The wrapper returns a v3 envelope on stdout; the orchestrator asserts `.status=="ok"` and reads `.result.outcome` per the remediator outcome vocabulary `success | partial | failed | plan-incorrect | blocked | malformed | scope-violation`. The extra `scope-violation` outcome (not present in implementer) and `malformed` both round-trip and are validated by the TASK-002 remediator schema. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
+Narrow-remediation dispatch, migrated to the v3 wrapper as of TASK-005. The orchestrator builds the canonical wrapper input via `plan_ops.py build-claude-dispatch-input --variant narrow-remediation --dispatch-context <load_bearing+dismissed+d5_summary.json>` (TASK-001 of `wrapper_autoclean_authorization`) and pipes its stdout into `plan_claude_dispatch.py run --input -`. The subcommand emits `agent: "plan-remediator"`, `overrides.model: "opus"`, the schema-required top-level `declared_files_changed` populated from the task's `Files:` list, and `payload.dispatch_context: {load_bearing_findings, dismissed_findings, d5_summary}` (forwarded verbatim from `review-route`'s `dispatch_context`) — replacing the prior hand-built JSON skeleton. Strictly one attempt. The wrapper returns a v3 envelope on stdout; the orchestrator asserts `.status=="ok"` and reads `.result.outcome` per the remediator outcome vocabulary `success | partial | failed | plan-incorrect | blocked | malformed | scope-violation`. The extra `scope-violation` outcome (not present in implementer) and `malformed` both round-trip and are validated by the TASK-002 remediator schema. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
 
-The dispatch payload mirrors the Phase B skeleton in §Phase B above; substitute `payload.agent="plan-remediator"` and add `payload.dispatch_context: {load_bearing_findings, dismissed_findings, d5_summary}` (forwarded verbatim from `review-route`'s `dispatch_context`). The `(file, line)` union derived from `load_bearing_findings[]` defines the touch-only-these-lines edit region: the wrapper's delta-bounded cleanup enforces file-level scope (envelope's `scope.declared_files_changed[]` and `scope.observed_delta_tracked[]` must both be subsets of that union); line-level enforcement stays orchestrator-side against the existing diff-hunks helper in `plan_ops.py`. The mandatory `**Dismissed findings noted:**` report section surfaces as `.result.report.dismissed_findings_acknowledged[]`; the orchestrator's D.5 gate reads from there. `output_instructions.schema_path` MUST point at `tests/scripts/fixtures/claude_dispatch/schemas/remediator_result.json` (TASK-002 schema). `malformed` outcomes — emitted when transport succeeded but `.result` failed schema validation — route the same as `failed` for D.2a.6 stage `implement`; `scope-violation` routes to the awaiting-user pause with `stage:"post_narrow_remediation_implement"`.
+**Invariant:** every dispatch site MUST be threaded through `build-claude-dispatch-input`; do NOT hand-craft the input JSON. The wrapper's input schema makes `declared_files_changed` REQUIRED at the top level — omitting it returns `status: input_invalid` and refuses to spawn the agent. The `(file, line)` union derived from `load_bearing_findings[]` defines the touch-only-these-lines edit region: the wrapper's delta-bounded cleanup enforces file-level scope (envelope's `scope.declared_files_changed[]` and `scope.observed_delta_tracked[]` must both be subsets of that union); line-level enforcement stays orchestrator-side against the existing diff-hunks helper in `plan_ops.py`. The mandatory `**Dismissed findings noted:**` report section surfaces as `.result.report.dismissed_findings_acknowledged[]`; the orchestrator's D.5 gate reads from there. `output_instructions.schema_path` MUST point at `tests/scripts/fixtures/claude_dispatch/schemas/remediator_result.json` (TASK-002 schema). `malformed` outcomes — emitted when transport succeeded but `.result` failed schema validation — route the same as `failed` for D.2a.6 stage `implement`; `scope-violation` routes to the awaiting-user pause with `stage:"post_narrow_remediation_implement"`.
 
 <!-- TRANSPORT BOUNDARY - do not edit below in this plan -->
 

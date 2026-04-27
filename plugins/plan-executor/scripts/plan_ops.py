@@ -11305,6 +11305,207 @@ def cmd_resolve_read_targets(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# build-claude-dispatch-input — canonical wrapper-input builder
+# ---------------------------------------------------------------------------
+#
+# TASK-001 (wrapper_autoclean_authorization): centralises the construction
+# of the JSON object accepted by `plan_claude_dispatch.py run --input -`.
+# `declared_files_changed` is now schema-required at the wrapper layer;
+# the four orchestrator dispatch sites (Phase B / Phase B-rework / Phase
+# D.2b / Phase B-narrow-remediation) plus the Phase A-single analyst
+# fan-out feed through this builder so the field is populated correctly
+# per task variant. Read-only agents emit `[]` explicitly; write-
+# authorized agents derive the list from the task's `Files:` block via
+# `_extract_task_files_from_plan` (the same canonical helper that
+# `_gate_commit_safe` uses).
+
+_BCDI_VARIANT_AGENT = {
+    "default": "plan-implementer",
+    "rework": "plan-implementer",
+    "role-swap": "plan-implementer",
+    "narrow-remediation": "plan-remediator",
+    "analyst": "plan-analyst",
+}
+
+_BCDI_VARIANT_MODEL = {
+    "default": "opus",
+    "rework": "opus",
+    "role-swap": "opus",
+    "narrow-remediation": "opus",
+    "analyst": "sonnet",
+}
+
+_BCDI_VARIANT_SCHEMA_PATH = {
+    "default": "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json",
+    "rework": "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json",
+    "role-swap": "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json",
+    "narrow-remediation": "tests/scripts/fixtures/claude_dispatch/schemas/remediator_result.json",
+    "analyst": "plugins/plan-executor/scripts/schemas/claude_dispatch_output.json",
+}
+
+
+def _bcdi_emit_error(code: str, message: str) -> None:
+    payload = {"errors": [{"code": code, "message": message}]}
+    json.dump(payload, sys.stdout, indent=2, sort_keys=False)
+    sys.stdout.write("\n")
+    sys.exit(1)
+
+
+def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
+    """Emit the canonical `claude_dispatch_input.json` shape for one dispatch.
+
+    The orchestrator (or any direct CLI caller) pipes this stdout into
+    ``plan_claude_dispatch.py run --input -``.
+    """
+    variant = args.variant
+    plan_file = Path(args.plan_file)
+    if not plan_file.is_file():
+        _bcdi_emit_error(
+            "plan-file-not-found",
+            f"plan file not found: {plan_file}",
+        )
+        return  # unreachable
+    plan_text = _load_text(plan_file)
+
+    normalized_task_id = _normalize_task_id(args.task_id)
+    if normalized_task_id is None:
+        _bcdi_emit_error(
+            "task-id-invalid",
+            f"task id is not parseable: {args.task_id!r}",
+        )
+        return
+
+    agent = _BCDI_VARIANT_AGENT[variant]
+    model = _BCDI_VARIANT_MODEL[variant]
+    schema_path = _BCDI_VARIANT_SCHEMA_PATH[variant]
+
+    if variant == "analyst":
+        declared_files: list[str] = []
+    else:
+        files = _extract_task_files_from_plan(plan_text, normalized_task_id)
+        if files is None:
+            _bcdi_emit_error(
+                "task-not-found",
+                (
+                    f"task {normalized_task_id} not present in plan "
+                    f"{plan_file}"
+                ),
+            )
+            return
+        declared_files = [p for p in files if p]
+        if not declared_files:
+            sys.stderr.write(
+                "warning: task "
+                f"{normalized_task_id} declares no files; the dispatch "
+                "will hit the wrapper's anti-aliasing / short-circuit "
+                "guard.\n"
+            )
+
+    repo_root = str(Path(args.repo_root).resolve()) if args.repo_root else str(Path.cwd().resolve())
+
+    payload: dict = {
+        "plan_path": str(plan_file.resolve()),
+        "repo_root": repo_root,
+    }
+    if variant != "analyst":
+        payload["task_id"] = normalized_task_id
+        if args.target_task_id:
+            normalized_tt = _normalize_task_id(args.target_task_id)
+            if normalized_tt is None:
+                _bcdi_emit_error(
+                    "target-task-id-invalid",
+                    f"target task id is not parseable: {args.target_task_id!r}",
+                )
+                return
+            payload["target_task_id"] = normalized_tt
+        else:
+            payload["target_task_id"] = None
+        if variant in ("default", "rework", "role-swap"):
+            if args.analyst_annotations:
+                ann_path = Path(args.analyst_annotations)
+                if not ann_path.is_file():
+                    _bcdi_emit_error(
+                        "analyst-annotations-not-found",
+                        f"analyst annotations file not found: {ann_path}",
+                    )
+                    return
+                try:
+                    payload["analyst_annotations"] = json.loads(
+                        _load_text(ann_path)
+                    )
+                except json.JSONDecodeError as e:
+                    _bcdi_emit_error(
+                        "analyst-annotations-invalid-json",
+                        f"analyst annotations file is not valid JSON: {e}",
+                    )
+                    return
+            else:
+                payload["analyst_annotations"] = None
+            payload["starting_sha"] = args.starting_sha or ""
+        if variant in ("rework", "narrow-remediation"):
+            if not args.dispatch_context:
+                _bcdi_emit_error(
+                    "dispatch-context-required",
+                    f"--dispatch-context is required for variant {variant!r}",
+                )
+                return
+            ctx_path = Path(args.dispatch_context)
+            if not ctx_path.is_file():
+                _bcdi_emit_error(
+                    "dispatch-context-not-found",
+                    f"dispatch context file not found: {ctx_path}",
+                )
+                return
+            try:
+                payload["dispatch_context"] = json.loads(_load_text(ctx_path))
+            except json.JSONDecodeError as e:
+                _bcdi_emit_error(
+                    "dispatch-context-invalid-json",
+                    f"dispatch context file is not valid JSON: {e}",
+                )
+                return
+
+    envelope = {
+        "schema_version": 1,
+        "agent": agent,
+        "payload": payload,
+        "output_instructions": {
+            "format": "json",
+            "schema_path": schema_path,
+            "schema_inline": None,
+            "max_bytes": 65536,
+        },
+        "overrides": {
+            "model": model,
+            "timeout_sec": None,
+            "tools_allowed_extra": None,
+            "tools_disallowed_extra": None,
+            "cwd": None,
+        },
+        "guardrails": {
+            "max_depth": 1,
+            "cost_cap_usd": None,
+            "network": "deny",
+        },
+        "trace": {
+            "run_id": args.run_id or "<orchestrator run_id>",
+            "parent_span_id": None,
+            "depth": 0,
+            "call_chain": ["orchestrator"],
+        },
+        "declared_files_changed": declared_files,
+    }
+
+    output = args.output or "-"
+    text = json.dumps(envelope, indent=2, sort_keys=False) + "\n"
+    if output == "-":
+        sys.stdout.write(text)
+    else:
+        Path(output).write_text(text, encoding="utf-8")
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
@@ -12004,6 +12205,58 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_rrt.set_defaults(func=cmd_resolve_read_targets)
+
+    # TASK-001 (wrapper_autoclean_authorization): canonical wrapper-input
+    # builder. Emits the JSON object accepted by ``plan_claude_dispatch.py
+    # run --input -``; populates the schema-required top-level
+    # ``declared_files_changed`` from the task's ``Files:`` block via
+    # ``_extract_task_files_from_plan``. The four orchestrator dispatch
+    # sites (Phase B / Phase B-rework / Phase D.2b / Phase B-narrow-
+    # remediation) plus the Phase A-single analyst fan-out feed through
+    # this builder.
+    p_bcdi = sub.add_parser(
+        "build-claude-dispatch-input",
+        help=(
+            "Emit the canonical claude_dispatch_input.json for one dispatch. "
+            "Pipe stdout into `plan_claude_dispatch.py run --input -`."
+        ),
+    )
+    p_bcdi.add_argument("--plan-file", required=True,
+                        help="Absolute path to the (child) plan file")
+    p_bcdi.add_argument("--task-id", required=True,
+                        help="TASK-NNN id (or NNN / N) the dispatch targets")
+    p_bcdi.add_argument(
+        "--variant", required=True,
+        choices=["default", "rework", "role-swap",
+                 "narrow-remediation", "analyst"],
+        help="Dispatch variant; selects agent, model, payload shape",
+    )
+    p_bcdi.add_argument("--repo-root", default=None,
+                        help="Repo root; defaults to cwd")
+    p_bcdi.add_argument("--analyst-annotations", default=None,
+                        help="Path to JSON file with analyst annotations")
+    p_bcdi.add_argument("--target-task-id", default=None,
+                        help="target_task_id for shared-file children (TASK-007)")
+    p_bcdi.add_argument("--starting-sha", default=None,
+                        help="Orchestrator's starting_sha for the run")
+    p_bcdi.add_argument(
+        "--dispatch-context", default=None,
+        help=(
+            "Path to JSON file forwarded as payload.dispatch_context "
+            "(required for variant=rework | narrow-remediation)"
+        ),
+    )
+    p_bcdi.add_argument("--run-id", default=None,
+                        help="Orchestrator run_id stamped into trace.run_id")
+    p_bcdi.add_argument("--output", default="-",
+                        help="Output path (default '-' = stdout)")
+    p_bcdi.add_argument(
+        "--json", action="store_true",
+        help=(
+            "Reserved for parity; this subcommand always emits JSON."
+        ),
+    )
+    p_bcdi.set_defaults(func=cmd_build_claude_dispatch_input)
 
     # TASK-020A: read-only lint that cross-references `**Status:** done` /
     # `partial` task markers against the run log's `commit_done` events and
@@ -12935,6 +13188,7 @@ def main(argv: list[str] | None = None) -> None:
         "gates": cmd_gates,
         "audit": cmd_audit,
         "resolve-read-targets": cmd_resolve_read_targets,
+        "build-claude-dispatch-input": cmd_build_claude_dispatch_input,
         "list-global-lock-paths": cmd_list_global_lock_paths,
         # TASK-008 (POSTMORTEM_FIXES): sandbox-divergence escape hatch.
         "auto-validate-divergence": cmd_auto_validate_divergence,

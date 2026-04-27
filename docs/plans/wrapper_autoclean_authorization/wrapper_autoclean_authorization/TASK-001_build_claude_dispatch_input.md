@@ -46,7 +46,7 @@ This plan extends the **Completed-Work Preservation Principle** (SKILL.md `## Ru
 
 ### TASK-001: `declared_files_changed` schema-required + `plan_ops.py build-claude-dispatch-input` subcommand + SKILL.md / dispatch-templates.md wiring
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** claude
 - **Files:**
@@ -98,3 +98,11 @@ The two changes reinforce each other: the schema is the structural backstop (any
 The Phase A-single template gets a tiny update — one new line `"declared_files_changed": []` — because once the schema makes the field required, every dispatch must emit it (including the read-only `plan-analyst` per-child classifier). The empty list is the explicit declaration that the analyst legitimately has empty scope; TASK-002's authorization gate then maps the `agent: "plan-analyst"` identity to `wrapper-empty-scope-readonly` for the cleanup pathway.
 
 **Migration risk.** Once the schema change lands, any in-flight dispatch from before this task that omits `declared_files_changed` will fail wrapper-level schema validation and return `status: input_invalid` instead of running the agent. This is the desired behavior — the alternative is the silent destruction we're trying to eliminate. Operators who hit this on the day this task lands will get an actionable error pointing at the field; their orchestrator (which is itself Claude reading SKILL.md) re-builds the payload via `build-claude-dispatch-input` and re-dispatches. There's no safe way to roll out this fix that preserves "old payload shape works" — that shape IS the silent-destruction vector.
+
+## Execution log — 20260427T213500 (paused)
+
+Starting SHA: `feba7001d79e5455860b46f0f9fe857286f3aa7f`  → Ending SHA: `feba7001d79e5455860b46f0f9fe857286f3aa7f`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | none | paused (post_implement_failure) | - | backend timeout @ 900s; 6 declared files modified in working tree, preserved per Completed-Work Preservation Principle; awaiting user disposition |
