@@ -895,6 +895,8 @@ def _restore_in_scope(
     tracked: list[str],
     untracked: list[str],
     repo_root: str,
+    *,
+    authorization_source: str,
 ) -> None:
     """Restore/delete changes that are inside allowed_files.
 
@@ -902,6 +904,23 @@ def _restore_in_scope(
     out-of-scope paths must never be passed here. Sibling work on disjoint
     files is preserved by construction.
     """
+    # Gated restore (TASK-002 prohibit_silent_revert extension).
+    _ALLOWED = {
+        "wrapper_internal_cleanup_explicit_declaration",
+        "wrapper_observe_only_blocked_by_status",
+    }
+    if authorization_source not in _ALLOWED:
+        raise RuntimeError(
+            f"Unauthorized wrapper restore attempt. "
+            f"Expected authorization_source in {sorted(_ALLOWED)}, "
+            f"got {authorization_source!r}."
+        )
+
+    if authorization_source == "wrapper_observe_only_blocked_by_status":
+        # Observe-only mode (TASK-003): caller wants to detect scope
+        # violations but NOT mutate the working tree.
+        return
+
     if tracked:
         _git(["restore", "--source=HEAD", "--"] + tracked, cwd=repo_root)
         _git(["restore", "--staged", "--"] + tracked, cwd=repo_root)
@@ -1004,6 +1023,8 @@ def _handle_timeout_cleanup(
     repo_root: str,
     allowed_files: list[str],
     baseline: dict,
+    *,
+    authorization_source: str,
 ) -> dict:
     """In-scope cleanup after a Codex timeout; observe-only outside scope.
 
@@ -1517,6 +1538,7 @@ def cmd_implement(args) -> int:
         if codex["status"] == "timeout":
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, allowed_files, baseline,
+                authorization_source="wrapper_internal_cleanup_explicit_declaration",
             )
             emit(make_envelope(
                 task["task_id"], "implement", "timeout",
@@ -1535,6 +1557,12 @@ def cmd_implement(args) -> int:
                     # when capture succeeded.
                     "baseline_error": baseline.get("error"),
                     "cleanup_details": cleanup_details,
+                    "wrapper_events": [{
+                        "event": "wrapper_autoclean_executed",
+                        "restored": cleanup_details.get("restored_tracked", []),
+                        "deleted": cleanup_details.get("deleted_untracked", []),
+                        "authorization_source": "wrapper_internal_cleanup_explicit_declaration",
+                    }] if cleanup_details.get("restored_tracked") or cleanup_details.get("deleted_untracked") else [],
                     "out_of_scope_tracked": cleanup_details.get(
                         "out_of_scope_tracked", []),
                     "out_of_scope_untracked": cleanup_details.get(
@@ -1858,6 +1886,7 @@ def cmd_review(args) -> int:
         if codex["status"] == "timeout":
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, review_files, baseline,
+                authorization_source="wrapper_internal_cleanup_explicit_declaration",
             )
             emit(make_envelope(
                 task["task_id"], "review", "timeout",
@@ -1870,6 +1899,12 @@ def cmd_review(args) -> int:
                     "cleanup_strategy": cleanup_details["cleanup_strategy"],
                     "baseline_captured": baseline["captured"],
                     "cleanup_details": cleanup_details,
+                    "wrapper_events": [{
+                        "event": "wrapper_autoclean_executed",
+                        "restored": cleanup_details.get("restored_tracked", []),
+                        "deleted": cleanup_details.get("deleted_untracked", []),
+                        "authorization_source": "wrapper_internal_cleanup_explicit_declaration",
+                    }] if cleanup_details.get("restored_tracked") or cleanup_details.get("deleted_untracked") else [],
                     "out_of_scope_tracked": cleanup_details.get(
                         "out_of_scope_tracked", []),
                     "out_of_scope_untracked": cleanup_details.get(
@@ -2103,6 +2138,7 @@ def cmd_plan_review(args) -> int:
             # observed write lands in out_of_scope_* for orchestrator visibility.
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, [], baseline,
+                authorization_source="wrapper_internal_cleanup_explicit_declaration",
             )
             emit(make_envelope(
                 "plan", "plan-review", "timeout",
@@ -2115,6 +2151,12 @@ def cmd_plan_review(args) -> int:
                     "cleanup_strategy": cleanup_details["cleanup_strategy"],
                     "baseline_captured": baseline["captured"],
                     "cleanup_details": cleanup_details,
+                    "wrapper_events": [{
+                        "event": "wrapper_autoclean_executed",
+                        "restored": cleanup_details.get("restored_tracked", []),
+                        "deleted": cleanup_details.get("deleted_untracked", []),
+                        "authorization_source": "wrapper_internal_cleanup_explicit_declaration",
+                    }] if cleanup_details.get("restored_tracked") or cleanup_details.get("deleted_untracked") else [],
                     "out_of_scope_tracked": cleanup_details.get(
                         "out_of_scope_tracked", []),
                     "out_of_scope_untracked": cleanup_details.get(

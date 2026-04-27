@@ -105,6 +105,7 @@ def good_input_obj() -> Dict[str, Any]:
             "depth": 0,
             "call_chain": ["orchestrator"],
         },
+        "declared_files_changed": [],
     }
 
 
@@ -145,11 +146,12 @@ def patch_cleanup_noop(monkeypatch):
     monkeypatch.setattr(
         cli.cleanup,
         "apply_cleanup",
-        lambda baseline, declared, repo_root: {
+        lambda baseline, declared, repo_root, **kwargs: {
             "scope_violation_detected": False,
             "scope_misreport_detected": False,
             "restored": [],
             "deleted": [],
+            "failed_paths": [],
             "out_of_scope_paths": [],
             "misreported_paths": [],
             "protected_skipped": [],
@@ -157,7 +159,6 @@ def patch_cleanup_noop(monkeypatch):
             "cleanup_strategy": "skipped_no_baseline",
         },
     )
-
 
 def _ok_envelope(**overrides) -> Dict[str, Any]:
     """Build a canned ``status: ok`` envelope for the fake backend."""
@@ -592,11 +593,12 @@ def test_run_cleanup_violation_demotes_ok_to_scope_violation(
     monkeypatch.setattr(
         cli.cleanup,
         "apply_cleanup",
-        lambda baseline, declared, repo_root: {
+        lambda baseline, declared, repo_root, **kwargs: {
             "scope_violation_detected": True,
             "scope_misreport_detected": False,
-            "restored": ["evil.txt"],
+            "restored": [],
             "deleted": [],
+            "failed_paths": [],
             "out_of_scope_paths": ["evil.txt"],
             "misreported_paths": [],
             "protected_skipped": [],
@@ -644,8 +646,8 @@ def test_run_cleanup_failed_paths_emits_cleanup_failure(
     monkeypatch.setattr(
         cli.cleanup,
         "apply_cleanup",
-        lambda baseline, declared, repo_root: {
-            "scope_violation_detected": True,
+        lambda baseline, declared, repo_root, **kwargs: {
+            "scope_violation_detected": False,
             "scope_misreport_detected": False,
             "restored": [],
             "deleted": [],
@@ -691,7 +693,7 @@ def test_run_cleanup_mixed_failed_and_restored_emits_cleanup_failure(
     monkeypatch.setattr(
         cli.cleanup,
         "apply_cleanup",
-        lambda baseline, declared, repo_root: {
+        lambda baseline, declared, repo_root, **kwargs: {
             "scope_violation_detected": True,
             "scope_misreport_detected": False,
             "restored": ["was_dirty.py"],
@@ -748,7 +750,7 @@ def test_run_cleanup_failure_takes_precedence_over_scope_violation(
     monkeypatch.setattr(
         cli.cleanup,
         "apply_cleanup",
-        lambda baseline, declared, repo_root: {
+        lambda baseline, declared, repo_root, **kwargs: {
             "scope_violation_detected": True,
             "scope_misreport_detected": False,
             "restored": [],
@@ -801,8 +803,8 @@ def test_run_cleanup_failure_overrides_non_ok_backend_status(
     monkeypatch.setattr(
         cli.cleanup,
         "apply_cleanup",
-        lambda baseline, declared, repo_root: {
-            "scope_violation_detected": True,
+        lambda baseline, declared, repo_root, **kwargs: {
+            "scope_violation_detected": False,
             "scope_misreport_detected": False,
             "restored": [],
             "deleted": [],
@@ -859,7 +861,7 @@ def test_run_agent_lies_in_files_changed_does_not_authorize_cleanup(
         lambda r: {"captured": True, "repo_root": str(r)},
     )
 
-    def _spy_cleanup(baseline, declared, repo_root):
+    def _spy_cleanup(baseline, declared, repo_root, **kwargs):
         seen.append(list(declared))
         # Simulate that the agent actually wrote evil.py and cleanup
         # reverts it because it is out-of-scope vs the trusted []
@@ -917,7 +919,7 @@ def test_run_overwrite_outside_declared_set_is_reverted(
         lambda r: {"captured": True, "repo_root": str(r)},
     )
 
-    def _spy_cleanup(baseline, declared, repo_root):
+    def _spy_cleanup(baseline, declared, repo_root, **kwargs):
         seen.append(list(declared))
         return {
             "scope_violation_detected": True,
@@ -953,52 +955,41 @@ def test_run_overwrite_outside_declared_set_is_reverted(
     assert "b.py" in envelope["scope"]["observed_delta_untracked"]
 
 
-def test_run_omitted_declared_files_changed_defaults_to_empty(
+def test_run_omitted_declared_files_changed_fails_validation(
     tmp_path, good_input_obj, patch_manifest, patch_cleanup_noop, monkeypatch, capsys,
 ):
-    """Omitted top-level field → cleanup is invoked with ``[]``
-    (deny-by-default for read-only agents like plan-analyst)."""
-    canned = _ok_envelope()
-    _patch_backend_returning(monkeypatch, canned)
-
-    seen: List[Any] = []
-    real_apply = cli.cleanup.apply_cleanup
-
-    def _spy(baseline, declared, repo_root):
-        seen.append(list(declared))
-        return real_apply(baseline, declared, repo_root)
-
-    monkeypatch.setattr(cli.cleanup, "apply_cleanup", _spy)
-
-    # good_input_obj does NOT carry declared_files_changed.
-    assert "declared_files_changed" not in good_input_obj
+    """TASK-001 prohibit_silent_revert extension: omitting
+    declared_files_changed now fails schema validation (it is REQUIRED).
+    """
+    # good_input_obj already carries declared_files_changed; remove it.
+    payload = dict(good_input_obj)
+    del payload["declared_files_changed"]
     input_path = tmp_path / "input.json"
-    input_path.write_text(json.dumps(good_input_obj), encoding="utf-8")
+    input_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    code, _out, _err = _run_cli(
+    code, out, _err = _run_cli(
         ["run", "--input", str(input_path), "--output", "-",
          "--repo-root", str(tmp_path)],
         capsys=capsys,
     )
 
-    assert code == 0
-    assert seen == [[]]
+    # 2 = EXIT_CODE_WRAPPER_FAILURE (due to Step 2 schema failure)
+    assert code == 2
+    envelope = _parse_envelope(out)
+    assert envelope["status"] == "input_invalid"
+    assert "declared_files_changed" in envelope["error"]["message"]
 
 
-def test_validate_input_accepts_declared_files_changed_field(
+def test_validate_input_requires_declared_files_changed_field(
     tmp_path, good_input_obj, capsys,
 ):
-    """Backward-compat: payloads with ``declared_files_changed`` set
-    are accepted by the input schema; payloads without it are too."""
+    """TASK-001: payloads without declared_files_changed are now rejected."""
     payload = dict(good_input_obj)
-    payload["declared_files_changed"] = ["foo.py", "bar/baz.py"]
+    del payload["declared_files_changed"]
     p = tmp_path / "in.json"
     p.write_text(json.dumps(payload), encoding="utf-8")
     code = cli.main(["validate-input", str(p)])
-    out = capsys.readouterr().out
-    assert code == 0
-    assert "ok" in out
-
+    assert code == 1  # validate-input returns 1 on schema fail
 
 # ---------------------------------------------------------------------------
 # stdin / stdout pipe round-trip

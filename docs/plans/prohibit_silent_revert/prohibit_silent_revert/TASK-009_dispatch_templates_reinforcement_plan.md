@@ -72,23 +72,3 @@ This plan does NOT touch: `cmd_commit_task`'s metadata-only rollback (preserves 
 Closes the loop: dispatch templates and the plan-implementer agent spec carry the principle so subagents internalize it; the design doc carries the principle so future contributors find it during architectural work; the audit subcommand provides drift protection so doc/CLI drift surfaces in CI before it bites a real run. The audit checks are deliberately strict — they assert the load-bearing invariants the principle relies on (every fail-task call site has authorization, principle is referenced from every phase that previously auto-reverted). Bundling the audit work into TASK-009 (rather than its own task) keeps the principle's drift protection landing in lockstep with its prose, avoiding a window where the principle exists but is unenforced.
 
 **Scope boundary.** This task does NOT change runtime behavior — pure-doc + audit additions. The audit machinery in `plan_ops.py` already exists (the existing `CANONICAL_CONTRACT` patterns are the model); this task adds two new check entries.
-
-## Expected outcome
-
-- Nine `feat(TASK-NNN):` commits plus one `chore(implement-plan):` housekeeping commit.
-- `cmd_fail_task` requires `--authorization-source` at the CLI; missing flag is a hard error. Every documented `fail-task` invocation in SKILL.md passes a valid value.
-- `paused` is a first-class plan-status. `batch-next`, `block-dependents` (no-op for paused), `update-plan-header`, `lint-plans`, and `mutate_task_status` all recognize it. A paused task in a schedule does not get re-picked.
-- `cmd_preflight` refuses non-TTY runs without `--unattended-revert-policy`. The pin propagates through the orchestrator.
-- SKILL.md `## Rules` carries the Completed-Work Preservation Principle. The shared **Awaiting-user pause** control-flow subroutine is documented and referenced from all five gap paths (G1, G2, G3, G10) plus the existing D.2a.5/D.2a.6 paths.
-- Phase C with non-empty diff pauses for user; with empty diff, auto-fail-task. Phase D.4 attempts in-place rescue first (single-shot, terminal); on failure, pauses for user. D.2a `--codex-review-binding` pauses for user (no escape-hatch flag); cron/CI users adopt `--unattended-revert-policy fail-fast`. `reconcile_batch` out-of-scope writes pause per-task with four user options.
-- `commit-task` accepts `--d4-rescue-tag` with XOR rules against `--remediation-tag` / `--narrow-remediation-tag`; commit body carries `[d4-rescue]` line.
-- `dispatch-templates.md` and `plan-implementer.md` reinforce the principle. `docs/plans/DUAL_AGENT_PLAN_EXECUTOR.md` carries it as standing design.
-- `plan_ops.py audit --strict --json` passes, including the two new drift checks (`fail_task_authorization_source`, `principle_referenced`).
-
-## Follow-ups (out of scope)
-
-- **`--unattended-revert-policy preserve-only` salvage-ref convention.** TASK-006 documents that `preserve-only` should record the discarded diff to a salvage ref before fail-task, but leaves the exact mechanism to the implementer's discretion (`git stash create` is one option). A follow-up plan can codify the salvage-ref naming scheme (`refs/salvage/<run_id>/<task_id>` etc.), the lifecycle (cleanup policy, max age), and a `plan_ops.py salvage-list` / `salvage-recover` UX. Out of scope here because the principle does not require any specific recording mechanism; just non-destruction.
-- **Per-finding `target_task_id` integration with D.4 rescue.** The hotfix introduced `target_task_id` on plan-review findings; this plan's D.4 rescue carries `rescue_findings[]` per task. A follow-up could thread `target_task_id` through D.4 rescue too if cross-task review findings ever surface there. Today, Phase D reviews are per-task by construction, so the integration isn't load-bearing.
-- **Migration banner for `--codex-review-binding`.** TASK-007's "implementer's discretion" note about a one-time `binding_mode_contract_changed_notice` event at run_start can be hardened into a structural requirement in a follow-up if operators report missing the contract change.
-- **`reconcile_batch` per-task in-place-fix UX.** TASK-008 documents four user options including "in-place fix"; the orchestrator handoff for that option (re-dispatching `plan-remediator` to revise the task within the original `Files:` and revert the out-of-scope writes) is currently a manual user-driven flow. A follow-up could add a one-liner orchestrator subcommand or template to streamline it.
-- **Pre-existing test failure in `test_analyst_to_parse_schedule_roundtrip` (`test_plan_ops.py:5194`).** Same caveat as the per-task-dispatch-refactor-v2 plan — unrelated to this work but worth a surgical fix before the integration test surface grows further.

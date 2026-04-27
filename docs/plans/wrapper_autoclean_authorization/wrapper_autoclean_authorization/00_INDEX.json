@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "Wrapper-Autoclean Authorization — Extend the Completed-Work Preservation Principle into the Dispatch Wrapper Layer",
+  "source_plan_file": "wrapper_autoclean_authorization.md",
+  "created": "2026-04-27",
+  "base_branch": "main",
+  "depends_on_plans": [
+    "prohibit_silent_revert"
+  ],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_build_claude_dispatch_input.md",
+      "priority": "critical",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_apply_cleanup_authorization_gate.md",
+      "priority": "critical",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_codex_restore_in_scope_authorization.md",
+      "priority": "high",
+      "depends_on": [
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_schema_fail_short_circuit.md",
+      "priority": "critical",
+      "depends_on": [
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_runlog_events_and_ast_audit.md",
+      "priority": "high",
+      "depends_on": [
+        "002",
+        "003"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "TASK-006_orchestrator_resume_protocol.md",
+      "priority": "high",
+      "depends_on": [
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "TASK-007_end_to_end_tests.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002",
+        "003",
+        "004",
+        "005",
+        "006"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

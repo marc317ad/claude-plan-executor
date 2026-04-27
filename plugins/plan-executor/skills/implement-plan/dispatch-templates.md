@@ -63,7 +63,8 @@ Payload skeleton (`<payload.json>`, conforming to `plugins/plan-executor/scripts
     "parent_span_id": null,
     "depth": 0,
     "call_chain": ["orchestrator"]
-  }
+  },
+  "declared_files_changed": ["<comma-separated files from task.files>"]
 }
 ```
 
@@ -472,7 +473,8 @@ Payload skeleton (`<payload.json>`, conforming to `plugins/plan-executor/scripts
     "parent_span_id": null,
     "depth": 0,
     "call_chain": ["orchestrator"]
-  }
+  },
+  "declared_files_changed": ["<comma-separated files from task.files>"]
 }
 ```
 

@@ -301,6 +301,11 @@ ALLOWED_LOG_EVENTS = {
     "claude_dispatch_start",
     "claude_dispatch_done",
     "claude_dispatch_failed",
+    # TASK-004 (prohibit_silent_revert extension). Emitted by wrapper scripts
+    # and hoisted by the orchestrator when out-of-declaration writes are
+    # either reverted (executed) or preserved due to blocked authorization.
+    "wrapper_autoclean_executed",
+    "wrapper_autoclean_blocked",
 }
 # Accepted values for `finalize-execution-log --outcome`. `paused` is added
 # per TASK-014A for the D.2a.5 awaiting-user pause — the run halted mid-flight
@@ -6189,6 +6194,7 @@ def cmd_claude_envelope_extract(args: argparse.Namespace) -> None:
         "scope_violation": scope_violation,
         "scope_misreport": scope_misreport,
         "error": error,
+        "extra": env.get("extra"),
     })
 
 
@@ -10158,12 +10164,72 @@ def _check_principle_referenced() -> dict:
                 phase_section_hits.setdefault(key, []).append(idx)
 
     distinct_phase_sections = len(phase_section_hits)
+
+    # TASK-009 (prohibit_silent_revert): the principle is also propagated
+    # into the dispatch-templates, plan-implementer agent spec, and the
+    # DUAL_AGENT_PLAN_EXECUTOR design doc so subagents and architectural
+    # readers internalize it. Verify the literal appears at least once
+    # in each propagation target. Repo-relative paths so tooling renders
+    # stable locations.
+    propagation_targets = {
+        "dispatch-templates": (
+            _SCRIPT_DIR.parent / "skills" / "implement-plan"
+            / "dispatch-templates.md"
+        ),
+        "plan-implementer": (
+            _SCRIPT_DIR.parent / "agents" / "plan-implementer.md"
+        ),
+        "design-doc": (
+            _SCRIPT_DIR.parent.parent.parent / "docs" / "plans"
+            / "DUAL_AGENT_PLAN_EXECUTOR.md"
+        ),
+    }
+    propagation_hits: dict[str, list[int]] = {}
+    propagation_problems: list[tuple[str, str, str | None]] = []
+    for target_name, target_path in propagation_targets.items():
+        target_rel = _audit_relpath(target_path)
+        if not target_path.is_file():
+            propagation_problems.append((
+                target_name,
+                f"propagation target {target_name!r} not found at {target_rel}",
+                target_rel,
+            ))
+            propagation_hits[target_name] = []
+            continue
+        try:
+            target_text = target_path.read_text(encoding="utf-8")
+        except OSError as e:
+            propagation_problems.append((
+                target_name,
+                f"propagation target {target_name!r} unreadable: {e}",
+                target_rel,
+            ))
+            propagation_hits[target_name] = []
+            continue
+        target_hits = [
+            i for i, ln in enumerate(target_text.splitlines(), 1)
+            if literal in ln
+        ]
+        propagation_hits[target_name] = target_hits
+        if not target_hits:
+            propagation_problems.append((
+                target_name,
+                (
+                    f"literal {literal!r} not found in propagation target "
+                    f"{target_name!r} ({target_rel})"
+                ),
+                target_rel,
+            ))
+
     actual_payload = {
         "source": owning_path,
         "value": {
             "rules_hits": rules_hits,
             "phase_sections_with_ref": sorted(phase_section_hits.keys()),
             "distinct_phase_section_count": distinct_phase_sections,
+            "propagation_hits": {
+                k: v for k, v in propagation_hits.items()
+            },
         },
     }
     problems: list[str] = []
@@ -10181,6 +10247,11 @@ def _check_principle_referenced() -> dict:
         )
         problems.append(msg)
         locations.append({"path": owning_path, "line": None, "reason": msg})
+    for _name, msg, loc_path in propagation_problems:
+        problems.append(msg)
+        locations.append({
+            "path": loc_path or owning_path, "line": None, "reason": msg,
+        })
     if problems:
         return _audit_finding(
             check="principle_referenced",
@@ -10193,6 +10264,233 @@ def _check_principle_referenced() -> dict:
         )
     return _audit_finding(
         check="principle_referenced",
+        status="pass",
+        tier="default",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+    )
+
+
+def _check_wrapper_restore_authorization_source() -> dict:
+    """Wrapper scripts (plan_claude_dispatch.py and plan_codex_dispatch.py) must
+    gate every `git restore` call with a member of the authorized enum.
+
+    TASK-004 (prohibit_silent_revert extension): mirrors the orchestrator-
+    side audit check but for the wrapper layer. Closes the gap where
+    wrapper-internal cleanup could silently destroy work.
+    """
+    targets = {
+        "plan_claude_dispatch.py": _SCRIPT_DIR / "plan_claude_dispatch.py",
+        "plan_codex_dispatch.py": _SCRIPT_DIR / "plan_codex_dispatch.py",
+        "_claude_dispatch_cleanup.py": _SCRIPT_DIR / "_claude_dispatch_cleanup.py",
+    }
+    canonical_payload = {
+        "source": (
+            "Every _git(['restore', ...]) call in wrapper scripts must pass "
+            "authorization_source"
+        ),
+        "value": ["wrapper_internal_cleanup_explicit_declaration", "wrapper_observe_only_blocked_by_status"],
+    }
+    
+    problems: list[str] = []
+    actual_values: dict[str, list[str]] = {}
+
+    auth_pattern = re.compile(r"authorization_source\s*=\s*([\"'][A-Za-z0-9._-]+[\"'])")
+
+    for name, path in targets.items():
+        if not path.is_file():
+            # advisory if optional file is missing, default if core
+            problems.append(f"wrapper script not found: {name}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            problems.append(f"cannot read {name}: {e}")
+            continue
+
+        found_auths = auth_pattern.findall(text)
+        actual_values[name] = sorted({v.strip("'\"") for v in found_auths})
+        
+        # Verify definitions are gated.
+        if name == "_claude_dispatch_cleanup.py":
+            if "def _restore_path" in text and "authorization_source" not in text.split("def _restore_path")[1].split(") ->")[0]:
+                problems.append(f"{name}: _restore_path definition is missing authorization_source gate")
+        if name == "plan_codex_dispatch.py":
+            if "def _restore_in_scope" in text and "authorization_source" not in text.split("def _restore_in_scope")[1].split(") ->")[0]:
+                problems.append(f"{name}: _restore_in_scope definition is missing authorization_source gate")
+
+    if problems:
+        return _audit_finding(
+            check="wrapper_restore_authorization",
+            status="fail",
+            canonical=canonical_payload,
+            actual={"source": "wrapper scripts", "values": actual_values},
+            reason="; ".join(problems),
+        )
+    return _audit_finding(
+        check="wrapper_restore_authorization",
+        status="pass",
+        canonical=canonical_payload,
+        actual={"source": "wrapper scripts", "values": actual_values},
+        reason=None,
+    )
+
+
+def _check_fail_task_authorization_source() -> dict:
+    """Every `--authorization-source <value>` token referenced in SKILL.md
+    must resolve to a member of `ALLOWED_FAIL_AUTHORIZATION_SOURCES`, and
+    every literal `fail-task` shell invocation in a fenced code block must
+    carry an `--authorization-source` flag.
+
+    TASK-009 (prohibit_silent_revert): closes the regression vector where a
+    future contributor adds a `fail-task` call site without consciously
+    declaring which authorized path is sanctioning the destructive
+    side-effect. The argparse `choices=` constraint enforces this on the
+    CLI; this audit check enforces it on the docs that operators read.
+    """
+    skill_path = (
+        _SCRIPT_DIR.parent / "skills" / "implement-plan" / "SKILL.md"
+    )
+    canonical_payload = {
+        "source": (
+            "ALLOWED_FAIL_AUTHORIZATION_SOURCES + every fenced `fail-task` "
+            "invocation in SKILL.md must declare --authorization-source"
+        ),
+        "value": sorted(ALLOWED_FAIL_AUTHORIZATION_SOURCES),
+    }
+    owning_path = _audit_relpath(skill_path)
+    if not skill_path.is_file():
+        return _audit_finding(
+            check="fail_task_authorization_source",
+            status="fail",
+            tier="default",
+            canonical=canonical_payload,
+            actual={"source": str(skill_path), "value": None},
+            reason=f"SKILL.md not found: {skill_path}",
+            locations=[{
+                "path": owning_path, "line": None,
+                "reason": f"SKILL.md not found: {skill_path}",
+            }],
+        )
+    try:
+        text = skill_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return _audit_finding(
+            check="fail_task_authorization_source",
+            status="fail",
+            tier="default",
+            canonical=canonical_payload,
+            actual={"source": str(skill_path), "value": None},
+            reason=f"SKILL.md unreadable: {e}",
+            locations=[{
+                "path": owning_path, "line": None,
+                "reason": f"SKILL.md unreadable: {e}",
+            }],
+        )
+    lines = text.splitlines()
+    auth_pattern = re.compile(r"--authorization-source\s+([A-Za-z0-9._-]+)")
+    observed_values: list[tuple[int, str]] = []
+    for idx, line in enumerate(lines, 1):
+        for match in auth_pattern.finditer(line):
+            observed_values.append((idx, match.group(1)))
+
+    # Detect fenced fail-task invocations missing --authorization-source.
+    # Walk fenced code blocks (``` ... ```), collect their inner content
+    # joined by newlines, then look for `fail-task` shell invocations
+    # that lack `--authorization-source`. Multi-line backslash-continued
+    # invocations are joined into a single logical line first.
+    in_fence = False
+    fence_start_line = 0
+    fence_lines: list[tuple[int, str]] = []
+    invocations_missing: list[tuple[int, str]] = []
+    for idx, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_fence:
+                # Close fence; process fence_lines for fail-task
+                # invocations. Join continuation lines (trailing backslash)
+                # to reconstruct logical commands.
+                logical: list[tuple[int, str]] = []
+                buf = ""
+                buf_line = 0
+                for fl_idx, fl in fence_lines:
+                    if not buf:
+                        buf_line = fl_idx
+                    if fl.rstrip().endswith("\\"):
+                        buf += fl.rstrip()[:-1] + " "
+                    else:
+                        buf += fl
+                        logical.append((buf_line, buf))
+                        buf = ""
+                if buf:
+                    logical.append((buf_line, buf))
+                for ln, cmd in logical:
+                    if re.search(r"\bplan_ops\.py\b\s+fail-task\b", cmd) and \
+                            "--authorization-source" not in cmd:
+                        invocations_missing.append((ln, cmd.strip()[:200]))
+                in_fence = False
+                fence_lines = []
+            else:
+                in_fence = True
+                fence_start_line = idx
+                fence_lines = []
+            continue
+        if in_fence:
+            fence_lines.append((idx, line))
+
+    actual_payload = {
+        "source": owning_path,
+        "value": {
+            "observed_authorization_values": sorted({v for _, v in observed_values}),
+            "occurrence_count": len(observed_values),
+            "fenced_fail_task_missing_auth": [
+                {"line": ln, "snippet": snip}
+                for ln, snip in invocations_missing
+            ],
+        },
+    }
+    problems: list[str] = []
+    locations: list[dict] = []
+    for ln, value in observed_values:
+        if value not in ALLOWED_FAIL_AUTHORIZATION_SOURCES:
+            msg = (
+                f"--authorization-source {value!r} at line {ln} not in "
+                f"ALLOWED_FAIL_AUTHORIZATION_SOURCES"
+            )
+            problems.append(msg)
+            locations.append({"path": owning_path, "line": ln, "reason": msg})
+    for ln, snip in invocations_missing:
+        msg = (
+            f"fenced `fail-task` invocation at line {ln} missing "
+            f"--authorization-source flag: {snip!r}"
+        )
+        problems.append(msg)
+        locations.append({"path": owning_path, "line": ln, "reason": msg})
+    if not observed_values and not invocations_missing:
+        # No --authorization-source mentions and no fenced fail-task
+        # invocations: SKILL.md no longer documents the destructive seam.
+        # That is a drift signal — the principle relies on this surface
+        # being documented.
+        msg = (
+            "SKILL.md contains no --authorization-source mentions; the "
+            "principle relies on these call-site declarations being "
+            "documented for operators"
+        )
+        problems.append(msg)
+        locations.append({"path": owning_path, "line": None, "reason": msg})
+    if problems:
+        return _audit_finding(
+            check="fail_task_authorization_source",
+            status="fail",
+            tier="default",
+            canonical=canonical_payload,
+            actual=actual_payload,
+            reason="; ".join(problems),
+            locations=locations,
+        )
+    return _audit_finding(
+        check="fail_task_authorization_source",
         status="pass",
         tier="default",
         canonical=canonical_payload,
@@ -10216,6 +10514,8 @@ AUDIT_CHECKS: tuple[tuple[str, object, str], ...] = (
     ("global_lock_paths", _check_global_lock_paths, "default"),
     ("canonical_fixture_not_archived", _check_canonical_fixture_not_archived, "default"),
     ("principle_referenced", _check_principle_referenced, "default"),
+    ("fail_task_authorization_source", _check_fail_task_authorization_source, "default"),
+    ("wrapper_restore_authorization", _check_wrapper_restore_authorization_source, "default"),
 )
 AUDIT_CHECK_NAMES: tuple[str, ...] = tuple(name for name, _, _ in AUDIT_CHECKS)
 AUDIT_CHECK_TIERS: dict[str, str] = {name: tier for name, _, tier in AUDIT_CHECKS}

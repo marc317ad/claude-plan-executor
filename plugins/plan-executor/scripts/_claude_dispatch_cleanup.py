@@ -404,6 +404,8 @@ def _restore_path(
     repo_root: str,
     rel: str,
     baseline: Mapping[str, Any],
+    *,
+    authorization_source: str,
 ) -> str:
     """Restore ``rel`` to its baseline state. Returns one of:
 
@@ -423,6 +425,27 @@ def _restore_path(
       3. Tracked at HEAD but clean at baseline → ``git restore --source=HEAD``.
       4. Otherwise → newly-created out-of-scope file → delete.
     """
+    # Gated restore (TASK-002 prohibit_silent_revert extension).
+    _ALLOWED = {
+        "wrapper_internal_cleanup_explicit_declaration",
+        "wrapper_observe_only_blocked_by_status",
+    }
+    if authorization_source not in _ALLOWED:
+        raise RuntimeError(
+            f"Unauthorized wrapper restore attempt for {rel!r}. "
+            f"Expected authorization_source in {sorted(_ALLOWED)}, "
+            f"got {authorization_source!r}."
+        )
+
+    if authorization_source == "wrapper_observe_only_blocked_by_status":
+        # Observe-only mode (TASK-003): caller wants to detect scope
+        # violations but NOT mutate the working tree. Return "failed"
+        # sentinel so the path lands in failed_paths (silently suppressed
+        # by the caller's blocked-cleanup routing, but visible in audit).
+        # Wait, return "restored_bytes" / "deleted" would be lying.
+        # I'll return a new outcome "preserved_blocked".
+        return "preserved_blocked"
+
     full = Path(repo_root) / rel
     in_tracked_blobs = rel in baseline.get("tracked_blobs", {})
     in_untracked_blobs = rel in baseline.get("untracked_blobs", {})
@@ -501,6 +524,8 @@ def apply_cleanup(
     baseline: Mapping[str, Any],
     declared_files_changed: Iterable[str],
     repo_root: str,
+    *,
+    authorization_source: str,
 ) -> dict:
     """Compute the post-dispatch delta vs ``baseline`` and revert any
     paths in ``(observed_delta − declared_files_changed − protected)``.
@@ -666,12 +691,20 @@ def apply_cleanup(
         if rel in declared:
             continue
         # Out of scope and not protected → revert.
-        outcome = _restore_path(repo_resolved, rel, baseline)
+        outcome = _restore_path(
+            repo_resolved, rel, baseline,
+            authorization_source=authorization_source,
+        )
         out_of_scope.append(rel)
         if outcome in ("restored_bytes", "restored_head"):
             restored.append(rel)
         elif outcome == "deleted":
             deleted.append(rel)
+        elif outcome == "preserved_blocked":
+            # Task-003: record that the path was detected as out-of-scope
+            # but preserved due to authorization block. We don't append
+            # to restored/deleted/failed.
+            pass
         elif outcome == "failed":
             # Per-file OSError caught inside _restore_path. Surface the
             # path to the caller so the wrapper can emit

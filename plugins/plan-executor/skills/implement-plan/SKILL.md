@@ -71,7 +71,7 @@ Never write inline Python for plan operations. Never `git stash` inside this ski
 
 ## Dispatch error handling (Claude wrapper)
 
-Every Claude-wrapper dispatch (`plan_claude_dispatch.py run` for `plan-analyst` / `plan-implementer` / `plan-remediator`) is invoke → extract → route. Wrap with `claude_dispatch_start` before, `claude_dispatch_done` on `status==ok`, `claude_dispatch_failed` on any non-`ok` status. Pipe the envelope through `$PYTHON plan_ops.py claude-envelope-extract --stdin --agent <plan-analyst|plan-implementer|plan-remediator> --json` to normalize to `{status, outcome, result, scope_violation, scope_misreport, error}`. **Universal invariant:** `status != ok` ⟹ `commit-task` is forbidden for this task. Status routing: `scope_violation` → Awaiting-user pause (`stage:"post_<site>_implement"`); `cleanup_failure` → halt `run_end reason=wrapper_cleanup_failed`; every other non-`ok` value (`schema_invalid | timeout | denied | backend_error | budget_exhausted | depth_exceeded | manifest_invalid | input_invalid`) collapses to `outcome="malformed"` (analyst → halt `analyst_invalid`; implementer/remediator → Phase C). Full status mapping + per-site stage labels in `docs/plans/SKILL_bash_dispatch_migration/run-log-events.md`.
+Every Claude-wrapper dispatch (`plan_claude_dispatch.py run` for `plan-analyst` / `plan-implementer` / `plan-remediator`) is invoke → extract → route. Wrap with `claude_dispatch_start` before, `claude_dispatch_done` on `status==ok`, `claude_dispatch_failed` on any non-`ok` status. Pipe the envelope through `$PYTHON plan_ops.py claude-envelope-extract --stdin --agent <plan-analyst|plan-implementer|plan-remediator> --json` to normalize to `{status, outcome, result, scope_violation, scope_misreport, error}`. **Universal invariant:** `status != ok` ⟹ `commit-task` is forbidden for this task. Status routing: `scope_violation` (with `wrapper_autoclean_blocked: true`) → Awaiting-user pause (`stage:"post_<site>_implement_wrapper_blocked"`); `scope_violation` (autoclean executed) → Awaiting-user pause (`stage:"post_<site>_implement"`); `cleanup_failure` → halt `run_end reason=wrapper_cleanup_failed`; every other non-`ok` value (`schema_invalid | timeout | denied | backend_error | budget_exhausted | depth_exceeded | manifest_invalid | input_invalid`) collapses to `outcome="malformed"` (analyst → halt `analyst_invalid`; implementer/remediator → Phase C). Full status mapping + per-site stage labels in `docs/plans/SKILL_bash_dispatch_migration/run-log-events.md`.
 
 ## plan_ops.py CLI reference
 
@@ -499,7 +499,7 @@ Empty batch + non-empty ready → halt "scheduler stuck". Empty batch + empty re
 Dispatch all batch tasks in a **single message** — Claude via Agent, Codex via Bash:
 
 - Log `implement_start {task_id, agent, model?, batch_index}` per task (chain into the dispatch via `&&` when convenient). Include `plan_file: "<child-basename>"` for the task so the run-log records which child file the implementer's commit will land in.
-- **Claude tasks** → `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload.json>` with `payload.agent="plan-implementer"`, `payload.variant="default"`, and `payload.payload` carrying `{plan_path, repo_root, task_id, target_task_id?, analyst_annotations, starting_sha}`. The wrapper renders the **Phase B** template from `dispatch-templates.md` and returns the v3 envelope (see §Dispatch error handling (Claude wrapper) for shape). Migrated from `Agent(subagent_type: "plan-implementer", ...)` per TASK-004.
+- **Claude tasks** → `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload.json>` with `payload.agent="plan-implementer"`, `payload.variant="default"`, and `payload.payload` carrying `{plan_path, repo_root, task_id, target_task_id?, analyst_annotations, starting_sha}`, and top-level `payload.declared_files_changed` carrying the normalized `task.files` list. The wrapper renders the **Phase B** template from `dispatch-templates.md` and returns the v3 envelope (see §Dispatch error handling (Claude wrapper) for shape). Migrated from `Agent(subagent_type: "plan-implementer", ...)` per TASK-004.
 - **Codex tasks** → Wrapper computes the timeout default from `len(task["files"])` per the formula in §Bash-call idioms; pass `--timeout N` to override.
   `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement --plan-file <abs> --task-id NNN --repo-root <abs>`.
 
@@ -832,6 +832,8 @@ run_start
 schedule_written
 v_check_failed
 v_check_passed
+wrapper_autoclean_blocked
+wrapper_autoclean_executed
 ```
 
 Use `--fields-json '{...}'` (NOT `--payload`) to attach the event payload.

@@ -684,20 +684,61 @@ def cmd_run(args: argparse.Namespace) -> int:
     # top-level ``declared_files_changed`` (populated by the orchestrator),
     # NOT from the agent's self-reported ``result.files_changed``. A
     # malicious or buggy agent could otherwise lie in its envelope to
-    # extend its own authorization. Omitted field defaults to []
-    # (deny-by-default for read-only agents like plan-analyst).
+    # extend its own authorization.
     declared_raw = input_obj.get("declared_files_changed")
     if isinstance(declared_raw, list):
         declared = [s for s in declared_raw if isinstance(s, str)]
     else:
+        # Schema validation (Step 2) ensures this field is present as an
+        # array. This fallback is defensive.
         declared = []
+
+    # TASK-003 prohibit_silent_revert extension: if the backend failed to
+    # produce a schema-valid result (malformed_output or schema_invalid),
+    # and we have an observed diff, DO NOT execute silent cleanup.
+    # Preserve the tree and surface the violation so the orchestrator can
+    # route to the Awaiting-User pause.
+    _CLEANUP_BLOCKED_STATUS = {"timeout", "backend_error", "schema_invalid"}
+    auth_source = "wrapper_internal_cleanup_explicit_declaration"
+    if envelope["status"] in _CLEANUP_BLOCKED_STATUS:
+        auth_source = "wrapper_observe_only_blocked_by_status"
+
     # Agent's self-reported files_changed is parsed for informational /
     # diff-metadata purposes only; never used as cleanup authority.
     _observed = _extract_observed_files_changed(envelope)  # noqa: F841
-    cleanup_result = cleanup.apply_cleanup(baseline, declared, repo_root)
+    cleanup_result = cleanup.apply_cleanup(
+        baseline, declared, repo_root,
+        authorization_source=auth_source,
+    )
 
-    # Fold cleanup flags into the envelope's scope.
+    # fold cleanup flags into the envelope's scope.
     envelope = _merge_scope_with_cleanup(envelope, cleanup_result)
+
+    # TASK-004: Emit wrapper-level autoclean events for the run log.
+    # These land in the envelope's ``extra.wrapper_events`` and are hoisted
+    # by the orchestrator.
+    wrapper_events = []
+    if auth_source == "wrapper_observe_only_blocked_by_status" and cleanup_result.get("scope_violation_detected"):
+        extra = envelope.setdefault("extra", {})
+        if isinstance(extra, dict):
+            extra["wrapper_autoclean_blocked"] = True
+            extra["preserved_files"] = cleanup_result.get("out_of_scope_paths", [])
+            wrapper_events.append({
+                "event": "wrapper_autoclean_blocked",
+                "reason": "backend_status_untrusted",
+                "preserved_files": extra["preserved_files"],
+            })
+    elif cleanup_result.get("restored") or cleanup_result.get("deleted"):
+        wrapper_events.append({
+            "event": "wrapper_autoclean_executed",
+            "restored": cleanup_result.get("restored", []),
+            "deleted": cleanup_result.get("deleted", []),
+            "authorization_source": auth_source,
+        })
+    if wrapper_events:
+        extra = envelope.setdefault("extra", {})
+        if isinstance(extra, dict):
+            extra["wrapper_events"] = wrapper_events
 
     # If the inner result was schema-invalid OR cleanup detected a
     # scope violation, demote the wrapper status accordingly. ``ok`` →
