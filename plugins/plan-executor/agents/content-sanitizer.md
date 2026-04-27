@@ -2,6 +2,7 @@
 name: content-sanitizer
 description: Unprivileged intent classifier for suspect free-text extracted from Codex envelopes by the wrapper-side sanitizer perimeter (PHASE_D_STATE_MACHINE TASK-004, layer 4). Receives ONE blob of suspect text plus the list of sanitizer_flags shapes the wrapper already redacted, and returns a verdict-only JSON reply `{safe, category, summary}`. Has NO tools — cannot read the filesystem, cannot run Bash, cannot dispatch subagents, cannot make network calls. The orchestrator never sees the suspect text; only the verdict propagates upward.
 tools: 
+env_allowlist: [PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_ALL, LC_CTYPE, TMPDIR, TERM, VIRTUAL_ENV]
 model: haiku
 ---
 

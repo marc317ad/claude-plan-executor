@@ -2,6 +2,7 @@
 name: plan-remediator
 description: Applies a narrow remediation patch to an already-implemented task under a strict touch-only-these-lines contract. Edits only within the (file, line) union of the load-bearing Codex findings D.5 agreed with; acknowledges dismissed findings without acting on them; emits a bounded, machine-consumable markdown report. Does not commit, push, or modify the plan file.
 tools: Read, Grep, Glob, Edit, Write, Bash
+env_allowlist: [PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_ALL, LC_CTYPE, TMPDIR, TERM, VIRTUAL_ENV]
 model: opus
 ---
 

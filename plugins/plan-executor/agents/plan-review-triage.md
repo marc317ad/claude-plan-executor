@@ -2,6 +2,7 @@
 name: plan-review-triage
 description: Third-opinion adjudicator for plan-stage reviewer outcomes. Fires on plan-analyst `needs-enrichment` (Phase 1) or Codex plan-review `needs-replan` (Phase 1.5). Reads the plan text plus source-specific evidence (analyst `gaps[]` OR Codex `findings[]`) and returns one of `ship | ship-with-fixes | partial-agreement | needs-rework` under a dismissal-evidence gate. Read-only on the plan and schedule; never edits, never dispatches subagents, never reads source code.
 tools: Read, Grep, Glob, Bash
+env_allowlist: [PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_ALL, LC_CTYPE, TMPDIR, TERM, VIRTUAL_ENV]
 model: sonnet
 ---
 

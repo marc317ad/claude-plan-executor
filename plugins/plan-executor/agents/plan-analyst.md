@@ -2,6 +2,7 @@
 name: plan-analyst
 description: Per-child task classifier (default). Reads one decomposed child plan file and classifies its single task as claude or codex, emitting a minimal JSON `{agent, classification_reason}` reply. Legacy whole-plan mode is retained for direct CLI callers (see §Legacy mode below).
 tools: Read, Grep, Glob, Bash
+env_allowlist: [PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_ALL, LC_CTYPE, TMPDIR, TERM, VIRTUAL_ENV]
 model: sonnet
 ---
 

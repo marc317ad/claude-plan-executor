@@ -2,6 +2,7 @@
 name: plan-reviewer
 description: Pre-dispatch independent reviewer for the Phase 1.5-Claude path (`claude_only=true`). Reads a persisted schedule JSON and decides `approved | approved-with-notes | needs-replan`. Same output contract as the Codex `plan-review` wrapper (codex_plan_review_schema.json) so the verdict-routing ladder, `--codex-plan-review-binding` mutex, and the `--allow-gaps` demotion all consume the parsed verdict identically across reviewer mechanisms. Read-only on the plan and schedule; never edits, never dispatches subagents, never reads source code.
 tools: Read, Grep, Glob, Bash
+env_allowlist: [PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_ALL, LC_CTYPE, TMPDIR, TERM, VIRTUAL_ENV]
 model: sonnet
 ---
 

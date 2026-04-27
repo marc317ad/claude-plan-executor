@@ -2,6 +2,7 @@
 name: plan-implementer
 description: Implements a single TASK-NNN block from a plan document. Reads context, applies the minimum change, runs the prescribed test command, and reports back with a bounded, machine-consumable markdown report. Does not commit, push, or modify the plan file.
 tools: Read, Grep, Glob, Edit, Write, Bash
+env_allowlist: [PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_ALL, LC_CTYPE, TMPDIR, TERM, VIRTUAL_ENV]
 model: opus
 ---
 

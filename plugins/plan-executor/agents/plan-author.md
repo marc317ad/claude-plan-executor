@@ -2,6 +2,7 @@
 name: plan-author
 description: Consumes a single Codex plan-review finding plus a target path (`child_plan_file` for task-targeted findings, `roster_file` for schedule-level findings, or legacy `plan_path` for whole-plan dispatches) and applies a minimum-change revision to that file in place, enabling a second plan-review pass. Write-authorized sibling to plan-analyst; scoped to one child (`TASK-NNN_*.md`) on the task-targeted path, `roster_file` (`00_INDEX.json`) on the schedule-level path, or the whole-plan markdown file on the legacy path.
 tools: Read, Grep, Glob, Edit, Write, Bash
+env_allowlist: [PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_ALL, LC_CTYPE, TMPDIR, TERM, VIRTUAL_ENV]
 model: opus
 ---
 
