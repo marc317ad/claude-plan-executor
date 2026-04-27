@@ -14695,6 +14695,16 @@ class TestPlanPathsNormalizeFilesEntry:
             ("scripts/foo.py:10–20", "scripts/foo.py"),
             # `:N` single-line reference.
             ("scripts/foo.py:42", "scripts/foo.py"),
+            # Trailing parenthetical with a nested call-reference like
+            # `_changed_paths()`. Pre-fix the outer regex's `[^)]+` choked
+            # on the first inner `)` and the rationale tail leaked through,
+            # poisoning `declared_files_changed` (TASK-001 of
+            # wrapper_autoclean_authorization).
+            ("plugins/foo.py (extends X with bar())", "plugins/foo.py"),
+            # Multiple nested `()` groups in the rationale.
+            ("plugins/foo.py (signature() change + bar)", "plugins/foo.py"),
+            # Plain rationale parenthetical — backward-compat sanity check.
+            ("plugins/foo.py (rationale)", "plugins/foo.py"),
         ],
     )
     def test_normalize_files_entry_canonical(

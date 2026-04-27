@@ -151,7 +151,7 @@ def normalize_files_entry(raw: str) -> str:
     # must be removed as a unit, otherwise the dash-split truncates the
     # entry mid-parenthetical and the trailing-paren strip no longer sees
     # a closing `)` to anchor on.
-    cleaned = re.sub(r"\s*\([^)]+\)\s*$", "", cleaned).strip()
+    cleaned = re.sub(r"\s*\([^)]*(?:\([^)]*\)[^)]*)*\)\s*$", "", cleaned).strip()
     # Prefer leading backtick-quoted path so descriptive prose after
     # the path (e.g., "`foo.py` -- description") doesn't weld to the
     # path and break commit-safe.
