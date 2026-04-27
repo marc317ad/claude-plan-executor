@@ -239,8 +239,21 @@ def _resolve_prompt(payload: Mapping[str, Any]) -> str:
       * ``payload["prompt"]`` — explicit string from the caller;
       * ``payload["instructions"]`` — fall-back wording used by the
         plan-executor's existing fixtures;
+      * structured plan-implementer dispatch shape (``task_id`` +
+        ``plan_path``) — render a directive prose mirroring the Phase B
+        template body so the agent recognizes it as an implementation
+        directive rather than receiving raw JSON;
       * else the JSON dump of ``payload`` (the nested session can still
         parse the structured form).
+
+    The structured-payload branch exists because the canonical wrapper
+    input builder (``plan_ops.py build-claude-dispatch-input``, added in
+    TASK-001 of wrapper_autoclean_authorization, commit c776d4c) emits a
+    payload of ``{plan_path, task_id, repo_root, starting_sha, ...}``
+    without an explicit ``prompt``/``instructions`` field. Without this
+    fallback the implementer agent receives raw JSON and emits
+    clarifying prose ("which CLI surface did you mean?") instead of
+    implementing the task.
     """
     if not isinstance(payload, Mapping):
         return json.dumps(payload, default=str)
@@ -248,6 +261,33 @@ def _resolve_prompt(payload: Mapping[str, Any]) -> str:
         v = payload.get(key)
         if isinstance(v, str) and v:
             return v
+    # Structured-payload fallback for plan-implementer dispatches.
+    task_id = payload.get("task_id")
+    plan_path = payload.get("plan_path")
+    if (
+        isinstance(task_id, str)
+        and task_id
+        and isinstance(plan_path, str)
+        and plan_path
+    ):
+        lines = [
+            f"Implement TASK-{task_id} from the plan at `{plan_path}` per your plan-implementer agent specification.",
+            "",
+            (
+                "Read the plan to find the `## Context` section and the verbatim "
+                "`### TASK-NNN: <title>` block (with Status / Priority / Files / "
+                "Test command / Acceptance criteria / Description / Reversion "
+                "guidance). Apply the minimum change satisfying the AC, run the "
+                "test command, and return your structured JSON report. Do not "
+                "commit, do not modify the plan file, do not use `git stash`."
+            ),
+            "",
+            "Structured dispatch payload (verbatim, for reference):",
+            "```json",
+            json.dumps(payload, indent=2, default=str),
+            "```",
+        ]
+        return "\n".join(lines)
     return json.dumps(payload, default=str)
 
 

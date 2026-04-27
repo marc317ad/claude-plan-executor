@@ -906,3 +906,63 @@ def test_real_claude_smoke(tmp_path: Path, output_schema: dict) -> None:
     # error condition — but the envelope must always be schema-valid.
     _validate(envelope, output_schema)
     assert envelope["status"] in {"ok", "timeout", "backend_error"}
+
+
+# ---------------------------------------------------------------------------
+# _resolve_prompt unit tests (hand-fix for canonical builder regression)
+# ---------------------------------------------------------------------------
+#
+# The canonical wrapper-input builder (``plan_ops.py
+# build-claude-dispatch-input``, TASK-001 of
+# wrapper_autoclean_authorization, commit c776d4c) emits payloads of
+# the shape ``{plan_path, task_id, repo_root, starting_sha, ...}``
+# without an explicit ``prompt``/``instructions`` field. Before the
+# fix, ``_resolve_prompt`` fell through to ``json.dumps(payload)`` and
+# the plan-implementer agent received raw JSON. These tests pin the
+# priority order: prompt > instructions > structured-fallback >
+# json-dump.
+
+
+def test_resolve_prompt_uses_explicit_prompt_field() -> None:
+    """An explicit ``payload['prompt']`` short-circuits all fallbacks."""
+    assert backend._resolve_prompt({"prompt": "foo"}) == "foo"
+
+
+def test_resolve_prompt_uses_instructions_when_no_prompt() -> None:
+    """``payload['instructions']`` is the second-priority source."""
+    assert backend._resolve_prompt({"instructions": "bar"}) == "bar"
+
+
+def test_resolve_prompt_implementer_directive_when_task_id_and_plan_path() -> None:
+    """Plan-implementer dispatch shape renders a directive prose, not JSON.
+
+    Regression: TASK-001's canonical builder (commit c776d4c) emitted
+    ``{plan_path, task_id, ...}`` without ``prompt``/``instructions``.
+    The fallback must produce a directive that names the task and plan
+    path so the agent recognizes it as an implementation dispatch.
+    """
+    payload = {
+        "task_id": "002",
+        "plan_path": "/abs/plan.md",
+        "repo_root": "/abs",
+    }
+    rendered = backend._resolve_prompt(payload)
+    assert isinstance(rendered, str)
+    assert rendered.startswith("Implement TASK-002 from the plan at")
+    assert "/abs/plan.md" in rendered
+
+
+def test_resolve_prompt_falls_back_to_json_dump_for_analyst_shape() -> None:
+    """Payloads missing ``task_id`` (e.g. analyst dispatches) preserve
+    the original ``json.dumps`` fallback so non-implementer agents are
+    unaffected."""
+    payload = {"plan_path": "/p"}
+    rendered = backend._resolve_prompt(payload)
+    # Must round-trip as JSON — that is the original fallback contract.
+    assert json.loads(rendered) == {"plan_path": "/p"}
+
+
+def test_resolve_prompt_falls_back_for_non_mapping() -> None:
+    """Non-Mapping payloads (e.g. a bare string) produce the JSON-encoded form."""
+    rendered = backend._resolve_prompt("just a string")
+    assert json.loads(rendered) == "just a string"
