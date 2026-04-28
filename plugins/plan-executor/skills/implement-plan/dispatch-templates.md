@@ -446,6 +446,8 @@ Bash command template — the orchestrator builds the canonical wrapper input vi
 
 The top-level `declared_files_changed` is populated from the task's `Files:` list via `_extract_task_files_from_plan` — the same canonical helper `_gate_commit_safe` uses. **Invariant:** every dispatch site MUST be threaded through this builder; do NOT hand-craft the input JSON. The wrapper's input schema makes `declared_files_changed` REQUIRED at the top level — omitting it returns `status: input_invalid` and refuses to spawn the agent.
 
+**Default dispatch timeout (BUG-145).** When `overrides.timeout_sec` is `null` (the default emitted by `build-claude-dispatch-input`) and no `--timeout N` is passed on the wrapper CLI, `plan_claude_dispatch.py` applies `DEFAULT_DISPATCH_TIMEOUT_SEC = 1800s` (30 min) as the resolved effective timeout — superseding the older backend 300s / unwritten 900s fallback that pessimized multi-file implementer tasks. Override per-task via `overrides.timeout_sec` in the input JSON or `--timeout N` on the wrapper invocation when a longer or shorter budget is justified.
+
 Payload skeleton (emitted by `build-claude-dispatch-input --variant default`, conforming to `plugins/plan-executor/scripts/schemas/claude_dispatch_input.json`):
 
 ```json

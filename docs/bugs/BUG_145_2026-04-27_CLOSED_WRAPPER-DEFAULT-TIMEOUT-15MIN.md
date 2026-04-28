@@ -1,6 +1,6 @@
 ---
 bug_id: 145
-status: OPEN
+status: CLOSED
 group: WRAPPER-DEFAULT-TIMEOUT-15MIN
 severity: minor
 source_fix_id: null

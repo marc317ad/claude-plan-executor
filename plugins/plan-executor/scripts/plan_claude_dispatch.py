@@ -113,6 +113,14 @@ EXIT_CODE_OK = 0
 EXIT_CODE_NON_OK = 1
 EXIT_CODE_WRAPPER_FAILURE = 2
 
+#: Default subprocess timeout in seconds applied when neither
+#: ``input.overrides.timeout_sec`` nor the ``--timeout`` CLI flag is
+#: supplied. Bumped from the unwritten 900s backend default to 1800s
+#: (30 min) to accommodate multi-file implementer hops (BUG-145). The
+#: SKILL ``implement-plan`` and ``dispatch-templates.md`` both reference
+#: this value explicitly so the dispatch budget is no longer "unwritten".
+DEFAULT_DISPATCH_TIMEOUT_SEC = 1800
+
 
 # ---------------------------------------------------------------------------
 # I/O helpers
@@ -294,6 +302,11 @@ def _build_effective(
         effective["timeout_sec"] = timeout_sec
     elif cli_timeout is not None and cli_timeout > 0:
         effective["timeout_sec"] = cli_timeout
+    else:
+        # BUG-145: pin a 1800s default at the wrapper rather than letting
+        # the backend's 300s / unwritten 900s default fire on heavy
+        # multi-file tasks. Documented in SKILL.md + dispatch-templates.md.
+        effective["timeout_sec"] = DEFAULT_DISPATCH_TIMEOUT_SEC
 
     tools_disallowed_extra = overrides.get("tools_disallowed_extra")
     if isinstance(tools_disallowed_extra, list):
@@ -980,7 +993,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Subprocess timeout in seconds (overrides input.overrides.timeout_sec "
-            "when set; backend default applies otherwise)."
+            "when set). When neither this flag nor input.overrides.timeout_sec "
+            "is supplied the wrapper applies DEFAULT_DISPATCH_TIMEOUT_SEC "
+            "(1800s; BUG-145)."
         ),
     )
     run.add_argument(
