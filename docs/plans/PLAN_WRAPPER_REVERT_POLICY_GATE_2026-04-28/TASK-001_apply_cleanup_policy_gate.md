@@ -26,7 +26,7 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
 - **Agent:** claude
 - **Files:**
   - `plugins/plan-executor/scripts/_claude_dispatch_cleanup.py` (add keyword-only `unattended_revert_policy` arg to `apply_cleanup`; add the gate; update return-shape docs and `cleanup_strategy` enum)
-  - `tests/scripts/test_claude_dispatch_cleanup.py` (3 new tests: detect-only under `pause`, detect-only under `fail-fast`, salvage-then-revert under `preserve-only` continues to behave as today)
+  - `tests/scripts/test_claude_dispatch_cleanup.py` (5 new tests: detect-only under `pause`, detect-only under `fail-fast`, salvage-then-revert under `preserve-only`, default-None routes to `pause` semantics, unknown-policy raises `ValueError`)
 - **Dependencies:** []
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_claude_dispatch_cleanup.py`
 - **Acceptance criteria:**
