@@ -1,0 +1,106 @@
+{
+  "outcome": "needs-enrichment",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "`apply_cleanup` policy gate in `_claude_dispatch_cleanup.py`",
+      "files": [
+        "`plugins/plan-executor/scripts/_claude_dispatch_cleanup.py` (add keyword-only `unattended_revert_policy` arg to `apply_cleanup`; add the gate; update return-shape docs and `cleanup_strategy` enum)",
+        "`tests/scripts/test_claude_dispatch_cleanup.py` (3 new tests: detect-only under `pause`, detect-only under `fail-fast`, salvage-then-revert under `preserve-only` continues to behave as today)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_claude_dispatch_cleanup.py",
+      "priority": "critical",
+      "plan_file": "TASK-001_apply_cleanup_policy_gate.md",
+      "description": "",
+      "acceptance_criteria": [
+        "`apply_cleanup` signature gains a keyword-only argument `unattended_revert_policy: Optional[str] = None`. When `None`, the function behaves as `pause` (non-destructive). When the value is not in the closed set `{\"pause\", \"fail-fast\", \"preserve-only\"}` the function raises `ValueError` with a message naming the unknown value (parallel to the existing `authorization_source` validation at line 662).",
+        "When `unattended_revert_policy in {\"pause\", \"fail-fast\", None}`: the function MUST detect the out-of-scope set exactly as today (same `observed_delta` math, same protected-skip handling, same misreport logic, same `out_of_scope_paths` population) but MUST NOT call `_restore_path` on any out-of-scope path. `restored=[]`, `deleted=[]`, `failed_paths=[]`. `scope_violation_detected` is computed from `out_of_scope_paths` (unchanged). `cleanup_strategy` is `\"detect_only_revert_policy_pause\"` when policy is `pause` (and `None`-default), `\"detect_only_revert_policy_fail_fast\"` when `fail-fast`.",
+        "When `unattended_revert_policy == \"preserve-only\"`: the function behaves identically to today (existing `_restore_path` loop + `restored`/`deleted`/`failed_paths` population; `cleanup_strategy=\"delta_bounded\"`).",
+        "The return-dict shape grows by ZERO keys; only the values of `restored` / `deleted` / `failed_paths` / `cleanup_strategy` differ across policies. Downstream consumers (`plan_claude_dispatch.py:771\u2013781`, the wrapper-events emission) require no changes.",
+        "Module docstring at `_claude_dispatch_cleanup.py:646\u2013652` is rewritten to reflect the new contract: under `pause`/`fail-fast`, two concurrent callers' writes are NOT mutated; the orchestrator's reconcile-batch is authoritative for cross-task scope partitioning.",
+        "Tests:"
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "002",
+      "title": "Thread `unattended_revert_policy` from orchestrator \u2192 wrapper payload \u2192 `apply_cleanup` for all three wrappers",
+      "files": [
+        "`plugins/plan-executor/scripts/schemas/claude_dispatch_input.json` (add `unattended_revert_policy` as optional top-level field; closed enum `[\"pause\", \"fail-fast\", \"preserve-only\"]`; default unset; description references `--unattended-revert-policy`)",
+        "`plugins/plan-executor/scripts/schemas/codex_dispatch_input.json` (same field, same shape)",
+        "`plugins/plan-executor/scripts/schemas/gemini_dispatch_input.json` (same field, same shape) \u2014 only if this schema file exists; if Gemini wrapper inlines its schema, update the inline version",
+        "`plugins/plan-executor/scripts/plan_claude_dispatch.py` (extract `unattended_revert_policy` from validated input at the same level as `declared_files_changed`; pass it to `cleanup.apply_cleanup` at line 748)",
+        "`plugins/plan-executor/scripts/plan_codex_dispatch.py` (analogous edit; if codex has its own cleanup call, mirror the threading)",
+        "`plugins/plan-executor/scripts/plan_gemini_dispatch.py` (analogous edit; the four `_handle_timeout_cleanup` sites I patched on commit a7be6c5 also feed into this \u2014 verify they propagate the policy)",
+        "`plugins/plan-executor/scripts/plan_ops.py` (the `build-claude-dispatch-input`, `build-codex-dispatch-input`, and `build-gemini-dispatch-input` subcommands populate the field from `$UNATTENDED_REVERT_POLICY` env var, falling back to the value pinned by `cmd_preflight`; if no value is resolvable, omit the field \u2014 let the wrapper default kick in)",
+        "`tests/scripts/test_plan_claude_dispatch_cli.py` (1 new test: end-to-end policy threading \u2014 payload with `unattended_revert_policy=pause` + an out-of-scope write yields a `scope_violation` envelope with the working tree retaining the write)",
+        "`tests/scripts/test_plan_codex_dispatch_cli.py` if extant, or whichever fixture file covers the Codex wrapper CLI (1 analogous test)",
+        "`tests/scripts/test_plan_gemini_dispatch_cli.py` if extant (1 analogous test)",
+        "`tests/scripts/test_plan_ops.py` (1 new test per builder subcommand: emitted JSON's top-level `unattended_revert_policy` matches the env-var input)"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_claude_dispatch_cli.py tests/scripts/test_plan_codex_dispatch_cli.py tests/scripts/test_plan_gemini_dispatch_cli.py tests/scripts/test_plan_ops.py -k \"unattended_revert_policy or revert_policy_gate or RevertPolicy\"",
+      "priority": "critical",
+      "plan_file": "TASK-002_thread_unattended_revert_policy.md",
+      "description": "",
+      "acceptance_criteria": [
+        "All three wrapper-input schema files (or inlined schemas) declare `unattended_revert_policy` as an optional top-level property with the closed enum `{\"pause\", \"fail-fast\", \"preserve-only\"}`. `description` cross-references the orchestrator-level flag.",
+        "All three wrapper scripts read the field from the validated input and pass it to `cleanup.apply_cleanup(...)` (or analogous Codex/Gemini cleanup call) as the `unattended_revert_policy` keyword argument.",
+        "All three `build-*-dispatch-input` subcommands populate the field from `os.environ.get(\"UNATTENDED_REVERT_POLICY\")`. If unset, the field is omitted (wrapper defaults to non-destructive). If set to a value not in the enum, the subcommand exits non-zero with `errors[*].code = \"unattended-revert-policy-invalid\"` (parallel to `cmd_preflight`'s validation at line 4960).",
+        "End-to-end test: `python3 plan_claude_dispatch.py run --input <payload-with-pause-and-an-out-of-scope-write>` returns a `scope_violation` envelope; `git status --porcelain` confirms the out-of-scope file's edit is still on disk; `envelope.extra.wrapper_events` carries an event documenting the policy-gated non-destruction.",
+        "The schema-audit fixture (per TASK-008 of PLAN_GEMINI_INTEGRATION) covers the new field across all three wrapper-input schemas.",
+        "Direct CLI smoke (one per wrapper): a payload with `unattended_revert_policy: \"preserve-only\"` + an out-of-scope write reverts the file (existing destructive behavior is preserved when the operator explicitly opts in)."
+      ],
+      "agent": "claude"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/_claude_dispatch_cleanup.py",
+        "tests/scripts/test_claude_dispatch_cleanup.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_claude_dispatch.py",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/plan_gemini_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/schemas/claude_dispatch_input.json",
+        "plugins/plan-executor/scripts/schemas/codex_dispatch_input.json",
+        "plugins/plan-executor/scripts/schemas/gemini_dispatch_input.json",
+        "tests/scripts/test_plan_claude_dispatch_cli.py",
+        "tests/scripts/test_plan_codex_dispatch_cli.py",
+        "tests/scripts/test_plan_gemini_dispatch_cli.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "task_id": "001",
+      "type": "missing-description",
+      "severity": "soft",
+      "detail": "TASK-001 in TASK-001_apply_cleanup_policy_gate.md has no `**Description:**` section"
+    },
+    {
+      "task_id": "002",
+      "type": "missing-description",
+      "severity": "soft",
+      "detail": "TASK-002 in TASK-002_thread_unattended_revert_policy.md has no `**Description:**` section"
+    }
+  ],
+  "risks": []
+}
