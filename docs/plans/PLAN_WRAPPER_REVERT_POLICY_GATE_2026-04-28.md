@@ -45,7 +45,7 @@ That stated invariant is what this plan overrides. The operator-stated rule is: 
 
 ## Tasks
 
-### TASK-001: `apply_cleanup` policy gate in `_claude_dispatch_cleanup.py`
+## TASK-001: `apply_cleanup` policy gate in `_claude_dispatch_cleanup.py`
 
 - **Status:** pending
 - **Priority:** critical
@@ -68,7 +68,7 @@ That stated invariant is what this plan overrides. The operator-stated rule is: 
     - `test_apply_cleanup_default_policy_is_pause` — call without the policy kwarg; assert non-destructive behavior. Documents the safer-by-default contract.
     - `test_apply_cleanup_unknown_policy_raises_valueerror` — `unattended_revert_policy="yolo"`; assert `ValueError` containing the literal `"yolo"`.
 
-### TASK-002: Thread `unattended_revert_policy` from orchestrator → wrapper payload → `apply_cleanup` for all three wrappers
+## TASK-002: Thread `unattended_revert_policy` from orchestrator → wrapper payload → `apply_cleanup` for all three wrappers
 
 - **Status:** pending
 - **Priority:** critical
@@ -85,7 +85,7 @@ That stated invariant is what this plan overrides. The operator-stated rule is: 
   - `tests/scripts/test_plan_codex_dispatch_cli.py` if extant, or whichever fixture file covers the Codex wrapper CLI (1 analogous test)
   - `tests/scripts/test_plan_gemini_dispatch_cli.py` if extant (1 analogous test)
   - `tests/scripts/test_plan_ops.py` (1 new test per builder subcommand: emitted JSON's top-level `unattended_revert_policy` matches the env-var input)
-- **Dependencies:** ["001"]
+- **Dependencies:** [001]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_claude_dispatch_cli.py tests/scripts/test_plan_codex_dispatch_cli.py tests/scripts/test_plan_gemini_dispatch_cli.py tests/scripts/test_plan_ops.py -k "unattended_revert_policy or revert_policy_gate or RevertPolicy"`
 - **Acceptance criteria:**
   - All three wrapper-input schema files (or inlined schemas) declare `unattended_revert_policy` as an optional top-level property with the closed enum `{"pause", "fail-fast", "preserve-only"}`. `description` cross-references the orchestrator-level flag.

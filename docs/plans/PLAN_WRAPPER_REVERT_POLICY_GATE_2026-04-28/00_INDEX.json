@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "PLAN \u2014 Wrapper Revert-Policy Gate (no destruction without operator authorization)",
+  "source_plan_file": "PLAN_WRAPPER_REVERT_POLICY_GATE_2026-04-28.md",
+  "created": "2026-04-28",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_apply_cleanup_policy_gate.md",
+      "priority": "critical",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_thread_unattended_revert_policy.md",
+      "priority": "critical",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
