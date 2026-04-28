@@ -878,6 +878,7 @@ def cmd_plan_review(args) -> int:
         if result["status"] == "timeout":
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, [], baseline,
+                authorization_source="wrapper_internal_cleanup_explicit_declaration",
             )
             envelope = make_envelope(
                 "plan", "plan-review", "timeout",
@@ -935,6 +936,7 @@ def cmd_plan_review(args) -> int:
         if gemini["exit_code"] != 0:
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, [], baseline,
+                authorization_source="wrapper_internal_cleanup_explicit_declaration",
             )
             envelope = make_envelope(
                 "plan", "plan-review", "failure",
@@ -1088,6 +1090,7 @@ def cmd_review(args) -> int:
         if result["status"] == "timeout":
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, review_files, baseline,
+                authorization_source="wrapper_internal_cleanup_explicit_declaration",
             )
             emit(make_envelope(
                 task["task_id"], "review", "timeout",
@@ -1133,6 +1136,7 @@ def cmd_review(args) -> int:
         if gemini["exit_code"] != 0:
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, review_files, baseline,
+                authorization_source="wrapper_internal_cleanup_explicit_declaration",
             )
             emit(make_envelope(
                 task["task_id"], "review", "failure",
