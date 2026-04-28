@@ -231,29 +231,128 @@ def _resolve_timeout_sec(effective: Mapping[str, Any]) -> int:
     return DEFAULT_TIMEOUT_SEC
 
 
-def _resolve_prompt(payload: Mapping[str, Any]) -> str:
+def _render_phase_a_single_classifier_body(
+    plan_path: str, repo_root: str, payload: Mapping[str, Any]
+) -> str:
+    """Render the Phase A-single ``plan-analyst`` classifier body.
+
+    Mirrors the verbatim body below the ``<!-- TRANSPORT BOUNDARY -->``
+    marker in ``plugins/plan-executor/skills/implement-plan/dispatch-templates.md``
+    (`## Phase A-single` section). The agent spec on its own does NOT
+    pin the per-child contract — the legacy whole-plan contract is also
+    documented there for direct CLI callers — so without this framing
+    the nested plan-analyst can latch onto the wrong shape and either
+    time out (legacy whole-plan rationalization) or implement the task
+    (Opus-shaped over-reach), per BUG-144.
+    """
+    lines = [
+        f"Classify exactly one task from the plan at `{plan_path}`. "
+        f"Repo root: `{repo_root}`.",
+        "",
+        (
+            "Read the child plan file verbatim (it typically carries a "
+            "single `### TASK-NNN:` H3 heading plus the standard "
+            "metadata block — Status, Priority, Files, Dependencies, "
+            "Test command, Acceptance criteria, Description, "
+            "Implementation notes, Reversion guidance — but **may "
+            "carry >1 H3 heading** when several sibling sub-tasks "
+            "share a single child file; in that case the orchestrator "
+            "passes `target_task_id` as a first-class dispatch field "
+            "and the renderer auto-injects an \"Implement specifically "
+            "`### TASK-NNN:`\" first-instruction line). Use the "
+            "`claude` vs `codex` heuristics from your agent spec's "
+            "classification rubric (scope ≤30 lines and ≤3 files plus "
+            "a concrete test command → codex; multi-file coordination, "
+            "async/routing/API contract changes, new module creation, "
+            "priority `critical`, `Test command: none`, or "
+            "underspecified acceptance criteria → claude). Do NOT emit "
+            "a schedule, gaps, risks, or a batch table."
+        ),
+        "",
+        (
+            "You are classifying ONE task — return only the minimal "
+            "JSON below. Do not re-validate structure, do not compute "
+            "batches, do not surface cross-task gaps "
+            "(`compute-schedule` handles DAG + file-disjointness "
+            "downstream)."
+        ),
+        "",
+        "**Output (required fenced `json` block, no prose outside it):**",
+        "",
+        "```json",
+        "{",
+        '  "agent": "claude" | "codex",',
+        '  "classification_reason": "<one-line justification, ≤10 words>"',
+        "}",
+        "```",
+        "",
+        (
+            "Emit nothing else — no markdown report, no `tasks[]`, no "
+            "`batches[]`, no `gaps[]`. Any additional fields or prose "
+            "outside the fenced JSON block will be rejected by the "
+            "orchestrator as a malformed classifier reply."
+        ),
+        "",
+        (
+            "**You do NOT have the Agent tool.** Do all work directly "
+            "with Read, Grep, Glob, Bash."
+        ),
+    ]
+    target_task_id = payload.get("target_task_id") if isinstance(payload, Mapping) else None
+    if isinstance(target_task_id, str) and target_task_id:
+        lines.insert(
+            0,
+            (
+                f"Classify specifically `### TASK-{target_task_id}:` "
+                f"from the child plan file (the file declares >1 H3 "
+                f"`### TASK-NNN:` heading; the `target_task_id` "
+                f"dispatch field disambiguates which one to score)."
+            ),
+        )
+        lines.insert(1, "")
+    return "\n".join(lines)
+
+
+def _resolve_prompt(
+    payload: Mapping[str, Any],
+    *,
+    agent: Optional[str] = None,
+) -> str:
     """Pull the prompt text out of ``payload``.
 
     Conventions (best-effort, in order):
 
-      * ``payload["prompt"]`` — explicit string from the caller;
+      * ``payload["prompt"]`` — explicit string from the caller (the
+        canonical wrapper-input builder ``plan_ops.py
+        build-claude-dispatch-input`` populates this for non-analyst
+        variants since BUG-146 — it inlines the result schema and the
+        canonical implementer/remediator framing directly so the agent
+        always sees the canonical ``{outcome, files_changed, report}``
+        shape);
       * ``payload["instructions"]`` — fall-back wording used by the
         plan-executor's existing fixtures;
+      * ``agent == "plan-analyst"`` with a ``plan_path``/``repo_root``
+        payload — render the Phase A-single classifier body verbatim
+        from ``dispatch-templates.md`` (BUG-144). Without this frame
+        the nested plan-analyst latches onto the documented legacy
+        whole-plan contract or implements the task outright;
       * structured plan-implementer dispatch shape (``task_id`` +
         ``plan_path``) — render a directive prose mirroring the Phase B
-        template body so the agent recognizes it as an implementation
-        directive rather than receiving raw JSON;
+        template body. Largely superseded by the BUG-146 explicit
+        ``payload["prompt"]`` injection, retained as a defense in depth
+        for direct CLI callers who hand-build a payload;
       * else the JSON dump of ``payload`` (the nested session can still
         parse the structured form).
 
-    The structured-payload branch exists because the canonical wrapper
-    input builder (``plan_ops.py build-claude-dispatch-input``, added in
-    TASK-001 of wrapper_autoclean_authorization, commit c776d4c) emits a
-    payload of ``{plan_path, task_id, repo_root, starting_sha, ...}``
-    without an explicit ``prompt``/``instructions`` field. Without this
-    fallback the implementer agent receives raw JSON and emits
-    clarifying prose ("which CLI surface did you mean?") instead of
-    implementing the task.
+    Parameters
+    ----------
+    payload
+        The dispatch envelope's inner payload.
+    agent
+        The dispatch envelope's top-level ``agent`` field. Threaded so
+        the analyst-body branch can fire even when the payload itself
+        carries no agent-discriminator (the analyst payload is
+        deliberately minimal — just ``plan_path`` + ``repo_root``).
     """
     if not isinstance(payload, Mapping):
         return json.dumps(payload, default=str)
@@ -261,9 +360,29 @@ def _resolve_prompt(payload: Mapping[str, Any]) -> str:
         v = payload.get(key)
         if isinstance(v, str) and v:
             return v
+    plan_path = payload.get("plan_path")
+    repo_root = payload.get("repo_root")
+    # BUG-144: Phase A-single plan-analyst classifier body. Fires when
+    # the dispatch envelope's top-level ``agent`` is ``plan-analyst``
+    # and the payload carries the canonical analyst minimal shape
+    # (plan_path + repo_root, no task_id). Without this frame the
+    # nested plan-analyst received a raw JSON dump of the payload,
+    # latched onto the legacy whole-plan contract documented in its
+    # own agent spec, and either timed out at 300s or implemented the
+    # task outright (TASK-006 of the 20260426 dry-run wrote 13 files
+    # before the wrapper's delta-bounded cleanup caught it).
+    if (
+        agent == "plan-analyst"
+        and isinstance(plan_path, str)
+        and plan_path
+        and isinstance(repo_root, str)
+        and repo_root
+    ):
+        return _render_phase_a_single_classifier_body(
+            plan_path, repo_root, payload
+        )
     # Structured-payload fallback for plan-implementer dispatches.
     task_id = payload.get("task_id")
-    plan_path = payload.get("plan_path")
     if (
         isinstance(task_id, str)
         and task_id
@@ -291,6 +410,41 @@ def _resolve_prompt(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, default=str)
 
 
+def _resolve_model(
+    effective: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> Optional[str]:
+    """Return the model alias to thread into ``--model``.
+
+    BUG-144: ``_build_argv`` previously omitted ``--model`` entirely,
+    so the nested ``claude -p`` session inherited the parent CLI's
+    model regardless of what the dispatch envelope or the agent
+    manifest declared. Captured envelope from the 20260426 dry-run:
+    ``payload.overrides.model: "sonnet"`` and ``manifest.model:
+    "sonnet"`` both ignored — the nested session ran on
+    ``claude-opus-4-7[1m]``, doubling cost and broadening the
+    instruction-overriding surface.
+
+    Resolution order (first non-empty wins; ``effective`` mirrors the
+    CLI's payload-level overrides which always wins over manifest):
+
+      * ``effective["model"]`` (from ``payload.overrides.model``);
+      * ``manifest["model"]`` (from the agent frontmatter).
+
+    Returns ``None`` when neither is set, in which case the caller
+    omits ``--model`` and the nested CLI inherits the parent's model
+    selection (today's status-quo).
+    """
+    if isinstance(effective, Mapping):
+        v = effective.get("model")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    if isinstance(manifest, Mapping):
+        v = manifest.get("model")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
 def _build_argv(
     *,
     manifest: Mapping[str, Any],
@@ -304,6 +458,7 @@ def _build_argv(
     permission_mode = _resolve_permission_mode(effective)
     allowed_csv = _allowed_tools_csv(manifest)
     disallowed_csv = _disallowed_tools_csv(effective)
+    model = _resolve_model(effective, manifest)
 
     argv: List[str] = [
         backend_binary,
@@ -314,8 +469,10 @@ def _build_argv(
         "--disallowedTools", disallowed_csv,
         "--add-dir", cwd,
         "--output-format", "json",
-        prompt,
     ]
+    if model:
+        argv.extend(["--model", model])
+    argv.append(prompt)
     return argv
 
 
@@ -418,7 +575,10 @@ def invoke(
     agent_name = manifest.get("name") if isinstance(manifest, Mapping) else None
     model_name = manifest.get("model") if isinstance(manifest, Mapping) else None
     timeout_sec = _resolve_timeout_sec(effective)
-    prompt_text = _resolve_prompt(payload)
+    prompt_text = _resolve_prompt(
+        payload,
+        agent=str(agent_name) if isinstance(agent_name, str) else None,
+    )
 
     argv = _build_argv(
         manifest=manifest,

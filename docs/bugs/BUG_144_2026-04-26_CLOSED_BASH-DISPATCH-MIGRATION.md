@@ -1,6 +1,6 @@
 ---
 bug_id: 144
-status: OPEN
+status: CLOSED
 group: BASH-DISPATCH-MIGRATION
 severity: critical
 source_fix_id: null
@@ -21,7 +21,7 @@ change_history: []
 
 # BUG-144: Claude wrapper never renders dispatch-template body — TASK-003 migration shipped orchestrator-side without the wrapper-side render path, every per-child plan-analyst dispatch ships a raw payload dump as the user prompt
 
-**Status:** OPEN
+**Status:** CLOSED
 **Severity:** critical (blocks all `/implement-plan` runs whose schedules contain at least one child file without a declared `**Agent:**` — i.e., the default path)
 **Group:** BASH-DISPATCH-MIGRATION
 **Depends on:** none
@@ -245,3 +245,21 @@ The wrapper-side fix is additive — adding `render_dispatch_prompt`, threading 
 ## Run history
 
 (none yet — bug filed 2026-04-26 from /implement-plan dry-run halt)
+
+### Run hand-fix-2026-04-28 — CLOSED
+
+Files: `plugins/plan-executor/scripts/_claude_backend.py`, `tests/scripts/test_claude_backend.py`
+
+Reviewer verdict: gemini-2.5-pro independent review of the recommended fix returned **ship-as-is** (verdict captured in the orchestrator's run notes; no separate amendments needed). The recommended fix's render_dispatch_prompt + --model wiring + json.dumps fallback removal was assessed as the correct shape with no significant gaps.
+
+Reviewer advisories: none beyond the original bug report's recommended fix.
+
+Implementation notes: applied as a hand-fix from the orchestrator session because the nested `claude -p /fix-bugs` dispatch was being blocked by the harness's permission perimeter for sub-agent bash and the user pre-authorized the hand-fix path under broad administrative authority. BUG-146's prior fix already inlined the canonical implementer/remediator framing into `payload["prompt"]` for the default/rework/role-swap/narrow-remediation variants, so the BUG-144 wrapper-side fix narrowed to:
+
+1. `_render_phase_a_single_classifier_body` helper that renders the verbatim Phase A-single body from `dispatch-templates.md` (with `target_task_id` auto-injection when the analyst payload carries one).
+2. `_resolve_prompt(payload, *, agent=None)` now fires the analyst body when `agent == "plan-analyst"` and the payload carries the canonical minimal shape (`plan_path` + `repo_root`, no `task_id`).
+3. `_resolve_model(effective, manifest)` returns the `--model` alias to thread, with `effective.model` (payload override) winning over `manifest.model` (frontmatter); `_build_argv` extends argv with `["--model", model]` before the trailing prompt positional.
+
+Tests: 11 new tests in `test_claude_backend.py` covering Phase A-single rendering, target_task_id injection, explicit-prompt short-circuit, _resolve_model precedence, --model argv wiring, --model omission when neither side declares one, prompt-positional invariance with --model present, and an end-to-end `invoke()` test that asserts the rendered analyst body lands as the trailing argv positional with `--model sonnet` threaded in. The pre-existing buggy-shape assertion `test_resolve_prompt_falls_back_to_json_dump_for_analyst_shape` was renamed to `test_resolve_prompt_falls_back_to_json_dump_for_unagented_minimal_shape` and narrowed to cover only payloads where `agent` is unknown — the analyst branch now fires correctly when `agent="plan-analyst"` is supplied.
+
+`venv/bin/pytest tests/scripts/test_claude_backend.py -v` → 39 passed, 1 skipped (live-binary smoke gate).

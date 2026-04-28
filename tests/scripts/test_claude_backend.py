@@ -952,13 +952,13 @@ def test_resolve_prompt_implementer_directive_when_task_id_and_plan_path() -> No
     assert "/abs/plan.md" in rendered
 
 
-def test_resolve_prompt_falls_back_to_json_dump_for_analyst_shape() -> None:
-    """Payloads missing ``task_id`` (e.g. analyst dispatches) preserve
-    the original ``json.dumps`` fallback so non-implementer agents are
-    unaffected."""
+def test_resolve_prompt_falls_back_to_json_dump_for_unagented_minimal_shape() -> None:
+    """When ``agent`` is unknown and the payload lacks both task_id and
+    the analyst minimal shape, ``_resolve_prompt`` preserves the
+    original ``json.dumps`` fallback so non-implementer/non-analyst
+    callers are unaffected."""
     payload = {"plan_path": "/p"}
     rendered = backend._resolve_prompt(payload)
-    # Must round-trip as JSON — that is the original fallback contract.
     assert json.loads(rendered) == {"plan_path": "/p"}
 
 
@@ -966,3 +966,185 @@ def test_resolve_prompt_falls_back_for_non_mapping() -> None:
     """Non-Mapping payloads (e.g. a bare string) produce the JSON-encoded form."""
     rendered = backend._resolve_prompt("just a string")
     assert json.loads(rendered) == "just a string"
+
+
+# ---------------------------------------------------------------------------
+# BUG-144: Phase A-single plan-analyst classifier rendering
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_prompt_renders_phase_a_single_for_plan_analyst() -> None:
+    """``agent='plan-analyst'`` with the canonical analyst minimal
+    payload (``plan_path`` + ``repo_root``, no ``task_id``) MUST render
+    the Phase A-single classifier body verbatim — not a JSON dump.
+
+    Regression: BUG-144. Before the fix, the wrapper fell through to
+    ``json.dumps(payload)`` and the nested plan-analyst received a raw
+    dict containing the legacy-mode field name ``plan_path``, which
+    the agent latched onto and either timed out at 300s (legacy
+    whole-plan rationalization) or implemented the task directly
+    (TASK-006 of the 20260426 dry-run wrote 13 files before the
+    wrapper's delta-bounded cleanup caught it).
+    """
+    payload = {
+        "plan_path": "/abs/path/TASK-001_example.md",
+        "repo_root": "/abs/repo",
+    }
+    rendered = backend._resolve_prompt(payload, agent="plan-analyst")
+    assert isinstance(rendered, str)
+    # Must contain the verbatim classifier instructions.
+    assert "Classify exactly one task" in rendered
+    # Must substitute the placeholder values from the payload.
+    assert "/abs/path/TASK-001_example.md" in rendered
+    assert "/abs/repo" in rendered
+    # Must contain the canonical output schema for the classifier reply.
+    assert '"agent": "claude" | "codex"' in rendered
+    # Must not be a raw JSON dump of the payload (the bug signature).
+    assert '"plan_path"' not in rendered
+
+
+def test_resolve_prompt_phase_a_single_target_task_id_injection() -> None:
+    """When the analyst payload carries ``target_task_id``, the rendered
+    body MUST prepend the disambiguator first-instruction line per the
+    `target_task_id` auto-injection rule from ``dispatch-templates.md``.
+    """
+    payload = {
+        "plan_path": "/abs/p.md",
+        "repo_root": "/abs",
+        "target_task_id": "002",
+    }
+    rendered = backend._resolve_prompt(payload, agent="plan-analyst")
+    assert "Classify specifically `### TASK-002:`" in rendered
+    # The classifier body must still follow.
+    assert "Classify exactly one task" in rendered
+
+
+def test_resolve_prompt_explicit_prompt_wins_over_analyst_branch() -> None:
+    """An explicit ``payload['prompt']`` short-circuits even when
+    ``agent='plan-analyst'`` is supplied — direct CLI callers stay in
+    control of the prompt text."""
+    payload = {
+        "prompt": "explicit prompt text",
+        "plan_path": "/abs/p.md",
+        "repo_root": "/abs",
+    }
+    rendered = backend._resolve_prompt(payload, agent="plan-analyst")
+    assert rendered == "explicit prompt text"
+
+
+# ---------------------------------------------------------------------------
+# BUG-144: --model resolution + argv wiring
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_model_effective_overrides_manifest() -> None:
+    """``effective.model`` (payload-level override) wins over
+    ``manifest.model`` (agent frontmatter)."""
+    assert backend._resolve_model(
+        {"model": "sonnet"}, {"model": "opus"}
+    ) == "sonnet"
+
+
+def test_resolve_model_falls_back_to_manifest_when_effective_absent() -> None:
+    assert backend._resolve_model({}, {"model": "sonnet"}) == "sonnet"
+
+
+def test_resolve_model_returns_none_when_both_absent() -> None:
+    """Neither side declares a model → ``None`` so the caller omits
+    ``--model`` and the nested CLI inherits the parent's selection."""
+    assert backend._resolve_model({}, {}) is None
+    # Empty/whitespace strings are treated as absent.
+    assert backend._resolve_model({"model": "  "}, {"model": ""}) is None
+
+
+def test_argv_includes_model_from_manifest(tmp_path: Path) -> None:
+    """``--model`` is appended to argv when the manifest declares one
+    and the effective dict does not override it."""
+    shim = _make_shim(tmp_path, stdout_payload='{"result":"ok"}')
+    backend.invoke(
+        manifest={"name": "plan-analyst", "model": "sonnet", "tools": []},
+        effective={"cwd": str(tmp_path)},
+        payload={"plan_path": "/p", "repo_root": "/r"},
+        backend_binary=str(shim),
+    )
+    argv = _read_recorded_argv(shim)
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "sonnet"
+
+
+def test_argv_effective_model_overrides_manifest_model(tmp_path: Path) -> None:
+    """When ``effective.model`` is set (mirrors
+    ``payload.overrides.model``), it wins over ``manifest.model``."""
+    shim = _make_shim(tmp_path, stdout_payload='{"result":"ok"}')
+    backend.invoke(
+        manifest={"name": "plan-implementer", "model": "opus", "tools": []},
+        effective={"cwd": str(tmp_path), "model": "sonnet"},
+        payload={"prompt": "x"},
+        backend_binary=str(shim),
+    )
+    argv = _read_recorded_argv(shim)
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "sonnet"
+
+
+def test_argv_omits_model_when_neither_side_declares_one(tmp_path: Path) -> None:
+    """When neither ``effective`` nor ``manifest`` declares a model,
+    ``--model`` is omitted entirely (status-quo inheritance from the
+    parent CLI). Locking in the conservative default."""
+    shim = _make_shim(tmp_path, stdout_payload='{"result":"ok"}')
+    backend.invoke(
+        manifest={"name": "plan-analyst", "tools": []},
+        effective={"cwd": str(tmp_path)},
+        payload={"prompt": "x"},
+        backend_binary=str(shim),
+    )
+    argv = _read_recorded_argv(shim)
+    assert "--model" not in argv
+
+
+def test_argv_prompt_remains_last_positional_with_model_present(tmp_path: Path) -> None:
+    """The prompt argument MUST remain the trailing positional even
+    when ``--model`` is wired in. Regression backstop for the argv
+    extension order in ``_build_argv``."""
+    shim = _make_shim(tmp_path, stdout_payload='{"result":"ok"}')
+    backend.invoke(
+        manifest={"name": "plan-analyst", "model": "sonnet", "tools": []},
+        effective={"cwd": str(tmp_path)},
+        payload={"prompt": "the prompt"},
+        backend_binary=str(shim),
+    )
+    argv = _read_recorded_argv(shim)
+    assert argv[-1] == "the prompt"
+    # ``--model sonnet`` precedes the prompt.
+    model_idx = argv.index("--model")
+    assert argv[model_idx + 1] == "sonnet"
+    assert model_idx + 1 < len(argv) - 1
+
+
+def test_invoke_passes_rendered_analyst_body_to_backend(tmp_path: Path) -> None:
+    """End-to-end: ``invoke`` with a plan-analyst manifest + minimal
+    analyst payload (no explicit prompt) MUST result in argv whose
+    last positional is the rendered Phase A-single classifier body —
+    not a JSON dump of the payload. This is the regression backstop
+    that TASK-003 explicitly waved (BUG-144 root-cause)."""
+    shim = _make_shim(tmp_path, stdout_payload='{"result":"ok"}')
+    backend.invoke(
+        manifest={"name": "plan-analyst", "model": "sonnet", "tools": ["Read"]},
+        effective={"cwd": str(tmp_path)},
+        payload={
+            "plan_path": "/abs/path/TASK-001_example.md",
+            "repo_root": "/abs/repo",
+        },
+        backend_binary=str(shim),
+    )
+    argv = _read_recorded_argv(shim)
+    captured_prompt = argv[-1]
+    assert "Classify exactly one task" in captured_prompt
+    assert "/abs/path/TASK-001_example.md" in captured_prompt
+    assert "/abs/repo" in captured_prompt
+    assert '"agent": "claude" | "codex"' in captured_prompt
+    # No raw payload JSON leakage (the bug signature).
+    assert '"plan_path":' not in captured_prompt
+    # And --model sonnet was threaded in.
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "sonnet"
