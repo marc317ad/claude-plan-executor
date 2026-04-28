@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "next_id": 147,
+  "content_fingerprints": {},
+  "groups": {
+    "BASH-DISPATCH-MIGRATION": {
+      "bug_ids": [
+        144
+      ],
+      "primary_subsystem": "bash-dispatch-migration",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-04-28",
+      "updated_at": "2026-04-28"
+    },
+    "IMP-PLAN": {
+      "bug_ids": [
+        142
+      ],
+      "primary_subsystem": "imp-plan",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-04-28",
+      "updated_at": "2026-04-28"
+    },
+    "IMP-PLAN-2": {
+      "bug_ids": [
+        143
+      ],
+      "primary_subsystem": "imp-plan-2",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-04-28",
+      "updated_at": "2026-04-28"
+    },
+    "IMPLEMENTER-RESULT-SCHEMA-MISMATCH": {
+      "bug_ids": [
+        146
+      ],
+      "primary_subsystem": "implementer-result-schema-mismatch",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-04-28",
+      "updated_at": "2026-04-28"
+    },
+    "WRAPPER-DEFAULT-TIMEOUT-15MIN": {
+      "bug_ids": [
+        145
+      ],
+      "primary_subsystem": "wrapper-default-timeout-15min",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-04-28",
+      "updated_at": "2026-04-28"
+    }
+  },
+  "groups_history": [],
+  "history": [
+    {
+      "event": "manifest-sync",
+      "synced_at": "2026-04-28",
+      "bug_count": 5,
+      "next_id": 147,
+      "groups_count": 5,
+      "forced": false,
+      "drift_summary": {
+        "added_bugs": [
+          "142",
+          "143",
+          "144",
+          "145",
+          "146"
+        ],
+        "removed_bugs": [],
+        "severity_changes": {},
+        "added_groups": [
+          "BASH-DISPATCH-MIGRATION",
+          "IMP-PLAN",
+          "IMP-PLAN-2",
+          "IMPLEMENTER-RESULT-SCHEMA-MISMATCH",
+          "WRAPPER-DEFAULT-TIMEOUT-15MIN"
+        ],
+        "removed_groups": [],
+        "modified_groups": {}
+      }
+    }
+  ],
+  "bug_severities": {
+    "142": "minor",
+    "143": "minor",
+    "144": "critical",
+    "145": "minor",
+    "146": "minor"
+  }
+}
