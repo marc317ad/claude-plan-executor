@@ -13,7 +13,7 @@
       "file": "TASK-001_apply_cleanup_policy_gate.md",
       "priority": "critical",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {

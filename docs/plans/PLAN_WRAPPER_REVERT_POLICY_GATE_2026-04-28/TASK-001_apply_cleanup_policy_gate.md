@@ -21,7 +21,7 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
 
 ### TASK-001: `apply_cleanup` policy gate in `_claude_dispatch_cleanup.py`
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** claude
 - **Files:**

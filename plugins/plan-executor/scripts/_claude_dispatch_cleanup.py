@@ -143,6 +143,15 @@ ALLOWED_CLEANUP_AUTHORIZATION_SOURCES: frozenset[str] = frozenset({
     "wrapper-empty-scope-readonly",
 })
 
+# Closed enum for ``unattended_revert_policy`` (PLAN_WRAPPER_REVERT_POLICY_GATE
+# TASK-001). ``None`` at the call site routes to ``pause`` semantics so the
+# safer-by-default contract holds when callers have not yet been migrated.
+ALLOWED_UNATTENDED_REVERT_POLICIES: frozenset[str] = frozenset({
+    "pause",
+    "fail-fast",
+    "preserve-only",
+})
+
 # Translation to the legacy per-file gate enum on ``_restore_path``
 # (introduced by prohibit_silent_revert TASK-002). Both new values map
 # to the explicit-declaration revert mode; the structural decision to
@@ -591,6 +600,7 @@ def apply_cleanup(
     repo_root: str,
     *,
     authorization_source: object = _MISSING_AUTHORIZATION_SOURCE,
+    unattended_revert_policy: Optional[str] = None,
 ) -> dict:
     """Compute the post-dispatch delta vs ``baseline`` and revert any
     paths in ``(observed_delta − declared_files_changed − protected)``.
@@ -643,13 +653,19 @@ def apply_cleanup(
         ``declared_files_changed`` shows no actual diff vs baseline
         (the nested session declared a phantom write).
 
-    Concurrency: this function only ever mutates paths it computed
-    from the baseline + observed delta + declared scope passed in by
-    the caller; it does not touch any global / shared state. Two
-    concurrent callers operating on disjoint declared scopes will see
-    each other's writes as "out of scope" relative to their own
-    baseline — which is the correct safe behavior. Tests must arrange
-    disjoint baselines (one per process) to verify isolation.
+    Concurrency: under ``unattended_revert_policy`` of ``"pause"``
+    (the ``None`` default) or ``"fail-fast"``, this function detects
+    out-of-scope writes but does NOT mutate them — two concurrent
+    callers' writes are left intact, and the orchestrator's
+    reconcile-batch is authoritative for cross-task scope
+    partitioning. Under ``"preserve-only"`` the function reverts the
+    out-of-declaration delta in place; concurrent same-repo callers
+    operating on disjoint declared scopes will then see each other's
+    writes as "out of scope" relative to their own baseline and
+    destroy them, which is why ``preserve-only`` is opt-in only and
+    the orchestrator must serialize same-repo dispatches before
+    selecting it. Tests arrange disjoint baselines (one per process)
+    to verify the process-local-baseline contract.
     """
     # Authorization gate — fires BEFORE _changed_paths() and the
     # classification loop, so a missing/bad value cannot silently revert
@@ -663,6 +679,19 @@ def apply_cleanup(
         raise ValueError(
             f"apply_cleanup: unknown authorization_source {authorization_source!r}; "
             f"expected one of {sorted(ALLOWED_CLEANUP_AUTHORIZATION_SOURCES)}"
+        )
+
+    # Revert-policy gate (PLAN_WRAPPER_REVERT_POLICY_GATE TASK-001). ``None``
+    # routes to ``pause`` so callers that have not yet been migrated get
+    # non-destructive behavior by default.
+    effective_policy = (
+        "pause" if unattended_revert_policy is None else unattended_revert_policy
+    )
+    if effective_policy not in ALLOWED_UNATTENDED_REVERT_POLICIES:
+        raise ValueError(
+            f"apply_cleanup: unknown unattended_revert_policy "
+            f"{unattended_revert_policy!r}; expected one of "
+            f"{sorted(ALLOWED_UNATTENDED_REVERT_POLICIES)}"
         )
 
     # Use baseline's repo_root if present so callers cannot accidentally
@@ -769,13 +798,17 @@ def apply_cleanup(
             continue
         if rel in declared:
             continue
-        # Out of scope and not protected → revert. Translate the
-        # apply_cleanup-level enum to the per-file gate enum.
+        # Out of scope and not protected. Under the safer-by-default
+        # ``pause``/``fail-fast`` policies, classify only — DO NOT
+        # mutate. Under ``preserve-only`` the legacy salvage-then-revert
+        # branch runs.
+        out_of_scope.append(rel)
+        if effective_policy != "preserve-only":
+            continue
         outcome = _restore_path(
             repo_resolved, rel, baseline,
             authorization_source=_RESTORE_GATE_TRANSLATION[authorization_source],
         )
-        out_of_scope.append(rel)
         if outcome in ("restored_bytes", "restored_head"):
             restored.append(rel)
         elif outcome == "deleted":
@@ -806,6 +839,13 @@ def apply_cleanup(
         ):
             misreported.append(rel)
 
+    if effective_policy == "preserve-only":
+        cleanup_strategy = "delta_bounded"
+    elif effective_policy == "fail-fast":
+        cleanup_strategy = "detect_only_revert_policy_fail_fast"
+    else:
+        cleanup_strategy = "detect_only_revert_policy_pause"
+
     return {
         "scope_violation_detected": bool(out_of_scope),
         "scope_misreport_detected": bool(misreported),
@@ -816,5 +856,5 @@ def apply_cleanup(
         "misreported_paths": sorted(misreported),
         "protected_skipped": sorted(protected_skipped),
         "baseline_captured": True,
-        "cleanup_strategy": "delta_bounded",
+        "cleanup_strategy": cleanup_strategy,
     }

@@ -57,12 +57,19 @@ def _call_cleanup(
     repo,
     *,
     source: str = "wrapper-declared-scope",
+    policy: str = "preserve-only",
 ):
-    """Test helper: thread the TASK-002 authorization_source through
-    every call. Most tests use the default; new gate-tests override
-    ``source`` to exercise the closed enum."""
+    """Test helper: thread the TASK-002 authorization_source and the
+    PLAN_WRAPPER_REVERT_POLICY_GATE TASK-001 ``unattended_revert_policy``
+    through every call. The default policy is ``preserve-only`` so
+    existing tests that assert on ``restored`` / ``deleted`` content
+    keep their existing semantics; gate-tests override ``policy`` to
+    exercise the new non-destructive ``pause`` / ``fail-fast`` branches.
+    """
     return cleanup.apply_cleanup(
-        baseline, declared, repo, authorization_source=source,
+        baseline, declared, repo,
+        authorization_source=source,
+        unattended_revert_policy=policy,
     )
 
 
@@ -722,3 +729,94 @@ class TestConcurrencyIsolation:
         assert s2["untracked"] == []
         assert s1["tracked_blobs_keys"] == []
         assert s2["tracked_blobs_keys"] == []
+
+
+# ---------------------------------------------------------------------------
+# PLAN_WRAPPER_REVERT_POLICY_GATE TASK-001: unattended_revert_policy gate
+# ---------------------------------------------------------------------------
+
+
+class TestUnattendedRevertPolicyGate:
+    def test_apply_cleanup_pause_policy_detects_but_does_not_revert(
+        self, tmp_path,
+    ):
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "rogue.txt").write_text("rogue payload\n")
+        result = cleanup.apply_cleanup(
+            baseline, [], str(repo),
+            authorization_source="wrapper-declared-scope",
+            unattended_revert_policy="pause",
+        )
+        assert result["out_of_scope_paths"] == ["rogue.txt"]
+        assert result["restored"] == []
+        assert result["deleted"] == []
+        assert result["failed_paths"] == []
+        assert (repo / "rogue.txt").read_text() == "rogue payload\n"
+        assert result["cleanup_strategy"] == "detect_only_revert_policy_pause"
+        assert result["scope_violation_detected"] is True
+
+    def test_apply_cleanup_fail_fast_policy_detects_but_does_not_revert(
+        self, tmp_path,
+    ):
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "rogue.txt").write_text("rogue payload\n")
+        result = cleanup.apply_cleanup(
+            baseline, [], str(repo),
+            authorization_source="wrapper-declared-scope",
+            unattended_revert_policy="fail-fast",
+        )
+        assert result["out_of_scope_paths"] == ["rogue.txt"]
+        assert result["restored"] == []
+        assert result["deleted"] == []
+        assert (repo / "rogue.txt").read_text() == "rogue payload\n"
+        assert (
+            result["cleanup_strategy"]
+            == "detect_only_revert_policy_fail_fast"
+        )
+
+    def test_apply_cleanup_preserve_only_policy_unchanged(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        (repo / "keep.py").write_text("orig\n")
+        _git(["add", "keep.py"], cwd=repo)
+        _git(["commit", "-q", "-m", "add keep"], cwd=repo)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "keep.py").write_text("rogue mutation\n")
+        result = cleanup.apply_cleanup(
+            baseline, [], str(repo),
+            authorization_source="wrapper-declared-scope",
+            unattended_revert_policy="preserve-only",
+        )
+        assert result["cleanup_strategy"] == "delta_bounded"
+        assert "keep.py" in result["out_of_scope_paths"]
+        assert "keep.py" in result["restored"]
+        assert (repo / "keep.py").read_text() == "orig\n"
+
+    def test_apply_cleanup_default_policy_is_pause(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "rogue.txt").write_text("rogue payload\n")
+        result = cleanup.apply_cleanup(
+            baseline, [], str(repo),
+            authorization_source="wrapper-declared-scope",
+        )
+        assert result["out_of_scope_paths"] == ["rogue.txt"]
+        assert result["restored"] == []
+        assert result["deleted"] == []
+        assert (repo / "rogue.txt").read_text() == "rogue payload\n"
+        assert result["cleanup_strategy"] == "detect_only_revert_policy_pause"
+
+    def test_apply_cleanup_unknown_policy_raises_valueerror(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        with pytest.raises(ValueError) as excinfo:
+            cleanup.apply_cleanup(
+                baseline, [], str(repo),
+                authorization_source="wrapper-declared-scope",
+                unattended_revert_policy="yolo",
+            )
+        msg = str(excinfo.value)
+        assert "yolo" in msg
+        for v in sorted(["pause", "fail-fast", "preserve-only"]):
+            assert v in msg
