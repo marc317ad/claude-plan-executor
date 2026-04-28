@@ -1918,6 +1918,30 @@ def _run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
 
+# TASK-005: env-var names for the Gemini availability check. Exposed as
+# module constants so tests can assert against the same names the helper
+# reads, and so any future relocation of the helper updates one source.
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+GOOGLE_APP_CRED_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
+
+
+def _resolve_gemini_available() -> bool:
+    """Return True iff the `gemini` CLI is on `$PATH` AND at least one of
+    `GEMINI_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` is set to a
+    non-empty value (TASK-005).
+
+    Sole source of truth for the orchestrator preflight `gemini_available`
+    field and the wrapper's missing-API-key short-circuit. Returns False
+    whenever the binary is absent OR when both env vars are unset/empty,
+    matching the wrapper contract in `plan_gemini_dispatch._check_api_key_env`.
+    """
+    if shutil.which("gemini") is None:
+        return False
+    api_key = os.environ.get(GEMINI_API_KEY_ENV, "").strip()
+    creds = os.environ.get(GOOGLE_APP_CRED_ENV, "").strip()
+    return bool(api_key or creds)
+
+
 def _resolve_python() -> str:
     """Resolve the interpreter path per documented precedence (TASK-008).
 
@@ -5068,6 +5092,7 @@ def cmd_preflight(args: argparse.Namespace) -> None:
             dirty["source_blocking"].append(path)
 
     codex_available = shutil.which("codex") is not None
+    gemini_available = _resolve_gemini_available()
 
     sha_cp = _git(["rev-parse", "HEAD"])
     starting_sha = sha_cp.stdout.strip() or ""
@@ -5088,6 +5113,7 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         "starting_sha": starting_sha,
         "run_id": _run_id(),
         "codex_available": codex_available,
+        "gemini_available": gemini_available,
         "dirty_files": dirty,
         "scope_warnings": warnings,
         "base_branch": base_branch,
@@ -10499,6 +10525,49 @@ def _check_fail_task_authorization_source() -> dict:
     )
 
 
+def _check_gemini_available() -> dict:
+    """Advisory-tier surfacing of the runtime Gemini availability state.
+
+    Reports the `_resolve_gemini_available()` truth-table view at audit
+    time so executor self-checks see whether the orchestrator would
+    advertise Gemini as available right now. Always passes (binary +
+    key state is operator-environment, not a contract drift); the
+    finding's `actual.value` carries the boolean and the structured
+    breakdown (`binary_present`, `api_key_present`, `creds_present`).
+    Tier=advisory: never flips default-tier verdicts.
+    """
+    binary_present = shutil.which("gemini") is not None
+    api_key_present = bool(os.environ.get(GEMINI_API_KEY_ENV, "").strip())
+    creds_present = bool(os.environ.get(GOOGLE_APP_CRED_ENV, "").strip())
+    available = _resolve_gemini_available()
+    canonical_payload = {
+        "source": "TASK-005 preflight gemini_available contract",
+        "value": (
+            "advisory: surfaces _resolve_gemini_available() truth-table "
+            "state at audit time"
+        ),
+    }
+    actual_payload = {
+        "source": "_resolve_gemini_available()",
+        "value": {
+            "available": available,
+            "binary_present": binary_present,
+            "api_key_present": api_key_present,
+            "creds_present": creds_present,
+            "api_key_env": GEMINI_API_KEY_ENV,
+            "creds_env": GOOGLE_APP_CRED_ENV,
+        },
+    }
+    return _audit_finding(
+        check="gemini-available",
+        status="pass",
+        canonical=canonical_payload,
+        actual=actual_payload,
+        reason=None,
+        tier="advisory",
+    )
+
+
 # Ordered registry. The order is the canonical `--list` output and the
 # row order in the Markdown report. Append new checks to the end so
 # downstream tooling that snapshots `--list` does not drift.
@@ -10516,6 +10585,7 @@ AUDIT_CHECKS: tuple[tuple[str, object, str], ...] = (
     ("principle_referenced", _check_principle_referenced, "default"),
     ("fail_task_authorization_source", _check_fail_task_authorization_source, "default"),
     ("wrapper_restore_authorization", _check_wrapper_restore_authorization_source, "default"),
+    ("gemini-available", _check_gemini_available, "advisory"),
 )
 AUDIT_CHECK_NAMES: tuple[str, ...] = tuple(name for name, _, _ in AUDIT_CHECKS)
 AUDIT_CHECK_TIERS: dict[str, str] = {name: tier for name, _, tier in AUDIT_CHECKS}

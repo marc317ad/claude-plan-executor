@@ -23076,3 +23076,87 @@ class Test_implementer_schema_smoke_end_to_end:
         body = json.loads(cp.stdout)
         assert body["outcome"] is None, body
         assert body["outcome"] != "success", body
+
+
+# ---------------------------------------------------------------------------
+# TASK-005: `_resolve_gemini_available` truth-table + audit registration.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGeminiAvailable:
+    """The helper is the SOLE source of truth for the orchestrator's
+    `gemini_available` preflight field and the wrapper's missing-API-key
+    short-circuit. The four-row truth table:
+      (binary_present, key_present) → expected
+    """
+
+    def test_env_var_constants_exposed(self):
+        # Tests assert against the same names the helper reads —
+        # acceptance criterion in TASK-005.
+        assert plan_ops.GEMINI_API_KEY_ENV == "GEMINI_API_KEY"
+        assert plan_ops.GOOGLE_APP_CRED_ENV == "GOOGLE_APPLICATION_CREDENTIALS"
+
+    def test_binary_present_key_present(self, monkeypatch):
+        monkeypatch.setattr(plan_ops.shutil, "which", lambda name: "/usr/bin/gemini" if name == "gemini" else None)
+        monkeypatch.setenv(plan_ops.GEMINI_API_KEY_ENV, "sk-test")
+        monkeypatch.delenv(plan_ops.GOOGLE_APP_CRED_ENV, raising=False)
+        assert plan_ops._resolve_gemini_available() is True
+
+    def test_binary_present_creds_only(self, monkeypatch):
+        monkeypatch.setattr(plan_ops.shutil, "which", lambda name: "/usr/bin/gemini" if name == "gemini" else None)
+        monkeypatch.delenv(plan_ops.GEMINI_API_KEY_ENV, raising=False)
+        monkeypatch.setenv(plan_ops.GOOGLE_APP_CRED_ENV, "/tmp/creds.json")
+        assert plan_ops._resolve_gemini_available() is True
+
+    def test_binary_present_key_absent(self, monkeypatch):
+        monkeypatch.setattr(plan_ops.shutil, "which", lambda name: "/usr/bin/gemini" if name == "gemini" else None)
+        monkeypatch.delenv(plan_ops.GEMINI_API_KEY_ENV, raising=False)
+        monkeypatch.delenv(plan_ops.GOOGLE_APP_CRED_ENV, raising=False)
+        assert plan_ops._resolve_gemini_available() is False
+
+    def test_binary_absent_key_present(self, monkeypatch):
+        monkeypatch.setattr(plan_ops.shutil, "which", lambda name: None)
+        monkeypatch.setenv(plan_ops.GEMINI_API_KEY_ENV, "sk-test")
+        assert plan_ops._resolve_gemini_available() is False
+
+    def test_binary_absent_key_absent(self, monkeypatch):
+        monkeypatch.setattr(plan_ops.shutil, "which", lambda name: None)
+        monkeypatch.delenv(plan_ops.GEMINI_API_KEY_ENV, raising=False)
+        monkeypatch.delenv(plan_ops.GOOGLE_APP_CRED_ENV, raising=False)
+        assert plan_ops._resolve_gemini_available() is False
+
+    def test_empty_string_key_treated_as_absent(self, monkeypatch):
+        # Wrapper contract: whitespace/empty value is "not set".
+        monkeypatch.setattr(plan_ops.shutil, "which", lambda name: "/usr/bin/gemini" if name == "gemini" else None)
+        monkeypatch.setenv(plan_ops.GEMINI_API_KEY_ENV, "   ")
+        monkeypatch.setenv(plan_ops.GOOGLE_APP_CRED_ENV, "")
+        assert plan_ops._resolve_gemini_available() is False
+
+
+class TestGeminiAvailableAuditCheck:
+    def test_registered_at_advisory_tier(self):
+        assert "gemini-available" in plan_ops.AUDIT_CHECK_NAMES
+        assert plan_ops.AUDIT_CHECK_TIERS["gemini-available"] == "advisory"
+
+    def test_check_returns_pass_with_truth_table_breakdown(self, monkeypatch):
+        monkeypatch.setattr(plan_ops.shutil, "which", lambda name: "/usr/bin/gemini" if name == "gemini" else None)
+        monkeypatch.setenv(plan_ops.GEMINI_API_KEY_ENV, "sk-test")
+        monkeypatch.delenv(plan_ops.GOOGLE_APP_CRED_ENV, raising=False)
+        finding = plan_ops._check_gemini_available()
+        assert finding["check"] == "gemini-available"
+        assert finding["status"] == "pass"
+        assert finding["tier"] == "advisory"
+        value = finding["actual"]["value"]
+        assert value["available"] is True
+        assert value["binary_present"] is True
+        assert value["api_key_present"] is True
+        assert value["creds_present"] is False
+
+    def test_advisory_finding_does_not_flip_default_verdict(self, monkeypatch, tmp_path):
+        # Force gemini unavailable so advisory finding still returns pass
+        # (advisory is informational only).
+        monkeypatch.setattr(plan_ops.shutil, "which", lambda name: None)
+        monkeypatch.delenv(plan_ops.GEMINI_API_KEY_ENV, raising=False)
+        monkeypatch.delenv(plan_ops.GOOGLE_APP_CRED_ENV, raising=False)
+        finding = plan_ops._check_gemini_available()
+        assert finding["status"] == "pass"

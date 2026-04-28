@@ -58,3 +58,11 @@ Cheap insurance: extend the existing schema-audit fixture to cover the new Gemin
 - If the existing test is parameterized via `pytest.mark.parametrize` per file, the union of globs flows in naturally; if it's a single test that loops internally, same.
 - Do NOT add a Gemini-specific equivalent of `test_implement_schema_matches_task_001_report_contract`. There is no Gemini-implement contract; the orchestrator does not dispatch Gemini for implementation. The Codex-specific test stays Codex-specific.
 - After this task, six schemas are covered. Future schemas added to `plugins/plan-executor/scripts/` matching neither glob will NOT be auto-covered — the next family's onboarding adds its own glob to the union.
+
+## Execution log — 20260428T121041 (paused)
+
+Starting SHA: `2f1542210304cd2301fc500f60694a672cd7c9e4`  → Ending SHA: `2f1542210304cd2301fc500f60694a672cd7c9e4`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 008 | claude | - | paused (work destroyed by TASK-005 wrapper autoclean) | - | implementer succeeded; sibling wrapper reverted file before commit; needs re-run |

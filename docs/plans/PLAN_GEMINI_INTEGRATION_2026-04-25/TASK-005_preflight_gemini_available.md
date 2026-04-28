@@ -72,3 +72,11 @@ Plumbing-only task: add the helper, add the preflight field, add the SKILL.md fl
 - Audit-check naming convention: `gemini-available` mirrors the `codex-available` analogue (which doesn't exist today but is implied by the preflight field). If you add a `codex-available` audit check at the same time as belt-and-braces symmetry, do it in a separate commit so this task stays scope-tight.
 - The flag is added to argparse in the orchestrator's command-parsing layer. Today /implement-plan's argument-parsing is documented in SKILL.md's `## Parse arguments` table — the orchestrator (Claude-Opus running the skill) reads the table at run-time. There is no Python argparse module to edit for the orchestrator-level flag; the flag is "real" because it is documented, normalized, and routed in the skill's prose. TASK-005's job is to add the row to the table; TASK-006 / TASK-007 wire the routing.
 - The `parse-preflight-report` subcommand (if it exists; otherwise the JSON consumers in SKILL.md) MUST gracefully accept the new field. Verify by running `plan_ops.py preflight --json` against the existing `sample_phase4.md` fixture and confirming downstream consumers do not error on the additional key.
+
+## Execution log — 20260428T121041 (paused)
+
+Starting SHA: `2f1542210304cd2301fc500f60694a672cd7c9e4`  → Ending SHA: `2f1542210304cd2301fc500f60694a672cd7c9e4`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | claude | - | paused (wrapper scope_violation; cross-task autoclean destroyed sibling) | - | changes intact in working tree; wrapper bug halted commit |

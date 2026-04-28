@@ -170,6 +170,7 @@ Optional:
   --allow-gaps            Proceed past analyst outcome=needs-enrichment
                           (today: proceed past non-empty `build-tasks warnings[]`)
   --strict-branch         Halt (not warn) if current branch != plan's Base branch
+  --allow-gemini-fallback Enable Gemini-CLI fallback for adversarial review when Codex is unavailable or transiently fails. Implementation tasks remain Codex-only.
 ```
 
 Mutual exclusions: `--codex-only` + `--claude-only` → error. `--codex-review-binding` + `--claude-only` → error (Codex review-binding requires Codex availability and is incompatible with the Claude-only routing flag bound at Phase 0). `--codex-plan-review-binding` + `--claude-only` → error (same rationale, applied to the plan-review seam). The orchestrator LLM reads this prose and halts pre-dispatch; there is no structural checker in `plan_ops.py` for these mutexes (consistent with the existing `--codex-only` ⊕ `--claude-only` enforcement). Normalize `--task-ids` values via `plan_ops.py normalize-task-id` before filtering.
