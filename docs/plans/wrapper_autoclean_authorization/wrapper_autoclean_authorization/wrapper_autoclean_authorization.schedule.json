@@ -1,0 +1,232 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "002",
+      "title": "`_claude_dispatch_cleanup.apply_cleanup` authorization gate + `plan_claude_dispatch.py` call-site update",
+      "files": [
+        "plugins/plan-executor/scripts/_claude_dispatch_cleanup.py (`apply_cleanup` signature + early gate at line 564 \u2014 before the `_changed_paths()` call at line 589 and the classification loop at line 662)",
+        "plugins/plan-executor/scripts/plan_claude_dispatch.py (`cmd_run` step 9 at `:697` \u2014 pass `authorization_source=\"wrapper-declared-scope\"` for write-authorized agents and `\"wrapper-empty-scope-readonly\"` for `plan-analyst`)",
+        "plugins/plan-executor/scripts/_plan_paths.py (one-line comment near `PROTECTED_PATH_PREFIXES` at line 31)",
+        "tests/scripts/test_claude_dispatch_cleanup.py (every `apply_cleanup(...)` call threads `authorization_source` \u2014 ~30 call sites across `TestApplyCleanup` classes at lines 173\u2013490)",
+        "tests/scripts/test_plan_claude_dispatch_cli.py (3 new cmd_run integration tests for the authorization-source kwarg threading)"
+      ],
+      "dependencies": [],
+      "test_command": "python3 -m pytest tests/scripts/test_claude_dispatch_cleanup.py -q && python3 -m pytest tests/scripts/test_plan_claude_dispatch_cli.py -q -k \"authorization_source or AuthorizationSource\"",
+      "priority": "critical",
+      "plan_file": "TASK-002_apply_cleanup_authorization_gate.md",
+      "description": "Closes Layer B of the defect for the Claude wrapper. The sentinel-default keyword-only param keeps existing positional test seams readable while making omissions fail loudly. The agent-identity-based discriminator (`plan-analyst` \u2194 `wrapper-empty-scope-readonly`; everyone else \u2194 `wrapper-declared-scope`) anchors the authorization decision in the dispatch payload's agent field rather than allowing any caller to opt out by passing the readonly value casually. The anti-aliasing guard (write-authorized agent + empty declared scope \u2192 DON'T fall back to readonly, route to TASK-004 short-circuit) is the load-bearing fix for the TASK-009 destruction event.\n\n**Implementation notes.** The check at the top of `apply_cleanup` is two lines (sentinel comparison + enum membership); the existing function body needs no other changes. The wrapper's `cmd_run` change is similarly small \u2014 three lines (one for the `if agent_name == \"plan-analyst\"` branch, one for the explicit `authorization_source` keyword on the `apply_cleanup` call). The anti-aliasing guard is one extra `if` in `cmd_run` that early-returns on the empty-declared write-authorized case; the actual envelope construction lands in TASK-004.\n\nTest-fixture update strategy: prefer the `_call_cleanup` helper approach over rewriting every assertion. The new helper signature mirrors `apply_cleanup`'s: `_call_cleanup(baseline, declared, repo, *, source=\"wrapper-declared-scope\")`. Most tests use the default; the four new tests above explicitly pass non-default values to exercise the gate.\n\n## Execution log \u2014 20260427T223241 (paused)\n\nStarting SHA: `246ee2b5d6204e40865f7d2bf2251d38998eb6d8`  \u2192 Ending SHA: `246ee2b5d6204e40865f7d2bf2251d38998eb6d8`\n\n| Task | Agent | Reviewer | Verdict | Commit | Notes |\n|---|---|---|---|---|---|\n| 002 | claude | - | - | - | paused \u2014 implementer returned markdown clarification question; zero edits |",
+      "acceptance_criteria": [
+        "`_claude_dispatch_cleanup.py` module-level constants:",
+        "`apply_cleanup` signature gains a keyword-only param: `*, authorization_source: object = _MISSING_AUTHORIZATION_SOURCE`. Body raises:",
+        "`plan_claude_dispatch.py:cmd_run` step 9 (around `:697`) constructs the `authorization_source` value explicitly: ```python if agent_name == \"plan-analyst\": authorization_source = \"wrapper-empty-scope-readonly\" else: authorization_source = \"wrapper-declared-scope\" ``` A one-line comment documents the discriminator. The value is passed to `apply_cleanup` as a keyword argument.",
+        "Anti-aliasing guard: at the same call site, when `agent_name in {\"plan-implementer\", \"plan-remediator\"}` AND `len(declared) == 0`, the wrapper does NOT call `apply_cleanup` at all \u2014 it routes through TASK-004's short-circuit (this is the load-bearing recovery path). This task lands the structural decision; TASK-004 implements the actual envelope-construction logic.",
+        "All existing callers of `apply_cleanup` in tests are updated to thread `authorization_source` through. No silent-default fallback in test code. The most ergonomic path is to add a small fixture helper `_call_cleanup(baseline, declared, repo, *, source=\"wrapper-declared-scope\")` near the top of `test_claude_dispatch_cleanup.py` and route every existing call through it; that keeps the diff narrow.",
+        "`_claude_dispatch_cleanup.py` module docstring (lines 1\u201353) gains a new section under \"Public API\" titled \"Authorization gate\" that documents the new contract (one paragraph + the enum values).",
+        "A one-line comment in `_plan_paths.py` near `PROTECTED_PATH_PREFIXES` (line 31) documents the asymmetry: ``# Note: plan_claude_dispatch.py and _claude_dispatch_cleanup.py are intentionally NOT in this prefix list \u2014 they are the wrapper layer itself, not consumers. Wrapper-self-protection is provided by the authorization-source gate in apply_cleanup, not by this allowlist.``",
+        "New tests:"
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "003",
+      "title": "`plan_codex_dispatch.py:_restore_in_scope` authorization gate + `_handle_timeout_cleanup` call-site update",
+      "files": [
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py (`_restore_in_scope` at `:894`; `_handle_timeout_cleanup` at `:1003`; call-site at `:1084`; `validate_scope` at `:918` \u2014 one-line observe-only comment)",
+        "tests/scripts/test_plan_codex_dispatch.py (or the cleanup-specific test file; whichever currently exercises `_restore_in_scope` / `_handle_timeout_cleanup`)"
+      ],
+      "dependencies": [
+        "002"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_codex_dispatch*.py -q -k \"restore_in_scope or RestoreInScope or timeout_cleanup or TimeoutCleanup\"",
+      "priority": "high",
+      "plan_file": "TASK-003_codex_restore_in_scope_authorization.md",
+      "description": "Mirrors TASK-002 at the Codex wrapper. The Codex wrapper has fewer mutation surfaces than the Claude wrapper (its `validate_scope` is observe-only; only `_handle_timeout_cleanup` mutates), so the authorization enum is single-valued at v1. The asymmetry is documented so future contributors who add a Codex-side cleanup path know to extend the enum.\n\n**Implementation notes.** The Codex wrapper's `_restore_in_scope` (`:894`) takes positional `tracked, untracked, repo_root` arguments. Adding a keyword-only param is a clean append; existing call sites at `:1084` get the kwarg added. The function is private (single underscore) and never called from tests directly except via `_handle_timeout_cleanup`, so the test-update surface is small. Ensure the new tests use a real `git init -q -b main` fixture (mirrors the existing `tests/scripts/test_plan_codex_dispatch_*.py` patterns) so the `_git(\"restore\", ...)` calls actually execute against a real repo and we verify behavior end-to-end.",
+      "acceptance_criteria": [
+        "`plan_codex_dispatch.py` module-level constants (mirroring TASK-002 in shape):",
+        "`_restore_in_scope` signature gains a keyword-only param: `*, authorization_source: object = _MISSING_AUTHORIZATION_SOURCE`. Body raises `TypeError` (missing) / `ValueError` (unknown) with the same shape as TASK-002. The check fires **before** any `_git([\"restore\", ...])` (line 906\u2013908) or `Path.unlink()` (line 913) call in the function body.",
+        "`_handle_timeout_cleanup` (`:1003`) call-site at `:1084` is updated: ```python if restore_tracked or delete_untracked: _restore_in_scope( restore_tracked, delete_untracked, repo_root, authorization_source=\"wrapper-codex-timeout-cleanup\", ) ``` A one-line comment above the call documents that timeout cleanup is the only authorized call site for `_restore_in_scope`.",
+        "`validate_scope` (`:918`) gains a one-line comment at the top of its body documenting that the function is observe-only and does not require an authorization gate. Mirrors the existing wording in the docstring (\"the wrapper NEVER mutates files outside `allowed_files`\") so the comment and docstring agree.",
+        "The Codex wrapper module's `# Scope validation` comment block (around line 889) gains one paragraph after the existing comments documenting the new authorization contract: ``` # Authorization gate (v1, TASK-003 of wrapper_autoclean_authorization). # `_restore_in_scope` is the wrapper's only file-mutating cleanup helper. # It requires an explicit `authorization_source` keyword argument from # the closed enum `ALLOWED_RESTORE_AUTHORIZATION_SOURCES`. v1 has one # value (`wrapper-codex-timeout-cleanup`) because timeout cleanup is the # only mutating call site today. New mutating paths MUST extend the # enum and add a corresponding entry to the audit drift check in # `plan_ops.py audit` (TASK-005). `validate_scope` is observe-only and # gateless. ```",
+        "New tests:"
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "004",
+      "title": "Schema-fail short-circuit + `error.code: wrapper_autoclean_blocked` in `plan_claude_dispatch.py:cmd_run`",
+      "files": [
+        "plugins/plan-executor/scripts/_claude_dispatch_envelope.py (`build_scope_violation` at `:366` \u2014 relax to accept `error_code` keyword param with default `\"scope_violation\"`)",
+        "plugins/plan-executor/scripts/_claude_dispatch_cleanup.py (`apply_cleanup` \u2014 new short-circuit branch; new `cleanup_strategy: \"skipped_authorization_blocked\"` value)",
+        "plugins/plan-executor/scripts/plan_claude_dispatch.py (`cmd_run` step 9 around `:697` \u2014 new branch detecting the cleanup short-circuit and constructing the new envelope; comment block documenting status precedence)",
+        "tests/scripts/test_claude_dispatch_envelope.py (assert `build_scope_violation` accepts the new kwarg; default preserves behavior)",
+        "tests/scripts/test_claude_dispatch_cleanup.py (new test for the short-circuit branch in `apply_cleanup`)",
+        "tests/scripts/test_plan_claude_dispatch_cli.py (new fixtures covering the schema-fail short-circuit path)"
+      ],
+      "dependencies": [
+        "002"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_claude_dispatch_cli.py -q -k \"wrapper_autoclean_blocked or WrapperAutocleanBlocked or schema_fail_short_circuit\"",
+      "priority": "critical",
+      "plan_file": "TASK-004_schema_fail_short_circuit.md",
+      "description": "Implements the recoverable-failure path. When the orchestrator forgets to populate `declared_files_changed` for a write-authorized agent (Layer A regression OR an in-flight dispatch from before TASK-001 lands), the wrapper detects the situation pre-cleanup and surfaces a structured `error.code: wrapper_autoclean_blocked` envelope while preserving the working tree. The orchestrator's resume protocol (TASK-006) routes that envelope through the existing `Awaiting-user pause` subroutine. This is the load-bearing recovery path for the TASK-009 destruction event: with this in place, any future occurrence of \"implementer wrote files, orchestrator didn't populate declared scope\" pauses cleanly instead of destroying work.\n\n**Implementation notes.** The \"compute observed_delta pre-cleanup\" step lives inside `apply_cleanup` already (`_changed_paths()` at line 589, then the classification loop at 662). The new branch sits between those two \u2014 `observed_delta` is computed, then if the new conditions hold (`wrapper-declared-scope` + empty declared + non-empty observed), return early with the new `cleanup_strategy` value before any `_restore_path` call. This keeps the gate logic colocated with the rest of the cleanup module's contract.\n\nThe wrapper's `cmd_run` change is a `match`/`if-elif` over `cleanup_strategy` values. Today the wrapper translates `cleanup_failure` and `scope_violation_detected` into specific envelope builders; this task adds one more branch for `skipped_authorization_blocked`.\n\nThe \"compute observed_delta\" computation is already cheap (two `git diff --name-only` calls in `_changed_paths`); no new cost. The branch fires only when the conditions hold, so existing callers see no behavior change.",
+      "acceptance_criteria": [
+        "`_claude_dispatch_envelope.build_scope_violation` (`:366`) gains a keyword-only param `error_code: str = \"scope_violation\"`. The internal `_error()` call at `:401` uses the supplied code instead of the hardcoded `\"scope_violation\"`. All existing callers (none today; the function is the only call site of the constant) continue to work without change because the default value preserves behavior.",
+        "`_claude_dispatch_cleanup.apply_cleanup` adds a new branch immediately after the authorization-gate check (added by TASK-002):",
+        "`plan_claude_dispatch.py:cmd_run` step 9 (around `:697`) is restructured: 1. Compute `authorization_source` per TASK-002 (agent identity discriminator). 2. Call `apply_cleanup(baseline, declared, repo_root, authorization_source=...)`. 3. Inspect `cleanup_result[\"cleanup_strategy\"]`:",
+        "The wrapper's status precedence is documented in a comment block above `cmd_run` step 9: ```python # Status precedence (TASK-004 of wrapper_autoclean_authorization). # cleanup_failure > scope_violation(error_code=wrapper_autoclean_blocked) #   > scope_violation(error_code=scope_violation) > schema_invalid. # Rationale: cleanup_failure continues to win because a non-empty # failed_paths means the working tree is in an unknown state. # wrapper_autoclean_blocked outranks scope_violation because it represents # a more cautious \"we preserved everything pending user input\" outcome # that the orchestrator must not overwrite with a stale schema-validation # failure. The orchestrator's routing ladder reads error.code to # distinguish the new \"preserve everything\" path from the legacy # \"wrapper reverted out-of-scope writes\" path. ```",
+        "The schema-validation failure path (around `:784`) is NOT changed \u2014 `schema_invalid` continues to fire when the inner agent result fails its output-schema validation. The new short-circuit is upstream of that, at the cleanup step, and is independent of inner-result schema validation.",
+        "New tests:"
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "005",
+      "title": "`ALLOWED_LOG_EVENTS` extension + `wrapper_autoclean_authorization` AST audit drift check",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py (`ALLOWED_LOG_EVENTS` at `:232`; new `_check_wrapper_autoclean_authorization` audit function near `_check_fail_task_authorization_source` at `:10269`; registration entry near `:10446`)",
+        "tests/scripts/test_plan_ops.py (new fixtures for the audit check)"
+      ],
+      "dependencies": [
+        "002",
+        "003"
+      ],
+      "test_command": "python3 plugins/plan-executor/scripts/plan_ops.py audit --strict --json && python3 -m pytest tests/scripts/test_plan_ops.py -q -k \"wrapper_autoclean_authorization or AuditWrapperAutoclean\"",
+      "priority": "high",
+      "plan_file": "TASK-005_runlog_events_and_ast_audit.md",
+      "description": "Drift protection for the wrapper layer. The orchestrator-side `_check_fail_task_authorization_source` (TASK-009 of prohibit_silent_revert) catches CLI-level drift; this audit catches Python-level drift in the wrapper layer. AST walk (Codex's recommendation over grep \u2014 fewer false positives around comments / helper definitions / test fixtures). The default tier (not strict) means the check surfaces in `audit --json` output but doesn't break preflight; it can be promoted to strict after the false-positive rate is known on the live tree.\n\n**Implementation notes.** Python's `ast.parse(source).walk()` plus a `parent_map` (computed via `ast.walk` + a child-to-parent dict) gives constant-time enclosing-function lookup. The \"every direct caller is authorized\" rule for the helper-allowlist case is a second AST pass over the same files looking for `Call(func=Name(id=\"_restore_path\"))` and asserting the enclosing function has `authorization_source`. Recursion is not needed in v1 because the call graph is two levels deep; if it ever grows, the audit can be promoted to a fixed-point traversal in a follow-up.\n\nThe conditional `plan_gemini_dispatch.py` inclusion uses a simple `if (REPO_ROOT / \"plugins/plan-executor/scripts/plan_gemini_dispatch.py\").exists():` guard. Gemini wrapper might never ship; the audit must not fail in that case. When the Gemini wrapper does ship, its own task lands the authorization gate AND extends the audit's `ALLOWED_HELPER_NAMES` if it adds new helper functions.\n\nThe `os.unlink` / `os.remove` recognition is conservative \u2014 pattern-matches are easy to evade; if a future contributor uses `import os as o; o.unlink(p)`, the audit misses it. v1 catches the canonical forms; v2 (follow-up) could extend to import-aliased forms via an import-alias resolver. Not load-bearing for this plan; the gate at `apply_cleanup` / `_restore_in_scope` is the primary defense.",
+      "acceptance_criteria": [
+        "`ALLOWED_LOG_EVENTS` (`:232`) gains two new entries:",
+        "A docstring comment block above the two new entries explains they are orchestrator-emitted (not wrapper-emitted) and what each authorizes audit-wise.",
+        "New audit check `_check_wrapper_autoclean_authorization` registered alongside `principle_referenced` and `fail_task_authorization_source` in the `AUDIT_CHECKS` registry near line 10446. Tier: `default` (NOT `strict` \u2014 initial rollout favors visibility over hard-fail; promotion to `strict` is documented as a follow-up).",
+        "The audit check is an AST walk over the Python source files (NOT a regex grep). Files walked:",
+        "The walk flags every `ast.Call` node whose function-receiver matches one of:",
+        "For each flagged Call, the audit walks up the AST (using a parent-map computed once per file) to find the enclosing `FunctionDef`. The check passes for that Call iff one of:",
+        "Failure surface: a list of `{file, line, function, reason}` dicts naming the offending call site(s). The `reason` field distinguishes \"no authorization_source param on enclosing function\" vs \"allowlisted helper but unauthorized direct caller at <other-file:line>\".",
+        "The check does NOT enforce on `tests/` paths (the `_walk` only inspects the four wrapper files; tests at `tests/scripts/*.py` may freely `Path.unlink()` temp files).",
+        "The check does NOT enforce on `os.unlink(...)` calls inside `try`/`except` blocks that catch `OSError` AND immediately re-raise OR return \u2014 these are best-effort cleanup that is not the primary mutation surface. Implementer's discretion: if the AST recognition is too complex for a tight v1, allow the false-positive and add the call site to the allowlist as a second iteration. The Codex `_restore_path` body at `_claude_dispatch_cleanup.py:496` is one such case.",
+        "New tests in `tests/scripts/test_plan_ops.py`:"
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "006",
+      "title": "Orchestrator-side resume protocol \u2014 `Awaiting-user pause` extension to `post_wrapper_autoclean_blocked`",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/SKILL.md (Awaiting-user pause stage table \u2014 add `post_wrapper_autoclean_blocked` row; Phase B classify shim at `:512`; Phase B-rework / D.2a.5 routing at `:640`; Phase B-narrow-remediation routing at `:640`)",
+        "plugins/plan-executor/scripts/plan_ops.py (`cmd_fail_task --authorization-source` enum extends with `wrapper-autoclean-user-instruction`)",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "dependencies": [
+        "004"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_plan_ops.py -q -k \"wrapper_autoclean_user_instruction or post_wrapper_autoclean_blocked\"",
+      "priority": "high",
+      "plan_file": "TASK-006_orchestrator_resume_protocol.md",
+      "description": "Wires the wrapper's signal back into the orchestrator's existing pause infrastructure. The user gets four explicit options (re-dispatch with corrected scope, keep-and-commit, revert, abort) and the work stays in the working tree until disposition. Mirrors prohibit_silent_revert TASK-008's reconcile-batch four-options framing \u2014 same UX, different trigger.\n\n**Implementation notes.** SKILL.md is the single source of truth for the orchestrator's runtime behavior. The Awaiting-user pause stage table is already maintained as a list per prohibit_silent_revert TASK-004; extending it is a one-row addition. The four cross-reference one-liners at the dispatch sites are pure prose; they don't change the parser's behavior on the existing `error.code: scope_violation` path (which routes through `post_<site>_implement` as documented today).\n\nThe auth-source enum extension follows the same pattern prohibit_silent_revert tasks used: append the value to the `choices=[...]` list in `cmd_fail_task` argparse, update the docstring comment block above. The test pattern from prohibit_silent_revert TASK-008 (`test_fail_task_authorization_source_accepts_reconcile_out_of_scope_user_instruction`) is the template \u2014 the new test is structurally identical but with the new value.",
+      "acceptance_criteria": [
+        "SKILL.md `Awaiting-user pause (shared control flow)` subsection (added by prohibit_silent_revert TASK-004) \u2014 the per-stage payload contract table gains a new row:",
+        "SKILL.md `## Dispatch error handling (Claude wrapper)` table at `:74` gains a new sub-bullet under the `status != ok` row: ``status == \"scope_violation\" AND error.code == \"wrapper_autoclean_blocked\" \u2192 invoke the **Awaiting-user pause** subroutine with stage=\"post_wrapper_autoclean_blocked\"; the existing scope_violation route (error.code == \"scope_violation\", file-level out-of-scope writes the wrapper reverted) routes the same as it does today (post_<site>_implement).``",
+        "The four call sites in SKILL.md (Phase B default `:502`, Phase B-rework `:640`'s `dispatch_bounded_remediation` branch, Phase D.2b `:650`, Phase B-narrow-remediation `:640`'s `dispatch_narrow_remediation` branch) each cross-reference the new stage with one line: ``Wrapper `error.code: \"wrapper_autoclean_blocked\"` \u2192 Awaiting-user pause stage=`post_wrapper_autoclean_blocked` (NOT `post_<site>_implement`); see \u00a7Awaiting-user pause table for payload contract.``",
+        "`cmd_fail_task` `--authorization-source` enum (in `plan_ops.py`) extends with `wrapper-autoclean-user-instruction`. The docstring comment block above the argparse declaration documents the new value: ``` # wrapper-autoclean-user-instruction \u2014 sanctioned by the user via # next-turn instruction after an Awaiting-user pause whose stage is # post_wrapper_autoclean_blocked. Authorizes reverting the implementer's # preserved deltas. Issued only when option (c) is selected from the # four-option resume UX (see SKILL.md \u00a7Awaiting-user pause). ```",
+        "`review-route` (the deterministic state machine in `plan_ops.py` documented at SKILL.md `:640`) does NOT need to change: the wrapper-autoclean-blocked path is at the dispatch-site level (Phase B classify shim), not inside `review-route`'s post-implement classification.",
+        "New tests:"
+      ],
+      "agent": "claude"
+    },
+    {
+      "id": "007",
+      "title": "End-to-end tests covering the four affected dispatch sites",
+      "files": [
+        "tests/scripts/test_wrapper_autoclean_authorization.py (NEW \u2014 Codex's recommended location)",
+        "tests/scripts/fixtures/wrapper_autoclean/ (NEW \u2014 fixture plans + stub agent)",
+        "tests/scripts/test_skill_dispatch_implementer.py (minimal update if any pre-TASK-001 negative assertion exists about `declared_files_changed`)"
+      ],
+      "dependencies": [
+        "002",
+        "003",
+        "004",
+        "005",
+        "006"
+      ],
+      "test_command": "python3 -m pytest tests/scripts/test_wrapper_autoclean_authorization.py -q",
+      "priority": "high",
+      "plan_file": "TASK-007_end_to_end_tests.md",
+      "description": "Behavior coverage for the four affected dispatch sites. The matrix test future-proofs against new sites being added without coverage. The \"blocks when declared empty\" tests exercise the load-bearing recovery path (TASK-004) end-to-end, proving that even a buggy orchestrator that fails to populate `declared_files_changed` no longer destroys work.\n\n**Implementation notes.** The fixture stub agent emits markdown (not JSON) so the inner result-schema validation fails \u2014 this is intentional, mirroring the actual TASK-009 failure mode. The test asserts that the *outer* envelope's `error.code` is `wrapper_autoclean_blocked` (not `schema_invalid`), proving that the new status-precedence rule from TASK-004 fires correctly. If a future test wants to exercise both the `wrapper_autoclean_blocked` path AND the `schema_invalid` path independently, the stub can be parametrized to emit JSON with deliberate schema violations.\n\nStub agent: prefer Python over bash for cross-platform compatibility (the existing `tests/scripts/stubs/plan_claude_dispatch_stub.py` is Python). The stub's `argv[0]` will be the executable path, `argv[1:]` will be the args the wrapper passes (`-p`, `--agent`, `--permission-mode`, ...). The stub parses `--add-dir <repo>` to find the repo and writes the files there, then emits the markdown success report on stdout. Stderr is ignored; exit code 0.\n\nCross-platform note: on Windows / WSL, `subprocess.run([stub_path, ...])` works for both `.py` and `.sh` files as long as the `.sh` has a shebang and is executable. The Python stub is more portable; recommend that.\n\nThe `--backend-binary` flag was added in SKILL_bash_dispatch_migration TASK-002 specifically for test stubs (per `plan_claude_dispatch.py:933-938`). Tests use that flag instead of relying on `claude` being on PATH.\n\nThe matrix tests use `pytest.mark.parametrize` with `ids=` so failures point to the specific variant: `default | rework | role-swap | narrow-remediation`. The matrix's \"blocks when declared empty\" version asserts `error.code == \"wrapper_autoclean_blocked\"` for each variant.",
+      "acceptance_criteria": [
+        "New file `tests/scripts/test_wrapper_autoclean_authorization.py`:",
+        "Test class `TestEndToEndWrapperAutocleanAuthorization`:",
+        "The \"blocks when declared empty\" test variant runs for all four sites (parametrized similarly):",
+        "The fixture directory `tests/scripts/fixtures/wrapper_autoclean/`:",
+        "`tests/scripts/test_skill_dispatch_implementer.py` is updated minimally: any test that currently asserts the absence of `declared_files_changed` in the dispatch payload (legacy invariant from before TASK-001) is updated to assert its presence. No tests are deleted; existing doc-only invariants stay."
+      ],
+      "agent": "claude"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/_claude_dispatch_cleanup.py",
+        "plugins/plan-executor/scripts/_plan_paths.py",
+        "plugins/plan-executor/scripts/plan_claude_dispatch.py",
+        "tests/scripts/test_claude_dispatch_cleanup.py",
+        "tests/scripts/test_plan_claude_dispatch_cli.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "004",
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/_claude_dispatch_cleanup.py",
+        "plugins/plan-executor/scripts/_claude_dispatch_envelope.py",
+        "plugins/plan-executor/scripts/plan_claude_dispatch.py",
+        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "tests/scripts/test_claude_dispatch_cleanup.py",
+        "tests/scripts/test_claude_dispatch_envelope.py",
+        "tests/scripts/test_plan_claude_dispatch_cli.py",
+        "tests/scripts/test_plan_codex_dispatch.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": [
+        "006"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 5,
+      "task_ids": [
+        "007"
+      ],
+      "file_locks": [
+        "tests/scripts/fixtures/wrapper_autoclean/",
+        "tests/scripts/test_skill_dispatch_implementer.py",
+        "tests/scripts/test_wrapper_autoclean_authorization.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}
