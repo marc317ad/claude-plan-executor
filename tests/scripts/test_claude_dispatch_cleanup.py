@@ -51,6 +51,21 @@ def _load_cleanup():
 cleanup = _load_cleanup()
 
 
+def _call_cleanup(
+    baseline,
+    declared,
+    repo,
+    *,
+    source: str = "wrapper-declared-scope",
+):
+    """Test helper: thread the TASK-002 authorization_source through
+    every call. Most tests use the default; new gate-tests override
+    ``source`` to exercise the closed enum."""
+    return cleanup.apply_cleanup(
+        baseline, declared, repo, authorization_source=source,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Repo fixture
 # ---------------------------------------------------------------------------
@@ -177,7 +192,7 @@ class TestSnapshotBaseline:
 class TestApplyCleanupBasics:
     def test_skipped_no_baseline(self, tmp_path):
         repo = _make_repo(tmp_path)
-        result = cleanup.apply_cleanup(
+        result = _call_cleanup(
             {"captured": False}, ["foo"], str(repo),
         )
         assert result["cleanup_strategy"] == "skipped_no_baseline"
@@ -190,7 +205,7 @@ class TestApplyCleanupBasics:
     def test_no_changes_no_violations(self, tmp_path):
         repo = _make_repo(tmp_path)
         baseline = cleanup.snapshot_baseline(str(repo))
-        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        result = _call_cleanup(baseline, [], str(repo))
         assert result["cleanup_strategy"] == "delta_bounded"
         assert result["scope_violation_detected"] is False
         assert result["scope_misreport_detected"] is False
@@ -203,7 +218,7 @@ class TestApplyCleanupBasics:
         baseline = cleanup.snapshot_baseline(str(repo))
         # Simulate the nested session creating a declared file.
         (repo / "declared.txt").write_text("payload\n")
-        result = cleanup.apply_cleanup(
+        result = _call_cleanup(
             baseline, ["declared.txt"], str(repo),
         )
         assert result["scope_violation_detected"] is False
@@ -219,7 +234,7 @@ class TestScopeViolationDetected:
         # Nested session declares "declared.txt" but writes "rogue.txt" too.
         (repo / "declared.txt").write_text("ok\n")
         (repo / "rogue.txt").write_text("nope\n")
-        result = cleanup.apply_cleanup(
+        result = _call_cleanup(
             baseline, ["declared.txt"], str(repo),
         )
         assert result["scope_violation_detected"] is True
@@ -240,7 +255,7 @@ class TestScopeViolationDetected:
         # Nested session declares "declared.txt" but mutates keep.py.
         (repo / "declared.txt").write_text("ok\n")
         (repo / "keep.py").write_text("rogue mutation\n")
-        result = cleanup.apply_cleanup(
+        result = _call_cleanup(
             baseline, ["declared.txt"], str(repo),
         )
         assert result["scope_violation_detected"] is True
@@ -253,7 +268,7 @@ class TestScopeViolationDetected:
         baseline = cleanup.snapshot_baseline(str(repo))
         (repo / "a.txt").write_text("a\n")
         (repo / "b.txt").write_text("b\n")
-        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        result = _call_cleanup(baseline, [], str(repo))
         assert result["scope_violation_detected"] is True
         assert set(result["out_of_scope_paths"]) == {"a.txt", "b.txt"}
         assert set(result["deleted"]) == {"a.txt", "b.txt"}
@@ -266,7 +281,7 @@ class TestScopeViolationDetected:
         proto = repo / ".claude" / "internal.json"
         proto.parent.mkdir(parents=True, exist_ok=True)
         proto.write_text("{}\n")
-        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        result = _call_cleanup(baseline, [], str(repo))
         # Out-of-declaration but protected → classified under
         # protected_skipped, NOT mutated, and DOES NOT flip the
         # scope-violation flag.
@@ -281,7 +296,7 @@ class TestScopeViolationDetected:
         run_log = repo / "docs" / "plans" / "_run_log.jsonl"
         run_log.parent.mkdir(parents=True, exist_ok=True)
         run_log.write_text('{"event":"x"}\n')
-        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        result = _call_cleanup(baseline, [], str(repo))
         assert run_log.exists()
         assert "docs/plans/_run_log.jsonl" in result["protected_skipped"]
         assert result["scope_violation_detected"] is False
@@ -293,7 +308,7 @@ class TestScopeMisreportDetected:
         baseline = cleanup.snapshot_baseline(str(repo))
         # Declare two paths but only write one.
         (repo / "real.txt").write_text("real\n")
-        result = cleanup.apply_cleanup(
+        result = _call_cleanup(
             baseline, ["real.txt", "phantom.txt"], str(repo),
         )
         assert result["scope_misreport_detected"] is True
@@ -307,7 +322,7 @@ class TestScopeMisreportDetected:
         baseline = cleanup.snapshot_baseline(str(repo))
         (repo / "a.txt").write_text("a\n")
         (repo / "b.txt").write_text("b\n")
-        result = cleanup.apply_cleanup(
+        result = _call_cleanup(
             baseline, ["a.txt", "b.txt"], str(repo),
         )
         assert result["scope_misreport_detected"] is False
@@ -317,7 +332,7 @@ class TestScopeMisreportDetected:
         repo = _make_repo(tmp_path)
         baseline = cleanup.snapshot_baseline(str(repo))
         # Declare README.md (already present, unchanged) — misreport.
-        result = cleanup.apply_cleanup(baseline, ["README.md"], str(repo))
+        result = _call_cleanup(baseline, ["README.md"], str(repo))
         assert result["scope_misreport_detected"] is True
         assert "README.md" in result["misreported_paths"]
 
@@ -335,7 +350,7 @@ class TestObservedDeltaSubtraction:
         baseline = cleanup.snapshot_baseline(str(repo))
         # Dispatch declares NOTHING and touches NOTHING; the pre-dirty
         # state is unchanged.
-        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        result = _call_cleanup(baseline, [], str(repo))
         assert result["scope_violation_detected"] is False
         assert "README.md" not in result["out_of_scope_paths"]
         # Pre-dirty content preserved.
@@ -350,12 +365,94 @@ class TestObservedDeltaSubtraction:
         baseline = cleanup.snapshot_baseline(str(repo))
         # Nested session mutates README again.
         (repo / "README.md").write_text("rogue further mutation\n")
-        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        result = _call_cleanup(baseline, [], str(repo))
         assert result["scope_violation_detected"] is True
         assert "README.md" in result["out_of_scope_paths"]
         assert "README.md" in result["restored"]
         # Restored to PRE-DISPATCH state (the dirty version), NOT HEAD.
         assert (repo / "README.md").read_text() == "pre-dirty\n"
+
+
+# ---------------------------------------------------------------------------
+# TASK-002 (wrapper_autoclean_authorization): authorization gate
+# ---------------------------------------------------------------------------
+
+
+class TestAuthorizationGate:
+    def test_apply_cleanup_raises_typeerror_without_authorization_source(
+        self, tmp_path,
+    ):
+        repo = _make_repo(tmp_path)
+        with pytest.raises(TypeError) as excinfo:
+            cleanup.apply_cleanup({}, [], str(repo))
+        msg = str(excinfo.value)
+        assert "expected one of" in msg
+        for v in sorted(["wrapper-declared-scope", "wrapper-empty-scope-readonly"]):
+            assert v in msg
+
+    def test_apply_cleanup_raises_valueerror_on_unknown_authorization_source(
+        self, tmp_path,
+    ):
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        with pytest.raises(ValueError) as excinfo:
+            cleanup.apply_cleanup(
+                baseline, [], str(repo),
+                authorization_source="bogus",
+            )
+        assert "unknown authorization_source 'bogus'" in str(excinfo.value)
+
+    def test_apply_cleanup_wrapper_declared_scope_with_empty_declared_reverts_all(
+        self, tmp_path,
+    ):
+        """When the explicit ``wrapper-declared-scope`` is passed with an
+        empty ``declared`` list, the legacy semantic is preserved: every
+        observed delta is reverted. The anti-aliasing guard against this
+        configuration lives in ``plan_claude_dispatch.py:cmd_run`` and
+        prevents the wrapper from EVER reaching this branch silently for
+        a write-authorized agent — but if a caller explicitly authorizes
+        it, cleanup proceeds."""
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "rogue.txt").write_text("nope\n")
+        result = _call_cleanup(
+            baseline, [], str(repo), source="wrapper-declared-scope",
+        )
+        assert result["cleanup_strategy"] == "delta_bounded"
+        assert result["scope_violation_detected"] is True
+        assert "rogue.txt" in result["deleted"]
+        assert not (repo / "rogue.txt").exists()
+
+    def test_apply_cleanup_wrapper_empty_scope_readonly_with_empty_declared_reverts_all(
+        self, tmp_path,
+    ):
+        """A read-only agent that wrote anything violated its contract;
+        the wrapper reverts every observed delta."""
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "leaked.txt").write_text("read-only agent wrote me\n")
+        result = _call_cleanup(
+            baseline, [], str(repo), source="wrapper-empty-scope-readonly",
+        )
+        assert result["cleanup_strategy"] == "delta_bounded"
+        assert result["scope_violation_detected"] is True
+        assert "leaked.txt" in result["deleted"]
+        assert not (repo / "leaked.txt").exists()
+
+    def test_apply_cleanup_wrapper_declared_scope_with_nonempty_declared_preserves_in_scope(
+        self, tmp_path,
+    ):
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "x.py").write_text("declared\n")
+        (repo / "y.py").write_text("undeclared\n")
+        result = _call_cleanup(
+            baseline, ["x.py"], str(repo), source="wrapper-declared-scope",
+        )
+        assert (repo / "x.py").exists()
+        assert (repo / "x.py").read_text() == "declared\n"
+        assert "y.py" in result["deleted"]
+        assert not (repo / "y.py").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -379,14 +476,14 @@ class TestFailedPathsSurfacing:
         repo = _make_repo(tmp_path)
         baseline = cleanup.snapshot_baseline(str(repo))
         (repo / "rogue.txt").write_text("nope\n")
-        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        result = _call_cleanup(baseline, [], str(repo))
         assert result["scope_violation_detected"] is True
         assert "rogue.txt" in result["deleted"]
         assert result["failed_paths"] == []
 
     def test_skipped_no_baseline_returns_empty_failed_paths(self, tmp_path):
         repo = _make_repo(tmp_path)
-        result = cleanup.apply_cleanup(
+        result = _call_cleanup(
             {"captured": False}, [], str(repo),
         )
         assert "failed_paths" in result
@@ -403,13 +500,13 @@ class TestFailedPathsSurfacing:
 
         original = cleanup._restore_path
 
-        def _fake_restore(repo_root: str, rel: str, baseline_arg: Mapping[str, Any]) -> str:
+        def _fake_restore(repo_root: str, rel: str, baseline_arg: Mapping[str, Any], **_kw) -> str:
             if rel == "locked.txt":
                 return "failed"
-            return original(repo_root, rel, baseline_arg)
+            return original(repo_root, rel, baseline_arg, **_kw)
 
         monkeypatch.setattr(cleanup, "_restore_path", _fake_restore)
-        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        result = _call_cleanup(baseline, [], str(repo))
 
         # Both are out of scope.
         assert result["scope_violation_detected"] is True
@@ -439,13 +536,13 @@ class TestFailedPathsSurfacing:
 
         original = cleanup._restore_path
 
-        def _fake_restore(repo_root: str, rel: str, baseline_arg: Mapping[str, Any]) -> str:
+        def _fake_restore(repo_root: str, rel: str, baseline_arg: Mapping[str, Any], **_kw) -> str:
             if rel == "broken.txt":
                 return "failed"
-            return original(repo_root, rel, baseline_arg)
+            return original(repo_root, rel, baseline_arg, **_kw)
 
         monkeypatch.setattr(cleanup, "_restore_path", _fake_restore)
-        result = cleanup.apply_cleanup(baseline, [], str(repo))
+        result = _call_cleanup(baseline, [], str(repo))
 
         assert result["scope_violation_detected"] is True
         assert "keep.py" in result["restored"]
@@ -484,7 +581,10 @@ def _worker(repo_str: str, declared: list, my_files: dict, result_q):
     for rel, content in my_files.items():
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(content)
-    res = mod.apply_cleanup(baseline, declared, repo_str)
+    res = mod.apply_cleanup(
+        baseline, declared, repo_str,
+        authorization_source="wrapper-declared-scope",
+    )
 
     # Capture which of MY declared files survived AND which OTHER files
     # are visible from this worker's POV (used by assertions).

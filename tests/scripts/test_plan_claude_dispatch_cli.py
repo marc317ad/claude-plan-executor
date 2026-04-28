@@ -1304,3 +1304,122 @@ class TestDeclaredFilesChangedRequired:
         # The empty-but-present case is legal for read-only agents: the
         # wrapper does NOT emit input_invalid here.
         assert envelope["status"] != "input_invalid"
+
+
+# ---------------------------------------------------------------------------
+# TASK-002 (wrapper_autoclean_authorization): cmd_run threads
+# ``authorization_source`` into ``apply_cleanup`` based on agent identity.
+# ---------------------------------------------------------------------------
+
+
+def _patch_capture_apply_cleanup(monkeypatch) -> List[Dict[str, Any]]:
+    """Replace ``cleanup.apply_cleanup`` with a capture stub that records
+    the kwargs each call site passed in. Returns the captures list.
+    """
+    captured: List[Dict[str, Any]] = []
+
+    def _stub(baseline, declared, repo_root, **kwargs):
+        captured.append({
+            "declared": list(declared) if declared is not None else None,
+            "kwargs": dict(kwargs),
+        })
+        return {
+            "scope_violation_detected": False,
+            "scope_misreport_detected": False,
+            "restored": [],
+            "deleted": [],
+            "failed_paths": [],
+            "out_of_scope_paths": [],
+            "misreported_paths": [],
+            "protected_skipped": [],
+            "baseline_captured": False,
+            "cleanup_strategy": "skipped_no_baseline",
+        }
+
+    monkeypatch.setattr(
+        cli.cleanup,
+        "snapshot_baseline",
+        lambda repo_root: {"captured": False, "repo_root": str(repo_root)},
+    )
+    monkeypatch.setattr(cli.cleanup, "apply_cleanup", _stub)
+    return captured
+
+
+class TestCmdRunAuthorizationSource:
+    """Integration tests verifying ``cmd_run`` threads the correct
+    ``authorization_source`` kwarg into ``apply_cleanup`` based on the
+    dispatch payload's top-level ``agent`` field.
+    """
+
+    def test_cmd_run_authorization_source_wrapper_declared_scope_for_plan_implementer(
+        self, tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+    ) -> None:
+        captured = _patch_capture_apply_cleanup(monkeypatch)
+        _patch_backend_returning(monkeypatch, _ok_envelope())
+
+        # Non-empty declared scope so the anti-aliasing guard does NOT
+        # short-circuit; the wrapper must call apply_cleanup with the
+        # write-authorized authorization value.
+        payload = dict(good_input_obj)
+        payload["agent"] = "plan-implementer"
+        payload["declared_files_changed"] = ["x.py"]
+        input_path = tmp_path / "input.json"
+        input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        code, _out, _err = _run_cli(
+            ["run", "--input", str(input_path), "--output", "-",
+             "--repo-root", str(tmp_path)],
+            capsys=capsys,
+        )
+        assert code == 0
+        assert len(captured) == 1
+        assert captured[0]["kwargs"].get("authorization_source") == \
+            "wrapper-declared-scope"
+
+    def test_cmd_run_authorization_source_wrapper_empty_scope_readonly_for_plan_analyst(
+        self, tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+    ) -> None:
+        captured = _patch_capture_apply_cleanup(monkeypatch)
+        _patch_backend_returning(
+            monkeypatch, _ok_envelope(agent="plan-analyst"),
+        )
+
+        payload = dict(good_input_obj)
+        payload["agent"] = "plan-analyst"
+        payload["declared_files_changed"] = []
+        input_path = tmp_path / "input.json"
+        input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        code, _out, _err = _run_cli(
+            ["run", "--input", str(input_path), "--output", "-",
+             "--repo-root", str(tmp_path)],
+            capsys=capsys,
+        )
+        assert code == 0
+        assert len(captured) == 1
+        assert captured[0]["kwargs"].get("authorization_source") == \
+            "wrapper-empty-scope-readonly"
+
+    def test_cmd_run_authorization_source_wrapper_declared_scope_for_plan_remediator(
+        self, tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+    ) -> None:
+        captured = _patch_capture_apply_cleanup(monkeypatch)
+        _patch_backend_returning(
+            monkeypatch, _ok_envelope(agent="plan-remediator"),
+        )
+
+        payload = dict(good_input_obj)
+        payload["agent"] = "plan-remediator"
+        payload["declared_files_changed"] = ["x.py"]
+        input_path = tmp_path / "input.json"
+        input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        code, _out, _err = _run_cli(
+            ["run", "--input", str(input_path), "--output", "-",
+             "--repo-root", str(tmp_path)],
+            capsys=capsys,
+        )
+        assert code == 0
+        assert len(captured) == 1
+        assert captured[0]["kwargs"].get("authorization_source") == \
+            "wrapper-declared-scope"

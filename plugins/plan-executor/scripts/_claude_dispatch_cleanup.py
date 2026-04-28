@@ -29,6 +29,31 @@ Public API
         Returns the result dict shape documented under
         :func:`apply_cleanup`.
 
+Authorization gate
+------------------
+
+:func:`apply_cleanup` requires a keyword-only ``authorization_source``
+argument anchored in the dispatch payload's top-level ``agent`` field.
+Omission raises :class:`TypeError`; an unknown value raises
+:class:`ValueError`. Both checks fire before any working-tree
+inspection so a missing/bad value cannot silently revert anything. The
+closed enum is intentionally minimal at v1:
+
+  * ``"wrapper-declared-scope"`` — write-authorized agents
+    (``plan-implementer`` / ``plan-remediator``). The wrapper reverts
+    every observed delta outside ``declared_files_changed`` ∪
+    protected paths.
+  * ``"wrapper-empty-scope-readonly"`` — read-only agents
+    (``plan-analyst``). Any observed delta is a contract violation;
+    the wrapper reverts it.
+
+The discriminator anchors authorization in the agent identity rather
+than letting any caller opt out by passing the readonly value
+casually. The companion anti-aliasing guard (a write-authorized agent
+with empty ``declared_files_changed`` is routed to
+``wrapper_autoclean_blocked`` by the dispatch wrapper, NOT to the
+readonly path) lives in ``plan_claude_dispatch.py:cmd_run``.
+
 Factoring note
 --------------
 
@@ -88,6 +113,46 @@ GIT_TIMEOUT = 30
 #: keeps a single dispatch's baseline bounded even in repos with large
 #: blobs.
 MAX_BASELINE_BLOB_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+# ---------------------------------------------------------------------------
+# Authorization gate (TASK-002 wrapper_autoclean_authorization)
+# ---------------------------------------------------------------------------
+#
+# ``apply_cleanup`` requires a keyword-only ``authorization_source`` that
+# names which dispatch-payload-anchored permission the caller is acting
+# under. The closed enum at v1:
+#
+#   * ``"wrapper-declared-scope"`` — write-authorized agents
+#     (``plan-implementer`` / ``plan-remediator``). Reverts the observed
+#     delta minus ``declared_files_changed`` minus protected paths.
+#   * ``"wrapper-empty-scope-readonly"`` — read-only agents
+#     (``plan-analyst``). Any observed delta is treated as a contract
+#     violation and reverted.
+#
+# A sentinel default makes omission fail at call time with a TypeError
+# whose message names the expected enum values; a bogus value raises
+# ValueError. Both checks fire before ``_changed_paths()`` and the
+# classification loop, so a missing/bad value cannot silently revert
+# anything. Mirrors the ``--authorization-source`` enum design from
+# prohibit_silent_revert TASK-001 (cmd_fail_task).
+
+_MISSING_AUTHORIZATION_SOURCE = object()
+
+ALLOWED_CLEANUP_AUTHORIZATION_SOURCES: frozenset[str] = frozenset({
+    "wrapper-declared-scope",
+    "wrapper-empty-scope-readonly",
+})
+
+# Translation to the legacy per-file gate enum on ``_restore_path``
+# (introduced by prohibit_silent_revert TASK-002). Both new values map
+# to the explicit-declaration revert mode; the structural decision to
+# NOT mutate (e.g., when the backend status is untrusted, or when a
+# write-authorized agent declared no scope) is made upstream in
+# ``plan_claude_dispatch.py:cmd_run`` by skipping the call entirely.
+_RESTORE_GATE_TRANSLATION = {
+    "wrapper-declared-scope": "wrapper_internal_cleanup_explicit_declaration",
+    "wrapper-empty-scope-readonly": "wrapper_internal_cleanup_explicit_declaration",
+}
 
 # ---------------------------------------------------------------------------
 # Tiny git plumbing helpers (duplicated from plan_codex_dispatch — see the
@@ -525,7 +590,7 @@ def apply_cleanup(
     declared_files_changed: Iterable[str],
     repo_root: str,
     *,
-    authorization_source: str,
+    authorization_source: object = _MISSING_AUTHORIZATION_SOURCE,
 ) -> dict:
     """Compute the post-dispatch delta vs ``baseline`` and revert any
     paths in ``(observed_delta − declared_files_changed − protected)``.
@@ -586,6 +651,20 @@ def apply_cleanup(
     baseline — which is the correct safe behavior. Tests must arrange
     disjoint baselines (one per process) to verify isolation.
     """
+    # Authorization gate — fires BEFORE _changed_paths() and the
+    # classification loop, so a missing/bad value cannot silently revert
+    # anything. See module docstring "Authorization gate".
+    if authorization_source is _MISSING_AUTHORIZATION_SOURCE:
+        raise TypeError(
+            "apply_cleanup requires authorization_source; expected one of "
+            f"{sorted(ALLOWED_CLEANUP_AUTHORIZATION_SOURCES)}"
+        )
+    if authorization_source not in ALLOWED_CLEANUP_AUTHORIZATION_SOURCES:
+        raise ValueError(
+            f"apply_cleanup: unknown authorization_source {authorization_source!r}; "
+            f"expected one of {sorted(ALLOWED_CLEANUP_AUTHORIZATION_SOURCES)}"
+        )
+
     # Use baseline's repo_root if present so callers cannot accidentally
     # point cleanup at a different worktree than the one the snapshot
     # was taken from. This also makes the function safe under
@@ -690,10 +769,11 @@ def apply_cleanup(
             continue
         if rel in declared:
             continue
-        # Out of scope and not protected → revert.
+        # Out of scope and not protected → revert. Translate the
+        # apply_cleanup-level enum to the per-file gate enum.
         outcome = _restore_path(
             repo_resolved, rel, baseline,
-            authorization_source=authorization_source,
+            authorization_source=_RESTORE_GATE_TRANSLATION[authorization_source],
         )
         out_of_scope.append(rel)
         if outcome in ("restored_bytes", "restored_head"):

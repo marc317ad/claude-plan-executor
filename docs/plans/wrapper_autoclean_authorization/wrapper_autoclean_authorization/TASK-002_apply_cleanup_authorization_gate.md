@@ -45,6 +45,7 @@ The discriminator for which authorization value to pass is **agent identity**, a
   - plugins/plan-executor/scripts/plan_claude_dispatch.py (`cmd_run` step 9 at `:697` — pass `authorization_source="wrapper-declared-scope"` for write-authorized agents and `"wrapper-empty-scope-readonly"` for `plan-analyst`)
   - plugins/plan-executor/scripts/_plan_paths.py (one-line comment near `PROTECTED_PATH_PREFIXES` at line 31)
   - tests/scripts/test_claude_dispatch_cleanup.py (every `apply_cleanup(...)` call threads `authorization_source` — ~30 call sites across `TestApplyCleanup` classes at lines 173–490)
+  - tests/scripts/test_plan_claude_dispatch_cli.py (3 new cmd_run integration tests for the authorization-source kwarg threading)
 - **Dependencies:** [001]
 - **Test command:** `python3 -m pytest tests/scripts/test_claude_dispatch_cleanup.py -q && python3 -m pytest tests/scripts/test_plan_claude_dispatch_cli.py -q -k "authorization_source or AuthorizationSource"`
 - **Acceptance criteria:**
@@ -76,7 +77,7 @@ The discriminator for which authorization value to pass is **agent identity**, a
     - `test_apply_cleanup_wrapper_declared_scope_with_nonempty_declared_preserves_in_scope` — `declared=["x.py"]`; observed delta on `x.py` is preserved, on `y.py` is reverted.
     - `test_cmd_run_passes_wrapper_declared_scope_for_plan_implementer` — integration: monkeypatch `_claude_dispatch_cleanup.apply_cleanup`, dispatch with `agent="plan-implementer"`, assert captured kwargs include `authorization_source="wrapper-declared-scope"`.
     - `test_cmd_run_passes_wrapper_empty_scope_readonly_for_plan_analyst` — same but `agent="plan-analyst"`.
-- **Reversion guidance:** `git restore plugins/plan-executor/scripts/_claude_dispatch_cleanup.py plugins/plan-executor/scripts/plan_claude_dispatch.py plugins/plan-executor/scripts/_plan_paths.py tests/scripts/test_claude_dispatch_cleanup.py`
+- **Reversion guidance:** `git restore plugins/plan-executor/scripts/_claude_dispatch_cleanup.py plugins/plan-executor/scripts/plan_claude_dispatch.py plugins/plan-executor/scripts/_plan_paths.py tests/scripts/test_claude_dispatch_cleanup.py tests/scripts/test_plan_claude_dispatch_cli.py`
 
 **Description:**
 Closes Layer B of the defect for the Claude wrapper. The sentinel-default keyword-only param keeps existing positional test seams readable while making omissions fail loudly. The agent-identity-based discriminator (`plan-analyst` ↔ `wrapper-empty-scope-readonly`; everyone else ↔ `wrapper-declared-scope`) anchors the authorization decision in the dispatch payload's agent field rather than allowing any caller to opt out by passing the readonly value casually. The anti-aliasing guard (write-authorized agent + empty declared scope → DON'T fall back to readonly, route to TASK-004 short-circuit) is the load-bearing fix for the TASK-009 destruction event.
@@ -84,3 +85,11 @@ Closes Layer B of the defect for the Claude wrapper. The sentinel-default keywor
 **Implementation notes.** The check at the top of `apply_cleanup` is two lines (sentinel comparison + enum membership); the existing function body needs no other changes. The wrapper's `cmd_run` change is similarly small — three lines (one for the `if agent_name == "plan-analyst"` branch, one for the explicit `authorization_source` keyword on the `apply_cleanup` call). The anti-aliasing guard is one extra `if` in `cmd_run` that early-returns on the empty-declared write-authorized case; the actual envelope construction lands in TASK-004.
 
 Test-fixture update strategy: prefer the `_call_cleanup` helper approach over rewriting every assertion. The new helper signature mirrors `apply_cleanup`'s: `_call_cleanup(baseline, declared, repo, *, source="wrapper-declared-scope")`. Most tests use the default; the four new tests above explicitly pass non-default values to exercise the gate.
+
+## Execution log — 20260427T223241 (paused)
+
+Starting SHA: `246ee2b5d6204e40865f7d2bf2251d38998eb6d8`  → Ending SHA: `246ee2b5d6204e40865f7d2bf2251d38998eb6d8`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | claude | - | - | - | paused — implementer returned markdown clarification question; zero edits |

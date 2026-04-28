@@ -693,40 +693,67 @@ def cmd_run(args: argparse.Namespace) -> int:
         # array. This fallback is defensive.
         declared = []
 
-    # TASK-003 prohibit_silent_revert extension: if the backend failed to
-    # produce a schema-valid result (malformed_output or schema_invalid),
-    # and we have an observed diff, DO NOT execute silent cleanup.
-    # Preserve the tree and surface the violation so the orchestrator can
-    # route to the Awaiting-User pause.
-    _CLEANUP_BLOCKED_STATUS = {"timeout", "backend_error", "schema_invalid"}
-    auth_source = "wrapper_internal_cleanup_explicit_declaration"
-    if envelope["status"] in _CLEANUP_BLOCKED_STATUS:
-        auth_source = "wrapper_observe_only_blocked_by_status"
+    # TASK-002 wrapper_autoclean_authorization: the cleanup
+    # authorization is anchored in the dispatch payload's top-level
+    # ``agent`` field. ``plan-analyst`` is the only read-only agent; all
+    # others are write-authorized.
+    if agent_name == "plan-analyst":
+        auth_source = "wrapper-empty-scope-readonly"
+    else:
+        auth_source = "wrapper-declared-scope"
 
     # Agent's self-reported files_changed is parsed for informational /
     # diff-metadata purposes only; never used as cleanup authority.
     _observed = _extract_observed_files_changed(envelope)  # noqa: F841
-    cleanup_result = cleanup.apply_cleanup(
-        baseline, declared, repo_root,
-        authorization_source=auth_source,
+
+    # TASK-002 anti-aliasing guard: a write-authorized agent with empty
+    # ``declared_files_changed`` MUST NOT take the readonly path —
+    # otherwise a Layer-A regression (orchestrator failing to populate
+    # declared scope) could destroy work. Skip ``apply_cleanup`` and
+    # route through the wrapper_autoclean_blocked envelope.
+    # The actual envelope construction lands in TASK-004 of this plan;
+    # for now we emit a stub cleanup_result so downstream merging /
+    # event emission preserves the tree.
+    _antialias_blocked = (
+        agent_name in {"plan-implementer", "plan-remediator"}
+        and len(declared) == 0
     )
+    if _antialias_blocked:
+        cleanup_result = {
+            "scope_violation_detected": False,
+            "scope_misreport_detected": False,
+            "restored": [],
+            "deleted": [],
+            "failed_paths": [],
+            "out_of_scope_paths": [],
+            "misreported_paths": [],
+            "protected_skipped": [],
+            "baseline_captured": baseline.get("captured", False),
+            "cleanup_strategy": "skipped_anti_aliasing_guard",
+        }
+    else:
+        cleanup_result = cleanup.apply_cleanup(
+            baseline, declared, repo_root,
+            authorization_source=auth_source,
+        )
 
     # fold cleanup flags into the envelope's scope.
     envelope = _merge_scope_with_cleanup(envelope, cleanup_result)
 
-    # TASK-004: Emit wrapper-level autoclean events for the run log.
-    # These land in the envelope's ``extra.wrapper_events`` and are hoisted
-    # by the orchestrator.
+    # TASK-004 (prohibit_silent_revert) / TASK-002 (this plan): emit
+    # wrapper-level autoclean events for the run log. These land in the
+    # envelope's ``extra.wrapper_events`` and are hoisted by the
+    # orchestrator.
     wrapper_events = []
-    if auth_source == "wrapper_observe_only_blocked_by_status" and cleanup_result.get("scope_violation_detected"):
+    if _antialias_blocked:
         extra = envelope.setdefault("extra", {})
         if isinstance(extra, dict):
             extra["wrapper_autoclean_blocked"] = True
-            extra["preserved_files"] = cleanup_result.get("out_of_scope_paths", [])
+            extra["preserved_files"] = []
             wrapper_events.append({
                 "event": "wrapper_autoclean_blocked",
-                "reason": "backend_status_untrusted",
-                "preserved_files": extra["preserved_files"],
+                "reason": "antialiasing_guard_empty_declared_scope",
+                "preserved_files": [],
             })
     elif cleanup_result.get("restored") or cleanup_result.get("deleted"):
         wrapper_events.append({
