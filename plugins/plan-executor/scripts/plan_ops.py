@@ -11465,6 +11465,108 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
                 )
                 return
 
+    # BUG-146: inline the result schema content (not just its path) so the
+    # implementer/remediator/analyst agent has no choice but to follow the
+    # canonical ``{outcome, files_changed, report}`` shape. Without this,
+    # the agent's prompt only sees ``schema_path`` as an opaque string and
+    # falls back to a guessed legacy shape (top-level
+    # ``{status, task_id, summary, ...}``) — see
+    # ``docs/bugs/BUG_146_*_IMPLEMENTER-RESULT-SCHEMA-MISMATCH.md``. The
+    # inlined schema is also threaded into ``payload.prompt`` for the
+    # write-authorized variants so the structured-fallback rendering path
+    # in ``_claude_backend._resolve_prompt`` surfaces it directly to the
+    # nested agent (which never reads the wrapper envelope).
+    schema_inline_obj: dict | None = None
+    schema_abs = (Path(repo_root) / schema_path).resolve()
+    if schema_abs.is_file():
+        try:
+            schema_inline_obj = json.loads(_load_text(schema_abs))
+        except json.JSONDecodeError as e:
+            _bcdi_emit_error(
+                "schema-inline-invalid-json",
+                f"result schema file is not valid JSON ({schema_abs}): {e}",
+            )
+            return
+    else:
+        _bcdi_emit_error(
+            "schema-inline-not-found",
+            f"result schema file not found at {schema_abs}",
+        )
+        return
+
+    if variant != "analyst":
+        prompt_lines = [
+            f"Implement TASK-{normalized_task_id} from the plan at "
+            f"`{plan_file.resolve()}` per your "
+            f"{agent} agent specification.",
+            "",
+            (
+                "Read the plan to find the `## Context` section and the "
+                "verbatim `### TASK-NNN: <title>` block (with Status / "
+                "Priority / Files / Test command / Acceptance criteria / "
+                "Description / Reversion guidance). Apply the minimum "
+                "change satisfying the AC, run the test command, and "
+                "return your structured JSON report. Do not commit, do "
+                "not modify the plan file, do not use `git stash`."
+            ),
+            "",
+            (
+                "## Result envelope (MANDATORY shape — do NOT emit a "
+                "legacy `{status, task_id, summary, ...}` shape)"
+            ),
+            "",
+            (
+                "Your final message MUST be a single JSON object "
+                "conforming to the canonical schema below. The wrapper "
+                "parses this with `claude-envelope-extract`; any "
+                "deviation classifies the run as `malformed` and pauses "
+                "the orchestrator. Top-level keys MUST be exactly "
+                "`outcome`, `files_changed`, and `report`."
+            ),
+            "",
+            "Worked example (canonical shape):",
+            "```json",
+            json.dumps(
+                {
+                    "outcome": "success",
+                    "files_changed": ["path/to/file.py"],
+                    "report": {
+                        "summary": "<2-5 bullets describing what changed>",
+                        "test_command": "<verbatim test command or 'none'>",
+                        "test_outcome": "passed",
+                        "test_output_tail": "<last 30 lines or 'n/a'>",
+                        "acceptance_criteria_check": [
+                            {"status": "x", "criterion": "<text>",
+                             "evidence": "<file:line or assertion>"},
+                        ],
+                        "plan_adaptations": [],
+                        "concerns_for_reviewer": [],
+                    },
+                },
+                indent=2,
+            ),
+            "```",
+            "",
+            (
+                "`outcome` MUST be one of: `success`, `partial`, "
+                "`failed`, `plan-incorrect`, `blocked`, `malformed`. "
+                "`files_changed` MUST be an array of repo-relative "
+                "paths. `report` MUST be an object (free-form keys "
+                "describing the implementation report)."
+            ),
+            "",
+            f"Result schema (verbatim, from `{schema_path}`):",
+            "```json",
+            json.dumps(schema_inline_obj, indent=2),
+            "```",
+            "",
+            "Structured dispatch payload (verbatim, for reference):",
+            "```json",
+            json.dumps(payload, indent=2, default=str),
+            "```",
+        ]
+        payload["prompt"] = "\n".join(prompt_lines)
+
     envelope = {
         "schema_version": 1,
         "agent": agent,
@@ -11472,7 +11574,7 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
         "output_instructions": {
             "format": "json",
             "schema_path": schema_path,
-            "schema_inline": None,
+            "schema_inline": schema_inline_obj,
             "max_bytes": 65536,
         },
         "overrides": {

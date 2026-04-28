@@ -1,6 +1,6 @@
 ---
 bug_id: 146
-status: OPEN
+status: CLOSED
 group: IMPLEMENTER-RESULT-SCHEMA-MISMATCH
 severity: minor
 source_fix_id: null

@@ -102,6 +102,8 @@ When the trigger fires, emit the optional `**Outcome states:**` block in your re
 
 Emit the report using the exact shape below.
 
+**JSON-dispatch path (BUG-146).** When the orchestrator dispatches you via `plan_claude_dispatch.py run` with `output_instructions.format: "json"`, your prompt will inline the canonical result schema (`tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json`) verbatim. In that path you MUST emit a single JSON object with top-level keys `{outcome, files_changed, report}` — `outcome` is one of `success | partial | failed | plan-incorrect | blocked | malformed`, `files_changed` is an array of repo-relative paths, and `report` is an object carrying the markdown sections below as free-form fields. Do NOT emit the legacy shape (top-level `status`/`task_id`/`summary`/`test_result`). The wrapper's `claude-envelope-extract` parser keys on `result.outcome`; absence pauses the run.
+
 ## Report format
 
 ```

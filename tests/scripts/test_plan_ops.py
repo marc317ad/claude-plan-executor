@@ -22812,3 +22812,267 @@ class TestBuildClaudeDispatchInput:
         envelope = _parse_json(cp)
         assert envelope["agent"] == "plan-remediator"
         assert envelope["overrides"]["model"] == "opus"
+
+
+# ---------------------------------------------------------------------------
+# BUG-146: implementer-result schema mismatch — wrapper-side schema inlining
+# ---------------------------------------------------------------------------
+
+
+class Test_implementer_schema_inline_in_dispatch_input:
+    """BUG-146 — `cmd_build_claude_dispatch_input` must inline the result
+    schema content (not just the path) into both ``output_instructions``
+    AND ``payload.prompt`` so the implementer agent has no choice but to
+    follow the canonical ``{outcome, files_changed, report}`` shape. The
+    legacy ``{status, task_id, summary, ...}`` fallback was the symptom
+    that paused the wrapper_autoclean_authorization run TASK-002."""
+
+    def test_implementer_schema_inlined_into_output_instructions(
+        self, bcdi_plan: Path,
+    ) -> None:
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "001",
+            "--variant", "default",
+            "--starting-sha", "abc123",
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = _parse_json(cp)
+        oi = envelope["output_instructions"]
+        # schema_inline must be the parsed schema object (not None / not a path).
+        assert isinstance(oi["schema_inline"], dict), oi["schema_inline"]
+        # Canonical-shape required key set on the inlined schema:
+        assert oi["schema_inline"].get("title") == (
+            "claude_dispatch_implementer_result"
+        )
+        props = oi["schema_inline"]["properties"]
+        assert set(props.keys()) >= {"outcome", "files_changed", "report"}
+        # outcome enum must include the canonical six.
+        assert set(props["outcome"]["enum"]) == {
+            "success", "partial", "failed",
+            "plan-incorrect", "blocked", "malformed",
+        }
+
+    def test_implementer_schema_inlined_into_payload_prompt(
+        self, bcdi_plan: Path,
+    ) -> None:
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "001",
+            "--variant", "default",
+            "--starting-sha", "abc123",
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = _parse_json(cp)
+        prompt = envelope["payload"].get("prompt")
+        assert isinstance(prompt, str) and prompt
+        # Canonical worked-example keys must appear verbatim in the prompt
+        # so the implementer cannot guess a legacy shape.
+        assert '"outcome"' in prompt
+        assert '"files_changed"' in prompt
+        assert '"report"' in prompt
+        # Guard against drift back to the legacy top-level shape.
+        assert '"status": "success"' not in prompt
+        assert '"task_id":' not in prompt or '"task_id": "001"' in prompt
+        # The full schema body must be inlined (not just the path string).
+        assert "claude_dispatch_implementer_result" in prompt
+
+    def test_implementer_schema_inlined_for_rework_and_role_swap(
+        self, bcdi_plan: Path, tmp_path: Path,
+    ) -> None:
+        ctx = tmp_path / "ctx.json"
+        ctx.write_text(
+            '{"findings_for_retry": [], "d5_summary": "stub"}',
+            encoding="utf-8",
+        )
+        for variant, extra in (
+            ("rework", ["--dispatch-context", str(ctx)]),
+            ("role-swap", []),
+        ):
+            cp = _run(
+                "build-claude-dispatch-input",
+                "--plan-file", str(bcdi_plan),
+                "--task-id", "001",
+                "--variant", variant,
+                *extra,
+            )
+            assert cp.returncode == 0, (variant, cp.stderr)
+            envelope = _parse_json(cp)
+            assert isinstance(
+                envelope["output_instructions"]["schema_inline"], dict,
+            ), variant
+            prompt = envelope["payload"].get("prompt") or ""
+            assert '"outcome"' in prompt, variant
+            assert '"files_changed"' in prompt, variant
+            assert '"report"' in prompt, variant
+
+    def test_remediator_variant_inlines_remediator_schema(
+        self, bcdi_plan: Path, tmp_path: Path,
+    ) -> None:
+        ctx = tmp_path / "ctx.json"
+        ctx.write_text('{"load_bearing_findings": []}', encoding="utf-8")
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "001",
+            "--variant", "narrow-remediation",
+            "--dispatch-context", str(ctx),
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = _parse_json(cp)
+        oi = envelope["output_instructions"]
+        assert isinstance(oi["schema_inline"], dict)
+        # The narrow-remediation variant points at the remediator schema.
+        assert oi["schema_path"].endswith("remediator_result.json")
+        # Prompt still carries the canonical-shape worked example.
+        prompt = envelope["payload"]["prompt"]
+        assert '"outcome"' in prompt
+
+    def test_analyst_variant_inlines_analyst_schema_no_prompt_override(
+        self, bcdi_plan: Path,
+    ) -> None:
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "001",
+            "--variant", "analyst",
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = _parse_json(cp)
+        oi = envelope["output_instructions"]
+        # Schema must still be inlined for the analyst variant.
+        assert isinstance(oi["schema_inline"], dict)
+        # Analyst variant intentionally does NOT inject `payload.prompt`
+        # (its existing fan-out path drives the prompt elsewhere); we
+        # only require the structured envelope still validates.
+        assert "prompt" not in envelope["payload"]
+
+    def test_envelope_with_inlined_schema_validates_against_input_schema(
+        self, bcdi_plan: Path, tmp_path: Path,
+    ) -> None:
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        import plan_claude_dispatch as pcd  # noqa: WPS433
+        schema = pcd._load_schema(pcd.INPUT_SCHEMA_PATH)
+        ctx = tmp_path / "ctx.json"
+        ctx.write_text(
+            '{"findings_for_retry": [], "d5_summary": "stub"}',
+            encoding="utf-8",
+        )
+        for variant in (
+            "default", "rework", "role-swap",
+            "narrow-remediation", "analyst",
+        ):
+            extra = []
+            if variant in ("rework", "narrow-remediation"):
+                extra = ["--dispatch-context", str(ctx)]
+            cp = _run(
+                "build-claude-dispatch-input",
+                "--plan-file", str(bcdi_plan),
+                "--task-id", "001",
+                "--variant", variant,
+                *extra,
+            )
+            assert cp.returncode == 0, (variant, cp.stderr)
+            envelope = _parse_json(cp)
+            err = pcd._validate_against_schema(envelope, schema)
+            assert err is None, (variant, err)
+
+
+class Test_implementer_schema_smoke_end_to_end:
+    """BUG-146 AC integration smoke — stub the canonical-shape result and
+    confirm `claude-envelope-extract` resolves a non-None ``outcome`` and
+    does NOT classify the result as ``malformed``. This exercises the
+    contract from the parser side independently of the wrapper-side
+    inlining; together with the schema-inline tests above, the loop
+    closes end-to-end."""
+
+    def test_canonical_shape_payload_parses_outcome_success(
+        self, tmp_path: Path,
+    ) -> None:
+        # Simulate the implementer's stdout in the canonical shape.
+        canonical = {
+            "outcome": "success",
+            "files_changed": ["plugins/foo.py", "tests/test_foo.py"],
+            "report": {
+                "summary": "applied fix and added test",
+                "test_command": "pytest tests/test_foo.py",
+                "test_outcome": "passed",
+                "test_output_tail": "1 passed",
+                "acceptance_criteria_check": [],
+                "plan_adaptations": [],
+                "concerns_for_reviewer": [],
+            },
+        }
+        # claude-envelope-extract reads the wrapper envelope on stdin and
+        # extracts the agent's inner result. Build a minimal wrapper-shape
+        # envelope that mirrors what plan_claude_dispatch.py emits.
+        wrapper_envelope = {
+            "schema_version": 1,
+            "status": "ok",
+            "result": canonical,
+            "agent": "plan-implementer",
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT),
+             "claude-envelope-extract",
+             "--stdin",
+             "--agent", "plan-implementer",
+             "--json"],
+            input=json.dumps(wrapper_envelope),
+            capture_output=True,
+            text=True,
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = json.loads(cp.stdout)
+        # The parser surfaces the inner ``result.outcome`` at top level.
+        assert body["outcome"] == "success", body
+        # Sanity: must NOT collapse to ``malformed`` for a canonical shape.
+        assert body["outcome"] != "malformed", body
+        # The inner ``result`` is preserved verbatim.
+        assert body["result"]["outcome"] == "success"
+        assert body["result"]["files_changed"] == [
+            "plugins/foo.py", "tests/test_foo.py",
+        ]
+
+    def test_legacy_shape_payload_is_classified_malformed(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression guard: the pre-BUG-146 legacy shape (top-level
+        `status`/`task_id`) must NOT silently parse as `outcome=success`."""
+        legacy = {
+            "status": "success",
+            "task_id": "001",
+            "summary": "...",
+            "files_changed": ["plugins/foo.py"],
+            "test_result": "passed",
+            "test_command": "pytest",
+            "test_output_tail": "1 passed",
+            "notes": "...",
+        }
+        wrapper_envelope = {
+            "schema_version": 1,
+            "status": "ok",
+            "result": legacy,
+            "agent": "plan-implementer",
+        }
+        cp = subprocess.run(
+            [str(PY), str(SCRIPT),
+             "claude-envelope-extract",
+             "--stdin",
+             "--agent", "plan-implementer",
+             "--json"],
+            input=json.dumps(wrapper_envelope),
+            capture_output=True,
+            text=True,
+        )
+        # The parser must surface ``outcome=None`` for the legacy shape
+        # (no top-level ``result.outcome``) — the orchestrator's SKILL
+        # then classifies the run as ``malformed`` and pauses. This is
+        # the BUG-146 reproduction symptom; the wrapper-side fix prevents
+        # the legacy shape from being emitted in the first place.
+        assert cp.returncode == 0, cp.stderr
+        body = json.loads(cp.stdout)
+        assert body["outcome"] is None, body
+        assert body["outcome"] != "success", body
