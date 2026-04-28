@@ -35,7 +35,12 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
   - When `unattended_revert_policy == "preserve-only"`: the function behaves identically to today (existing `_restore_path` loop + `restored`/`deleted`/`failed_paths` population; `cleanup_strategy="delta_bounded"`).
   - The return-dict shape grows by ZERO keys; only the values of `restored` / `deleted` / `failed_paths` / `cleanup_strategy` differ across policies. Downstream consumers (`plan_claude_dispatch.py:771–781`, the wrapper-events emission) require no changes.
   - Module docstring at `_claude_dispatch_cleanup.py:646–652` is rewritten to reflect the new contract: under `pause`/`fail-fast`, two concurrent callers' writes are NOT mutated; the orchestrator's reconcile-batch is authoritative for cross-task scope partitioning.
-  - Tests:
+  - Five new tests land in `tests/scripts/test_claude_dispatch_cleanup.py`:
+    - `test_apply_cleanup_pause_policy_detects_but_does_not_revert` — write a file outside declared scope, call `apply_cleanup(..., unattended_revert_policy="pause")`, assert `out_of_scope_paths == [path]`, `restored == []`, `deleted == []`, file content on disk is unchanged from the test-induced write, `cleanup_strategy == "detect_only_revert_policy_pause"`.
+    - `test_apply_cleanup_fail_fast_policy_detects_but_does_not_revert` — same setup as the `pause` test but with `fail-fast`; assert `cleanup_strategy == "detect_only_revert_policy_fail_fast"`.
+    - `test_apply_cleanup_preserve_only_policy_unchanged` — `unattended_revert_policy="preserve-only"`; assert behavior identical to today's no-policy-arg call (file reverted, `restored` non-empty, `cleanup_strategy == "delta_bounded"`).
+    - `test_apply_cleanup_default_policy_is_pause` — call without the policy kwarg; assert non-destructive behavior matching the `pause` test. Documents the safer-by-default contract.
+    - `test_apply_cleanup_unknown_policy_raises_valueerror` — `unattended_revert_policy="yolo"`; assert `ValueError` whose message contains the literal `"yolo"` and the closed enum.
 - **Reversion guidance:** none
 
 **Description:**

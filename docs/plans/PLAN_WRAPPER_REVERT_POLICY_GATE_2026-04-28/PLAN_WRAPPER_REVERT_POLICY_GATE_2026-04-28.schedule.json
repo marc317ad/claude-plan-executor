@@ -1,5 +1,5 @@
 {
-  "outcome": "needs-enrichment",
+  "outcome": "valid",
   "tasks": [
     {
       "id": "001",
@@ -12,7 +12,7 @@
       "test_command": "venv/bin/pytest -q tests/scripts/test_claude_dispatch_cleanup.py",
       "priority": "critical",
       "plan_file": "TASK-001_apply_cleanup_policy_gate.md",
-      "description": "",
+      "description": "Closes the destructive-action half of the wrapper-revert-policy bypass. `apply_cleanup`'s job is to revert any post-dispatch write that lies outside the local task's `declared_files_changed`, and the existing implementation does that unconditionally for write-authorized agents \u2014 which is what destroyed TASK-008's correct work in run `20260428T121041`. This task adds a single keyword-only argument (`unattended_revert_policy`) to the function and gates the destructive branch on its value. Under `pause` (and the `None` default) and `fail-fast`, the function performs all the same delta classification it does today (computing `out_of_scope_paths`, populating `scope_violation_detected`, detecting `misreported_paths`) but skips every call to `_restore_path`, leaving the working tree exactly as the inner agent left it. Under `preserve-only` the existing salvage-then-revert behavior is preserved unchanged \u2014 operators who explicitly opt into destruction get the documented behavior. Because the return-dict shape is unchanged, downstream consumers in `plan_claude_dispatch.py:771\u2013781` (the `wrapper_events` emission) and the envelope builder need no edits \u2014 they already key off `restored`/`deleted`/`failed_paths` and `scope_violation_detected`, which all behave correctly under the new branches.\n\n**Implementation notes.** The gate is roughly 8 lines: one `Optional[str]` arg with `None` default, one closed-enum validation block (parallel to the existing `authorization_source` validation at line 662), one branch around the `_restore_path` loop, two new `cleanup_strategy` enum values. The bulk of the diff is in tests \u2014 five new tests in `test_claude_dispatch_cleanup.py` covering each policy + the default + the unknown-value error. Existing tests must continue to pass; the safer-by-default contract means tests that don't pass `unattended_revert_policy` get the new non-destructive behavior, so any test that asserts on `restored`/`deleted` content has to be updated to either pass `unattended_revert_policy=\"preserve-only\"` (to keep its assertion) or reword the assertion to match the new default.\n\nTest-fixture update strategy: prefer extending the existing `_call_cleanup` helper (or whatever the suite uses) over per-test rewrites. Add a single keyword-arg passthrough so existing call-sites can opt into `preserve-only` without touching their assertion lines.",
       "acceptance_criteria": [
         "`apply_cleanup` signature gains a keyword-only argument `unattended_revert_policy: Optional[str] = None`. When `None`, the function behaves as `pause` (non-destructive). When the value is not in the closed set `{\"pause\", \"fail-fast\", \"preserve-only\"}` the function raises `ValueError` with a message naming the unknown value (parallel to the existing `authorization_source` validation at line 662).",
         "When `unattended_revert_policy in {\"pause\", \"fail-fast\", None}`: the function MUST detect the out-of-scope set exactly as today (same `observed_delta` math, same protected-skip handling, same misreport logic, same `out_of_scope_paths` population) but MUST NOT call `_restore_path` on any out-of-scope path. `restored=[]`, `deleted=[]`, `failed_paths=[]`. `scope_violation_detected` is computed from `out_of_scope_paths` (unchanged). `cleanup_strategy` is `\"detect_only_revert_policy_pause\"` when policy is `pause` (and `None`-default), `\"detect_only_revert_policy_fail_fast\"` when `fail-fast`.",
@@ -45,7 +45,7 @@
       "test_command": "venv/bin/pytest -q tests/scripts/test_plan_claude_dispatch_cli.py tests/scripts/test_plan_codex_dispatch_cli.py tests/scripts/test_plan_gemini_dispatch_cli.py tests/scripts/test_plan_ops.py -k \"unattended_revert_policy or revert_policy_gate or RevertPolicy\"",
       "priority": "critical",
       "plan_file": "TASK-002_thread_unattended_revert_policy.md",
-      "description": "",
+      "description": "Closes the plumbing half. TASK-001 added the destructive-action gate inside `apply_cleanup`, but the gate is dead code until each wrapper actually receives a policy value to thread through. This task extends the wrapper input schemas of all three dispatch wrappers (Claude, Codex, Gemini) with the same optional `unattended_revert_policy` field, updates each wrapper's `cmd_run` (or equivalent) to extract the value and pass it as the `unattended_revert_policy` keyword argument to its `apply_cleanup` (or analogous cleanup) call, and updates the orchestrator-side payload builders (`plan_ops.py build-claude-dispatch-input` and the analogous Codex / Gemini builders, if separate) to populate the field from the orchestrator's pinned `$UNATTENDED_REVERT_POLICY` value (set by Phase 0 preflight at `plan_ops.py:4952`).\n\n**Implementation notes.** The wrapper-side change per script is small \u2014 one new field read after schema validation, one new keyword on the cleanup call. The Gemini wrapper has four `_handle_timeout_cleanup` call sites (recently patched on commit `a7be6c5` for the `authorization_source` kwarg); all four must propagate the policy. Each wrapper's input schema gets the same optional field with the same closed enum (`[\"pause\", \"fail-fast\", \"preserve-only\"]`).\n\nOrchestrator-side: each `build-*-dispatch-input` subcommand reads `os.environ.get(\"UNATTENDED_REVERT_POLICY\")`. If unset, the field is omitted (wrapper falls back to the safer-by-default `pause` behavior introduced in TASK-001). If set to a value not in the enum, the subcommand exits non-zero with `errors[*].code = \"unattended-revert-policy-invalid\"` (parallel to the existing validation at `plan_ops.py:4960`). The orchestrator pins this env var via Phase 0 preflight; SKILL.md already documents the pinning at line 247 \u2014 no SKILL.md edits in this task.\n\nTests: per-wrapper integration smoke that asserts (i) a payload with `unattended_revert_policy: \"pause\"` + an out-of-scope write returns `scope_violation` with the file STILL on disk; (ii) a payload with `\"preserve-only\"` reverts the file as today. Plus `test_plan_ops.py` coverage of the builder subcommand's env-var reading and enum validation. The end-to-end test for the Gemini wrapper uses the same fixture pattern as the Claude/Codex equivalents but exercises the four `_handle_timeout_cleanup` call sites rather than a single `apply_cleanup` call.",
       "acceptance_criteria": [
         "All three wrapper-input schema files (or inlined schemas) declare `unattended_revert_policy` as an optional top-level property with the closed enum `{\"pause\", \"fail-fast\", \"preserve-only\"}`. `description` cross-references the orchestrator-level flag.",
         "All three wrapper scripts read the field from the validated input and pass it to `cleanup.apply_cleanup(...)` (or analogous Codex/Gemini cleanup call) as the `unattended_revert_policy` keyword argument.",
@@ -88,19 +88,6 @@
       ]
     }
   ],
-  "gaps": [
-    {
-      "task_id": "001",
-      "type": "missing-description",
-      "severity": "soft",
-      "detail": "TASK-001 in TASK-001_apply_cleanup_policy_gate.md has no `**Description:**` section"
-    },
-    {
-      "task_id": "002",
-      "type": "missing-description",
-      "severity": "soft",
-      "detail": "TASK-002 in TASK-002_thread_unattended_revert_policy.md has no `**Description:**` section"
-    }
-  ],
+  "gaps": [],
   "risks": []
 }
