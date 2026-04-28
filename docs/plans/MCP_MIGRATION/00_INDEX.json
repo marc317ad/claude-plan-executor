@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "plan_ops.py MCP Tool-Server Migration",
+  "created": "2026-04-28",
+  "base_branch": "main",
+  "depends_on_plans": [
+    "docs/plans/PHASE_D_STATE_MACHINE/PLAN_PHASE_D_STATE_MACHINE.md"
+  ],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "high",
+      "depends_on": ["001", "002", "003"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "medium",
+      "depends_on": ["004"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "medium",
+      "depends_on": ["005"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "high",
+      "depends_on": ["004"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "008",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "high",
+      "depends_on": ["006"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "009",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "medium",
+      "depends_on": ["007"],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "010",
+      "file": "PLAN_MCP_MIGRATION.md",
+      "priority": "high",
+      "depends_on": ["007", "008"],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

@@ -32,7 +32,9 @@
       "Bash(bash *)",
       "Bash(/mnt/d/claude-plan-executor/venv/bin/python *)",
       "Bash(export CLAUDE_PLUGIN_ROOT=/mnt/d/claude-plan-executor/plugins/plan-executor)",
-      "Bash(python3 /mnt/d/claude-plan-executor/plugins/plan-executor/scripts/plan_ops.py audit --json)"
+      "Bash(python3 /mnt/d/claude-plan-executor/plugins/plan-executor/scripts/plan_ops.py audit --json)",
+      "Read(//home/mad/.claude/plugins/cache/claude-fix-bugs/**)",
+      "Bash(python3 /home/mad/.claude/plugins/cache/claude-fix-bugs/**/bug_ops.py *)"
     ]
   }
 }

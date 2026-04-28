@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "Phase 1.5 State Machine + Sanitizer Extension",
+  "created": "2026-04-28",
+  "base_branch": "main",
+  "depends_on_plans": [
+    "docs/plans/PHASE_D_STATE_MACHINE/PLAN_PHASE_D_STATE_MACHINE.md"
+  ],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "medium",
+      "depends_on": [
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "medium",
+      "depends_on": [
+        "001",
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002",
+        "004",
+        "006"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
