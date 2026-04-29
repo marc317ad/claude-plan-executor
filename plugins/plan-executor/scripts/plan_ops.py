@@ -312,6 +312,43 @@ ALLOWED_LOG_EVENTS = {
 # and the user's next turn decides disposition.
 ALLOWED_RUN_OUTCOMES = {"success", "partial", "failed", "paused"}
 
+# Hand-fix gate (R2 from docs/analysis/orchestrator_dispatch_drift_20260429.md).
+# Run-log events that may carry `mechanism: "hand-fix"`. When such an event is
+# emitted via `log-event`, `cmd_log_event` requires an active `awaiting_user`
+# pause for the same `(run_id, task_id)`; otherwise it is a normal-flow leak
+# of the `feedback_handfix_default` rule and is rejected. See SKILL.md:19
+# (orchestrator's role is routing) and the rule body in that memory file.
+HANDFIX_GATED_EVENTS = frozenset({"remediation_start", "narrow_remediation_start"})
+# Recognized hand-fix vocabulary across `mechanism` and `mode` fields. The
+# orchestrator's current emission is `mechanism: "hand-fix"`; the run log
+# also carries the legacy `mode: "hand_fix_by_orchestrator"` form (e.g.,
+# `_run_log.jsonl` lines 30/32/44). The gate normalizes both fields by
+# case-folding and stripping `-`/`_`/whitespace, then matches the
+# substring "handfix" — covering "hand-fix", "hand_fix",
+# "hand_fix_by_orchestrator", etc. so the orchestrator cannot bypass the
+# guard by switching field name or punctuation.
+HANDFIX_FIELDS = ("mechanism", "mode")
+HANDFIX_TOKEN = "handfix"
+
+
+def _is_handfix_intent(fields: dict) -> bool:
+    """True if any of the recognized `HANDFIX_FIELDS` carries a value whose
+    normalized form contains the `HANDFIX_TOKEN` substring.
+
+    Normalization: lower-case and strip `-`, `_`, whitespace. Non-string
+    values are ignored (the field shape contract is set elsewhere).
+    """
+    for key in HANDFIX_FIELDS:
+        val = fields.get(key)
+        if not isinstance(val, str):
+            continue
+        normalized = (
+            val.lower().replace("-", "").replace("_", "").replace(" ", "")
+        )
+        if HANDFIX_TOKEN in normalized:
+            return True
+    return False
+
 # TASK-010: Globally-locked dependency / environment paths. Tasks whose
 # `files` set intersects this default set (or globs, or operator-supplied
 # additions from `docs/plans/_global_lock_paths.yaml`) MUST occupy their
@@ -4753,6 +4790,61 @@ def _load_awaiting_user_ids(run_log: Path) -> set[str]:
     return ids
 
 
+def _run_log_handfix_pause_active(
+    run_log: Path, run_id: str, task_id: str
+) -> bool:
+    """Return True if an `awaiting_user` pause is active for (run_id, task_id).
+
+    Active = there exists an `awaiting_user` event for this `(run_id, task_id)`
+    pair with no subsequent `commit_done` / `failed` / `run_end` event for the
+    same task (or any `run_end` for the run) that would have resolved it.
+
+    Used by `cmd_log_event` to gate `mechanism: "hand-fix"` events on
+    `remediation_start` / `narrow_remediation_start` so the hand-fix rule
+    (`feedback_handfix_default.md`) cannot leak into normal-flow dispatch.
+    See `docs/analysis/orchestrator_dispatch_drift_20260429.md` for the
+    motivating leak (run `20260429T111054` task 006).
+
+    Tolerance contract matches the other run-log scanners: missing file or
+    malformed lines are skipped (return False / continue), since the guard
+    is a safety net, not a run-log integrity check.
+    """
+    if not run_log.exists():
+        return False
+    try:
+        lines = run_log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    norm_target = _normalize_task_id(str(task_id))
+    if norm_target is None:
+        return False
+    paused = False
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("run_id") != run_id:
+            continue
+        evtype = ev.get("event")
+        if evtype == "run_end":
+            paused = False
+            continue
+        norm_ev_task = _normalize_task_id(str(ev.get("task_id", "")))
+        if norm_ev_task != norm_target:
+            continue
+        if evtype == "awaiting_user":
+            paused = True
+        elif evtype in {"commit_done", "failed"}:
+            paused = False
+    return paused
+
+
 def _load_feat_commit_ids(git_dir: Path) -> set[str]:
     """Collect normalized task ids shipped via `feat(TASK-NNN):` commits.
 
@@ -7785,6 +7877,60 @@ def cmd_log_event(args: argparse.Namespace) -> None:
                 ),
             }],
         })
+    # Hand-fix gate (R2 from orchestrator_dispatch_drift_20260429.md).
+    # Hand-fix intent (`mechanism`/`mode` carrying any recognized hand-fix
+    # vocabulary — see `_is_handfix_intent`) on `remediation_start` /
+    # `narrow_remediation_start` is allowed only when an `awaiting_user`
+    # pause is active for the same `(run_id, task_id)`. See
+    # `feedback_handfix_default.md` for the rule.
+    if args.event in HANDFIX_GATED_EVENTS and _is_handfix_intent(fields):
+        run_id = fields.get("run_id")
+        task_id = fields.get("task_id")
+        if not isinstance(run_id, str) or not run_id:
+            _die(args, {"errors": [{
+                "path": "$.run_id",
+                "code": "handfix-requires-run-id",
+                "message": (
+                    f"event {args.event!r} with hand-fix intent requires a "
+                    "non-empty run_id so the paused-state gate can be "
+                    "verified"
+                ),
+            }]})
+        if not isinstance(task_id, str) or not task_id:
+            _die(args, {"errors": [{
+                "path": "$.task_id",
+                "code": "handfix-requires-task-id",
+                "message": (
+                    f"event {args.event!r} with hand-fix intent requires a "
+                    "non-empty task_id so the paused-state gate can be "
+                    "verified"
+                ),
+            }]})
+        norm_task_id = _normalize_task_id(task_id)
+        if norm_task_id is None:
+            _die(args, {"errors": [{
+                "path": "$.task_id",
+                "code": "handfix-bad-task-id",
+                "message": (
+                    f"event {args.event!r} with hand-fix intent: "
+                    f"task_id={task_id!r} is not a valid task identifier "
+                    "(expected NNN, NNNX, or TASK-NNN[X])"
+                ),
+            }]})
+        if not _run_log_handfix_pause_active(RUN_LOG_PATH, run_id, task_id):
+            _die(args, {"errors": [{
+                "path": "$",
+                "code": "handfix-not-paused",
+                "message": (
+                    f"event {args.event!r} with hand-fix intent rejected: "
+                    f"run_id={run_id!r} task_id={task_id!r} has no active "
+                    "awaiting_user pause in the run log. Hand-fix is "
+                    "authorized only after a run has paused on this task; "
+                    "outside that envelope, dispatch a subagent. See "
+                    "feedback_handfix_default.md and "
+                    "docs/analysis/orchestrator_dispatch_drift_20260429.md."
+                ),
+            }]})
     # TASK-022: optional `--findings-json` attaches the full reviewer
     # finding payload to the event. Validated via the same helper
     # `commit-task` uses so the two seams share one schema. Collision with

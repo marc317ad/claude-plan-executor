@@ -307,6 +307,334 @@ class TestLogEvent:
 
 
 # ---------------------------------------------------------------------------
+# log-event — hand-fix paused-state gate
+# (R2 from docs/analysis/orchestrator_dispatch_drift_20260429.md)
+# ---------------------------------------------------------------------------
+
+
+def _seed_log(run_log: Path, *events: dict) -> None:
+    """Append canonical run-log lines for gate tests."""
+    run_log.parent.mkdir(parents=True, exist_ok=True)
+    with run_log.open("a", encoding="utf-8") as fh:
+        for ev in events:
+            fh.write(json.dumps(ev) + "\n")
+
+
+class TestLogEventHandfixGate:
+    """`mechanism: "hand-fix"` on `remediation_start` / `narrow_remediation_start`
+    is permitted only when an `awaiting_user` pause is active for the same
+    `(run_id, task_id)`. Mechanically enforces gate 1 of the rule in
+    `feedback_handfix_default.md`. The leak this guard closes is the
+    run `20260429T111054` task 006 case: `review_done needs-rework` →
+    `remediation_start mechanism: "hand-fix"` with no intervening
+    `awaiting_user` event.
+    """
+
+    def _emit_handfix(
+        self, run_id: str = "R1", task_id: str = "006",
+        event: str = "remediation_start",
+    ) -> subprocess.CompletedProcess:
+        fields = {
+            "run_id": run_id,
+            "task_id": task_id,
+            "variant": "bounded",
+            "mechanism": "hand-fix",
+            "findings_count": 1,
+            "reason": "narrow doc fix",
+        }
+        return _run(
+            "log-event",
+            "--event", event,
+            "--fields-json", json.dumps(fields),
+            "--json",
+        )
+
+    def test_rejects_handfix_without_pause(self, isolated_plan: Path) -> None:
+        # Normal-flow: run_start → implement → review_done (needs-rework)
+        # → remediation_start mechanism=hand-fix. No awaiting_user. Reject.
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "implement_start", "run_id": "R1", "task_id": "006"},
+            {"ts": "t2", "event": "review_done", "run_id": "R1", "task_id": "006",
+             "verdict": "needs-rework", "findings_count": 1},
+        )
+        cp = self._emit_handfix()
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-not-paused" in codes, body
+
+    def test_allows_handfix_after_awaiting_user(
+        self, isolated_plan: Path
+    ) -> None:
+        # Paused recovery path: awaiting_user is the most recent task event.
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "implement_start", "run_id": "R1", "task_id": "006"},
+            {"ts": "t2", "event": "awaiting_user", "run_id": "R1", "task_id": "006",
+             "stage": "post_implement_failure"},
+        )
+        cp = self._emit_handfix()
+        assert cp.returncode == 0, cp.stderr
+        assert _parse_json(cp)["ok"] is True
+
+    def test_rejects_after_pause_resolved_by_commit_done(
+        self, isolated_plan: Path
+    ) -> None:
+        # awaiting_user → commit_done resolves the pause for this task;
+        # subsequent hand-fix attempt must be rejected.
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "awaiting_user", "run_id": "R1", "task_id": "006",
+             "stage": "post_implement_failure"},
+            {"ts": "t2", "event": "commit_done", "run_id": "R1", "task_id": "006"},
+        )
+        cp = self._emit_handfix()
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-not-paused" in codes, body
+
+    def test_rejects_after_pause_resolved_by_run_end(
+        self, isolated_plan: Path
+    ) -> None:
+        # run_end resolves all pauses for the run.
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "awaiting_user", "run_id": "R1", "task_id": "006",
+             "stage": "post_implement_failure"},
+            {"ts": "t2", "event": "run_end", "run_id": "R1", "outcome": "paused"},
+        )
+        cp = self._emit_handfix()
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-not-paused" in codes, body
+
+    def test_other_run_pause_does_not_authorize(
+        self, isolated_plan: Path
+    ) -> None:
+        # awaiting_user for a DIFFERENT run_id does not unlock hand-fix here.
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R0"},
+            {"ts": "t1", "event": "awaiting_user", "run_id": "R0", "task_id": "006"},
+            {"ts": "t2", "event": "run_start", "run_id": "R1"},
+            {"ts": "t3", "event": "implement_start", "run_id": "R1", "task_id": "006"},
+        )
+        cp = self._emit_handfix(run_id="R1", task_id="006")
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-not-paused" in codes, body
+
+    def test_other_task_pause_does_not_authorize(
+        self, isolated_plan: Path
+    ) -> None:
+        # awaiting_user for a DIFFERENT task_id (same run) does not unlock.
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "awaiting_user", "run_id": "R1", "task_id": "007"},
+        )
+        cp = self._emit_handfix(run_id="R1", task_id="006")
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-not-paused" in codes, body
+
+    def test_normalizes_task_id(self, isolated_plan: Path) -> None:
+        # awaiting_user logged with task_id "TASK-006"; hand-fix emitted with
+        # task_id "006" must still be authorized — both normalize to "006".
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "awaiting_user", "run_id": "R1",
+             "task_id": "TASK-006"},
+        )
+        cp = self._emit_handfix(run_id="R1", task_id="006")
+        assert cp.returncode == 0, cp.stderr
+
+    def test_narrow_remediation_start_is_also_gated(
+        self, isolated_plan: Path
+    ) -> None:
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "implement_start", "run_id": "R1", "task_id": "006"},
+        )
+        cp = self._emit_handfix(event="narrow_remediation_start")
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-not-paused" in codes, body
+
+    def test_remediation_start_without_handfix_mechanism_is_allowed(
+        self, isolated_plan: Path
+    ) -> None:
+        # Phase D.2a normal subagent rework: mechanism is not "hand-fix",
+        # so the gate must NOT fire even with no pause.
+        cp = _run(
+            "log-event",
+            "--event", "remediation_start",
+            "--fields-json", json.dumps({
+                "run_id": "R1", "task_id": "006", "variant": "bounded",
+                "mechanism": "subagent-rework", "findings_count": 1,
+            }),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+
+    def test_handfix_mechanism_on_ungated_event_is_allowed(
+        self, isolated_plan: Path
+    ) -> None:
+        # The gate is scoped to remediation_start / narrow_remediation_start.
+        # An unrelated event with `mechanism: "hand-fix"` is not blocked here
+        # (the gate is intentionally narrow; broader policy is gate 2 + 3 in
+        # feedback_handfix_default.md, which are judgment, not mechanical).
+        cp = _run(
+            "log-event",
+            "--event", "fallback_used",
+            "--fields-json", json.dumps({
+                "run_id": "R1", "task_id": "006",
+                "mechanism": "hand-fix", "reason": "smoke",
+            }),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+
+    def test_missing_run_id_rejects_clearly(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "remediation_start",
+            "--fields-json", json.dumps({
+                "task_id": "006", "mechanism": "hand-fix",
+            }),
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-requires-run-id" in codes, body
+
+    def test_missing_task_id_rejects_clearly(self, isolated_plan: Path) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "remediation_start",
+            "--fields-json", json.dumps({
+                "run_id": "R1", "mechanism": "hand-fix",
+            }),
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-requires-task-id" in codes, body
+
+    def test_malformed_task_id_rejects_with_dedicated_code(
+        self, isolated_plan: Path
+    ) -> None:
+        # `task_id="not-a-task"` is non-empty so the missing-task-id check
+        # passes, but it cannot normalize. The gate must surface a
+        # diagnostic-grade `handfix-bad-task-id` rather than the generic
+        # `handfix-not-paused`.
+        cp = _run(
+            "log-event",
+            "--event", "remediation_start",
+            "--fields-json", json.dumps({
+                "run_id": "R1", "task_id": "not-a-task",
+                "mechanism": "hand-fix",
+            }),
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-bad-task-id" in codes, body
+
+    def test_legacy_mode_field_is_also_gated(
+        self, isolated_plan: Path
+    ) -> None:
+        # Older run-log entries (e.g., _run_log.jsonl lines 30/32/44) used
+        # `mode: "hand_fix_by_orchestrator"` instead of `mechanism: "hand-fix"`.
+        # The gate must recognize the legacy vocabulary so the orchestrator
+        # cannot bypass it by switching field name or punctuation.
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "review_done", "run_id": "R1", "task_id": "006",
+             "verdict": "needs-rework"},
+        )
+        cp = _run(
+            "log-event",
+            "--event", "remediation_start",
+            "--fields-json", json.dumps({
+                "run_id": "R1", "task_id": "006",
+                "mode": "hand_fix_by_orchestrator", "findings_addressed": 1,
+            }),
+            "--json",
+        )
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-not-paused" in codes, body
+
+    def test_failed_event_resolves_pause(self, isolated_plan: Path) -> None:
+        # `failed` for the task clears the pause (memory says
+        # commit_done / failed / run_end are resolvers).
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "awaiting_user", "run_id": "R1", "task_id": "006"},
+            {"ts": "t2", "event": "failed", "run_id": "R1", "task_id": "006",
+             "stage": "review", "reason": "blocked"},
+        )
+        cp = self._emit_handfix()
+        assert cp.returncode != 0
+        body = _parse_json(cp)
+        codes = [e.get("code") for e in body.get("errors", [])]
+        assert "handfix-not-paused" in codes, body
+
+    def test_repause_after_failed_authorizes_again(
+        self, isolated_plan: Path
+    ) -> None:
+        # awaiting_user → failed → awaiting_user reopens the pause for the
+        # same task; second hand-fix must be allowed.
+        _seed_log(
+            plan_ops.RUN_LOG_PATH,
+            {"ts": "t0", "event": "run_start", "run_id": "R1"},
+            {"ts": "t1", "event": "awaiting_user", "run_id": "R1", "task_id": "006"},
+            {"ts": "t2", "event": "failed", "run_id": "R1", "task_id": "006"},
+            {"ts": "t3", "event": "awaiting_user", "run_id": "R1", "task_id": "006",
+             "stage": "post_failed_recovery"},
+        )
+        cp = self._emit_handfix()
+        assert cp.returncode == 0, cp.stderr
+        assert _parse_json(cp)["ok"] is True
+
+    def test_malformed_run_log_lines_skipped(self, isolated_plan: Path) -> None:
+        # Garbage lines must not crash the predicate; a valid awaiting_user
+        # later in the file still authorizes hand-fix.
+        plan_ops.RUN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with plan_ops.RUN_LOG_PATH.open("w", encoding="utf-8") as fh:
+            fh.write("not json at all\n")
+            fh.write('{"truncated":\n')
+            fh.write(json.dumps(
+                {"ts": "t0", "event": "run_start", "run_id": "R1"}
+            ) + "\n")
+            fh.write(json.dumps(
+                {"ts": "t1", "event": "awaiting_user",
+                 "run_id": "R1", "task_id": "006"}
+            ) + "\n")
+        cp = self._emit_handfix()
+        assert cp.returncode == 0, cp.stderr
+
+
+# ---------------------------------------------------------------------------
 # acquire-lock / release-lock
 # ---------------------------------------------------------------------------
 
