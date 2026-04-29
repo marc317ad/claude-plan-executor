@@ -11427,6 +11427,27 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
     The orchestrator (or any direct CLI caller) pipes this stdout into
     ``plan_claude_dispatch.py run --input -``.
     """
+    # PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002: validate the
+    # orchestrator-pinned $UNATTENDED_REVERT_POLICY env var before doing
+    # any plan-file work so an invalid value fails fast (parallel to
+    # cmd_preflight's --unattended-revert-policy validation).
+    raw_policy_env = os.environ.get("UNATTENDED_REVERT_POLICY")
+    unattended_revert_policy = None
+    if raw_policy_env is None or raw_policy_env == "":
+        unattended_revert_policy = None
+    elif raw_policy_env in {"pause", "fail-fast", "preserve-only"}:
+        unattended_revert_policy = raw_policy_env
+    else:
+        _bcdi_emit_error(
+            "unattended-revert-policy-invalid",
+            (
+                f"$UNATTENDED_REVERT_POLICY is not in the closed enum "
+                f"{{pause, fail-fast, preserve-only}}: "
+                f"{raw_policy_env!r}"
+            ),
+        )
+        return
+
     variant = args.variant
     plan_file = Path(args.plan_file)
     if not plan_file.is_file():
@@ -11667,6 +11688,11 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
         },
         "declared_files_changed": declared_files,
     }
+    # PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002: only attach the field when
+    # the orchestrator pinned a value. Omitting it lets the wrapper apply
+    # its 'pause' default — never the destructive legacy behavior.
+    if unattended_revert_policy is not None:
+        envelope["unattended_revert_policy"] = unattended_revert_policy
 
     output = args.output or "-"
     text = json.dumps(envelope, indent=2, sort_keys=False) + "\n"
@@ -11675,6 +11701,73 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
     else:
         Path(output).write_text(text, encoding="utf-8")
     sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002: codex / gemini builder
+# subcommands. These mirror cmd_build_claude_dispatch_input's revert-policy
+# env-var contract. The codex/gemini wrappers consume CLI argparse args
+# rather than a single JSON envelope, so the emitted JSON is the documented
+# cross-wrapper contract envelope (codex_dispatch_input.json /
+# gemini_dispatch_input.json) and is also useful for orchestrator audit.
+# ---------------------------------------------------------------------------
+
+
+def _bcdi_resolve_policy_or_die():
+    """Read $UNATTENDED_REVERT_POLICY, validate against the closed enum,
+    and either return the value, return None when unset, or fail-fast via
+    ``_bcdi_emit_error`` with code ``unattended-revert-policy-invalid``.
+    """
+    raw = os.environ.get("UNATTENDED_REVERT_POLICY")
+    if raw is None or raw == "":
+        return None
+    if raw in {"pause", "fail-fast", "preserve-only"}:
+        return raw
+    _bcdi_emit_error(
+        "unattended-revert-policy-invalid",
+        (
+            f"$UNATTENDED_REVERT_POLICY is not in the closed enum "
+            f"{{pause, fail-fast, preserve-only}}: {raw!r}"
+        ),
+    )
+    return None  # unreachable; _bcdi_emit_error sys.exits
+
+
+def _bcdi_emit_envelope(envelope: dict, output: str) -> None:
+    text = json.dumps(envelope, indent=2, sort_keys=False) + "\n"
+    if output == "-":
+        sys.stdout.write(text)
+    else:
+        Path(output).write_text(text, encoding="utf-8")
+    sys.exit(0)
+
+
+def cmd_build_codex_dispatch_input(args: argparse.Namespace) -> None:
+    """Emit the codex_dispatch_input.json envelope for one dispatch.
+
+    Currently the only cross-wrapper field is ``unattended_revert_policy``;
+    the codex wrapper consumes the rest via argparse. See
+    ``schemas/codex_dispatch_input.json`` for the documented contract.
+    """
+    policy = _bcdi_resolve_policy_or_die()
+    envelope: dict = {}
+    if policy is not None:
+        envelope["unattended_revert_policy"] = policy
+    _bcdi_emit_envelope(envelope, args.output or "-")
+
+
+def cmd_build_gemini_dispatch_input(args: argparse.Namespace) -> None:
+    """Emit the gemini_dispatch_input.json envelope for one dispatch.
+
+    Currently the only cross-wrapper field is ``unattended_revert_policy``;
+    the gemini wrapper consumes the rest via argparse. See
+    ``schemas/gemini_dispatch_input.json`` for the documented contract.
+    """
+    policy = _bcdi_resolve_policy_or_die()
+    envelope: dict = {}
+    if policy is not None:
+        envelope["unattended_revert_policy"] = policy
+    _bcdi_emit_envelope(envelope, args.output or "-")
 
 
 # ---------------------------------------------------------------------------
@@ -12429,6 +12522,34 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_bcdi.set_defaults(func=cmd_build_claude_dispatch_input)
+
+    # PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002: codex / gemini builder
+    # subcommands. The codex/gemini wrappers consume CLI argparse args
+    # rather than a single JSON envelope, so currently these emit only the
+    # cross-wrapper ``unattended_revert_policy`` field (see
+    # schemas/codex_dispatch_input.json / schemas/gemini_dispatch_input.json
+    # for the documented contract).
+    p_bcodi = sub.add_parser(
+        "build-codex-dispatch-input",
+        help=(
+            "Emit the codex_dispatch_input.json envelope for one dispatch. "
+            "Currently only carries cross-wrapper unattended_revert_policy."
+        ),
+    )
+    p_bcodi.add_argument("--output", default="-",
+                         help="Output path (default '-' = stdout)")
+    p_bcodi.set_defaults(func=cmd_build_codex_dispatch_input)
+
+    p_bgdi = sub.add_parser(
+        "build-gemini-dispatch-input",
+        help=(
+            "Emit the gemini_dispatch_input.json envelope for one dispatch. "
+            "Currently only carries cross-wrapper unattended_revert_policy."
+        ),
+    )
+    p_bgdi.add_argument("--output", default="-",
+                        help="Output path (default '-' = stdout)")
+    p_bgdi.set_defaults(func=cmd_build_gemini_dispatch_input)
 
     # TASK-020A: read-only lint that cross-references `**Status:** done` /
     # `partial` task markers against the run log's `commit_done` events and
@@ -13361,6 +13482,8 @@ def main(argv: list[str] | None = None) -> None:
         "audit": cmd_audit,
         "resolve-read-targets": cmd_resolve_read_targets,
         "build-claude-dispatch-input": cmd_build_claude_dispatch_input,
+        "build-codex-dispatch-input": cmd_build_codex_dispatch_input,
+        "build-gemini-dispatch-input": cmd_build_gemini_dispatch_input,
         "list-global-lock-paths": cmd_list_global_lock_paths,
         # TASK-008 (POSTMORTEM_FIXES): sandbox-divergence escape hatch.
         "auto-validate-divergence": cmd_auto_validate_divergence,

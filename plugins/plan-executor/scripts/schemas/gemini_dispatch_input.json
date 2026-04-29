@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "gemini_dispatch_input",
+  "description": "Documentation-only schema for the conceptual input payload to plan_gemini_dispatch.py. The Gemini wrapper currently accepts CLI argparse args directly rather than a single JSON envelope; this schema exists to declare the cross-wrapper contract for fields that span all three dispatch wrappers (TASK-002 of PLAN_WRAPPER_REVERT_POLICY_GATE).",
+  "type": "object",
+  "properties": {
+    "unattended_revert_policy": {
+      "type": "string",
+      "enum": ["pause", "fail-fast", "preserve-only"],
+      "description": "Cross-references the orchestrator-level --unattended-revert-policy flag (PLAN_WRAPPER_REVERT_POLICY_GATE). Optional: when omitted the wrapper defaults to the safer-by-default 'pause' behavior. The orchestrator pins this via Phase 0 preflight and propagates it via the $UNATTENDED_REVERT_POLICY env var or the --unattended-revert-policy CLI arg."
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}

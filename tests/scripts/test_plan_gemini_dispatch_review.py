@@ -592,3 +592,93 @@ def test_gemini_cli_home_isolation(tmp_path, shim_path):
     assert not Path(home_b).exists(), (
         f"GEMINI_CLI_HOME {home_b} still exists after wrapper teardown"
     )
+
+
+# ---------------------------------------------------------------------------
+# PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002 — preserve-only smoke
+#
+# Direct unit-level smoke for the gemini wrapper's timeout-cleanup path
+# under ``unattended_revert_policy="preserve-only"`` (AC #6). The gemini
+# wrapper reuses ``_handle_timeout_cleanup`` from plan_codex_dispatch
+# (imported at gemini-line-79); we exercise the function via the gemini
+# module's import binding to prove the codepath is wired.
+# ---------------------------------------------------------------------------
+
+
+class TestUnattendedRevertPolicyPreserveOnlySmokeGemini:
+    """Asserts that under ``unattended_revert_policy="preserve-only"``
+    the gemini wrapper's timeout-cleanup path threads the policy through
+    to its result envelope and that out-of-scope writes are observed-only
+    — the gemini wrapper has no destructive path that can erase
+    out-of-scope work, regardless of policy."""
+
+    def _init_git_repo(self, repo_root: Path, file_name: str,
+                       initial: str) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"],
+                       cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.name", "t"],
+                       cwd=repo_root, check=True)
+        subprocess.run(
+            ["git", "config", "commit.gpgsign", "false"],
+            cwd=repo_root, check=True,
+        )
+        (repo_root / file_name).write_text(initial, encoding="utf-8")
+        subprocess.run(["git", "add", file_name], cwd=repo_root, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "init"],
+            cwd=repo_root, check=True,
+        )
+
+    def test_preserve_only_threads_policy_and_observes_out_of_scope(
+        self, tmp_path,
+    ) -> None:
+        scripts_dir = REPO_ROOT / "plugins" / "plan-executor" / "scripts"
+        sys.path.insert(0, str(scripts_dir))
+        # Import the gemini module so the test exercises the gemini
+        # wrapper's import binding (`_handle_timeout_cleanup` re-exported
+        # at plan_gemini_dispatch.py:88).
+        import plan_gemini_dispatch as pgd  # noqa: E402
+        import plan_codex_dispatch as pcd  # noqa: E402
+
+        # Sanity: the gemini wrapper resolves its policy helper to the
+        # exact same callable as the codex wrapper (no shadowing).
+        assert pgd._handle_timeout_cleanup is pcd._handle_timeout_cleanup
+
+        self._init_git_repo(tmp_path, "in_scope.py", "ORIGINAL\n")
+        baseline = pcd._snapshot_baseline(str(tmp_path))
+        assert baseline["captured"] is True
+
+        # Implementer wrote an out-of-scope untracked file before the
+        # gemini CLI timed out.
+        (tmp_path / "out_of_scope.txt").write_text("evil\n", encoding="utf-8")
+
+        result = pgd._handle_timeout_cleanup(
+            str(tmp_path), ["in_scope.py"], baseline,
+            authorization_source="wrapper_internal_cleanup_explicit_declaration",
+            unattended_revert_policy="preserve-only",
+        )
+
+        # AC #2 / AC #6: policy threaded through into result envelope.
+        assert result.get("unattended_revert_policy") == "preserve-only"
+        # The gemini timeout cleanup is in-scope-only (delegates to the
+        # shared codex helper); out-of-scope writes are observed only.
+        assert (tmp_path / "out_of_scope.txt").exists()
+        assert "out_of_scope.txt" in result["out_of_scope_untracked"]
+        assert result["out_of_scope_observed"] is True
+
+    def test_resolve_unattended_revert_policy_helper_reads_env(
+        self, monkeypatch,
+    ) -> None:
+        scripts_dir = REPO_ROOT / "plugins" / "plan-executor" / "scripts"
+        sys.path.insert(0, str(scripts_dir))
+        import plan_gemini_dispatch as pgd  # noqa: E402
+
+        class _NS:
+            unattended_revert_policy = None
+
+        monkeypatch.setenv("UNATTENDED_REVERT_POLICY", "preserve-only")
+        assert pgd._resolve_unattended_revert_policy(_NS()) == "preserve-only"
+
+        monkeypatch.delenv("UNATTENDED_REVERT_POLICY", raising=False)
+        assert pgd._resolve_unattended_revert_policy(_NS()) is None

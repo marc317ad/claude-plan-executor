@@ -91,6 +91,18 @@ from plan_codex_dispatch import (  # noqa: E402
 # Backward-compatibility alias mirroring plan_codex_dispatch.
 _is_protected = is_protected_path
 
+
+def _resolve_unattended_revert_policy(args):
+    """Resolve the cross-wrapper revert policy from --unattended-revert-policy
+    or $UNATTENDED_REVERT_POLICY (PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002).
+    """
+    val = getattr(args, "unattended_revert_policy", None)
+    if val is None:
+        env_val = os.environ.get("UNATTENDED_REVERT_POLICY")
+        if env_val in {"pause", "fail-fast", "preserve-only"}:
+            val = env_val
+    return val
+
 RAW_TRUNCATE_CHARS = 2000
 DEFAULT_TIMEOUT_REVIEW = 180
 DEFAULT_TIMEOUT_PLAN_REVIEW = 180
@@ -879,6 +891,7 @@ def cmd_plan_review(args) -> int:
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, [], baseline,
                 authorization_source="wrapper_internal_cleanup_explicit_declaration",
+                unattended_revert_policy=_resolve_unattended_revert_policy(args),
             )
             envelope = make_envelope(
                 "plan", "plan-review", "timeout",
@@ -937,6 +950,7 @@ def cmd_plan_review(args) -> int:
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, [], baseline,
                 authorization_source="wrapper_internal_cleanup_explicit_declaration",
+                unattended_revert_policy=_resolve_unattended_revert_policy(args),
             )
             envelope = make_envelope(
                 "plan", "plan-review", "failure",
@@ -1091,6 +1105,7 @@ def cmd_review(args) -> int:
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, review_files, baseline,
                 authorization_source="wrapper_internal_cleanup_explicit_declaration",
+                unattended_revert_policy=_resolve_unattended_revert_policy(args),
             )
             emit(make_envelope(
                 task["task_id"], "review", "timeout",
@@ -1137,6 +1152,7 @@ def cmd_review(args) -> int:
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, review_files, baseline,
                 authorization_source="wrapper_internal_cleanup_explicit_declaration",
+                unattended_revert_policy=_resolve_unattended_revert_policy(args),
             )
             emit(make_envelope(
                 task["task_id"], "review", "failure",
@@ -1213,6 +1229,20 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--timeout", type=int, default=default_timeout,
                        help=f"Gemini execution timeout in seconds "
                             f"(default: {default_timeout})")
+        # PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002: cross-wrapper revert
+        # policy. Optional; falls back to $UNATTENDED_REVERT_POLICY env var
+        # then to the cleanup helper's default ('pause').
+        p.add_argument(
+            "--unattended-revert-policy",
+            choices=["pause", "fail-fast", "preserve-only"],
+            default=None,
+            help=(
+                "Cross-wrapper revert policy mirrored across the three "
+                "dispatch wrappers. When omitted, the wrapper reads "
+                "$UNATTENDED_REVERT_POLICY; if neither is set, falls "
+                "back to the safer-by-default 'pause' behavior."
+            ),
+        )
 
     impl = subparsers.add_parser(
         "implement",
@@ -1247,6 +1277,15 @@ def _build_parser() -> argparse.ArgumentParser:
                           "no-op reserved for future-compat)"))
     pr.add_argument("--dry-run", action="store_true",
                     help="Render prompt and metadata; do not invoke Gemini")
+    pr.add_argument(
+        "--unattended-revert-policy",
+        choices=["pause", "fail-fast", "preserve-only"],
+        default=None,
+        help=(
+            "Cross-wrapper revert policy mirrored across the three "
+            "dispatch wrappers (PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002)."
+        ),
+    )
     pr.add_argument("--timeout", type=int,
                     default=DEFAULT_TIMEOUT_PLAN_REVIEW,
                     help=f"Gemini execution timeout in seconds "

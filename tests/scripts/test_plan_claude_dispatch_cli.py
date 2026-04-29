@@ -1423,3 +1423,149 @@ class TestCmdRunAuthorizationSource:
         assert len(captured) == 1
         assert captured[0]["kwargs"].get("authorization_source") == \
             "wrapper-declared-scope"
+
+
+
+# ---------------------------------------------------------------------------
+# PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002 — end-to-end policy threading
+#
+# These tests exercise the *real* cleanup module against a temp git repo
+# (no apply_cleanup monkeypatch) to prove the wrapper-revert bug from run
+# 20260428T121041 is fixed. The dispatch_context for this remediation
+# specifically calls out that the existing scope_violation test stubs
+# apply_cleanup and therefore does not exercise this path.
+# ---------------------------------------------------------------------------
+
+
+def _init_temp_git_repo(repo_root: Path) -> None:
+    """Initialise a minimal git repo at ``repo_root`` with one HEAD commit.
+    ``snapshot_baseline`` requires a HEAD to compare against.
+    """
+    import subprocess as _sp
+    _sp.run(["git", "init", "-q"], cwd=repo_root, check=True)
+    _sp.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
+    _sp.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
+    _sp.run(
+        ["git", "config", "commit.gpgsign", "false"],
+        cwd=repo_root, check=True,
+    )
+    (repo_root / ".gitignore").write_text(
+        "spans.jsonl\nout.json\ninput.json\n", encoding="utf-8",
+    )
+    _sp.run(["git", "add", ".gitignore"], cwd=repo_root, check=True)
+    _sp.run(
+        ["git", "commit", "-q", "-m", "init"],
+        cwd=repo_root, check=True,
+    )
+
+
+class TestUnattendedRevertPolicyEndToEnd:
+    """End-to-end coverage of ``unattended_revert_policy`` threading from
+    the wrapper input payload through the *real* cleanup module
+    (PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002 ACs #4 and #6)."""
+
+    def _build_payload(
+        self, good_input_obj: Dict[str, Any], policy: Optional[str],
+    ) -> Dict[str, Any]:
+        payload = dict(good_input_obj)
+        # Non-empty declared scope so the wrapper's anti-aliasing guard
+        # does not short-circuit before apply_cleanup runs. The
+        # implementer writes a DIFFERENT file (``evil.txt``) which is
+        # the actual out-of-scope write the cleanup module must
+        # classify. ``allowed.py`` is never written, so the cleanup
+        # output also reports ``misreported_paths`` — that field does
+        # NOT block the scope_violation classification.
+        payload["declared_files_changed"] = ["allowed.py"]
+        if policy is not None:
+            payload["unattended_revert_policy"] = policy
+        return payload
+
+    def _patch_backend_writing(
+        self, monkeypatch, evil_path: Path,
+    ) -> None:
+        """Patch ``backend.invoke`` to (a) write an out-of-scope file
+        before returning, (b) emit an otherwise-clean ok envelope.
+        Mirrors the implementer-stub fixture pattern."""
+        canned = _ok_envelope()
+
+        def _invoke(manifest, effective, payload, trace, *,
+                    backend_binary=None, env=None):
+            evil_path.write_text("out-of-scope\n", encoding="utf-8")
+            out = dict(canned)
+            if isinstance(trace, Mapping):
+                out["trace"] = dict(trace)
+            return out
+
+        monkeypatch.setattr(cli.backend, "invoke", _invoke)
+
+    def test_unattended_revert_policy_pause_emits_scope_violation_and_preserves_file(
+        self, tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+    ) -> None:
+        """The wrapper-revert bug regression test (run 20260428T121041).
+
+        With ``unattended_revert_policy: "pause"`` and an out-of-scope
+        write from the implementer, the wrapper MUST emit
+        ``scope_violation`` AND leave the file on disk for human
+        inspection."""
+        _init_temp_git_repo(tmp_path)
+        evil = tmp_path / "evil.txt"
+        self._patch_backend_writing(monkeypatch, evil)
+
+        payload = self._build_payload(good_input_obj, "pause")
+        input_path = tmp_path / "input.json"
+        input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        code, out, _err = _run_cli(
+            ["run", "--input", str(input_path), "--output", "-",
+             "--repo-root", str(tmp_path)],
+            capsys=capsys,
+        )
+
+        assert code == 1
+        envelope = _parse_envelope(out)
+        assert envelope["status"] == "scope_violation", envelope
+        # Critical: the out-of-scope file MUST still be on disk under
+        # the ``pause`` policy. This is the load-bearing regression
+        # assertion against the run-20260428T121041 wrapper-revert bug.
+        assert evil.exists(), (
+            "pause policy MUST NOT delete out-of-scope writes; "
+            "this is the regression from run 20260428T121041"
+        )
+        assert evil.read_text(encoding="utf-8") == "out-of-scope\n"
+        # AC #4: envelope MUST carry policy-gated wrapper event proof so
+        # the run log records that the wrapper saw the out-of-scope write
+        # but deliberately did NOT revert it under the pause policy.
+        events = (envelope.get("extra") or {}).get("wrapper_events") or []
+        gated = [e for e in events
+                 if e.get("event") == "wrapper_autoclean_policy_gated"]
+        assert len(gated) == 1, events
+        assert gated[0]["cleanup_strategy"] == "detect_only_revert_policy_pause"
+        assert "evil.txt" in " ".join(gated[0].get("preserved_paths") or [])
+
+    def test_unattended_revert_policy_preserve_only_reverts_out_of_scope_file(
+        self, tmp_path, good_input_obj, patch_manifest, monkeypatch, capsys,
+    ) -> None:
+        """With ``unattended_revert_policy: "preserve-only"`` (the explicit
+        opt-in for legacy destructive cleanup), the out-of-scope write is
+        reverted. Documents that the legacy behavior is preserved when
+        the operator opts in."""
+        _init_temp_git_repo(tmp_path)
+        evil = tmp_path / "evil.txt"
+        self._patch_backend_writing(monkeypatch, evil)
+
+        payload = self._build_payload(good_input_obj, "preserve-only")
+        input_path = tmp_path / "input.json"
+        input_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        code, _out, _err = _run_cli(
+            ["run", "--input", str(input_path), "--output", "-",
+             "--repo-root", str(tmp_path)],
+            capsys=capsys,
+        )
+        # scope_violation still surfaces (the violation IS detected),
+        # but the file is reverted/deleted under preserve-only.
+        assert code == 1
+        assert not evil.exists(), (
+            "preserve-only policy MUST revert (delete) untracked "
+            "out-of-scope writes"
+        )

@@ -904,3 +904,77 @@ def test_plan_review_argparse_rejects_retired_plan_file_flag(tmp_path):
     assert "--plan-file" in cp.stderr or "unrecognized" in cp.stderr.lower(), (
         cp.stderr
     )
+
+
+# ---------------------------------------------------------------------------
+# PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002 — preserve-only smoke
+#
+# Direct unit-level smoke for the codex wrapper's timeout-cleanup path
+# under ``unattended_revert_policy="preserve-only"`` (AC #6). The codex
+# wrapper invokes `_handle_timeout_cleanup` only on Codex CLI timeouts;
+# we exercise the function directly here rather than driving a real
+# Codex CLI timeout.
+#
+# This test does NOT require the Codex binary and runs unconditionally
+# (no @pytest.mark.slow gate) because it is hermetic.
+# ---------------------------------------------------------------------------
+
+
+class TestUnattendedRevertPolicyPreserveOnlySmokeCodex:
+    """Asserts that under ``unattended_revert_policy="preserve-only"``
+    the codex wrapper's timeout-cleanup path threads the policy
+    through to its result envelope and that out-of-scope writes are
+    observed-only — the codex wrapper has no destructive path that can
+    erase out-of-scope work, regardless of policy."""
+
+    def _init_git_repo(self, repo_root: Path, file_name: str,
+                       initial: str) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"],
+                       cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.name", "t"],
+                       cwd=repo_root, check=True)
+        subprocess.run(
+            ["git", "config", "commit.gpgsign", "false"],
+            cwd=repo_root, check=True,
+        )
+        (repo_root / file_name).write_text(initial, encoding="utf-8")
+        subprocess.run(["git", "add", file_name], cwd=repo_root, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "init"],
+            cwd=repo_root, check=True,
+        )
+
+    def test_preserve_only_threads_policy_and_observes_out_of_scope(
+        self, tmp_path,
+    ) -> None:
+        sys.path.insert(
+            0, str(REPO_ROOT / "plugins" / "plan-executor" / "scripts"),
+        )
+        import plan_codex_dispatch as pcd  # noqa: E402
+
+        self._init_git_repo(tmp_path, "in_scope.py", "ORIGINAL\n")
+        baseline = pcd._snapshot_baseline(str(tmp_path))
+        assert baseline["captured"] is True
+
+        # Simulate the implementer writing an out-of-scope untracked
+        # file before the codex CLI timed out.
+        (tmp_path / "out_of_scope.txt").write_text("evil\n", encoding="utf-8")
+
+        result = pcd._handle_timeout_cleanup(
+            str(tmp_path), ["in_scope.py"], baseline,
+            authorization_source="wrapper_internal_cleanup_explicit_declaration",
+            unattended_revert_policy="preserve-only",
+        )
+
+        # Policy is threaded through into the result envelope for
+        # orchestrator diagnosis (AC #2 / AC #6 thread-through proof).
+        assert result.get("unattended_revert_policy") == "preserve-only"
+        # The codex timeout cleanup is in-scope-only by design — the
+        # out-of-scope write is observed (classified) but NEVER mutated,
+        # even under preserve-only. This is the wrapper-revert bug
+        # regression assertion for the codex wrapper: its in-scope-only
+        # cleanup path has no branch that can erase out-of-scope work.
+        assert (tmp_path / "out_of_scope.txt").exists()
+        assert "out_of_scope.txt" in result["out_of_scope_untracked"]
+        assert result["out_of_scope_observed"] is True

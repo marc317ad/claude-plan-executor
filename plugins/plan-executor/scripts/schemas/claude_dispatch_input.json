@@ -121,6 +121,11 @@
       "items": {
         "type": "string"
       }
+    },
+    "unattended_revert_policy": {
+      "type": "string",
+      "enum": ["pause", "fail-fast", "preserve-only"],
+      "description": "Cross-references the orchestrator-level --unattended-revert-policy flag (PLAN_WRAPPER_REVERT_POLICY_GATE). Optional: when omitted the wrapper defaults to the safer-by-default 'pause' behavior introduced in TASK-001 of this plan. The orchestrator pins this via Phase 0 preflight and propagates it through `plan_ops.py build-claude-dispatch-input`."
     }
   },
   "required": [

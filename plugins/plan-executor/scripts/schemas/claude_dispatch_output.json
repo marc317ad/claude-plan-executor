@@ -184,6 +184,11 @@
       },
       "required": ["code", "message", "retriable"],
       "additionalProperties": false
+    },
+    "extra": {
+      "type": "object",
+      "description": "Wrapper-level diagnostics: wrapper_events, wrapper_autoclean_blocked, preserved_files, etc.",
+      "additionalProperties": true
     }
   },
   "required": [

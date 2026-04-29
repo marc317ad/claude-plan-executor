@@ -36,6 +36,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1019,12 +1020,29 @@ def validate_scope(
     }
 
 
+def _resolve_unattended_revert_policy(args) -> Optional[str]:
+    """Resolve the policy from --unattended-revert-policy or $UNATTENDED_REVERT_POLICY.
+
+    Argparse choices already enforce the closed enum on the CLI side. The env
+    var is the orchestrator-pinned fallback (Phase 0 preflight); we silently
+    drop any out-of-enum env value so a stale shell does not crash the
+    wrapper. None means "let the cleanup helper apply its own default".
+    """
+    val = getattr(args, "unattended_revert_policy", None)
+    if val is None:
+        env_val = os.environ.get("UNATTENDED_REVERT_POLICY")
+        if env_val in {"pause", "fail-fast", "preserve-only"}:
+            val = env_val
+    return val
+
+
 def _handle_timeout_cleanup(
     repo_root: str,
     allowed_files: list[str],
     baseline: dict,
     *,
     authorization_source: str,
+    unattended_revert_policy: Optional[str] = None,
 ) -> dict:
     """In-scope cleanup after a Codex timeout; observe-only outside scope.
 
@@ -1113,6 +1131,7 @@ def _handle_timeout_cleanup(
         "out_of_scope_observed": out_of_scope_observed,
         "protected_skipped_tracked": protected_skipped_tracked,
         "protected_skipped_untracked": protected_skipped_untracked,
+        "unattended_revert_policy": unattended_revert_policy,
     }
 
 
@@ -1539,6 +1558,7 @@ def cmd_implement(args) -> int:
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, allowed_files, baseline,
                 authorization_source="wrapper_internal_cleanup_explicit_declaration",
+                unattended_revert_policy=_resolve_unattended_revert_policy(args),
             )
             emit(make_envelope(
                 task["task_id"], "implement", "timeout",
@@ -1887,6 +1907,7 @@ def cmd_review(args) -> int:
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, review_files, baseline,
                 authorization_source="wrapper_internal_cleanup_explicit_declaration",
+                unattended_revert_policy=_resolve_unattended_revert_policy(args),
             )
             emit(make_envelope(
                 task["task_id"], "review", "timeout",
@@ -2139,6 +2160,7 @@ def cmd_plan_review(args) -> int:
             cleanup_details = _handle_timeout_cleanup(
                 repo_root, [], baseline,
                 authorization_source="wrapper_internal_cleanup_explicit_declaration",
+                unattended_revert_policy=_resolve_unattended_revert_policy(args),
             )
             emit(make_envelope(
                 "plan", "plan-review", "timeout",
@@ -2317,6 +2339,22 @@ def _build_parser() -> argparse.ArgumentParser:
                 "{status:'error', reason:...}; routing continues."
             ),
         )
+        # PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002: cross-wrapper revert
+        # policy. Optional; when omitted the wrapper falls back to
+        # ``$UNATTENDED_REVERT_POLICY`` (env, set by Phase 0 preflight) and
+        # ultimately to the safer-by-default ``pause`` semantics inside
+        # the cleanup helper.
+        p.add_argument(
+            "--unattended-revert-policy",
+            choices=["pause", "fail-fast", "preserve-only"],
+            default=None,
+            help=(
+                "Cross-wrapper revert policy mirrored across the three "
+                "dispatch wrappers. When omitted, the wrapper reads "
+                "$UNATTENDED_REVERT_POLICY; if neither is set, falls "
+                "back to the safer-by-default 'pause' behavior."
+            ),
+        )
 
     impl = subparsers.add_parser(
         "implement", help="Dispatch an implementation task to Codex",
@@ -2359,6 +2397,15 @@ def _build_parser() -> argparse.ArgumentParser:
                           "no-op reserved for future-compat)"))
     pr.add_argument("--dry-run", action="store_true",
                     help="Render prompt and metadata; do not invoke Codex")
+    pr.add_argument(
+        "--unattended-revert-policy",
+        choices=["pause", "fail-fast", "preserve-only"],
+        default=None,
+        help=(
+            "Cross-wrapper revert policy mirrored across the three "
+            "dispatch wrappers (PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002)."
+        ),
+    )
     # TASK-004: plan-review keeps a flat default (the schedule is
     # bounded so per-task scaling does not apply). Default is ``None``
     # for parity with implement/review; ``cmd_plan_review`` resolves

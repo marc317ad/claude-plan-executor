@@ -10800,7 +10800,7 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
             [
                 str(PY), str(self.WRAPPER), "plan-review",
                 "--schedule-file", str(schedule),
-                "--repo-root", str(tmp_path),
+                "--repo-root", str(REPO_ROOT),
                 "--dry-run",
                 "--timeout", "180",
             ],
@@ -10836,7 +10836,7 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
                 str(PY), str(self.WRAPPER), "plan-review",
                 "--plan-file", str(tmp_path / "nope.md"),  # retired flag
                 "--schedule-file", str(schedule),
-                "--repo-root", str(tmp_path),
+                "--repo-root", str(REPO_ROOT),
                 "--dry-run",
             ],
             capture_output=True,
@@ -10852,7 +10852,7 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
             [
                 str(PY), str(self.WRAPPER), "plan-review",
                 "--schedule-file", str(tmp_path / "nope.json"),
-                "--repo-root", str(tmp_path),
+                "--repo-root", str(REPO_ROOT),
                 "--dry-run",
             ],
             capture_output=True,
@@ -10871,7 +10871,7 @@ class TestPlanCodexDispatchPlanReviewSubcommand:
             [
                 str(PY), str(self.WRAPPER), "plan-review",
                 "--schedule-file", str(schedule),
-                "--repo-root", str(tmp_path),
+                "--repo-root", str(REPO_ROOT),
                 "--dry-run",
             ],
             capture_output=True,
@@ -23160,3 +23160,188 @@ class TestGeminiAvailableAuditCheck:
         monkeypatch.delenv(plan_ops.GOOGLE_APP_CRED_ENV, raising=False)
         finding = plan_ops._check_gemini_available()
         assert finding["status"] == "pass"
+
+
+
+# ---------------------------------------------------------------------------
+# PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002
+# ---------------------------------------------------------------------------
+
+
+SCHEMAS_DIR = SCRIPTS_DIR / "schemas"
+
+
+class TestUnattendedRevertPolicySchemaShape:
+    """Self-contained schema-shape assertion (NOT gated on any other plan).
+
+    Loads each of the three wrapper-input schemas and asserts the
+    ``unattended_revert_policy`` property is present, optional, has the
+    closed enum ``["pause", "fail-fast", "preserve-only"]``, and the
+    ``description`` mentions ``--unattended-revert-policy``.
+    """
+
+    SCHEMAS = (
+        "claude_dispatch_input.json",
+        "codex_dispatch_input.json",
+        "gemini_dispatch_input.json",
+    )
+
+    @pytest.mark.parametrize("schema_filename", SCHEMAS)
+    def test_unattended_revert_policy_field_present(self, schema_filename):
+        schema_path = SCHEMAS_DIR / schema_filename
+        assert schema_path.is_file(), f"missing schema file: {schema_path}"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        props = schema.get("properties", {})
+        assert "unattended_revert_policy" in props, (
+            f"{schema_filename} is missing the unattended_revert_policy "
+            f"property"
+        )
+        prop = props["unattended_revert_policy"]
+        # Closed enum
+        assert prop.get("enum") == ["pause", "fail-fast", "preserve-only"], (
+            f"{schema_filename} unattended_revert_policy enum drift: "
+            f"{prop.get('enum')!r}"
+        )
+        # Optional: never in `required`
+        required = schema.get("required") or []
+        assert "unattended_revert_policy" not in required, (
+            f"{schema_filename} marks unattended_revert_policy as required; "
+            f"the contract requires it to be optional"
+        )
+        # Description cross-references the orchestrator-level flag
+        description = prop.get("description", "")
+        assert "--unattended-revert-policy" in description, (
+            f"{schema_filename} unattended_revert_policy description does "
+            f"not cross-reference the --unattended-revert-policy flag"
+        )
+
+
+class TestBuildClaudeDispatchInputRevertPolicyGate:
+    """End-to-end coverage of the ``build-claude-dispatch-input`` env-var
+    threading (TASK-002 of PLAN_WRAPPER_REVERT_POLICY_GATE).
+    """
+
+    def _make_min_plan(self, tmp_path: Path) -> Path:
+        plan = tmp_path / "plan.md"
+        plan.write_text(
+            "### TASK-001: stub\n\n"
+            "- **Status:** pending\n"
+            "- **Files:**\n"
+            "  - `foo.py`\n",
+            encoding="utf-8",
+        )
+        return plan
+
+    def test_env_unset_omits_field(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("UNATTENDED_REVERT_POLICY", raising=False)
+        plan = self._make_min_plan(tmp_path)
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--variant", "default",
+            "--repo-root", str(REPO_ROOT),
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = json.loads(cp.stdout)
+        assert "unattended_revert_policy" not in envelope, (
+            "field must be omitted when $UNATTENDED_REVERT_POLICY is unset"
+        )
+
+    @pytest.mark.parametrize(
+        "value", ["pause", "fail-fast", "preserve-only"],
+    )
+    def test_env_valid_propagates(self, tmp_path, monkeypatch, value):
+        monkeypatch.setenv("UNATTENDED_REVERT_POLICY", value)
+        plan = self._make_min_plan(tmp_path)
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--variant", "default",
+            "--repo-root", str(REPO_ROOT),
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = json.loads(cp.stdout)
+        assert envelope.get("unattended_revert_policy") == value
+
+    def test_env_invalid_fails_fast(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UNATTENDED_REVERT_POLICY", "bogus")
+        plan = self._make_min_plan(tmp_path)
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--variant", "default",
+            "--repo-root", str(REPO_ROOT),
+        )
+        assert cp.returncode != 0
+        payload = json.loads(cp.stdout)
+        codes = [e.get("code") for e in payload.get("errors", [])]
+        assert "unattended-revert-policy-invalid" in codes
+
+
+class TestBuildCodexDispatchInputRevertPolicyGate:
+    """End-to-end coverage of the ``build-codex-dispatch-input`` env-var
+    threading (TASK-002 of PLAN_WRAPPER_REVERT_POLICY_GATE).
+    """
+
+    SUBCMD = "build-codex-dispatch-input"
+
+    def test_env_unset_omits_field(self, monkeypatch):
+        monkeypatch.delenv("UNATTENDED_REVERT_POLICY", raising=False)
+        cp = _run(self.SUBCMD)
+        assert cp.returncode == 0, cp.stderr
+        envelope = json.loads(cp.stdout)
+        assert "unattended_revert_policy" not in envelope
+
+    @pytest.mark.parametrize(
+        "value", ["pause", "fail-fast", "preserve-only"],
+    )
+    def test_env_valid_propagates(self, monkeypatch, value):
+        monkeypatch.setenv("UNATTENDED_REVERT_POLICY", value)
+        cp = _run(self.SUBCMD)
+        assert cp.returncode == 0, cp.stderr
+        envelope = json.loads(cp.stdout)
+        assert envelope.get("unattended_revert_policy") == value
+
+    def test_env_invalid_fails_fast(self, monkeypatch):
+        monkeypatch.setenv("UNATTENDED_REVERT_POLICY", "bogus")
+        cp = _run(self.SUBCMD)
+        assert cp.returncode != 0
+        payload = json.loads(cp.stdout)
+        codes = [e.get("code") for e in payload.get("errors", [])]
+        assert "unattended-revert-policy-invalid" in codes
+
+
+class TestBuildGeminiDispatchInputRevertPolicyGate:
+    """End-to-end coverage of the ``build-gemini-dispatch-input`` env-var
+    threading (TASK-002 of PLAN_WRAPPER_REVERT_POLICY_GATE).
+    """
+
+    SUBCMD = "build-gemini-dispatch-input"
+
+    def test_env_unset_omits_field(self, monkeypatch):
+        monkeypatch.delenv("UNATTENDED_REVERT_POLICY", raising=False)
+        cp = _run(self.SUBCMD)
+        assert cp.returncode == 0, cp.stderr
+        envelope = json.loads(cp.stdout)
+        assert "unattended_revert_policy" not in envelope
+
+    @pytest.mark.parametrize(
+        "value", ["pause", "fail-fast", "preserve-only"],
+    )
+    def test_env_valid_propagates(self, monkeypatch, value):
+        monkeypatch.setenv("UNATTENDED_REVERT_POLICY", value)
+        cp = _run(self.SUBCMD)
+        assert cp.returncode == 0, cp.stderr
+        envelope = json.loads(cp.stdout)
+        assert envelope.get("unattended_revert_policy") == value
+
+    def test_env_invalid_fails_fast(self, monkeypatch):
+        monkeypatch.setenv("UNATTENDED_REVERT_POLICY", "bogus")
+        cp = _run(self.SUBCMD)
+        assert cp.returncode != 0
+        payload = json.loads(cp.stdout)
+        codes = [e.get("code") for e in payload.get("errors", [])]
+        assert "unattended-revert-policy-invalid" in codes

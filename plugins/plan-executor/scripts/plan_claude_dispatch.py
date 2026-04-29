@@ -745,9 +745,16 @@ def cmd_run(args: argparse.Namespace) -> int:
             "cleanup_strategy": "skipped_anti_aliasing_guard",
         }
     else:
+        # PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002: extract optional
+        # ``unattended_revert_policy`` from the validated input and forward
+        # it as a kwarg to ``apply_cleanup``. When omitted the cleanup
+        # function defaults to ``pause`` (the safer-by-default behavior
+        # introduced in TASK-001 of this plan).
+        urp_value = input_obj.get("unattended_revert_policy")
         cleanup_result = cleanup.apply_cleanup(
             baseline, declared, repo_root,
             authorization_source=auth_source,
+            unattended_revert_policy=urp_value,
         )
 
     # fold cleanup flags into the envelope's scope.
@@ -758,16 +765,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     # envelope's ``extra.wrapper_events`` and are hoisted by the
     # orchestrator.
     wrapper_events = []
+    _autoclean_blocked_flag = False
     if _antialias_blocked:
-        extra = envelope.setdefault("extra", {})
-        if isinstance(extra, dict):
-            extra["wrapper_autoclean_blocked"] = True
-            extra["preserved_files"] = []
-            wrapper_events.append({
-                "event": "wrapper_autoclean_blocked",
-                "reason": "antialiasing_guard_empty_declared_scope",
-                "preserved_files": [],
-            })
+        _autoclean_blocked_flag = True
+        wrapper_events.append({
+            "event": "wrapper_autoclean_blocked",
+            "reason": "antialiasing_guard_empty_declared_scope",
+            "preserved_files": [],
+        })
     elif cleanup_result.get("restored") or cleanup_result.get("deleted"):
         wrapper_events.append({
             "event": "wrapper_autoclean_executed",
@@ -775,10 +780,20 @@ def cmd_run(args: argparse.Namespace) -> int:
             "deleted": cleanup_result.get("deleted", []),
             "authorization_source": auth_source,
         })
-    if wrapper_events:
-        extra = envelope.setdefault("extra", {})
-        if isinstance(extra, dict):
-            extra["wrapper_events"] = wrapper_events
+    elif (cleanup_result.get("cleanup_strategy") or "").startswith(
+        "detect_only_revert_policy_"
+    ):
+        # PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002 AC #4: under pause/
+        # fail-fast policies the cleanup module classifies out-of-scope
+        # writes but does NOT revert them. Emit a wrapper event so the
+        # run log carries proof of the policy-gated non-destruction
+        # (paths preserved on disk for human inspection).
+        wrapper_events.append({
+            "event": "wrapper_autoclean_policy_gated",
+            "cleanup_strategy": cleanup_result.get("cleanup_strategy"),
+            "preserved_paths": list(cleanup_result.get("out_of_scope_paths") or []),
+            "authorization_source": auth_source,
+        })
 
     # If the inner result was schema-invalid OR cleanup detected a
     # scope violation, demote the wrapper status accordingly. ``ok`` →
@@ -838,6 +853,21 @@ def cmd_run(args: argparse.Namespace) -> int:
             permission_denials=envelope.get("permission_denials") or [],
             trace=envelope.get("trace") or trace,
         )
+
+    # Attach wrapper_events / blocked flag AFTER any potential
+    # status-demotion rebuild above (build_scope_violation /
+    # build_cleanup_failure construct fresh envelopes that drop
+    # ``extra``; we re-stamp the events onto whichever envelope is
+    # final). AC #4: under pause/fail-fast the policy_gated event must
+    # ride along with the scope_violation envelope.
+    if wrapper_events or _autoclean_blocked_flag:
+        extra = envelope.setdefault("extra", {})
+        if isinstance(extra, dict):
+            if _autoclean_blocked_flag:
+                extra["wrapper_autoclean_blocked"] = True
+                extra["preserved_files"] = []
+            if wrapper_events:
+                extra["wrapper_events"] = wrapper_events
 
     # ---- Step 10: stamp trace.ended_at ----
     envelope = _stamp_trace_end(envelope)
