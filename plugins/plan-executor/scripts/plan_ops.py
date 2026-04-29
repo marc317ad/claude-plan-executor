@@ -2742,23 +2742,31 @@ def _decompose_plan(
                 }
             ],
         }
+    task_heading_level = 2
     _, raw_blocks = _split_task_blocks_at_level(plan_text, level=2)
+    if not raw_blocks:
+        task_heading_level = 3
+        _, raw_blocks = _split_task_blocks_at_level(plan_text, level=3)
     errors: list[dict] = []
     # Surface malformed headers (short ids like `## TASK-1:` or `## TASK-12:`)
     # as structured errors before the `no-tasks` fallback — a tightened
     # grammar must fail loudly, not silently accept or silently drop blocks.
-    for raw_id, source_line in _malformed_task_headers(plan_text, level=2):
-        errors.append(
-            {
-                "code": "malformed-task-header",
-                "raw_id": raw_id,
-                "message": (
-                    f"`## TASK-{raw_id}:` at line {source_line} does not match "
-                    "the required three-digit TASK-NNN[A] grammar"
-                ),
-                "source_line": source_line,
-            }
-        )
+    for malformed_level in (2, 3):
+        for raw_id, source_line in _malformed_task_headers(
+            plan_text, level=malformed_level,
+        ):
+            errors.append(
+                {
+                    "code": "malformed-task-header",
+                    "raw_id": raw_id,
+                    "message": (
+                        f"`{'#' * malformed_level} TASK-{raw_id}:` at line "
+                        f"{source_line} does not match "
+                        "the required three-digit TASK-NNN[A] grammar"
+                    ),
+                    "source_line": source_line,
+                }
+            )
     if errors:
         return {"ok": False, "errors": errors}
     if not raw_blocks:
@@ -2766,8 +2774,9 @@ def _decompose_plan(
             {
                 "code": "no-tasks",
                 "message": (
-                    f"no `## TASK-NNN:` headings found in {plan_path.name}; "
-                    "the whole-plan decomposer requires H2 task headings"
+                    f"no `## TASK-NNN:` or `### TASK-NNN:` headings found "
+                    f"in {plan_path.name}; the whole-plan decomposer "
+                    "requires task headings"
                 ),
                 "source_line": 1,
             }
@@ -2778,7 +2787,7 @@ def _decompose_plan(
     for raw_id, title, block_text, source_line in raw_blocks:
         task = _parse_task_block(
             block_text,
-            level=2,
+            level=task_heading_level,
             raw_id=raw_id,
             title=title,
             source_line=source_line,
@@ -11789,19 +11798,19 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
         "plan_path": str(plan_file.resolve()),
         "repo_root": repo_root,
     }
+    payload["task_id"] = normalized_task_id
+    if args.target_task_id:
+        normalized_tt = _normalize_task_id(args.target_task_id)
+        if normalized_tt is None:
+            _bcdi_emit_error(
+                "target-task-id-invalid",
+                f"target task id is not parseable: {args.target_task_id!r}",
+            )
+            return
+        payload["target_task_id"] = normalized_tt
+    else:
+        payload["target_task_id"] = None
     if variant != "analyst":
-        payload["task_id"] = normalized_task_id
-        if args.target_task_id:
-            normalized_tt = _normalize_task_id(args.target_task_id)
-            if normalized_tt is None:
-                _bcdi_emit_error(
-                    "target-task-id-invalid",
-                    f"target task id is not parseable: {args.target_task_id!r}",
-                )
-                return
-            payload["target_task_id"] = normalized_tt
-        else:
-            payload["target_task_id"] = None
         if variant in ("default", "rework", "role-swap"):
             if args.analyst_annotations:
                 ann_path = Path(args.analyst_annotations)

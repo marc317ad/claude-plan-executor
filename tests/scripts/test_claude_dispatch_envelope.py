@@ -77,6 +77,7 @@ def good_input_payload() -> dict:
             "depth": 0,
             "call_chain": ["orchestrator"],
         },
+        "declared_files_changed": ["plugins/foo.py"],
     }
 
 

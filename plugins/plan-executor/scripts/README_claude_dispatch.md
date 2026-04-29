@@ -18,7 +18,7 @@ Validated escape (experiment 2026-04-18): a subagent with only `Bash` can
 shell out to the `claude` CLI:
 
 ```
-claude -p --output-format json --permission-mode acceptEdits --agent <name> ...
+claude -p --output-format json --permission-mode acceptEdits --agent plan-executor:<name> ...
 ```
 
 The nested `claude` is a fresh top-level session with full tool access,
@@ -211,7 +211,7 @@ payloads exceeding `PIPE_BUF` (4096 bytes on Linux). See
 
 ```
 claude -p \
-    --agent <manifest.name> \
+    --agent plan-executor:<manifest.name> \
     --permission-mode <effective.permission_mode | "acceptEdits"> \
     --allowedTools <csv from manifest.tools> \
     --disallowedTools Agent[,extras] \

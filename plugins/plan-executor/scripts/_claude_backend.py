@@ -10,7 +10,7 @@ Argv shape (PLAN_NESTED_DISPATCH §8.1; cross-checked against the live
 probe test in ``tests/scripts/test_claude_permission_mode_probe.py``)::
 
     claude -p \
-        --agent <manifest.name> \
+        --agent plan-executor:<manifest.name> \
         --permission-mode <effective.permission_mode | "acceptEdits"> \
         --allowedTools <csv from manifest.tools> \
         --disallowedTools Agent \
@@ -90,6 +90,11 @@ STDERR_TAIL_CHARS = 2_000
 
 #: Tool that is always in ``--disallowedTools`` regardless of manifest.
 DEPTH_LIMIT_DISALLOWED_TOOL = "Agent"
+
+#: Plugin namespace used by Claude Code's ``--agent`` flag for plugin-provided
+#: subagents. Passing the bare manifest name can miss the plugin agent and
+#: leave the nested session without the subagent's system prompt.
+DEFAULT_AGENT_NAMESPACE = "plan-executor"
 
 #: Grace period (seconds) between SIGTERM and SIGKILL when reaping the
 #: nested ``claude`` process group on parent termination.
@@ -219,6 +224,27 @@ def _resolve_permission_mode(effective: Mapping[str, Any]) -> str:
         if isinstance(mode, str) and mode.strip():
             return mode.strip()
     return DEFAULT_PERMISSION_MODE
+
+
+def _resolve_agent_cli_name(manifest: Mapping[str, Any]) -> str:
+    """Return the subagent identifier passed to ``claude -p --agent``.
+
+    Claude Code addresses plugin agents as ``<plugin-name>:<agent-name>``.
+    The wrapper's public JSON contract intentionally uses bare agent names
+    (``plan-implementer``) for allowlisting and schema routing, but the live
+    CLI invocation must be namespaced or the nested process will not reliably
+    load the plugin subagent system prompt.
+
+    Tests and future direct callers may pass ``qualified_name`` explicitly; an
+    already-qualified value is preserved.
+    """
+    raw = manifest.get("qualified_name") or manifest.get("name") or ""
+    agent_name = _stringify(raw).strip()
+    if not agent_name:
+        return agent_name
+    if ":" in agent_name:
+        return agent_name
+    return f"{DEFAULT_AGENT_NAMESPACE}:{agent_name}"
 
 
 def _resolve_timeout_sec(effective: Mapping[str, Any]) -> int:
@@ -453,7 +479,7 @@ def _build_argv(
     backend_binary: str,
 ) -> List[str]:
     """Assemble the argv per PLAN_NESTED_DISPATCH §8.1."""
-    agent_name = _stringify(manifest.get("name") or "")
+    agent_name = _resolve_agent_cli_name(manifest)
     cwd = _resolve_cwd(effective)
     permission_mode = _resolve_permission_mode(effective)
     allowed_csv = _allowed_tools_csv(manifest)

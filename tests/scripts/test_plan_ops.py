@@ -19263,6 +19263,61 @@ class TestDecomposePlan:
             assert task["description"] and task["description"].strip()
             assert len(task["acceptance_criteria"]) >= 1
 
+    def test_h3_shared_plan_round_trip(self, tmp_path: Path) -> None:
+        """Shared child-plan layout (`### TASK-NNN` under `## Tasks`)
+        must decompose, not fail with `no-tasks`.
+
+        This is the layout used by plans that already look like directory
+        child files but are still supplied as a single markdown plan.
+        """
+        src = tmp_path / "shared_h3.md"
+        src.write_text(
+            "# Shared H3 fixture\n"
+            "\n"
+            "**Base branch:** main\n"
+            "\n"
+            "## Goal\n\nGoal.\n\n"
+            "## Context\n\nCtx.\n\n"
+            "## Tasks\n\n"
+            "### TASK-001: First\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Files:**\n"
+            "  - a.txt (modify)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `true`\n"
+            "- **Acceptance criteria:**\n"
+            "  - first works\n"
+            "\n"
+            "**Description:**\nFirst task.\n\n"
+            "### TASK-002: Second\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** medium\n"
+            "- **Files:**\n"
+            "  - b.txt (modify)\n"
+            "- **Dependencies:** [001]\n"
+            "- **Test command:** `true`\n"
+            "- **Acceptance criteria:**\n"
+            "  - second works\n"
+            "\n"
+            "**Description:**\nSecond task.\n",
+            encoding="utf-8",
+        )
+
+        cp = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp.returncode == 0, cp.stderr
+        res = _parse_json(cp)
+        assert res["ok"] is True
+        assert res["task_count"] == 2
+        manifest = json.loads(
+            (Path(res["produced_dir"]) / "00_INDEX.json").read_text(
+                encoding="utf-8",
+            ),
+        )
+        assert [c["task_id"] for c in manifest["chunks"]] == ["001", "002"]
+
     def test_canonical_force_idempotent(self, tmp_path: Path) -> None:
         src = tmp_path / "canonical.md"
         src.write_text(
@@ -23064,6 +23119,25 @@ class TestBuildClaudeDispatchInput:
         assert envelope["declared_files_changed"] == []
         assert envelope["agent"] == "plan-analyst"
         assert envelope["overrides"]["model"] == "sonnet"
+        assert envelope["payload"]["task_id"] == "001"
+        assert envelope["payload"]["target_task_id"] is None
+
+    def test_build_claude_dispatch_input_analyst_variant_threads_target_task_id(
+        self, bcdi_plan: Path,
+    ) -> None:
+        cp = _run(
+            "build-claude-dispatch-input",
+            "--plan-file", str(bcdi_plan),
+            "--task-id", "001",
+            "--target-task-id", "TASK-001",
+            "--variant", "analyst",
+        )
+        assert cp.returncode == 0, cp.stderr
+        envelope = _parse_json(cp)
+        assert envelope["agent"] == "plan-analyst"
+        assert envelope["declared_files_changed"] == []
+        assert envelope["payload"]["task_id"] == "001"
+        assert envelope["payload"]["target_task_id"] == "001"
 
     def test_build_claude_dispatch_input_unknown_task_id_errors(
         self, bcdi_plan: Path,

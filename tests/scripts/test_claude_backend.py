@@ -300,7 +300,7 @@ def test_argv_includes_p_and_output_format_json(tmp_path: Path) -> None:
     assert argv[argv.index("--output-format") + 1] == "json"
 
 
-def test_argv_uses_manifest_name_for_agent_flag(tmp_path: Path) -> None:
+def test_argv_uses_plugin_qualified_agent_flag(tmp_path: Path) -> None:
     payload = json.dumps({
         "result": {"ok": True},
         "duration_ms": 1,
@@ -320,7 +320,15 @@ def test_argv_uses_manifest_name_for_agent_flag(tmp_path: Path) -> None:
 
     argv = _read_recorded_argv(shim)
     assert "--agent" in argv
-    assert argv[argv.index("--agent") + 1] == "plan-remediator"
+    assert argv[argv.index("--agent") + 1] == "plan-executor:plan-remediator"
+
+
+def test_resolve_agent_cli_name_preserves_explicit_qualified_name() -> None:
+    manifest = {
+        "name": "plan-remediator",
+        "qualified_name": "custom-plugin:plan-remediator",
+    }
+    assert backend._resolve_agent_cli_name(manifest) == "custom-plugin:plan-remediator"
 
 
 def test_argv_disallowed_extras_appended_after_agent(tmp_path: Path) -> None:
