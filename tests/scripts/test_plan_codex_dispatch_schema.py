@@ -9,7 +9,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = REPO_ROOT / "plugins" / "plan-executor" / "scripts"
 IMPLEMENT_SCHEMA = SCRIPT_DIR / "codex_implement_schema.json"
-CODEX_WRAPPER_SCHEMA_FILES = sorted(SCRIPT_DIR.glob("codex_*_schema.json"))
+WRAPPER_SCHEMA_FILES = sorted(
+    list(SCRIPT_DIR.glob("codex_*_schema.json"))
+    + list(SCRIPT_DIR.glob("gemini_*_schema.json"))
+)
 
 
 def _walk_schema_objects(node: dict, pointer: str = "$"):
@@ -42,8 +45,8 @@ def test_implement_schema_matches_task_001_report_contract() -> None:
     assert "plan_adaptations" in schema["required"]
 
 
-@pytest.mark.parametrize("schema_path", CODEX_WRAPPER_SCHEMA_FILES, ids=lambda path: path.name)
-def test_codex_wrapper_schemas_required_matches_properties(schema_path: Path) -> None:
+@pytest.mark.parametrize("schema_path", WRAPPER_SCHEMA_FILES, ids=lambda path: path.name)
+def test_wrapper_schemas_required_matches_properties(schema_path: Path) -> None:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
     for pointer, node in _walk_schema_objects(schema):

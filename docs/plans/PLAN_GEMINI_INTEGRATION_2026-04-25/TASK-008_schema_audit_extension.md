@@ -33,7 +33,7 @@ The existing `test_implement_schema_matches_task_001_report_contract` test stays
 
 ### TASK-008: Schema audit extension (cover `gemini_*_schema.json`)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `tests/scripts/test_plan_codex_dispatch_schema.py` (edit)

@@ -53,7 +53,7 @@
       "depends_on": [
         "001"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -86,7 +86,7 @@
       "depends_on": [
         "002"
       ],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     }
   ]
