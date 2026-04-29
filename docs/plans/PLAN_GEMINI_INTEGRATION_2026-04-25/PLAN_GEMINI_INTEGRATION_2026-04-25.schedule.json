@@ -2,29 +2,6 @@
   "outcome": "valid",
   "tasks": [
     {
-      "id": "005",
-      "title": "Preflight `gemini_available` field + `--allow-gemini-fallback` flag plumbing",
-      "files": [
-        "`plugins/plan-executor/scripts/plan_ops.py` (edit \u2014 preflight + audit + helper)",
-        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (edit \u2014 `## Parse arguments` table only; do NOT touch Phase 1.5 / Phase D.1 prose in this task \u2014 those are TASK-006 / TASK-007 scope)",
-        "`tests/scripts/test_plan_ops.py` (edit \u2014 append helper tests)"
-      ],
-      "dependencies": [],
-      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
-      "priority": "high",
-      "plan_file": "TASK-005_preflight_gemini_available.md",
-      "description": "Plumbing-only task: add the helper, add the preflight field, add the SKILL.md flag entry, add the audit check. No phase-routing prose changes. The helper lives in `plan_ops.py` so both the orchestrator's preflight AND the wrapper (TASK-003 imports it for its missing-API-key short-circuit) reference one source of truth.",
-      "acceptance_criteria": [
-        "The four-row truth-table tests pass.",
-        "`preflight --json` emits `gemini_available: bool` on every invocation.",
-        "The `--allow-gemini-fallback` flag is documented in SKILL.md's argument-parsing table; the wording is exactly the load-bearing string above.",
-        "The `audit` subcommand registers the new check at advisory tier (does NOT flip default-tier audit verdicts).",
-        "The new helper has docstring + module-level constants for the env-var names (`GEMINI_API_KEY_ENV = \"GEMINI_API_KEY\"`, `GOOGLE_APP_CRED_ENV = \"GOOGLE_APPLICATION_CREDENTIALS\"`) so the test can assert against the same names the helper reads.",
-        "No behavior change in any other code path (Phase 1.5 / Phase D.1 prose remains untouched in this task)."
-      ],
-      "agent": "claude"
-    },
-    {
       "id": "006",
       "title": "Phase 1.5 fallback wiring (Codex unavailable / transient failure \u2192 Gemini)",
       "files": [
@@ -34,9 +11,7 @@
         "`plugins/plan-executor/scripts/plan_ops.py` (edit \u2014 add `_route_plan_review` helper + integrate with `parse-plan-review-report` so the parser accepts envelopes from either reviewer)",
         "`tests/scripts/test_plan_ops.py` (edit \u2014 append routing-helper tests; ALSO append parse-plan-review-report tests for Gemini envelopes)"
       ],
-      "dependencies": [
-        "005"
-      ],
+      "dependencies": [],
       "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
       "priority": "medium",
       "plan_file": "TASK-006_phase_15_fallback.md",
@@ -49,7 +24,8 @@
         "run-log-schema.md documents `plan_review_fallback_used {from, to, reason}` with `from \u2208 {codex}`, `to \u2208 {gemini}`, `reason \u2208 {codex_unavailable, codex_timeout, codex_parse_error, codex_failure}`.",
         "No behavior change for runs invoked WITHOUT `--allow-gemini-fallback` \u2014 verify by running an existing fixture's preflight + simulated Phase 1.5 routing through `_route_plan_review` and asserting the verdict is `\"skip\"` regardless of `gemini_available`."
       ],
-      "agent": "claude"
+      "agent": "claude",
+      "classification_reason": "5 files touched, exceeds <=3-file codex threshold"
     },
     {
       "id": "007",
@@ -62,7 +38,6 @@
         "`tests/scripts/test_plan_ops.py` (edit \u2014 append routing-helper tests)"
       ],
       "dependencies": [
-        "005",
         "006"
       ],
       "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py",
@@ -77,7 +52,8 @@
         "run-log-schema.md documents both new events.",
         "No behavior change for runs without `--allow-gemini-fallback` \u2014 verify via the truth-table tests."
       ],
-      "agent": "claude"
+      "agent": "claude",
+      "classification_reason": "5 files, multi-file coordination across docs and code"
     },
     {
       "id": "008",
@@ -96,38 +72,28 @@
         "The existing implementer-report contract test stays unchanged.",
         "The discovery is implemented as `list(scripts_dir.glob(\"codex_*_schema.json\")) + list(scripts_dir.glob(\"gemini_*_schema.json\"))` (or equivalent), NOT as `glob(\"*_schema.json\")` \u2014 explicit families per the rationale above."
       ],
-      "agent": "claude"
+      "agent": "codex",
+      "classification_reason": "Single-file test edit, concrete test command, <=30 lines"
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "005",
+        "006",
         "008"
-      ],
-      "file_locks": [
-        "plugins/plan-executor/scripts/plan_ops.py",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md",
-        "tests/scripts/test_plan_codex_dispatch_schema.py",
-        "tests/scripts/test_plan_ops.py"
-      ]
-    },
-    {
-      "index": 2,
-      "task_ids": [
-        "006"
       ],
       "file_locks": [
         "plugins/plan-executor/scripts/plan_ops.py",
         "plugins/plan-executor/skills/implement-plan/SKILL.md",
         "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
         "plugins/plan-executor/skills/implement-plan/run-log-schema.md",
+        "tests/scripts/test_plan_codex_dispatch_schema.py",
         "tests/scripts/test_plan_ops.py"
       ]
     },
     {
-      "index": 3,
+      "index": 2,
       "task_ids": [
         "007"
       ],

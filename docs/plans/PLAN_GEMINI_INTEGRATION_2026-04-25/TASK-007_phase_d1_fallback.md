@@ -88,3 +88,11 @@ Phase D.1 fallback wiring, parallel structure to TASK-006. The verdict-decision-
 - Phase D.5's wrapper-checks placeholder: when the active reviewer is Gemini, pass the structural default `{"symbol_warnings": []}`. The Gemini wrapper (TASK-003) does NOT emit `wrapper_checks` in its envelope today; v1 keeps the field reviewer-specific. Document this in `dispatch-templates.md` so future readers don't expect symmetry.
 - DO NOT change the `<codex_findings_json>` placeholder name in v1. It's a name, not a contract; the agent reads it as "the active reviewer's findings". Renaming is a separate cleanup task across multiple templates and is not load-bearing for the fallback to work.
 - The `--codex-review-binding` interaction note in SKILL.md is the only operator-facing behavior clarification — it costs nothing and prevents future confusion about why a `needs-rework` Codex verdict isn't getting "rescued" by Gemini (it shouldn't be — binding means the verdict is binding, full stop).
+
+## Execution log — 20260429T111054 (success)
+
+Starting SHA: `f36dae775f11e267201fb726f663d34dd910b4b2`  → Ending SHA: `e0f6e73541b5f18803f9918c5c112c290e2ea584`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 007 | claude | codex | clean | e0f6e73 | first-pass clean; 15/15 new helper tests pass; 32/32 helper-scope tests pass (route_review + route_plan_review) |

@@ -92,3 +92,11 @@ Phase 1.5 fallback wiring. The orchestrator-side decision (route to Codex / Gemi
 - The parser update: `parse-plan-review-report` reads the envelope, extracts `reviewer` (default `"codex"`), picks the matching schema, validates `parsed`, returns the same shape it does today (the parser's output contract is unchanged because the schemas are structural mirrors).
 - Do NOT mention the legacy Codex-specific schema name in user-facing prose — say "the plan-review schema" and let the implementation pick. This keeps the SKILL.md prose family-agnostic.
 - The new test does NOT spawn subprocesses or read real Gemini envelopes — it tests the helper's truth table with literal arguments.
+
+## Execution log — 20260429T111054 (success)
+
+Starting SHA: `f36dae775f11e267201fb726f663d34dd910b4b2`  → Ending SHA: `e0f6e73541b5f18803f9918c5c112c290e2ea584`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 006 | claude | codex | clean | 2523369 | D.5 needs-rework hand-fix on run-log-schema.md:36 (widened plan_review_fallback_used wording to cover both trigger cases); re-review clean; committed with [remediation] tag |

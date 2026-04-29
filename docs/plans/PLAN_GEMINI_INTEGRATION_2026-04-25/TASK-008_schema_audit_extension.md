@@ -66,3 +66,11 @@ Starting SHA: `2f1542210304cd2301fc500f60694a672cd7c9e4`  → Ending SHA: `2f154
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 008 | claude | - | paused (work destroyed by TASK-005 wrapper autoclean) | - | implementer succeeded; sibling wrapper reverted file before commit; needs re-run |
+
+## Execution log — 20260429T111054 (success)
+
+Starting SHA: `f36dae775f11e267201fb726f663d34dd910b4b2`  → Ending SHA: `e0f6e73541b5f18803f9918c5c112c290e2ea584`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 008 | codex | claude | ship | 9b8c5de | single-file test extension |
