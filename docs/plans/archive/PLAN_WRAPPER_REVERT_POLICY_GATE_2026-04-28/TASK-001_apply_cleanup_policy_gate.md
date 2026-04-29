@@ -50,3 +50,11 @@ Closes the destructive-action half of the wrapper-revert-policy bypass. `apply_c
 **Implementation notes.** The gate is roughly 8 lines: one `Optional[str]` arg with `None` default, one closed-enum validation block (parallel to the existing `authorization_source` validation at line 662), one branch around the `_restore_path` loop, two new `cleanup_strategy` enum values. The bulk of the diff is in tests — five new tests in `test_claude_dispatch_cleanup.py` covering each policy + the default + the unknown-value error. Existing tests must continue to pass; the safer-by-default contract means tests that don't pass `unattended_revert_policy` get the new non-destructive behavior, so any test that asserts on `restored`/`deleted` content has to be updated to either pass `unattended_revert_policy="preserve-only"` (to keep its assertion) or reword the assertion to match the new default.
 
 Test-fixture update strategy: prefer extending the existing `_call_cleanup` helper (or whatever the suite uses) over per-test rewrites. Add a single keyword-arg passthrough so existing call-sites can opt into `preserve-only` without touching their assertion lines.
+
+## Execution log — 20260428T152542 (paused)
+
+Starting SHA: `89b240e453a989faf28c98c4cd942624c8639a8d`  → Ending SHA: `14e9553dabe5bb0572c4dc6523b552ec49fd2470`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | claude | ship-with-fixes [disagreement] | 14e9553 | reviewer flagged C-1 (TASK-002 scope) + 4 minors; D.5 dismissed C-1; minors recorded |
