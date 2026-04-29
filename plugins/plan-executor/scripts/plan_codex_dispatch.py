@@ -262,12 +262,24 @@ def parse_task_block(plan_text: str, task_id_arg: str) -> dict:
     end = len(tail) if end_match is None else end_match.start()
     block = tail[:end]
 
+    # Strip markdown-wrapping backticks from `test_command` to match the
+    # canonical helper in `plan_ops._parse_task_block`. Without this, sh
+    # treats the whole `` `cmd` `` string as command substitution: it
+    # execs the inner command's stdout, yielding exit 127.
+    test_cmd_raw = _extract_inline_field(block, "Test command")
+    if (
+        len(test_cmd_raw) >= 2
+        and test_cmd_raw.startswith("`")
+        and test_cmd_raw.endswith("`")
+    ):
+        test_cmd_raw = test_cmd_raw[1:-1]
+
     return {
         "task_id": task_id,
         "title": title,
         "status": _extract_inline_field(block, "Status"),
         "priority": _extract_inline_field(block, "Priority"),
-        "test_command": _extract_inline_field(block, "Test command"),
+        "test_command": test_cmd_raw,
         "files": _extract_bullet_list(block, "Files"),
         "acceptance_criteria": _extract_bullet_list(block, "Acceptance criteria"),
         "description": _extract_paragraph(block, "Description"),
@@ -1182,6 +1194,11 @@ def run_test_command(
     surface sandbox vs target-env test divergence).
     """
     cmd = (test_cmd or "").strip()
+    # Defensive unwrap: parse_task_block already strips markdown-wrapping
+    # backticks, but any direct caller handing us raw `` `cmd` `` would
+    # otherwise hit shell command-substitution and exit 127.
+    if len(cmd) >= 2 and cmd.startswith("`") and cmd.endswith("`"):
+        cmd = cmd[1:-1].strip()
     if not cmd or cmd.lower() == "none":
         return {
             "result": "not_run",

@@ -150,6 +150,21 @@ class TestWrapperParseTaskBlock:
         with pytest.raises(ValueError, match=r"TASK-004C not found in plan"):
             plan_codex_dispatch.parse_task_block(PLAN_WITH_SUFFIXED_TASKS, "004C")
 
+    def test_wrapper_parse_task_block_strips_wrapping_backticks(self) -> None:
+        """`test_command` must round-trip unwrapped. Plan markdown writes
+        `- **Test command:** \\`cmd\\``; the wrapper hands the value to
+        `subprocess.run(..., shell=True)`, where surviving backticks
+        trigger shell command-substitution and exit 127. Mirrors the
+        canonical unwrap in `plan_ops._parse_task_block`."""
+        block = plan_codex_dispatch.parse_task_block(
+            PLAN_WITH_SUFFIXED_TASKS, "004A"
+        )
+        assert block["test_command"] == (
+            "venv/bin/pytest tests/scripts/test_plan_ops.py -q"
+        )
+        assert not block["test_command"].startswith("`")
+        assert not block["test_command"].endswith("`")
+
 
 # ---------------------------------------------------------------------------
 # Files: bullet normalization (TASK-002 parser unification)
