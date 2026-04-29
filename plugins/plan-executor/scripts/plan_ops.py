@@ -5955,9 +5955,69 @@ def _validate_plan_review_finding(item: object, *, path: str) -> list[dict]:
     return errors
 
 
+_PLAN_REVIEW_TRANSIENT_OUTCOMES = frozenset({"timeout", "parse_error", "failure"})
+
+_PLAN_REVIEW_REVIEWERS = frozenset({"codex", "gemini"})
+
+
+def _route_plan_review(
+    allow_gemini_fallback: bool,
+    codex_available: bool,
+    gemini_available: bool,
+    codex_outcome: "str | None" = None,
+) -> str:
+    """Decide which Phase 1.5 reviewer (if any) handles plan-review (TASK-006).
+
+    Returns one of ``"codex" | "gemini" | "skip"``. The orchestrator calls
+    this helper at two seams:
+
+    1. **Pre-dispatch** (``codex_outcome=None``) — pick the initial reviewer
+       from preflight availability + the operator's
+       ``--allow-gemini-fallback`` opt-in.
+    2. **Post-Codex-failure** (``codex_outcome ∈ {"timeout", "parse_error",
+       "failure"}``) — decide whether to re-dispatch ONCE to Gemini before
+       degrading to ``"skip"``.
+
+    Truth table (canonical form per TASK-006 plan):
+
+        allow_fallback  codex_avail  gemini_avail  codex_outcome  → result
+        ─────────────────────────────────────────────────────────────────
+        False           True         *             None           → "codex"
+        False           False        *             None           → "skip"
+        True            True         *             None           → "codex"
+        True            False        True          None           → "gemini"
+        True            False        False         None           → "skip"
+        True            True         True          {transient}    → "gemini"
+        True            True         False         {transient}    → "skip"
+        False           *            *             {transient}    → "skip"
+        *               *            *             "success"      → "codex"
+
+    The helper does NOT loop. After Gemini returns ``{transient}``, the
+    caller invokes the helper a second time with ``gemini_available=False``
+    (the second leg is now "no fallback target available") — the helper
+    returns ``"skip"`` and the orchestrator emits
+    ``plan_review_skipped {reason: "all_reviewers_unavailable"}``.
+    """
+    if codex_outcome == "success":
+        return "codex"
+
+    if codex_outcome in _PLAN_REVIEW_TRANSIENT_OUTCOMES:
+        if allow_gemini_fallback and gemini_available:
+            return "gemini"
+        return "skip"
+
+    if codex_available:
+        return "codex"
+    if allow_gemini_fallback and gemini_available:
+        return "gemini"
+    return "skip"
+
+
 def _validate_plan_review_parsed(parsed: object) -> list[dict]:
     """Validate the `parsed` body of a plan-review envelope against the
-    codex_plan_review_schema.json contract. Returns canonical `errors[*]`."""
+    plan-review schema contract (codex_plan_review_schema.json /
+    gemini_plan_review_schema.json — structural mirrors per TASK-006).
+    Returns canonical `errors[*]`."""
     errors: list[dict] = []
     if not isinstance(parsed, dict):
         return [{
@@ -6400,6 +6460,22 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
             "message": msg,
         }]})
 
+    # TASK-006 — reviewer-agnostic envelope acceptance. Default to "codex"
+    # so wrapper envelopes emitted before the Gemini fallback shipped
+    # round-trip unchanged. Reject unknown reviewer families so a typo
+    # cannot silently bypass schema discrimination.
+    reviewer = envelope.get("reviewer", "codex")
+    if reviewer not in _PLAN_REVIEW_REVIEWERS:
+        _die(args, {"errors": [{
+            "path": "$.reviewer",
+            "code": "invalid-reviewer",
+            "message": (
+                f"envelope reviewer must be one of "
+                f"{sorted(_PLAN_REVIEW_REVIEWERS)} (default 'codex' when "
+                f"absent), got {reviewer!r}"
+            ),
+        }]})
+
     errors: list[dict] = []
 
     outcome = envelope.get("outcome")
@@ -6412,6 +6488,7 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
         result: dict = {
             "plan_file": envelope.get("plan_file") or envelope.get("task_id"),
             "outcome": outcome,
+            "reviewer": reviewer,
             "verdict": None,
             "findings_count": 0,
             "findings": [],
@@ -6466,6 +6543,7 @@ def cmd_parse_plan_review_report(args: argparse.Namespace) -> None:
     result = {
         "plan_file": parsed.get("plan_file"),
         "outcome": outcome,
+        "reviewer": reviewer,
         "verdict": parsed.get("verdict"),
         "findings_count": len(normalized_findings),
         "findings": normalized_findings,

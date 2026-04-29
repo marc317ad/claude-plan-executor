@@ -23345,3 +23345,309 @@ class TestBuildGeminiDispatchInputRevertPolicyGate:
         payload = json.loads(cp.stdout)
         codes = [e.get("code") for e in payload.get("errors", [])]
         assert "unattended-revert-policy-invalid" in codes
+
+
+# ---------------------------------------------------------------------------
+# TASK-006 — Phase 1.5 fallback wiring (Codex unavailable / transient
+# failure → Gemini). Truth-table tests for `_route_plan_review` plus
+# parser tests for the `reviewer` field on the plan-review envelope.
+# ---------------------------------------------------------------------------
+
+
+class Test_route_plan_review:
+    """TASK-006 — `_route_plan_review` truth table.
+
+    The orchestrator-side decision (route to Codex / Gemini / skip) is
+    centralized in `plan_ops._route_plan_review` so the truth table is
+    unit-testable in isolation. The wrapper end-to-end is exercised by
+    TASK-003 / TASK-004 wrapper tests; these tests pass synthetic
+    arguments and assert the helper's verdict against the canonical
+    truth table from the TASK-006 plan.
+    """
+
+    def test_no_fallback_codex_available_returns_codex(self) -> None:
+        """`--allow-gemini-fallback` NOT set + Codex available → "codex"
+        (today's behavior, regardless of `gemini_available`)."""
+        for gemini_available in (True, False):
+            assert plan_ops._route_plan_review(
+                allow_gemini_fallback=False,
+                codex_available=True,
+                gemini_available=gemini_available,
+                codex_outcome=None,
+            ) == "codex"
+
+    def test_no_fallback_codex_unavailable_returns_skip(self) -> None:
+        """`--allow-gemini-fallback` NOT set + Codex unavailable → "skip"
+        regardless of `gemini_available` (the flag is opt-in; without it
+        the behavior is identical to today's degraded skip)."""
+        for gemini_available in (True, False):
+            assert plan_ops._route_plan_review(
+                allow_gemini_fallback=False,
+                codex_available=False,
+                gemini_available=gemini_available,
+                codex_outcome=None,
+            ) == "skip"
+
+    def test_fallback_codex_available_returns_codex(self) -> None:
+        """`--allow-gemini-fallback` set + Codex available → "codex"
+        (Codex is primary when available; Gemini is the fallback target,
+        not a co-equal). `gemini_available` does not change the verdict."""
+        for gemini_available in (True, False):
+            assert plan_ops._route_plan_review(
+                allow_gemini_fallback=True,
+                codex_available=True,
+                gemini_available=gemini_available,
+                codex_outcome=None,
+            ) == "codex"
+
+    def test_fallback_codex_unavail_gemini_avail_returns_gemini(self) -> None:
+        """`--allow-gemini-fallback` set + Codex unavailable + Gemini
+        available → "gemini" (the pre-dispatch fallback leg)."""
+        assert plan_ops._route_plan_review(
+            allow_gemini_fallback=True,
+            codex_available=False,
+            gemini_available=True,
+            codex_outcome=None,
+        ) == "gemini"
+
+    def test_fallback_both_unavail_returns_skip(self) -> None:
+        """`--allow-gemini-fallback` set + neither reviewer available →
+        "skip" (no fallback target — degrade as today)."""
+        assert plan_ops._route_plan_review(
+            allow_gemini_fallback=True,
+            codex_available=False,
+            gemini_available=False,
+            codex_outcome=None,
+        ) == "skip"
+
+    @pytest.mark.parametrize(
+        "outcome", ["timeout", "parse_error", "failure"],
+    )
+    def test_fallback_codex_transient_failure_routes_to_gemini(
+        self, outcome: str,
+    ) -> None:
+        """`--allow-gemini-fallback` set + Codex returned a transient
+        outcome + Gemini available → "gemini" (the post-Codex-failure
+        re-dispatch leg, fired ONCE per the helper's contract)."""
+        assert plan_ops._route_plan_review(
+            allow_gemini_fallback=True,
+            codex_available=True,
+            gemini_available=True,
+            codex_outcome=outcome,
+        ) == "gemini"
+
+    @pytest.mark.parametrize(
+        "outcome", ["timeout", "parse_error", "failure"],
+    )
+    def test_fallback_codex_transient_no_gemini_returns_skip(
+        self, outcome: str,
+    ) -> None:
+        """`--allow-gemini-fallback` set + Codex transient outcome +
+        Gemini unavailable → "skip" (no fallback target)."""
+        assert plan_ops._route_plan_review(
+            allow_gemini_fallback=True,
+            codex_available=True,
+            gemini_available=False,
+            codex_outcome=outcome,
+        ) == "skip"
+
+    @pytest.mark.parametrize(
+        "outcome", ["timeout", "parse_error", "failure"],
+    )
+    def test_no_fallback_codex_transient_returns_skip(
+        self, outcome: str,
+    ) -> None:
+        """Codex transient outcome WITHOUT `--allow-gemini-fallback` →
+        "skip" regardless of `gemini_available` (the flag is opt-in)."""
+        for gemini_available in (True, False):
+            assert plan_ops._route_plan_review(
+                allow_gemini_fallback=False,
+                codex_available=True,
+                gemini_available=gemini_available,
+                codex_outcome=outcome,
+            ) == "skip"
+
+    def test_codex_success_outcome_returns_codex_defensive(self) -> None:
+        """Defensive: a `success` outcome means the caller should not be
+        invoking the helper to "route" — Codex already succeeded. Helper
+        returns "codex" rather than treating success as a transient
+        failure."""
+        for allow in (True, False):
+            for codex_avail in (True, False):
+                for gemini_avail in (True, False):
+                    assert plan_ops._route_plan_review(
+                        allow_gemini_fallback=allow,
+                        codex_available=codex_avail,
+                        gemini_available=gemini_avail,
+                        codex_outcome="success",
+                    ) == "codex"
+
+    def test_no_fallback_invariant_skip_regardless_of_gemini_state(self) -> None:
+        """TASK-006 AC: with `--allow-gemini-fallback` NOT set, the
+        helper returns "skip" on the codex-unavailable path REGARDLESS
+        of `gemini_available`. Verifies the orchestrator does not silently
+        fall back when the operator did not opt in."""
+        for gemini_available in (True, False):
+            assert plan_ops._route_plan_review(
+                allow_gemini_fallback=False,
+                codex_available=False,
+                gemini_available=gemini_available,
+                codex_outcome=None,
+            ) == "skip"
+
+    def test_second_leg_after_gemini_failure_returns_skip(self) -> None:
+        """The helper does NOT loop. After Gemini also fails, the caller
+        re-invokes with `gemini_available=False` (modeling "no fallback
+        target available") — the helper returns "skip" so the caller can
+        emit `plan_review_skipped {reason:"all_reviewers_unavailable"}`.
+        """
+        # First leg: Codex transient → Gemini.
+        assert plan_ops._route_plan_review(
+            allow_gemini_fallback=True,
+            codex_available=True,
+            gemini_available=True,
+            codex_outcome="timeout",
+        ) == "gemini"
+        # Second leg: Gemini also transient — caller re-invokes with
+        # gemini_available flipped to False to reflect "fallback target
+        # exhausted". Helper returns skip.
+        assert plan_ops._route_plan_review(
+            allow_gemini_fallback=True,
+            codex_available=True,
+            gemini_available=False,
+            codex_outcome="failure",
+        ) == "skip"
+
+
+class Test_parse_plan_review_report_reviewer_field:
+    """TASK-006 — `parse-plan-review-report` accepts envelopes with
+    `reviewer: "gemini"` (validates against the structurally-mirrored
+    Gemini schema) and defaults absent reviewer to "codex" for backward
+    compat with in-flight runs whose envelopes were emitted by today's
+    Codex wrapper.
+    """
+
+    def _envelope(
+        self,
+        *,
+        reviewer: "str | None" = None,
+        verdict: str = "approved",
+        outcome: str = "success",
+    ) -> dict:
+        env: dict = {
+            "task_id": "plan-review",
+            "subcommand": "plan-review",
+            "outcome": outcome,
+            "codex_exit_code": 0,
+            "parsed": {
+                "plan_file": "sample_plan",
+                "verdict": verdict,
+                "findings": [],
+                "notes": [],
+                "schedule_ok": True,
+                "summary": "ok",
+            },
+        }
+        if reviewer is not None:
+            env["reviewer"] = reviewer
+        return env
+
+    def _run_parser(self, envelope: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                str(PY), str(SCRIPT),
+                "parse-plan-review-report", "--stdin", "--json",
+            ],
+            input=json.dumps(envelope),
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+
+    def test_gemini_envelope_accepted(self) -> None:
+        """Envelope with `reviewer:"gemini"` validates against the
+        structurally-mirrored gemini_plan_review_schema.json and emits
+        the same result shape the Codex path emits, with `reviewer`
+        echoed in the output so the orchestrator can audit which family
+        produced the verdict."""
+        cp = self._run_parser(self._envelope(reviewer="gemini"))
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["reviewer"] == "gemini"
+        assert body["verdict"] == "approved"
+        assert body["plan_file"] == "sample_plan"
+        assert body["outcome"] == "success"
+
+    def test_codex_envelope_default_reviewer_codex(self) -> None:
+        """Envelope WITHOUT a `reviewer` field defaults to "codex" —
+        backward compat for in-flight runs whose envelopes were emitted
+        by today's Codex wrapper before the Gemini fallback shipped."""
+        cp = self._run_parser(self._envelope(reviewer=None))
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["reviewer"] == "codex"
+        assert body["verdict"] == "approved"
+
+    def test_explicit_codex_reviewer_accepted(self) -> None:
+        """Envelope with explicit `reviewer:"codex"` round-trips."""
+        cp = self._run_parser(self._envelope(reviewer="codex"))
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["reviewer"] == "codex"
+
+    def test_unknown_reviewer_rejected(self) -> None:
+        """Unknown reviewer family → structured `errors[*]` so a typo
+        cannot silently bypass schema discrimination."""
+        cp = self._run_parser(self._envelope(reviewer="claude-haiku"))
+        assert cp.returncode != 0
+        payload = json.loads(cp.stdout)
+        codes = [e.get("code") for e in payload.get("errors", [])]
+        assert "invalid-reviewer" in codes
+
+    @pytest.mark.parametrize(
+        "outcome", ["failure", "timeout", "parse_error"],
+    )
+    def test_terminal_outcome_preserves_reviewer_field(
+        self, outcome: str,
+    ) -> None:
+        """Terminal-outcome envelopes (Codex or Gemini wrapper failures)
+        preserve the `reviewer` field in the parser output so the
+        orchestrator can route by reviewer when emitting fallback events.
+        """
+        env = self._envelope(reviewer="gemini", outcome=outcome)
+        # Terminal envelopes are permitted to omit `parsed`.
+        env.pop("parsed", None)
+        cp = self._run_parser(env)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["reviewer"] == "gemini"
+        assert body["outcome"] == outcome
+        assert body["verdict"] is None
+        assert body["findings_count"] == 0
+
+    def test_gemini_envelope_with_findings_round_trips(self) -> None:
+        """Findings on a Gemini envelope flow through the same
+        normalization (target_task_id synthesis) the Codex path applies,
+        so the downstream triage + plan-author dispatchers consume the
+        same shape regardless of family."""
+        env = self._envelope(reviewer="gemini", verdict="needs-replan")
+        env["parsed"]["findings"] = [
+            {
+                "severity": "important",
+                "blocking": True,
+                "section": "tasks[002].test_command",
+                "concern": "test command bare 'none'",
+                "suggested_change": "add deferred sibling reference",
+                "target_task_id": "002",
+            },
+        ]
+        env["parsed"]["schedule_ok"] = False
+        env["parsed"]["summary"] = "one blocking finding"
+        cp = self._run_parser(env)
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        assert body["reviewer"] == "gemini"
+        assert body["verdict"] == "needs-replan"
+        assert body["findings_count"] == 1
+        assert body["findings"][0]["target_task_id"] == "002"
+        assert body["schedule_ok"] is False

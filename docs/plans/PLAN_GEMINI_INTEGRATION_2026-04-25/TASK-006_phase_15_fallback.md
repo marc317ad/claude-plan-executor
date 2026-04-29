@@ -46,7 +46,7 @@ The `--allow-gaps` demotion clause (TASK-004) flows through identically — the 
 
 ### TASK-006: Phase 1.5 fallback wiring (Codex unavailable / transient failure → Gemini)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (edit — `## Phase 1.5` section + log-event table + `## Parse arguments` cross-refs)

@@ -193,6 +193,28 @@ printf '%s' "<agent_output_extracted_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scr
 
 `parse-plan-review-report --from-claude` validates the bare `parsed` payload against `codex_plan_review_schema.json` and emits the same `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}` result the Codex path emits, so the Phase 1.5 verdict-routing table and the Phase 1.5.5 triage entry continue to consume the same parser output regardless of which reviewer mechanism produced it. Outcome on this path is always `success` — Agent-side errors bubble up as Agent dispatch failures, not envelope-level outcomes; treat such failures the same way the Codex path treats `outcome ∈ {timeout, parse_error, failure}` (degrade to `plan_review_skipped {reason:"claude_review_failure"}` for routing rather than blocking execution).
 
+## Phase 1.5-Gemini — Gemini-CLI plan review (fallback path)
+
+Dispatched in place of the Codex wrapper above when `--allow-gemini-fallback` is set AND `plan_ops._route_plan_review(...)` returns `"gemini"` — i.e., either Codex was unavailable from preflight (`codex_available=false`) AND Gemini is available, OR a Codex `plan-review` dispatch returned `outcome ∈ {timeout, parse_error, failure}` AND Gemini is available. See SKILL.md §Phase 1.5 for the truth table. The verdict-routing ladder, the `--codex-plan-review-binding` mutex, the auto-revise `plan-author` path, and the `--allow-gaps` demotion all consume the parsed verdict — they are agnostic to which family produced it. Run-log events on this path carry `reviewer:"gemini"` and the orchestrator MUST emit `plan_review_fallback_used {from:"codex", to:"gemini", reason:<reason>}` BEFORE the matching `plan_review_start`.
+
+Bash command template:
+
+```
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_gemini_dispatch.py" plan-review \
+  --schedule-file <absolute schedule path> \
+  --repo-root <absolute repo root> \
+  --timeout 180 \
+  [--allow-gaps]
+```
+
+Same `--schedule-file --repo-root --timeout [--allow-gaps]` flag set as the Phase 1.5 Codex path; the wrapper is responsible for the Gemini-CLI shell-out specifics. Schedule-only review (matches the post-TASK-008 Codex contract — `--plan-file` and `--plans-dir` are not on this surface).
+
+Wrapper emits one JSON envelope on stdout matching the Codex contract: `{plan_file, subcommand:"plan-review", reviewer:"gemini", outcome ∈ {success, failure, timeout, parse_error}, parsed}`. On `success`, `parsed` conforms to `scripts/gemini_plan_review_schema.json` (a structural mirror of `codex_plan_review_schema.json`). The orchestrator pipes the entire envelope through `parse-plan-review-report --stdin --json` (no flag — the parser dispatches by the envelope's `reviewer` field; default `"codex"` when absent preserves backward compat).
+
+The schema-validation retry inside the wrapper treats `parse_error` as a transient failure and surfaces it via `outcome=parse_error`; the orchestrator falls through to the degraded `plan_review_skipped {reason:"all_reviewers_unavailable"}` path (per `_route_plan_review` second-leg semantics) rather than looping. The fallback is one-shot.
+
+The `--allow-gaps` pass-through is identical to the Codex path: the wrapper consumes `--allow-gaps`, inspects the persisted schedule, and injects the demotion clause into the rendered Gemini prompt iff `gaps[]` is non-empty AND every entry's `severity` is `"soft"` AND the schedule has no structural violations. The wrapper-level decision was already centralized in `_should_inject_allow_gaps_demotion`, so both reviewers honor the operator's opt-in identically.
+
 ## Phase 1.5a — plan-author dispatch (needs-replan auto-revise)
 
 Dispatched only when the first Phase 1.5 Codex `plan-review` returns `needs-replan` AND auto-revise is on (default; disabled by `--no-auto-revise`). The author revises the plan text in place so a second review can proceed. Agent dispatch, `subagent_type: "plan-author"`, `model: "opus"`.
@@ -309,6 +331,8 @@ Dispatched at TWO orchestrator seams sharing one template, one agent, one parser
 - **Phase 1.5.5 (Codex-plan-review-source).** After Phase 1.5 (Codex plan-review) returns `verdict=needs-replan`, before the Phase 1.5a `plan-author` auto-revise dispatch. Skipped when `--codex-plan-review-binding` is set (halt with `run_end reason=plan_review_failed`) or `--no-auto-revise` is set (today's halt behavior preserved).
 
 One template, one `render(templates.PlanTriage, source=<src>, ...)` call from the orchestrator; the `{source}` placeholder discriminates the embedded evidence block, the verification-move examples, and the analyst-only same-family caveat. Agent dispatch, `subagent_type: "plan-review-triage"`, `model: "sonnet"` (parity with Phase D.5 — NOT opus).
+
+**Reviewer-agnostic findings placeholder (TASK-006).** On the `source=codex-plan-review` seam the embedded `<codex_findings_json>` placeholder receives the active reviewer's findings regardless of family — when the Phase 1.5-Gemini fallback path produced the verdict, the same placeholder carries Gemini's `parsed.findings[]` (the schemas are structural mirrors, so the per-finding shape is identical). The placeholder name is preserved verbatim — it is a name, not a contract — and the triage agent need not discriminate by reviewer family. Same applies to `<codex_summary>` (the active reviewer's `parsed.summary`).
 
 Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` lines 218-280): the verdict rubric, the dismissal-evidence gate, and the output shape port across verbatim, re-scoped from "diff + task block" to "plan + schedule + source-specific evidence".
 
