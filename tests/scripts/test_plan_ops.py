@@ -23519,6 +23519,176 @@ class Test_route_plan_review:
         ) == "skip"
 
 
+# ---------------------------------------------------------------------------
+# TASK-007 — Phase D.1 fallback wiring (Codex review of Claude work fails →
+# Gemini). Truth-table tests for `_route_review`, parallel structure to
+# TASK-006's `_route_plan_review` suite. The vocabulary differs ("fail"
+# instead of "skip") because Phase D.1 has no skip surface — review failure
+# cascades into task failure unless fallback succeeds.
+# ---------------------------------------------------------------------------
+
+
+class Test_route_review:
+    """TASK-007 — `_route_review` truth table.
+
+    The orchestrator-side decision (route to Codex / Gemini / fail) for
+    Phase D.1 cross-review is centralized in `plan_ops._route_review` so
+    the truth table is unit-testable in isolation. The wrapper end-to-end
+    is exercised by TASK-003 / TASK-004 wrapper tests; these tests pass
+    synthetic arguments and assert the helper's verdict against the
+    canonical truth table from the TASK-007 plan.
+    """
+
+    def test_no_fallback_pre_dispatch_returns_codex(self) -> None:
+        """`--allow-gemini-fallback` NOT set + pre-dispatch (no Codex
+        outcome yet) → "codex" (today's behavior; Codex is the sole
+        Phase D.1 reviewer on the Claude-impl path)."""
+        for codex_avail in (True, False):
+            for gemini_avail in (True, False):
+                assert plan_ops._route_review(
+                    allow_gemini_fallback=False,
+                    codex_available=codex_avail,
+                    gemini_available=gemini_avail,
+                    codex_outcome=None,
+                ) == "codex"
+
+    def test_fallback_pre_dispatch_returns_codex(self) -> None:
+        """`--allow-gemini-fallback` set + pre-dispatch → "codex" (Gemini
+        is a *transient-failure fallback*, not a co-equal first dispatch
+        on the Phase D.1 seam — the initial reviewer is Codex regardless
+        of the fallback flag or Gemini availability)."""
+        for codex_avail in (True, False):
+            for gemini_avail in (True, False):
+                assert plan_ops._route_review(
+                    allow_gemini_fallback=True,
+                    codex_available=codex_avail,
+                    gemini_available=gemini_avail,
+                    codex_outcome=None,
+                ) == "codex"
+
+    @pytest.mark.parametrize(
+        "outcome", ["timeout", "parse_error", "failure"],
+    )
+    def test_fallback_codex_transient_routes_to_gemini(
+        self, outcome: str,
+    ) -> None:
+        """`--allow-gemini-fallback` set + Codex returned a transient
+        outcome + Gemini available → "gemini" (the post-Codex-failure
+        re-dispatch leg, fired ONCE per the helper's contract)."""
+        for codex_avail in (True, False):
+            assert plan_ops._route_review(
+                allow_gemini_fallback=True,
+                codex_available=codex_avail,
+                gemini_available=True,
+                codex_outcome=outcome,
+            ) == "gemini"
+
+    @pytest.mark.parametrize(
+        "outcome", ["timeout", "parse_error", "failure"],
+    )
+    def test_fallback_codex_transient_no_gemini_returns_fail(
+        self, outcome: str,
+    ) -> None:
+        """`--allow-gemini-fallback` set + Codex transient outcome +
+        Gemini unavailable → "fail" (no fallback target — review-stage
+        failure cascades into task failure)."""
+        for codex_avail in (True, False):
+            assert plan_ops._route_review(
+                allow_gemini_fallback=True,
+                codex_available=codex_avail,
+                gemini_available=False,
+                codex_outcome=outcome,
+            ) == "fail"
+
+    @pytest.mark.parametrize(
+        "outcome", ["timeout", "parse_error", "failure"],
+    )
+    def test_no_fallback_codex_transient_returns_fail(
+        self, outcome: str,
+    ) -> None:
+        """Codex transient outcome WITHOUT `--allow-gemini-fallback` →
+        "fail" regardless of `gemini_available` (the flag is opt-in;
+        without it the behavior is identical to today's review-stage
+        failure cascade — Phase D.1 has no skip surface)."""
+        for codex_avail in (True, False):
+            for gemini_avail in (True, False):
+                assert plan_ops._route_review(
+                    allow_gemini_fallback=False,
+                    codex_available=codex_avail,
+                    gemini_available=gemini_avail,
+                    codex_outcome=outcome,
+                ) == "fail"
+
+    def test_scope_violation_never_falls_back(self) -> None:
+        """`scope_violation` is structural (per Phase B), not transient;
+        routing it to Gemini would mask the underlying issue. Helper
+        returns "fail" regardless of fallback flag or availability."""
+        for allow in (True, False):
+            for codex_avail in (True, False):
+                for gemini_avail in (True, False):
+                    assert plan_ops._route_review(
+                        allow_gemini_fallback=allow,
+                        codex_available=codex_avail,
+                        gemini_available=gemini_avail,
+                        codex_outcome="scope_violation",
+                    ) == "fail"
+
+    def test_codex_success_outcome_returns_codex_defensive(self) -> None:
+        """Defensive: a `success` outcome means the caller should not be
+        invoking the helper to "route" — Codex already succeeded. Helper
+        returns "codex" rather than treating success as a transient
+        failure."""
+        for allow in (True, False):
+            for codex_avail in (True, False):
+                for gemini_avail in (True, False):
+                    assert plan_ops._route_review(
+                        allow_gemini_fallback=allow,
+                        codex_available=codex_avail,
+                        gemini_available=gemini_avail,
+                        codex_outcome="success",
+                    ) == "codex"
+
+    def test_no_fallback_invariant_fail_regardless_of_gemini_state(
+        self,
+    ) -> None:
+        """TASK-007 AC: with `--allow-gemini-fallback` NOT set, the
+        helper returns "fail" on the codex-transient path REGARDLESS of
+        `gemini_available`. Verifies the orchestrator does not silently
+        fall back when the operator did not opt in."""
+        for gemini_avail in (True, False):
+            assert plan_ops._route_review(
+                allow_gemini_fallback=False,
+                codex_available=True,
+                gemini_available=gemini_avail,
+                codex_outcome="timeout",
+            ) == "fail"
+
+    def test_second_leg_after_gemini_failure_returns_fail(self) -> None:
+        """The helper does NOT loop. After Gemini also fails, the caller
+        re-invokes with `gemini_available=False` (modeling "no fallback
+        target available") — the helper returns "fail" so the caller can
+        emit `review_fallback_failed {from:"codex", to:"gemini",
+        reason:<gemini_outcome>}` before classifying the task as
+        review-stage failure.
+        """
+        # First leg: Codex transient → Gemini.
+        assert plan_ops._route_review(
+            allow_gemini_fallback=True,
+            codex_available=True,
+            gemini_available=True,
+            codex_outcome="timeout",
+        ) == "gemini"
+        # Second leg: Gemini also transient — caller re-invokes with
+        # gemini_available flipped to False to reflect "fallback target
+        # exhausted". Helper returns fail.
+        assert plan_ops._route_review(
+            allow_gemini_fallback=True,
+            codex_available=True,
+            gemini_available=False,
+            codex_outcome="failure",
+        ) == "fail"
+
+
 class Test_parse_plan_review_report_reviewer_field:
     """TASK-006 — `parse-plan-review-report` accepts envelopes with
     `reviewer: "gemini"` (validates against the structurally-mirrored

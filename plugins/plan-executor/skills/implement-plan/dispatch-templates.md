@@ -583,6 +583,26 @@ The wrapper derives its internal timeout from `len(task["files"])` per the imple
 
 **Pre-read excerpts (TASK-009).** The Codex wrapper auto-resolves `**Read targets:**` / `**Symbol targets:**` from the task block and embeds the rendered `## Pre-read excerpts` section at the top of Codex's prompt. No orchestrator-side templating is required; the excerpts surface inside the wrapper's prompt construction in `render_implement_prompt`. The same auto-resolution runs for `Phase D-Codex` reviews via `render_review_prompt`.
 
+### Verdict decision ladder (cross-family reviewer calibration)
+
+Lifted out of `## Phase D-Codex` to a shared section per TASK-007 — both `## Phase D-Codex` and `## Phase D-Gemini` reference this ladder via a one-line cross-reference (`(see "Verdict decision ladder" above)`). The prose is byte-for-byte the same so calibration does not drift between reviewer families. When you render the reviewer prompt for either Codex or Gemini, include this guidance verbatim before the schema reference. Cross-family reviewers historically overuse `needs-rework` on advisory nits; the ladder below reserves `needs-rework` for actual ship-blockers.
+
+Decide your verdict using this ladder in order. Stop at the first rung that fits — do NOT escalate to the next rung unless the criterion is actually met.
+
+1. **`clean`** — no issues, or only forward-looking suggestions that a human reviewer would file as follow-ups without asking the author to revise this commit. A clean scope check, acceptance criteria satisfied, tests pass.
+2. **`minor-findings`** — issues a human reviewer would merge with a follow-up note rather than block on. Examples: style drift, typos, out-of-date comment, non-load-bearing naming choice, unused import, a docstring that undersells the code, a log message that could be clearer.
+3. **`needs-rework`** — contract violation, acceptance-criterion miss, semantic bug, missing test for a declared verification criterion, or scope inflation past the task's file allow-list. This verdict returns work to the implementer; use it only when a human reviewer would block merge on the finding alone.
+
+Heuristic when unsure: ask "would a human reviewer block merge on this finding alone?" If no → `minor-findings`. If yes → `needs-rework`. Do not bundle several nits together and escalate their sum to `needs-rework`; list each as a minor finding instead.
+
+**Evidence gate (required before assigning `needs-rework`).** The heuristic answers *how severe if real*; the evidence gate answers *do you know it's real*. Before assigning `needs-rework` for a claimed semantic bug, contract violation, or acceptance-criterion miss, you MUST cite a concrete observation: a reproduced failure, a traced control-flow path through the cited symbol, or a cited invariant violation in the diff. A finding phrased as *"if X is true, then..."* or *"this is only safe if..."* that you did not verify is a hypothesis, not an observation. In-bounds verification moves for the cross-family reviewer sandbox: run the task's declared test command (`pytest -k <name>`, etc.), read the cited symbol in the repo, trace a short control-flow path by hand. Out of bounds: spinning up external services. **Downgrade rule:** if you cannot verify with those moves, downgrade to `minor-findings` phrased as a question. Hypotheses still surface; they just don't gate the commit.
+
+Worked examples (terse, synthetic):
+
+- Finding: "`# TODO: refactor this later` comment in `foo.py:42` is stale; the refactor already happened." Verdict: **`minor-findings`**. Justification: outdated comment, no behavior impact, trivial follow-up.
+- Finding: "Acceptance criterion V2 requires a regression test covering the empty-input branch; the diff adds the branch but no test asserts it." Verdict: **`needs-rework`**. Justification: declared verification criterion is unmet — a ship-blocker.
+- Finding: "Transitive closure may loop forever on cycles; cycle check only runs after." Verdict without verification: **`minor-findings`** phrased as a question. Justification: hypothesis — tracing `001→002→001` by hand or running the cycle test would have confirmed or refuted it. When unverified, downgrade and ask.
+
 ## Phase D-Codex — review via wrapper (reviews Claude-implemented work)
 
 **`target_task_id` (TASK-007).** Pass `--target-task-id <NNN>` to the wrapper for shared-file children (child plan declares >1 `### TASK-NNN:` H3 heading). The wrapper's `render_review_prompt` calls `plan_ops.render_target_task_id_injection(plan_text, target_task_id, plan_file=...)` and prepends the disambiguator line per §`target_task_id` auto-injection rule. Omitting `--target-task-id` when the child file carries >1 heading raises `MissingTargetTaskIdError` and the wrapper emits a `failure` envelope.
@@ -601,27 +621,35 @@ Bash command template:
 
 The wrapper derives its internal timeout from `len(files)` per the review formula in **SKILL.md §Bash-call idioms** (`max(180s, 30 * len(files))`); pass `--timeout N` only when the operator has a concrete reason to override. The envelope carries `effective_timeout: int` reporting the cap actually used. Wrapper captures a pre-dispatch baseline and performs delta-bounded post-review cleanup against it; any sandbox escape surfaces in `extra.sandbox_escape_detected` without changing outcome. Wrapper embeds the task-scoped diff (`git diff HEAD -- <files>`) — per-batch interleaving keeps that diff scoped exclusively to this task's work.
 
-### Verdict decision ladder (Codex reviewer calibration)
-
-When you render the reviewer prompt for Codex, include this guidance verbatim before the schema reference. Codex historically overuses `needs-rework` on advisory nits; the ladder below reserves `needs-rework` for actual ship-blockers.
-
-Decide your verdict using this ladder in order. Stop at the first rung that fits — do NOT escalate to the next rung unless the criterion is actually met.
-
-1. **`clean`** — no issues, or only forward-looking suggestions that a human reviewer would file as follow-ups without asking the author to revise this commit. A clean scope check, acceptance criteria satisfied, tests pass.
-2. **`minor-findings`** — issues a human reviewer would merge with a follow-up note rather than block on. Examples: style drift, typos, out-of-date comment, non-load-bearing naming choice, unused import, a docstring that undersells the code, a log message that could be clearer.
-3. **`needs-rework`** — contract violation, acceptance-criterion miss, semantic bug, missing test for a declared verification criterion, or scope inflation past the task's file allow-list. This verdict returns work to the implementer; use it only when a human reviewer would block merge on the finding alone.
-
-Heuristic when unsure: ask "would a human reviewer block merge on this finding alone?" If no → `minor-findings`. If yes → `needs-rework`. Do not bundle several nits together and escalate their sum to `needs-rework`; list each as a minor finding instead.
-
-**Evidence gate (required before assigning `needs-rework`).** The heuristic answers *how severe if real*; the evidence gate answers *do you know it's real*. Before assigning `needs-rework` for a claimed semantic bug, contract violation, or acceptance-criterion miss, you MUST cite a concrete observation: a reproduced failure, a traced control-flow path through the cited symbol, or a cited invariant violation in the diff. A finding phrased as *"if X is true, then..."* or *"this is only safe if..."* that you did not verify is a hypothesis, not an observation. In-bounds verification moves for the Codex sandbox: run the task's declared test command (`pytest -k <name>`, etc.), read the cited symbol in the repo, trace a short control-flow path by hand. Out of bounds: spinning up external services. **Downgrade rule:** if you cannot verify with those moves, downgrade to `minor-findings` phrased as a question. Hypotheses still surface; they just don't gate the commit.
-
-Worked examples (terse, synthetic):
-
-- Finding: "`# TODO: refactor this later` comment in `foo.py:42` is stale; the refactor already happened." Verdict: **`minor-findings`**. Justification: outdated comment, no behavior impact, trivial follow-up.
-- Finding: "Acceptance criterion V2 requires a regression test covering the empty-input branch; the diff adds the branch but no test asserts it." Verdict: **`needs-rework`**. Justification: declared verification criterion is unmet — a ship-blocker.
-- Finding: "Transitive closure may loop forever on cycles; cycle check only runs after." Verdict without verification: **`minor-findings`** phrased as a question. Justification: hypothesis — tracing `001→002→001` by hand or running the cycle test would have confirmed or refuted it. When unverified, downgrade and ask.
+When rendering Codex's reviewer prompt, embed the verdict-decision-ladder guidance verbatim (see "Verdict decision ladder (cross-family reviewer calibration)" above — lifted out of this section per TASK-007 so the same ladder serves both `## Phase D-Codex` and `## Phase D-Gemini` without calibration drift) before the schema reference. The ladder prose is reviewer-family-agnostic; the schema reference below is Codex-specific.
 
 Wrapper returns `parsed.verdict ∈ {clean, minor-findings, needs-rework}` per `scripts/codex_review_schema.json`; findings carry `severity`, `confidence`, `file`, `line`, `issue`, and `suggested_fix`, plus top-level `notes[]` for non-blocking observations. Orchestrator routes by verdict.
+
+## Phase D-Gemini — review via wrapper (transient-failure fallback for Phase D-Codex)
+
+**Fire condition.** The orchestrator dispatches this template ONLY when `--allow-gemini-fallback` is set AND a prior `## Phase D-Codex` dispatch returned `outcome ∈ {timeout, parse_error, failure}` AND `gemini_available=true`. Routing is centralized in `plan_ops._route_review` (sibling helper to `_route_plan_review`); see SKILL.md §Phase D — Review + commit's `--allow-gemini-fallback` routing table for the full truth table. `scope_violation` is intentionally NOT a fallback trigger — it is structural (per Phase B), not transient.
+
+**`target_task_id` (TASK-007).** Same disambiguator semantics as Phase D-Codex above. Pass `--target-task-id <NNN>` to the wrapper for shared-file children; the Gemini wrapper's `render_review_prompt` honors the flag identically. Omitting it for a >1-heading child file emits a `failure` envelope.
+
+Bash command template (parallel to Phase D-Codex; the same flag set, swapping the Codex wrapper script for the Gemini wrapper script):
+
+```
+{{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_gemini_dispatch.py" review \
+  --plan-file <absolute plan path> \
+  --task-id <NNN> \
+  --repo-root <absolute repo root> \
+  --files <comma-separated files_changed from implementer> \
+  --review-focus bugs \
+  [--target-task-id <NNN>]   # required when child plan declares >1 `### TASK-NNN:` H3 heading
+```
+
+Before invoking the wrapper, the orchestrator emits `review_fallback_used {task_id, from:"codex", to:"gemini", reason:"<codex_outcome>"}` (see `run-log-schema.md`). When the Gemini dispatch ALSO returns `outcome ∈ {timeout, parse_error, failure}`, emit `review_fallback_failed {task_id, from:"codex", to:"gemini", reason:"<gemini_outcome>"}` and classify as a review-stage failure per today's wrapper-failure clause in SKILL.md §Phase D.
+
+When rendering Gemini's reviewer prompt, embed the verdict-decision-ladder guidance verbatim (see "Verdict decision ladder (cross-family reviewer calibration)" above) before the schema reference — the prose is byte-for-byte identical to the Phase D-Codex rendering so calibration does not drift between families.
+
+**Wrapper-checks asymmetry (v1).** The Gemini wrapper does NOT emit `wrapper_checks` in its envelope — `wrapper_checks.symbol_warnings[]` is a Codex-specific feature today. When the active Phase D.1 reviewer is Gemini and a `needs-rework` verdict subsequently dispatches Phase D.5, the orchestrator passes `{"symbol_warnings": []}` as the `<wrapper_checks_json>` placeholder default (the same default the Phase D.5 template already uses on Codex failure-path envelopes). Future readers should not expect symmetry on this field; widening `wrapper_checks` to Gemini is intentionally out of scope for v1.
+
+Wrapper returns `parsed.verdict ∈ {clean, minor-findings, needs-rework}` per `scripts/gemini_review_schema.json` (a structural mirror of `codex_review_schema.json`); the findings shape and `notes[]` array are reviewer-agnostic. Orchestrator routes by verdict using the same §D.2 table — the `clean | minor-findings | needs-rework` vocabulary applies regardless of which family produced it. Run-log events on this branch carry `reviewer:"gemini"`.
 
 ## Phase D-Claude — code-reviewer on Codex work
 
@@ -657,7 +685,9 @@ Dispatched only when Codex reviewing a Claude-implemented task returns `needs-re
 
 > Scope: `<comma-separated files from Claude implementer's files_changed>`.
 >
-> Codex (a peer reviewer) returned `needs-rework` on this task and flagged the findings below. Independently review the change and decide whether each Codex finding is load-bearing (a ship-blocker) or a nitpick that should be dismissed.
+> <reviewer> (a peer reviewer) returned `needs-rework` on this task and flagged the findings below. Independently review the change and decide whether each finding is load-bearing (a ship-blocker) or a nitpick that should be dismissed.
+>
+> The `<reviewer>` placeholder is rendered as `Codex` or `Gemini` per the active Phase D.1 dispatch (TASK-007). The findings shape and dispatch contract are reviewer-agnostic; downstream prose continues to refer to "Codex findings" because the `<codex_findings_json>` placeholder name is unchanged for v1.
 >
 > Task (verbatim from plan):
 >

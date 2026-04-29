@@ -46,7 +46,7 @@ The `D.2b role-swap retry` for Codex-implemented tasks is unaffected — Gemini 
 
 ### TASK-007: Phase D.1 fallback wiring (Codex review of Claude work fails → Gemini)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (edit — `## Phase D — Review + commit` section + log-event table)

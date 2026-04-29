@@ -6013,6 +6013,73 @@ def _route_plan_review(
     return "skip"
 
 
+_REVIEW_TRANSIENT_OUTCOMES = frozenset({"timeout", "parse_error", "failure"})
+
+
+def _route_review(
+    allow_gemini_fallback: bool,
+    codex_available: bool,
+    gemini_available: bool,
+    codex_outcome: "str | None" = None,
+) -> str:
+    """Decide which Phase D.1 reviewer (if any) handles cross-review of a
+    Claude-implemented task (TASK-007).
+
+    Returns one of ``"codex" | "gemini" | "fail"``. Sibling helper to
+    ``_route_plan_review`` (TASK-006); same signature shape, different
+    output vocabulary — Phase D.1 has no skip surface, so a transient
+    failure with no fallback target degrades into a review-stage failure
+    rather than a documented skip. The orchestrator calls this helper at
+    two seams:
+
+    1. **Pre-dispatch** (``codex_outcome=None``) — pick the initial
+       reviewer. Today's behavior: Codex is the only Phase D.1 reviewer
+       on the Claude-impl path, so the helper returns ``"codex"`` here
+       regardless of ``allow_gemini_fallback`` (Gemini is a
+       *transient-failure fallback*, not a co-equal first dispatch on
+       this seam).
+    2. **Post-Codex-failure** (``codex_outcome ∈ {"timeout",
+       "parse_error", "failure"}``) — decide whether to re-dispatch ONCE
+       to Gemini before classifying as a review-stage failure.
+
+    ``scope_violation`` is intentionally NOT a fallback trigger — a
+    scope violation is a structural defect in the implementer's output
+    (per Phase B), not a transient reviewer failure. Routing it to
+    Gemini would mask the underlying issue. Returns ``"fail"``.
+
+    Truth table (canonical form per TASK-007 plan):
+
+        allow_fallback  codex_avail  gemini_avail  codex_outcome  → result
+        ─────────────────────────────────────────────────────────────────
+        False           *            *             None              → "codex"
+        True            *            *             None              → "codex"
+        False           *            *             {transient}       → "fail"
+        True            *            True          {transient}       → "gemini"
+        True            *            False         {transient}       → "fail"
+        *               *            *             "scope_violation" → "fail"
+        *               *            *             "success"         → "codex"
+
+    The helper does NOT loop. After Gemini also returns a transient
+    outcome, the caller re-invokes with ``gemini_available=False`` (the
+    second leg has "no fallback target available") — the helper returns
+    ``"fail"`` and the orchestrator emits
+    ``review_fallback_failed {from:"codex", to:"gemini", reason:<gemini_outcome>}``
+    before classifying the task as review-stage failure.
+    """
+    if codex_outcome == "success":
+        return "codex"
+
+    if codex_outcome == "scope_violation":
+        return "fail"
+
+    if codex_outcome in _REVIEW_TRANSIENT_OUTCOMES:
+        if allow_gemini_fallback and gemini_available:
+            return "gemini"
+        return "fail"
+
+    return "codex"
+
+
 def _validate_plan_review_parsed(parsed: object) -> list[dict]:
     """Validate the `parsed` body of a plan-review envelope against the
     plan-review schema contract (codex_plan_review_schema.json /
