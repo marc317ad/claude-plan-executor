@@ -26,8 +26,7 @@
           "blocking",
           "section",
           "concern",
-          "suggested_change",
-          "target_task_id"
+          "suggested_change"
         ],
         "additionalProperties": false
       }

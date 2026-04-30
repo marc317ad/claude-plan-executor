@@ -115,6 +115,95 @@ def build_parser() -> argparse.ArgumentParser:
     assert report["arg_specs"]["demo"][2]["value_kind"] == "path"
 
 
+def test_skip_from_report_preserves_selected_command_body():
+    codemod = load_codemod()
+    source = '''import argparse
+
+def _emit(args, result, *, exit_code=0): pass
+def _die(args, result, *, exit_code=1): pass
+def _result(payload, *, exit_code=0): return payload
+def _emit_or_die(args, result): pass
+
+def cmd_alpha(args: argparse.Namespace) -> None:
+    _emit(args, {"alpha": args.name})
+
+def cmd_beta(args: argparse.Namespace) -> None:
+    _emit(args, {"beta": args.name})
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    a = sub.add_parser("alpha")
+    a.add_argument("--name")
+    a.set_defaults(func=cmd_alpha)
+    b = sub.add_parser("beta")
+    b.add_argument("--name")
+    b.set_defaults(func=cmd_beta)
+    return parser
+'''
+    rewritten, report = codemod.transform_source(source, forced_skip_functions={"cmd_beta"})
+
+    assert "def _run_alpha" in rewritten
+    assert "def _run_beta" not in rewritten
+    assert "def cmd_beta(args: argparse.Namespace) -> None:\n    _emit(args, {\"beta\": args.name})" in rewritten
+    assert {item["function"] for item in report["rewritten"]} == {"cmd_alpha"}
+    assert report["skipped"] == [
+        {
+            "function": "cmd_beta",
+            "reason": "skip-from-report",
+            "evidence": "forced by --skip-from-report",
+        }
+    ]
+
+
+def test_cli_skip_from_report_accepts_legacy_report(tmp_path):
+    source = tmp_path / "source.py"
+    out = tmp_path / "out.py"
+    report = tmp_path / "dry-run-report.json"
+    source.write_text(
+        '''import argparse
+
+def _emit(args, result, *, exit_code=0): pass
+def _die(args, result, *, exit_code=1): pass
+def _result(payload, *, exit_code=0): return payload
+def _emit_or_die(args, result): pass
+
+def cmd_demo(args: argparse.Namespace) -> None:
+    _emit(args, {"ok": args.name})
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("demo")
+    p.add_argument("--name")
+    p.set_defaults(func=cmd_demo)
+    return parser
+''',
+        encoding="utf-8",
+    )
+    report.write_text(json.dumps({"skipped": [{"function": "cmd_demo"}]}), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CODEMOD_PATH),
+            "--in",
+            str(source),
+            "--out",
+            str(out),
+            "--skip-from-report",
+            str(report),
+        ],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "missing codemod_git_sha" not in result.stderr
+    assert "skip cmd_demo: skip-from-report" in result.stderr
+    assert "def _run_demo" not in out.read_text(encoding="utf-8")
+
+
 def _cmd_function_names(source: str) -> set[str]:
     tree = ast.parse(source)
     return {
@@ -254,7 +343,10 @@ def test_real_file_help_surface_matches_after_rewrite(tmp_path):
         capture_output=True,
         check=True,
     )
-    assert "--- " in result.stdout
+    if rewritten != source:
+        assert "--- " in result.stdout
+    else:
+        assert result.stdout == ""
     written_report = json.loads(report_path.read_text(encoding="utf-8"))
     assert written_report["summary"] == report["summary"]
 

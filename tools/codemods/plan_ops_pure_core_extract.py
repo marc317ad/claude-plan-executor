@@ -8,6 +8,7 @@ import ast
 import difflib
 import json
 import pathlib
+import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -368,7 +369,7 @@ def _detect_skip(func: ast.FunctionDef) -> tuple[str, str] | None:
                 if (
                     isinstance(node.func.value, ast.Name)
                     and node.func.value.id == "sys"
-                    and node.func.attr in {"exit", "stdout.write"}
+                    and node.func.attr == "exit"
                 ):
                     return "direct-stdout-exit", f"{func.name}:{getattr(node, 'lineno', func.lineno)}"
                 if (
@@ -489,9 +490,78 @@ def _replace_segment(source: str, node: ast.AST, replacement: str, offsets: list
     return source[:start] + replacement + source[end:]
 
 
-def transform_source(source: str) -> tuple[str, dict[str, Any]]:
+def _current_script_git_sha() -> str | None:
+    script_path = pathlib.Path(__file__).resolve()
+    try:
+        repo_root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=script_path.parent,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        rel_path = script_path.relative_to(pathlib.Path(repo_root)).as_posix()
+        result = subprocess.run(
+            ["git", "log", "-n", "1", "--format=%H", "--", rel_path],
+            cwd=repo_root,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except Exception:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _load_skip_from_report(path: pathlib.Path) -> tuple[set[str], list[str]]:
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"could not read JSON: {exc}") from exc
+    if not isinstance(report, dict):
+        raise ValueError("report root must be an object")
+
+    warnings: list[str] = []
+    report_sha = report.get("codemod_git_sha")
+    current_sha = _current_script_git_sha()
+    if isinstance(report_sha, str) and current_sha and report_sha != current_sha:
+        raise ValueError(
+            "skip report was produced by codemod "
+            f"{report_sha}, but current codemod is {current_sha}; rerun dry-run first"
+        )
+    if report_sha is None:
+        warnings.append(f"{path}: missing codemod_git_sha; accepting legacy skip report")
+
+    skipped = report.get("skipped")
+    if not isinstance(skipped, list):
+        raise ValueError("report must contain a skipped list")
+    functions: set[str] = set()
+    for index, item in enumerate(skipped):
+        if not isinstance(item, dict) or not isinstance(item.get("function"), str):
+            raise ValueError(f"skipped[{index}] must contain a string function")
+        functions.add(item["function"])
+    return functions, warnings
+
+
+def _write_text_atomic(path: pathlib.Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(text, encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def transform_source(
+    source: str,
+    *,
+    forced_skip_functions: set[str] | None = None,
+    initial_warnings: list[str] | None = None,
+) -> tuple[str, dict[str, Any]]:
     tree = ast.parse(source)
     arg_specs, cmd_to_command, warnings = extract_arg_specs(tree)
+    if initial_warnings:
+        warnings.extend(initial_warnings)
+    forced_skip = set(forced_skip_functions or set())
     cmd_funcs = [
         node
         for node in tree.body
@@ -507,6 +577,16 @@ def transform_source(source: str) -> tuple[str, dict[str, Any]]:
     for func in cmd_funcs:
         command = cmd_to_command.get(func.name, _cmd_suffix(func.name).replace("_", "-"))
         specs = arg_specs.get(command, [])
+        if func.name in forced_skip:
+            report_skipped.append(
+                {
+                    "function": func.name,
+                    "reason": "skip-from-report",
+                    "evidence": "forced by --skip-from-report",
+                }
+            )
+            forced_skip.remove(func.name)
+            continue
         if _is_already_shim(func):
             report_rewritten.append(
                 {
@@ -578,8 +658,12 @@ def transform_source(source: str) -> tuple[str, dict[str, Any]]:
         else:
             new_source += "\n\n" + helpers + "\n"
 
+    for missing in sorted(forced_skip):
+        warnings.append(f"{missing}: requested by --skip-from-report but no cmd_* function was found")
+
     report = {
         "schema_version": 1,
+        "codemod_git_sha": _current_script_git_sha(),
         "rewritten": sorted(report_rewritten, key=lambda r: r["function"]),
         "skipped": sorted(report_skipped, key=lambda r: r["function"]),
         "arg_specs": {
@@ -607,12 +691,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", dest="output", required=True, help="Output plan_ops.py path")
     parser.add_argument("--dry-run", action="store_true", help="Print diff and classification; do not write --out")
     parser.add_argument("--report", help="Write machine-readable JSON report")
+    parser.add_argument(
+        "--skip-from-report",
+        help="Reuse the skipped command list from a prior dry-run report",
+    )
     args = parser.parse_args(argv)
 
     input_path = pathlib.Path(args.input)
     output_path = pathlib.Path(args.output)
     source = input_path.read_text(encoding="utf-8")
-    rewritten, report = transform_source(source)
+    forced_skip_functions: set[str] | None = None
+    initial_warnings: list[str] | None = None
+    if args.skip_from_report:
+        try:
+            forced_skip_functions, initial_warnings = _load_skip_from_report(pathlib.Path(args.skip_from_report))
+        except ValueError as exc:
+            print(f"error: invalid --skip-from-report: {exc}", file=sys.stderr)
+            return 2
+    rewritten, report = transform_source(
+        source,
+        forced_skip_functions=forced_skip_functions,
+        initial_warnings=initial_warnings,
+    )
 
     for skipped in report["skipped"]:
         print(
@@ -634,11 +734,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"rewritten": report["rewritten"], "skipped": report["skipped"]}, indent=2), file=sys.stderr)
         return 0
 
-    if input_path.resolve() == output_path.resolve():
-        output_path.write_text(rewritten, encoding="utf-8")
-    else:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(rewritten, encoding="utf-8")
+    _write_text_atomic(output_path, rewritten)
     return 0
 
 
