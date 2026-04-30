@@ -1,0 +1,21 @@
+{
+  "payload": {
+    "_files": {
+      "docs/plans/sample.md": "# Plan: tier-c\n\n**Created:** 2026-04-30\n**Status:** in-progress\n**Base branch:** main\n\n## Context\n\nStub.\n\n## Tasks\n\n### TASK-001: First task\n\n- **Status:** open\n- **Agent:** claude\n- **Files:**\n  - src/foo.py\n- **Dependencies:** none\n\nBody.\n\n### TASK-002: Second task\n\n- **Status:** open\n- **Agent:** claude\n- **Files:**\n  - src/bar.py\n- **Dependencies:** [001]\n\nBody.\n"
+    },
+    "_seed_plans_dir": true,
+    "authorization_source": "reconcile-out-of-scope-user-instruction",
+    "files": "",
+    "plan_file": "docs/plans/sample.md",
+    "reason": "paused-run reverted by user",
+    "repo_root": null,
+    "retries_used": null,
+    "reversion_guidance": "operator chose `revert` from the four-option pause menu",
+    "reviewer_findings": "",
+    "run_id": "R1",
+    "stage": "implement",
+    "task_id": "001",
+    "update_schedule_state": null
+  },
+  "subcommand": "fail-task"
+}

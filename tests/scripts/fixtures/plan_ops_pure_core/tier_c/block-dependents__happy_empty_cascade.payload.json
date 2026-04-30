@@ -1,0 +1,15 @@
+{
+  "payload": {
+    "_files": {
+      "docs/plans/sample.md": "# Plan: tier-c\n\n**Created:** 2026-04-30\n**Status:** in-progress\n**Base branch:** main\n\n## Context\n\nStub.\n\n## Tasks\n\n### TASK-001: First task\n\n- **Status:** open\n- **Agent:** claude\n- **Files:**\n  - src/foo.py\n- **Dependencies:** none\n\nBody.\n\n### TASK-002: Second task\n\n- **Status:** open\n- **Agent:** claude\n- **Files:**\n  - src/bar.py\n- **Dependencies:** [001]\n\nBody.\n",
+      "docs/plans/schedule.json": "{\"outcome\": \"valid\", \"tasks\": [{\"id\": \"001\", \"agent\": \"claude\", \"title\": \"one\", \"files\": [\"src/foo.py\"], \"dependencies\": [], \"plan_file\": \"sample.md\"}, {\"id\": \"002\", \"agent\": \"claude\", \"title\": \"two\", \"files\": [\"src/bar.py\"], \"dependencies\": [], \"plan_file\": \"sample.md\"}], \"batches\": [], \"gaps\": [], \"risks\": []}"
+    },
+    "_seed_plans_dir": true,
+    "failed": "001",
+    "plan_file": "docs/plans/sample.md",
+    "run_id": "R1",
+    "schedule_file": "docs/plans/schedule.json",
+    "update_schedule_state": null
+  },
+  "subcommand": "block-dependents"
+}

@@ -1,0 +1,9 @@
+{
+  "payload": {
+    "_seed_plans_dir": true,
+    "event": "totally-bogus-event-name",
+    "fields_json": "{\"run_id\": \"R1\", \"task_id\": \"001\"}",
+    "findings_json": null
+  },
+  "subcommand": "log-event"
+}

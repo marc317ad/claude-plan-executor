@@ -1,0 +1,14 @@
+{
+  "payload": {
+    "_files": {
+      "docs/plans/schedule.json": "{\"outcome\": \"valid\", \"tasks\": [{\"id\": \"001\", \"agent\": \"claude\", \"title\": \"scope-test\", \"files\": [\"src/foo.py\"], \"dependencies\": [], \"plan_file\": \"sample.md\"}], \"batches\": [], \"gaps\": [], \"risks\": []}"
+    },
+    "_seed_plans_dir": true,
+    "out_of_scope_policy": "reconcile-and-revert",
+    "plans_dir": null,
+    "repo_root": ".",
+    "schedule_file": "docs/plans/schedule.json",
+    "stdin_text": "[{\"task_id\": \"001\", \"outcome\": \"success\", \"out_of_scope_observed\": true, \"out_of_scope_tracked\": [\"src/foo.py\"], \"out_of_scope_untracked\": []}]"
+  },
+  "subcommand": "reconcile-batch"
+}

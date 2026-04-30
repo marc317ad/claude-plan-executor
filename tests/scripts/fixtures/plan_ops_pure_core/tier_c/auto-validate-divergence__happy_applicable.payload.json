@@ -1,0 +1,13 @@
+{
+  "payload": {
+    "_seed_plans_dir": true,
+    "envelope_file": null,
+    "repo_root": null,
+    "run_id": null,
+    "stdin_text": "{\"outcome\": \"failure\", \"cause\": \"independent_test_run_failed\", \"task_id\": \"001\"}",
+    "task_id": null,
+    "test_command": "true",
+    "timeout": 30
+  },
+  "subcommand": "auto-validate-divergence"
+}

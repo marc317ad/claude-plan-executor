@@ -593,7 +593,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-006: Tier-C conformance fixtures (happy-path + codemod-correctness gates only)
 
-- **Status:** Pending
+- **Status:** Done
 - **Priority:** medium
 - **Files:**
   - tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py (create)

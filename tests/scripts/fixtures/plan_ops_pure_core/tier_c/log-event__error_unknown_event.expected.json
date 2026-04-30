@@ -1,0 +1,6 @@
+{
+  "compare_envelope": true,
+  "compare_run_log": true,
+  "exit_code": 1,
+  "stderr_policy": "empty"
+}

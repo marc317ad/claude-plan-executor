@@ -1,0 +1,27 @@
+{
+  "payload": {
+    "_files": {
+      "docs/plans/sample.md": "# Plan: tier-c\n\n**Created:** 2026-04-30\n**Status:** in-progress\n**Base branch:** main\n\n## Context\n\nStub.\n\n## Tasks\n\n### TASK-001: First task\n\n- **Status:** open\n- **Agent:** claude\n- **Files:**\n  - src/foo.py\n- **Dependencies:** none\n\nBody.\n\n### TASK-002: Second task\n\n- **Status:** open\n- **Agent:** claude\n- **Files:**\n  - src/bar.py\n- **Dependencies:** [001]\n\nBody.\n"
+    },
+    "_seed_plans_dir": true,
+    "d4_rescue_tag": false,
+    "diff_summary": "y",
+    "disagreement_tag": false,
+    "dismissed_finding_ids": [],
+    "dry_run": true,
+    "files": "src/foo.py",
+    "narrow_remediation_tag": false,
+    "plan_file": "docs/plans/sample.md",
+    "remediation_tag": false,
+    "reviewer": "none",
+    "reviewer_minor_findings": "[]",
+    "reviewer_verdict": "",
+    "run_id": "R1",
+    "sandbox_divergence_tag": false,
+    "task_id": "not-a-task-id",
+    "title": "x",
+    "update_schedule_state": null,
+    "v_check_timeout": 300
+  },
+  "subcommand": "commit-task"
+}

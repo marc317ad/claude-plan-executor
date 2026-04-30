@@ -2,42 +2,49 @@
   "outcome": "needs-enrichment",
   "tasks": [
     {
-      "id": "003F",
-      "title": "Hand-fix Codex/Gemini dispatch builders",
+      "id": "006",
+      "title": "Tier-C conformance fixtures (happy-path + codemod-correctness gates only)",
       "files": [
-        "plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_build_codex_dispatch_input`, `cmd_build_gemini_dispatch_input`, and directly shared `_bcdi_*` helper call sites)",
-        "tests/scripts/test_plan_ops.py (modify focused build-codex/build-gemini tests only if needed)"
+        "tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py (create)",
+        "tests/scripts/fixtures/plan_ops_pure_core/tier_c/<sub>__<case>.{payload,expected}.json (create, ~7-9 pairs)"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k \"build_codex_dispatch_input or build_gemini_dispatch_input or pure_core_baseline\" -q",
-      "priority": "high",
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py",
+      "priority": "medium",
       "plan_file": "PLAN_PURE_CORE_CODEMOD.md",
-      "description": "Completes the private-terminator family after the larger Claude builder is stable.",
+      "description": "Tier-C is now a regression net for the **codemod's correctness** (f-string preservation, dismissed-finding-ids validation shape, error-envelope round-trip on the named state mutators) plus structural happy-path round-tripping. The richer adversarial behavior tests that motivated v1's TASK-006 are deferred \u2014 they protect against drift in the underlying `cmd_*` logic, which is unchanged by an AST rewrite. If a future hardening plan wants them, they slot in cleanly against the same `_run_*` surface.",
       "acceptance_criteria": [
-        "Both commands become shims over `_args_to_payload_*` \u2192 `_run_*` \u2192 `_emit_or_die`.",
-        "Both preserve `--output -` stdout-mode and `--output <path>` no-stdout file-output mode.",
-        "Both use the pure `_bcdi_to_error_result` / `_bcdi_to_envelope_result` helpers from TASK-003E.",
-        "Existing focused tests and the TASK-000B baseline stay green.",
-        "Commit only this task's files."
+        "Per-function tmp-git-repo fixture: byte-equal git history (`git log --oneline --all` plus tree-hashes of every commit), byte-equal `_run_log.jsonl` (validates hash-chain), byte-equal lock-state file, identical exit codes per error path, byte-equal directory snapshot for `cmd_decompose_plan` outputs \u2014 all on the **happy path only**.",
+        "Required fixtures (named, happy-path-shaped):",
+        "cmd_commit_task: clean-commit happy path; `out_of_scope_observed=true` reconciler-partition path",
+        "cmd_fail_task: paused-run-with-authorization-source (codifies the hand-fix from TASK-003)",
+        "cmd_log_event: rejected-event (not in `ALLOWED_LOG_EVENTS`) \u2014 exercises `errors[]` round-trip",
+        "cmd_acquire_lock: stale-lock-takeover (codifies TASK-003's `_run_acquire_lock` shape)",
+        "cmd_auto_validate_divergence: applicable-envelope happy path (no test-command-times-out \u2014 that's underlying behavior, not codemod equivalence)",
+        "cmd_decompose_plan: malformed-plan error path (exercises `_run_*` error-envelope shape)",
+        "cmd_block_dependents: empty-cascade short-circuit (exercises early-return `_run_*` shape)",
+        "**`cmd_commit_task` dismissed-finding-ids fixture:** at least one happy-path fixture for the `--narrow-remediation-tag` + `--dismissed-finding-ids 1,2,3` combo proving that `_validate_commit_task_payload` (introduced by TASK-003) returns `errors[]` for invalid combos and the CLI's argparse layer keeps producing exit-code-2 banners for the same combos. Asserts both paths reject `--dismissed-finding-ids 1,x` (CLI: exit 2 + banner; pure: `errors[{\"code\":\"dismissed-finding-ids-not-int\"}]`).",
+        "**commit-task body f-string preservation:** byte-equal stderr verification on `bad --task-id: <invalid>` error path (line 6887 / its hand-fixed equivalent post-TASK-003) \u2014 directly load-bearing for codemod correctness."
       ],
-      "agent": "claude"
+      "agent": "claude",
+      "classification_reason": "new test module + 7-9 fixture pairs, design decisions"
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "003F"
+        "006"
       ],
       "file_locks": [
-        "plugins/plan-executor/scripts/plan_ops.py",
-        "tests/scripts/test_plan_ops.py"
+        "tests/scripts/fixtures/plan_ops_pure_core/tier_c/<sub>__<case>.{payload,expected}.json",
+        "tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py"
       ]
     }
   ],
   "gaps": [
     {
-      "task_id": "003F",
+      "task_id": "006",
       "type": "extra-task-heading",
       "severity": "soft",
       "detail": "PLAN_PURE_CORE_CODEMOD.md carries 16 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."

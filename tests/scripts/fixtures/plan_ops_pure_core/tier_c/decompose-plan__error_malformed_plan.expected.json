@@ -1,0 +1,6 @@
+{
+  "compare_dir_snapshot": true,
+  "compare_envelope": true,
+  "exit_code": 1,
+  "stderr_policy": "empty"
+}

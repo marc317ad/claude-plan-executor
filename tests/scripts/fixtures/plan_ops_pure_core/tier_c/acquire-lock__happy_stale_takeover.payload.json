@@ -1,0 +1,13 @@
+{
+  "payload": {
+    "_files": {
+      "docs/plans/_run_lock.json": "{\"/some/other/plan.md\": {\"run_id\": \"OTHER-RUN\", \"acquired_at\": \"2026-04-29T00:00:00Z\"}}",
+      "docs/plans/sample.md": "# Plan: tier-c\n\n**Created:** 2026-04-30\n**Status:** in-progress\n**Base branch:** main\n\n## Context\n\nStub.\n\n## Tasks\n\n### TASK-001: First task\n\n- **Status:** open\n- **Agent:** claude\n- **Files:**\n  - src/foo.py\n- **Dependencies:** none\n\nBody.\n\n### TASK-002: Second task\n\n- **Status:** open\n- **Agent:** claude\n- **Files:**\n  - src/bar.py\n- **Dependencies:** [001]\n\nBody.\n"
+    },
+    "_seed_plans_dir": true,
+    "force": true,
+    "plan_file": "docs/plans/sample.md",
+    "run_id": "TAKEOVER-RUN"
+  },
+  "subcommand": "acquire-lock"
+}

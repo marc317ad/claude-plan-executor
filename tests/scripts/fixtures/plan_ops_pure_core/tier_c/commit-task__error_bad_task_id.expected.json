@@ -1,0 +1,7 @@
+{
+  "compare_envelope": true,
+  "compare_run_log": true,
+  "exit_code": 1,
+  "expected_error_substring": "bad --task-id: 'not-a-task-id'",
+  "stderr_policy": "empty"
+}

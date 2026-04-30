@@ -1,0 +1,11 @@
+{
+  "payload": {
+    "_files": {
+      "plan.md": "# Plan: bogus\n\nNo Tasks section here.\n\nJust prose.\n"
+    },
+    "force": false,
+    "out_dir": null,
+    "plan_file": "plan.md"
+  },
+  "subcommand": "decompose-plan"
+}
