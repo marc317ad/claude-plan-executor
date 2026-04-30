@@ -2061,7 +2061,11 @@ def _emit_or_die(args, result: dict) -> None:
 
     if stdout_suppressed:
         sys.exit(exit_code)
-    if isinstance(text_output, str) and text_output:
+    if (
+        isinstance(text_output, str)
+        and text_output
+        and not getattr(args, "json", False)
+    ):
         sys.stdout.write(text_output)
         sys.exit(exit_code)
     _emit(args, result, exit_code=exit_code)
@@ -7073,57 +7077,67 @@ def cmd_block_dependents(args: argparse.Namespace) -> None:
     _emit_or_die(args, result)
 
 
-def cmd_fail_task(args: argparse.Namespace) -> None:
+def _args_to_payload_fail_task(args: argparse.Namespace) -> dict:
+    return {
+        "authorization_source": getattr(args, "authorization_source", None),
+        "task_id": args.task_id,
+        "plan_file": args.plan_file,
+        "repo_root": getattr(args, "repo_root", None),
+        "files": args.files,
+        "run_id": args.run_id,
+        "stage": args.stage,
+        "reason": args.reason,
+        "reversion_guidance": getattr(args, "reversion_guidance", None),
+        "reviewer_findings": getattr(args, "reviewer_findings", None),
+        "update_schedule_state": getattr(args, "update_schedule_state", None),
+        "retries_used": getattr(args, "retries_used", None),
+    }
+
+
+def _run_fail_task(payload: dict) -> dict:
     # ``--authorization-source`` is logically required (see argparse
     # declaration). Missing flag emits the structured envelope so
     # consumers can branch on ``errors[*].code`` rather than parsing
     # argparse's stderr text. This is the audit gate that closes the
     # silent-revert regression vector: every future contributor adding a
     # ``fail-task`` call MUST consciously declare the authorized path.
-    auth_source = getattr(args, "authorization_source", None)
+    auth_source = payload.get("authorization_source")
     if not auth_source:
-        if getattr(args, "json", False):
-            json.dump(
-                {"errors": [{
-                    "code": "authorization-source-required",
-                    "message": (
-                        "--authorization-source is required. Allowed values: "
-                        + ", ".join(sorted(ALLOWED_FAIL_AUTHORIZATION_SOURCES))
-                        + ". Each value corresponds to a documented authorized "
-                        "path in /implement-plan; see ALLOWED_FAIL_AUTHORIZATION_SOURCES "
-                        "in plan_ops.py for what each value sanctions."
-                    ),
-                }]},
-                sys.stdout,
-                indent=2,
-                sort_keys=False,
-            )
-            sys.stdout.write("\n")
-        else:
-            print(
-                "ERROR: --authorization-source is required "
-                "(code=authorization-source-required). Allowed values: "
-                + ", ".join(sorted(ALLOWED_FAIL_AUTHORIZATION_SOURCES))
-                + ".",
-                file=sys.stderr,
-            )
-        sys.exit(1)
+        return _result(
+            {"errors": [{
+                "code": "authorization-source-required",
+                "message": (
+                    "--authorization-source is required. Allowed values: "
+                    + ", ".join(sorted(ALLOWED_FAIL_AUTHORIZATION_SOURCES))
+                    + ". Each value corresponds to a documented authorized "
+                    "path in /implement-plan; see ALLOWED_FAIL_AUTHORIZATION_SOURCES "
+                    "in plan_ops.py for what each value sanctions."
+                ),
+            }]},
+            exit_code=1,
+        )
 
-    tid = _normalize_task_id(args.task_id)
+    tid = _normalize_task_id(payload["task_id"])
     if not tid:
-        _die(args, {"error": f"bad --task-id: {args.task_id!r}"})
+        return _result(
+            {"error": f"bad --task-id: {payload['task_id']!r}"},
+            exit_code=1,
+        )
 
-    plan = Path(args.plan_file)
+    plan = Path(payload["plan_file"])
     if not plan.is_file():
-        _die(args, {"error": f"plan file not found: {plan}"})
+        return _result(
+            {"error": f"plan file not found: {plan}"},
+            exit_code=1,
+        )
 
-    repo_root_arg = getattr(args, "repo_root", None)
+    repo_root_arg = payload.get("repo_root")
     if repo_root_arg:
         repo_root = Path(repo_root_arg).resolve()
     else:
         repo_root = Path.cwd().resolve()
 
-    raw_files = [f.strip() for f in (args.files or "").split(",") if f.strip()]
+    raw_files = [f.strip() for f in (payload.get("files") or "").split(",") if f.strip()]
 
     tracked: list[str] = []
     untracked: list[str] = []
@@ -7192,27 +7206,29 @@ def cmd_fail_task(args: argparse.Namespace) -> None:
     try:
         mutated, _ = mutate_task_status(original, tid, "failed")
     except ValueError as e:
-        _die(args, {"error": f"status mutation: {e}"})
+        return _result({"error": f"status mutation: {e}"}, exit_code=1)
     _write_text(plan, mutated)
 
     event_fields: dict = {
-        "run_id": args.run_id,
+        "run_id": payload["run_id"],
         "task_id": tid,
-        "stage": args.stage,
-        "reason": args.reason,
+        "stage": payload["stage"],
+        "reason": payload["reason"],
     }
     event_fields["authorization_source"] = auth_source
-    if args.reversion_guidance:
-        event_fields["reversion_guidance"] = args.reversion_guidance
-    if args.reviewer_findings:
+    if payload.get("reversion_guidance"):
+        event_fields["reversion_guidance"] = payload["reversion_guidance"]
+    if payload.get("reviewer_findings"):
         try:
-            parsed_findings = json.loads(args.reviewer_findings)
+            parsed_findings = json.loads(payload["reviewer_findings"])
         except json.JSONDecodeError as e:
-            _die(args, {"error": f"invalid --reviewer-findings: {e}"})
-        if args.stage == "review":
+            return _result(
+                {"error": f"invalid --reviewer-findings: {e}"}, exit_code=1,
+            )
+        if payload["stage"] == "review":
             review_errors = _validate_review_failure_payload(parsed_findings)
             if review_errors:
-                _die(args, {"errors": review_errors})
+                return _result({"errors": review_errors}, exit_code=1)
         event_fields["reviewer_findings"] = parsed_findings
     _append_run_log("failed", event_fields)
 
@@ -7220,17 +7236,22 @@ def cmd_fail_task(args: argparse.Namespace) -> None:
     # `state.failed` and (optionally) `state.retries_used[task_id]`.
     state_write_warning: str | None = None
     state_written = False
-    sched_for_state = getattr(args, "update_schedule_state", None)
+    sched_for_state = payload.get("update_schedule_state")
     if sched_for_state:
         retries_obj: dict | None = None
-        retries_raw = getattr(args, "retries_used", None)
+        retries_raw = payload.get("retries_used")
         if retries_raw:
             try:
                 parsed_r = json.loads(retries_raw)
             except json.JSONDecodeError as e:
-                _die(args, {"error": f"invalid --retries-used: {e}"})
+                return _result(
+                    {"error": f"invalid --retries-used: {e}"}, exit_code=1,
+                )
             if not isinstance(parsed_r, dict):
-                _die(args, {"error": "--retries-used must be a JSON object"})
+                return _result(
+                    {"error": "--retries-used must be a JSON object"},
+                    exit_code=1,
+                )
             retries_obj = parsed_r
         prior_state = read_schedule_state(sched_for_state)
         new_state = apply_fail_state_transition(prior_state, tid, retries_obj)
@@ -7252,7 +7273,13 @@ def cmd_fail_task(args: argparse.Namespace) -> None:
         out["schedule_state_written"] = state_written
         if state_write_warning:
             out["schedule_state_warning"] = state_write_warning
-    _emit(args, out)
+    return _result(out, exit_code=0)
+
+
+def cmd_fail_task(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_fail_task(args)
+    result = _run_fail_task(payload)
+    _emit_or_die(args, result)
 
 
 def _args_to_payload_update_plan_header(args: argparse.Namespace) -> dict:
@@ -10424,32 +10451,43 @@ def cmd_list_global_lock_paths(args: argparse.Namespace) -> None:
     _emit_or_die(args, result)
 
 
-def cmd_audit(args: argparse.Namespace) -> None:
-    """Self-audit CLI: --list | --json | --report-file | --check <csv>.
+def _args_to_payload_audit(args: argparse.Namespace) -> dict:
+    return {
+        "list": bool(getattr(args, "list", False)),
+        "check": getattr(args, "check", None),
+        "strict": bool(getattr(args, "strict", False)),
+        "report_file": getattr(args, "report_file", None),
+    }
+
+
+def _run_audit(payload: dict) -> dict:
+    """Self-audit pure core: --list | --json | --report-file | --check <csv>.
 
     See the `## TASK-007` section in `DUAL_AGENT_PLAN_EXECUTOR.md §14` for
     the operator-facing documentation of what this surfaces and when to
     run it.
     """
-    if args.list:
+    if payload["list"]:
         annotated = [
             {"name": name, "tier": AUDIT_CHECK_TIERS[name]}
             for name in AUDIT_CHECK_NAMES
         ]
-        _emit(args, {"checks": annotated})
-        return
+        return _result({"checks": annotated}, exit_code=0)
 
     requested: list[str] | None = None
-    if args.check:
-        requested = [s.strip() for s in args.check.split(",") if s.strip()]
+    if payload["check"]:
+        requested = [s.strip() for s in payload["check"].split(",") if s.strip()]
         unknown = [name for name in requested if name not in AUDIT_CHECK_NAMES]
         if unknown:
-            _die(args, {
-                "error": (
-                    f"unknown audit check name(s): {unknown}; "
-                    f"known: {list(AUDIT_CHECK_NAMES)}"
-                ),
-            })
+            return _result(
+                {
+                    "error": (
+                        f"unknown audit check name(s): {unknown}; "
+                        f"known: {list(AUDIT_CHECK_NAMES)}"
+                    ),
+                },
+                exit_code=1,
+            )
 
     findings: list[dict] = []
     for name, fn, tier in AUDIT_CHECKS:
@@ -10474,7 +10512,7 @@ def cmd_audit(args: argparse.Namespace) -> None:
     def _is_verdict_finding(f: dict) -> bool:
         if requested is not None:
             return True
-        if args.strict:
+        if payload["strict"]:
             return True
         return f.get("tier") != "advisory"
 
@@ -10490,24 +10528,30 @@ def cmd_audit(args: argparse.Namespace) -> None:
         "generated_at": _now(),
     }
 
-    if args.report_file:
-        out = Path(args.report_file)
+    if payload["report_file"]:
+        out = Path(payload["report_file"])
         try:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(_render_audit_markdown(report), encoding="utf-8")
         except OSError as e:
-            _die(args, {
-                "error": f"failed to write --report-file {out}: {e}",
-            })
+            return _result(
+                {"error": f"failed to write --report-file {out}: {e}"},
+                exit_code=1,
+            )
 
     exit_code = 0 if overall == "pass" else 1
-    # Non-JSON path uses a structured plaintext renderer instead of the
-    # default dict-repr fallback in `_emit`; `--json` still emits the
-    # canonical JSON document as before.
-    if not getattr(args, "json", False):
-        sys.stdout.write(_render_audit_text(report))
-        sys.exit(exit_code)
-    _emit(args, report, exit_code=exit_code)
+    # Non-JSON path uses a structured plaintext renderer via the
+    # `__plan_ops_text_output__` marker on `_emit_or_die`; `--json` still
+    # emits the canonical JSON document as before.
+    result = _result(report, exit_code=exit_code)
+    result["__plan_ops_text_output__"] = _render_audit_text(report)
+    return result
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_audit(args)
+    result = _run_audit(payload)
+    _emit_or_die(args, result)
 
 
 def _args_to_payload_gates(args: argparse.Namespace) -> dict:
@@ -11156,26 +11200,48 @@ def render_pre_read_excerpts(resolved: dict) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def cmd_resolve_read_targets(args: argparse.Namespace) -> None:
-    """CLI handler: read a task block (or stdin) and emit JSON.
+def _args_to_payload_resolve_read_targets(args: argparse.Namespace) -> dict:
+    use_stdin = bool(getattr(args, "stdin", False))
+    task_file = getattr(args, "task_file", None)
+    payload: dict = {
+        "stdin": use_stdin,
+        "task_file": Path(task_file) if task_file else None,
+    }
+    if use_stdin:
+        payload["stdin_text"] = _read_stdin_text()
+    elif task_file:
+        payload["task_text"] = _load_text(Path(task_file))
+    return payload
+
+
+def _run_resolve_read_targets(payload: dict) -> dict:
+    """Pure core: read a task block (or stdin) and return the resolved dict.
 
     Exit code is 0 even when `errors` is non-empty — missing symbols
     and missing files are advisory diagnostics, not fatal.
     """
-    if args.stdin:
-        text = sys.stdin.read()
-    elif args.task_file:
-        text = _load_text(Path(args.task_file))
+    if payload.get("stdin"):
+        text = payload.get("stdin_text", "")
+    elif payload.get("task_file") is not None:
+        text = payload.get("task_text", "")
     else:
-        _die(args, {
-            "error": "resolve-read-targets requires --stdin or --task-file",
-        })
-        return  # unreachable; _die calls sys.exit
+        return _result(
+            {"error": "resolve-read-targets requires --stdin or --task-file"},
+            exit_code=1,
+        )
     resolved = resolve_read_targets(text)
-    # `--json` is the default + only emission for this subcommand.
-    json.dump(resolved, sys.stdout, indent=2, sort_keys=False)
-    sys.stdout.write("\n")
-    sys.exit(0)
+    return _result(resolved, exit_code=0)
+
+
+def cmd_resolve_read_targets(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_resolve_read_targets(args)
+    result = _run_resolve_read_targets(payload)
+    # `--json` is the default + only emission for this subcommand; route
+    # success and error envelopes through `_emit_or_die` with JSON forced
+    # so the trailing-newline byte image stays identical to the
+    # pre-codemod handler.
+    args.json = True
+    _emit_or_die(args, result)
 
 
 # ---------------------------------------------------------------------------

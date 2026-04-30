@@ -424,7 +424,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-003D: Hand-fix direct-output commands
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_fail_task`, `cmd_audit`, `cmd_resolve_read_targets`, and their payload/run helpers)
