@@ -14,7 +14,7 @@
       "file": "PLAN_MCP_MIGRATION.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
@@ -30,7 +30,7 @@
       "file": "PLAN_MCP_MIGRATION.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {

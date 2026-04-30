@@ -105,10 +105,10 @@ Ten tasks, six batches. The hot file is `plan_ops_mcp_server.py` (TASKs 004/005/
 
 - **Batch 1 (parallel):** TASK-001 (server scaffolding, new file), TASK-002 (`plan_ops.py` pure-function audit), TASK-003 (schema sidecars, new files).
 - **Batch 2:** TASK-004 (Tier-1 tools) — needs 001+002+003.
-- **Batch 3 (parallel):** TASK-005 (Tier-2 tools, same file as 004 → must follow 004), TASK-007 (SKILL.md rewrite, depends on 004 since Tier-1 covers all hot orchestrator paths). Different files; parallel.
-- **Batch 4 (parallel):** TASK-006 (Tier-3 tools, same file as 005 → must follow 005), TASK-009 (drift guard, depends on 007). Different files; parallel.
-- **Batch 5:** TASK-008 (conformance test, depends on 006 for full-surface coverage).
-- **Batch 6:** TASK-010 (end-to-end smoke, depends on 007+008).
+- **Batch 3:** TASK-005 (Tier-2 tools, same file as 004 → must follow 004).
+- **Batch 4:** TASK-006 (Tier-3 tools, same file as 005 → must follow 005).
+- **Batch 5 (parallel):** TASK-007 (SKILL.md rewrite, depends on 004+006 — full MCP surface must be registered before SKILL.md rewrites every orchestrator-facing `plan_ops.py` invocation as a `Tool: plan_ops__<name>` call), TASK-008 (conformance test, depends on 006 for full-surface coverage). Different files; parallel.
+- **Batch 6 (parallel):** TASK-009 (drift guard, depends on 006+007), TASK-010 (end-to-end smoke, depends on 007+008). Different files; parallel.
 
 Single-session parallel execution within each batch is the target.
 
@@ -118,7 +118,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-001: MCP server scaffolding
 
-- **Status:** Pending
+- **Status:** Done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops_mcp_server.py (create)
@@ -160,13 +160,15 @@ Single-session parallel execution within each batch is the target.
 
 **Description:** Removes the remaining `_emit` / stdin / sys.exit entanglement so the MCP server can call the same cores the argparse shim does, with no behavior drift. Without this, TASK-004/005/006 would have to either duplicate logic or reach into private state. Most subcommands need only a 5–15 line shape change; a handful (`commit-task`, `fail-task`, `reconcile-batch`) carry larger I/O perimeters and are the riskiest sites.
 
+**Run note (2026-04-30, run 20260429T232737):** Implementer halted with `outcome: plan-incorrect`, no edits applied. Empirical scope contradicts the Description's "5–15 line shape change" estimate: `plan_ops.py` is 13,796 lines with 38 `cmd_*` functions spanning ~4,000 LoC and ~200 `_die`/`_emit` callsites interleaved through conditional branches. AC requires every `cmd_<sub>` to be the literal shim `cmd = _emit(_run_<sub>(payload))` with no `_emit`/`print`/`sys.exit` (and by extension no `_die`, since `_die = _emit(..., exit_code=1)`) and no `sys.stdin.read()` inside the pure core; even the AC's named already-pure example `cmd_review_route` is not literally `cmd = _emit(_run(payload))` today (it reads stdin, validates, calls `route(payload)`, then `_emit`). So the AC's literal shim shape is not present anywhere, requiring a full refactor of all 38 `cmd_*` sites including the supposedly-exempt ones. Behavior preservation is non-trivial: atomic writes, run-log JSONL appends, file-lock acquire/release, git operations, subprocess re-execution (`auto-validate-divergence`) all live inside `cmd_*` bodies and must move into `_run_*` without semantic drift; TASK-008's byte-equal conformance gate would surface any drift later as a hard-to-bisect failure across 38 simultaneous refactors. **Status remains Pending.** This task will be re-scoped (likely split into per-region or per-risk-tier sub-tasks, or have its AC narrowed) and re-attempted in a separate session.
+
 **Reversion guidance:** Per-subcommand revert: restore `cmd_*` to its prior shape and drop the `_run_*` indirection. The argparse map and CLI surface are unchanged regardless of revert depth.
 
 ---
 
 ### TASK-003: MCP input/output schema sidecars
 
-- **Status:** Pending
+- **Status:** Done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/schemas/mcp/<tool>.input.json × 36 (create — minus the ~6 that already have a sidecar reused)
@@ -264,7 +266,7 @@ Single-session parallel execution within each batch is the target.
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md (modify)
   - plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md (modify or delete — see acceptance)
-- **Dependencies:** TASK-004
+- **Dependencies:** TASK-004, TASK-006
 - **Test command:** deferred (TASK-009 drift guard + TASK-010 e2e)
 - **Acceptance criteria:**
   - Every orchestrator-facing `Bash: $PYTHON … plan_ops.py …` invocation in SKILL.md is rewritten as a `Tool: plan_ops__<name>` call with structured input.
@@ -310,7 +312,7 @@ Single-session parallel execution within each batch is the target.
 - **Priority:** medium
 - **Files:**
   - tests/scripts/test_skill_cli_reference_drift.py (modify — extend existing PHASE_D drift guard)
-- **Dependencies:** TASK-007
+- **Dependencies:** TASK-006, TASK-007
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_skill_cli_reference_drift.py`
 - **Acceptance criteria:**
   - Existing PHASE_D-era assertions (argparse subcommand vs SKILL.md table parity) are kept or deprecated cleanly if the SKILL table no longer exists.
@@ -345,3 +347,20 @@ Single-session parallel execution within each batch is the target.
 **Description:** The migration's smoke test. Proves the orchestrator no longer needs the bash CLI for a routine run, and proves the MCP server's failure modes are non-corrupting.
 
 **Reversion guidance:** Delete the test file and fixture. Bash-CLI e2e (PHASE_D TASK-008) remains the canonical regression smoke until this stabilizes.
+
+## Execution log — 20260429T232737 (paused)
+
+Starting SHA: `fc9d80b246124fbd91719a36c11dfd6739e15eea`  → Ending SHA: `fc9d80b246124fbd91719a36c11dfd6739e15eea`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | none | n/a | n/a | Implementer reported success; wrote 4 files; scaffolding tests passed in-session. Wrapper flagged scope_violation (false positive: parallel execution leaked sibling deltas + .mcp.json (create) prose suffix prevented declared-list match). Work preserved on disk under pause policy. |
+| 002 | claude | none | n/a | n/a | Implementer halted with plan-incorrect outcome (no edits). Genuine plan defect: Description estimates 5-15 line shape change but plan_ops.py is 13.8K LoC with 38 cmd_* fns and ~200 _emit/_die/print callsites; AC requires whole-surface refactor. |
+| 003 | claude | none | n/a | n/a | Implementer reported success; wrote 73 files in schemas/mcp/ + 1 test file. Wrapper flagged scope_violation (false positive: declared list had pseudo-paths <tool>.input.json × 36 + sibling parallel writes leaked into observed_delta). Work preserved on disk. |
+| 004 | claude | none | n/a | n/a | Not started; depends on TASK-001/002/003. |
+| 005 | claude | none | n/a | n/a | Not started; depends on TASK-004. |
+| 006 | claude | none | n/a | n/a | Not started; depends on TASK-005. |
+| 007 | claude | none | n/a | n/a | Not started; depends on TASK-004+TASK-006 (post plan revision). |
+| 008 | claude | none | n/a | n/a | Not started; depends on TASK-006. |
+| 009 | claude | none | n/a | n/a | Not started; depends on TASK-006+TASK-007. |
+| 010 | claude | none | n/a | n/a | Not started; depends on TASK-007+TASK-008. |
