@@ -399,7 +399,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-003C: Hand-fix `cmd_commit_task`
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_commit_task`, `_args_to_payload_commit_task`, `_run_commit_task`, and commit-task validation helpers)

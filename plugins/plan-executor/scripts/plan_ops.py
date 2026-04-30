@@ -6397,75 +6397,200 @@ def cmd_parse_plan_review_triage_report(args: argparse.Namespace) -> None:
     _emit_or_die(args, result)
 
 
-def cmd_commit_task(args: argparse.Namespace) -> None:
-    tid = _normalize_task_id(args.task_id)
+def _args_to_payload_commit_task(args: argparse.Namespace) -> dict:
+    # TASK-016C (post-remediation): `args.dismissed_finding_ids` is already
+    # normalized from the raw comma string into list[int] by main()'s
+    # cross-flag block before the handler runs. Pure/MCP callers MUST pass
+    # the same already-typed list shape.
+    return {
+        "task_id": args.task_id,
+        "files": args.files,
+        "plan_file": args.plan_file,
+        "reviewer": args.reviewer,
+        "reviewer_verdict": args.reviewer_verdict,
+        "reviewer_minor_findings": args.reviewer_minor_findings,
+        "dry_run": bool(getattr(args, "dry_run", False)),
+        "v_check_timeout": getattr(args, "v_check_timeout", None),
+        "run_id": args.run_id,
+        "title": args.title,
+        "diff_summary": args.diff_summary,
+        "remediation_tag": bool(getattr(args, "remediation_tag", False)),
+        "sandbox_divergence_tag": bool(
+            getattr(args, "sandbox_divergence_tag", False)
+        ),
+        "d4_rescue_tag": bool(getattr(args, "d4_rescue_tag", False)),
+        "narrow_remediation_tag": bool(
+            getattr(args, "narrow_remediation_tag", False)
+        ),
+        "disagreement_tag": bool(getattr(args, "disagreement_tag", False)),
+        "dismissed_finding_ids": list(
+            getattr(args, "dismissed_finding_ids", []) or []
+        ),
+        "update_schedule_state": getattr(args, "update_schedule_state", None),
+    }
+
+
+def _validate_commit_task_payload(payload: dict) -> list[dict]:
+    """Mirror commit-task CLI cross-flag invariants for pure/MCP callers.
+
+    The CLI path enforces these via ``parser.error()`` in ``main()`` before
+    the handler runs, so the live CLI banner shape is preserved. Pure/MCP
+    callers bypass argparse entirely, so this helper produces equivalent
+    structured ``errors[]`` for the same illegal combinations:
+
+    - ``--d4-rescue-tag`` + ``--disagreement-tag`` (D.4 rescue does not
+      invoke D.5).
+    - ``--d4-rescue-tag`` + non-empty ``--dismissed-finding-ids`` (rescue
+      treats every reviewer finding as load-bearing).
+    - ``--dismissed-finding-ids`` without ``--narrow-remediation-tag``
+      (the ``[disagreement: i,j]`` trailer only exists on D.2a.6).
+    - ``--narrow-remediation-tag`` without ``--dismissed-finding-ids``
+      (a narrow-remediation commit requires at least one dismissed
+      index).
+
+    The raw-string parsing of ``--dismissed-finding-ids`` (empty/non-integer
+    tokens) is NOT mirrored here — pure callers MUST pass an already-typed
+    ``list[int]`` per the schema; that gate stays in ``main()`` so the CLI
+    keeps emitting the standard argparse exit-code-2 banner.
+    """
+    errors: list[dict] = []
+    narrow = bool(payload.get("narrow_remediation_tag"))
+    d4 = bool(payload.get("d4_rescue_tag"))
+    disagreement = bool(payload.get("disagreement_tag"))
+    dismissed = list(payload.get("dismissed_finding_ids") or [])
+    has_dismissed = bool(dismissed)
+    if d4 and disagreement:
+        errors.append({
+            "path": "$",
+            "code": "d4-rescue-vs-disagreement",
+            "message": (
+                "--d4-rescue-tag is mutually exclusive with "
+                "--disagreement-tag; D.4 rescue does not invoke D.5 "
+                "(the rescue branch commits directly on post-rescue "
+                "clean re-review per SKILL.md §D.4)"
+            ),
+        })
+    if d4 and has_dismissed:
+        errors.append({
+            "path": "$",
+            "code": "d4-rescue-vs-dismissed-finding-ids",
+            "message": (
+                "--d4-rescue-tag is mutually exclusive with "
+                "--dismissed-finding-ids; D.4 rescue does not carry "
+                "dismissed findings (rescue_findings[] in the dispatch "
+                "template is exhaustive — every reviewer finding is "
+                "treated as load-bearing for the rescue attempt)"
+            ),
+        })
+    if has_dismissed and not narrow:
+        errors.append({
+            "path": "$.dismissed_finding_ids",
+            "code": "dismissed-without-narrow-remediation",
+            "message": (
+                "--dismissed-finding-ids requires "
+                "--narrow-remediation-tag; the [disagreement: i,j] "
+                "trailer only appears on the D.2a.6 narrow-remediation "
+                "path"
+            ),
+        })
+    if narrow and not has_dismissed:
+        errors.append({
+            "path": "$.dismissed_finding_ids",
+            "code": "narrow-remediation-without-dismissed",
+            "message": (
+                "--narrow-remediation-tag requires a non-empty "
+                "--dismissed-finding-ids; the partial-agreement path "
+                "always carries at least one dismissed index"
+            ),
+        })
+    return errors
+
+
+def _run_commit_task(payload: dict) -> dict:
+    cross_errors = _validate_commit_task_payload(payload)
+    if cross_errors:
+        return _result({"errors": cross_errors}, exit_code=1)
+
+    tid = _normalize_task_id(payload["task_id"])
     if not tid:
-        _die(args, {"error": f"bad --task-id: {args.task_id!r}"})
+        return _result(
+            {"error": f"bad --task-id: {payload['task_id']!r}"},
+            exit_code=1,
+        )
 
-    files = [f.strip() for f in args.files.split(",") if f.strip()]
+    files = [f.strip() for f in payload["files"].split(",") if f.strip()]
     if not files:
-        _die(args, {"error": "--files must list at least one file"})
+        return _result(
+            {"error": "--files must list at least one file"},
+            exit_code=1,
+        )
 
-    plan = Path(args.plan_file)
+    plan = Path(payload["plan_file"])
     if not plan.is_file():
-        _die(args, {"error": f"plan file not found: {plan}"})
+        return _result({"error": f"plan file not found: {plan}"}, exit_code=1)
 
     try:
-        minor = json.loads(args.reviewer_minor_findings) if args.reviewer_minor_findings else []
+        minor = (
+            json.loads(payload["reviewer_minor_findings"])
+            if payload["reviewer_minor_findings"] else []
+        )
     except json.JSONDecodeError as e:
-        _die(args, {"error": f"invalid --reviewer-minor-findings: {e}"})
+        return _result(
+            {"error": f"invalid --reviewer-minor-findings: {e}"},
+            exit_code=1,
+        )
     review_errors = _validate_review_success_payload(
-        args.reviewer,
-        args.reviewer_verdict,
+        payload["reviewer"],
+        payload["reviewer_verdict"],
         minor,
     )
     if review_errors:
-        _die(args, {"errors": review_errors})
+        return _result({"errors": review_errors}, exit_code=1)
 
     original_plan = _load_text(plan)
     try:
         mutated, _prior = mutate_task_status(original_plan, tid, "done")
     except ValueError as e:
-        _die(args, {"error": f"status mutation: {e}"})
+        return _result({"error": f"status mutation: {e}"}, exit_code=1)
 
-    if args.dry_run:
-        _emit(args, {
+    if payload["dry_run"]:
+        return _result({
             "dry_run": True,
             "task_id": tid,
             "files": files,
             "would_commit": True,
-        })
+        }, exit_code=0)
 
     # TASK-020B: opt-in `acceptance_v_check` YAML frontmatter runs the plan's
     # own declared V-check pre-commit. Runs AFTER the `--files` staging guard
     # (the `--files` validation above) but BEFORE the plan-status flip
-    # (`_write_text` below). On failure we `_die` silently — no plan text
-    # written, no git state touched, no `commit_done` event. Plans without
-    # frontmatter or without the key: zero behavior change.
+    # (`_write_text` below). On failure we return a structured error — no
+    # plan text written, no git state touched, no `commit_done` event. Plans
+    # without frontmatter or without the key: zero behavior change.
     fm = _parse_frontmatter(original_plan)
     v_check_cmd = fm.get("acceptance_v_check")
     if v_check_cmd:
-        timeout = getattr(args, "v_check_timeout", None) or 300
+        timeout = payload.get("v_check_timeout") or 300
         # `cmd_commit_task` has no `--git-dir` flag — the caller's CWD is the
         # repo root, matching the semantics of `_git()` above (which also
         # runs with no explicit cwd). Using `Path(".")` keeps the V-check
         # execution context consistent with the surrounding git operations.
         v_result = _run_v_check(str(v_check_cmd), Path("."), timeout)
         if v_result.get("code") != "v-check-passed":
-            _die(args, {
+            return _result({
                 "errors": [{
                     "code": v_result["code"],
                     "message": v_result["message"],
                     "stdout_tail": v_result["stdout_tail"],
                     "stderr_tail": v_result["stderr_tail"],
                 }],
-            })
+            }, exit_code=1)
         # Log pass event BEFORE the commit so the audit record captures the
         # V-check outcome even if a later step (e.g., `git commit`) fails.
         # Per the annotation: `v_check_passed` is an audit event, NOT proof
         # of task completion — pairing proof remains `commit_done`.
         _append_run_log("v_check_passed", {
-            "run_id": args.run_id,
+            "run_id": payload["run_id"],
             "task_id": tid,
             "command": str(v_check_cmd),
         })
@@ -6475,24 +6600,23 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
     # TASK-016C (post-remediation): dismissed-finding-ids content parsing
     # lives in main() post-parse so empty/non-integer tokens fail via
     # parser.error() (exit 2) before any plan mutation. By the time we
-    # reach the handler, args.dismissed_finding_ids is already a
-    # list[int] (possibly empty) — see main().
-    dismissed_ids: list[int] = list(
-        getattr(args, "dismissed_finding_ids", []) or []
-    )
+    # reach the handler, payload["dismissed_finding_ids"] is already a
+    # list[int] (possibly empty) — see main() and
+    # _args_to_payload_commit_task().
+    dismissed_ids: list[int] = list(payload.get("dismissed_finding_ids") or [])
 
     commit_msg = (
-        f"feat(TASK-{tid}): {args.title}\n\n"
-        f"{args.diff_summary}\n\n"
+        f"feat(TASK-{tid}): {payload['title']}\n\n"
+        f"{payload['diff_summary']}\n\n"
         f"Plan: {plan.name}\n"
     )
-    if getattr(args, "remediation_tag", False):
+    if payload["remediation_tag"]:
         # D.2a.5 post-remediation commit: a trailing [remediation] tag so the
         # run summary and `git log --oneline` can distinguish retries from
         # clean first-pass commits. Kept on its own line adjacent to any
         # [disagreement] tag that D.2a might have already appended upstream.
         commit_msg = commit_msg.rstrip("\n") + "\n\n[remediation]\n"
-    if getattr(args, "sandbox_divergence_tag", False):
+    if payload["sandbox_divergence_tag"]:
         # TASK-008 (POSTMORTEM_FIXES): orchestrator auto-validate branch
         # writes `[sandbox-divergence]` to the commit body alongside any
         # existing [disagreement] / [remediation] tags. The tag is
@@ -6501,7 +6625,7 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         # above). Adjacent to other trailers and on its own line so
         # `git log --oneline` and the run summary can scan for it.
         commit_msg = commit_msg.rstrip("\n") + "\n\n[sandbox-divergence]\n"
-    if getattr(args, "d4_rescue_tag", False):
+    if payload["d4_rescue_tag"]:
         # TASK-005 D.4 rescue commit: append a [d4-rescue] trailer line
         # so `git log --oneline` and the run summary can distinguish a
         # successful rescue from D.2a.5 [remediation] or D.2a.6
@@ -6509,7 +6633,7 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         # have already excluded --remediation-tag, --narrow-remediation
         # -tag, --disagreement-tag, and --dismissed-finding-ids.
         commit_msg = commit_msg.rstrip("\n") + "\n\n[d4-rescue]\n"
-    if getattr(args, "narrow_remediation_tag", False):
+    if payload["narrow_remediation_tag"]:
         # TASK-016C D.2a.6 post-narrow-remediation commit: a trailing
         # [narrow-remediation] tag plus a [disagreement: i,j] trailer
         # listing the dismissed finding indices, on adjacent lines with
@@ -6545,7 +6669,7 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
     if outcome in ("invalid-index", "missing-entry"):
         assert err is not None
         _write_text(plan, original_plan)
-        _die(args, {"errors": [err]})
+        return _result({"errors": [err]}, exit_code=1)
 
     def _restore_roster() -> None:
         """Roll the roster back through the same atomic pattern as the
@@ -6612,37 +6736,48 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         ):
             _write_text(plan, original_plan)
             _restore_roster()
-            _die(args, {
+            return _result({
                 "error": (
                     "internal: 00_INDEX.json staged path "
                     f"{rel_index!r} is not in the shared "
                     "COMMIT_ALWAYS_IGNORE set; commit-task and "
                     "_gate_commit_safe would diverge"
                 ),
-            })
+            }, exit_code=1)
         add_files.append(str(index_path))
     add = _git(["add", "--", *add_files])
     if add.returncode != 0:
         _write_text(plan, original_plan)
         _restore_roster()
-        _die(args, {"error": f"git add failed: {add.stderr.strip()}"})
+        return _result(
+            {"error": f"git add failed: {add.stderr.strip()}"},
+            exit_code=1,
+        )
 
     commit = _git(["commit", "-m", commit_msg, "--only", "--", *add_files])
     if commit.returncode != 0:
         _git(["reset", "HEAD", "--", *add_files])
         _write_text(plan, original_plan)
         _restore_roster()
-        _die(args, {"error": f"git commit failed: {commit.stderr.strip() or commit.stdout.strip()}"})
+        return _result(
+            {
+                "error": (
+                    f"git commit failed: "
+                    f"{commit.stderr.strip() or commit.stdout.strip()}"
+                ),
+            },
+            exit_code=1,
+        )
 
     sha_cp = _git(["rev-parse", "HEAD"])
     commit_sha = sha_cp.stdout.strip()
 
     event_fields = {
-        "run_id": args.run_id,
+        "run_id": payload["run_id"],
         "task_id": tid,
         "commit_sha": commit_sha,
         "files": files,
-        "reviewer_verdict": args.reviewer_verdict,
+        "reviewer_verdict": payload["reviewer_verdict"],
         "minor_findings_count": len(minor),
         # TASK-022: persist the full reviewer minor-findings payload on
         # every `commit_done` event so audits months later can retrieve
@@ -6650,30 +6785,24 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         # why it was dismissed/accepted/deferred). Key is always present:
         # an empty `--reviewer-minor-findings '[]'` yields `findings: []`.
         "findings": minor,
-        "disagreement_tag": bool(args.disagreement_tag),
-        "remediation_tag": bool(getattr(args, "remediation_tag", False)),
+        "disagreement_tag": bool(payload["disagreement_tag"]),
+        "remediation_tag": bool(payload["remediation_tag"]),
         # TASK-016C: surface the D.2a.6 flags in commit_done so the run
         # summary and downstream auditing can distinguish narrow
         # remediations from full D.2a.5 retries without re-parsing the
         # commit body.
-        "narrow_remediation_tag": bool(
-            getattr(args, "narrow_remediation_tag", False)
-        ),
+        "narrow_remediation_tag": bool(payload["narrow_remediation_tag"]),
         # TASK-005: surface the D.4-rescue flag in commit_done so the
         # run summary and downstream auditing can distinguish rescue
         # commits from D.2a.5/D.2a.6 retries without re-parsing the
         # commit body. Parallel to the remediation/narrow flags above.
-        "d4_rescue_tag": bool(
-            getattr(args, "d4_rescue_tag", False)
-        ),
+        "d4_rescue_tag": bool(payload["d4_rescue_tag"]),
         "dismissed_finding_ids": dismissed_ids,
         # TASK-008 (POSTMORTEM_FIXES): surface the auto-validate
         # divergence tag in the commit_done event so the run summary's
         # "Sandbox divergences" subsection (and downstream auditing) can
         # enumerate affected tasks without re-parsing commit bodies.
-        "sandbox_divergence_tag": bool(
-            getattr(args, "sandbox_divergence_tag", False)
-        ),
+        "sandbox_divergence_tag": bool(payload["sandbox_divergence_tag"]),
     }
     _append_run_log("commit_done", event_fields)
 
@@ -6683,7 +6812,7 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
     # audit trail captures the commit even if state-write fails.
     state_write_warning: str | None = None
     state_written = False
-    sched_for_state = getattr(args, "update_schedule_state", None)
+    sched_for_state = payload.get("update_schedule_state")
     if sched_for_state:
         prior_state = read_schedule_state(sched_for_state)
         new_state = apply_commit_state_transition(
@@ -6702,7 +6831,13 @@ def cmd_commit_task(args: argparse.Namespace) -> None:
         out["schedule_state_written"] = state_written
         if state_write_warning:
             out["schedule_state_warning"] = state_write_warning
-    _emit(args, out)
+    return _result(out, exit_code=0)
+
+
+def cmd_commit_task(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_commit_task(args)
+    result = _run_commit_task(payload)
+    _emit_or_die(args, result)
 
 
 def _is_inside_submodule(abs_path: Path, rel: str, repo_root: Path) -> bool:
