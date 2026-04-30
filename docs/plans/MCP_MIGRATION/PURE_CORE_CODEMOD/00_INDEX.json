@@ -63,7 +63,7 @@
       "superseded_by": []
     },
     {
-      "task_id": "003",
+      "task_id": "003A",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "high",
       "depends_on": [
@@ -75,9 +75,69 @@
     {
       "task_id": "003B",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
+      "priority": "high",
+      "depends_on": [
+        "003A"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003C",
+      "file": "PLAN_PURE_CORE_CODEMOD.md",
+      "priority": "high",
+      "depends_on": [
+        "003B"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003D",
+      "file": "PLAN_PURE_CORE_CODEMOD.md",
+      "priority": "high",
+      "depends_on": [
+        "003C"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003E",
+      "file": "PLAN_PURE_CORE_CODEMOD.md",
+      "priority": "high",
+      "depends_on": [
+        "003D"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003F",
+      "file": "PLAN_PURE_CORE_CODEMOD.md",
+      "priority": "high",
+      "depends_on": [
+        "003E"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003G",
+      "file": "PLAN_PURE_CORE_CODEMOD.md",
+      "priority": "high",
+      "depends_on": [
+        "003F"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003H",
+      "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "medium",
       "depends_on": [
-        "003"
+        "003G"
       ],
       "status": "Pending",
       "superseded_by": []
@@ -87,7 +147,7 @@
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "medium",
       "depends_on": [
-        "003B"
+        "003H"
       ],
       "status": "Pending",
       "superseded_by": []
@@ -97,7 +157,7 @@
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "medium",
       "depends_on": [
-        "003B"
+        "003H"
       ],
       "status": "Pending",
       "superseded_by": []
@@ -107,7 +167,7 @@
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "medium",
       "depends_on": [
-        "003B"
+        "003H"
       ],
       "status": "Pending",
       "superseded_by": []

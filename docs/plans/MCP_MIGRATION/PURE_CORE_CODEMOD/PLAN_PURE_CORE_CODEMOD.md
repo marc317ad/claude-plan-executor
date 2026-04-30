@@ -12,11 +12,11 @@ Extract a deterministic AST-codemod-driven pure-core (`_run_X(payload) -> dict`)
 ## Verification
 
 - The full existing `tests/scripts/test_plan_ops*.py` suite passes after every individual task and at end-of-plan (no semantic drift).
-- The `tests/scripts/test_plan_ops_pure_core_baseline.py` byte-equal CLI baseline (created in TASK-000B) passes against the post-codemod `plan_ops.py` (TASK-002) and again after every TASK-003 hand-fix commit.
+- The `tests/scripts/test_plan_ops_pure_core_baseline.py` byte-equal CLI baseline (created in TASK-000B) passes against the post-codemod `plan_ops.py` (TASK-002) and again after every TASK-003A–003F hand-fix commit.
 - `python plugins/plan-executor/scripts/plan_ops.py --help` lists 38 subcommands; `python plugins/plan-executor/scripts/plan_ops.py <sub> --help` returns the same `option_strings` list per-subcommand as the pre-codemod baseline.
 - `dry_run_report.json` (TASK-001B) shows `summary.total_cmd_x == 38`, the 9-function skip-list (or its expansion if the dry-run discovers more), and zero `ambiguous_arg_specs_count`.
-- Tier-A / Tier-B / Tier-C conformance harness fixtures (TASK-003B / TASK-004 / TASK-005 / TASK-006) all pass: byte-equal canonical envelopes between CLI subprocess and in-process `_run_*` paths for each fixture pair.
-- `git log` shows: one TASK-000A commit, one TASK-000B commit, one TASK-001 commit, one TASK-001B commit (plus the report artifact), one TASK-002 commit (codemod-applied), N TASK-003 per-cluster commits, plus per-task fixture commits — no rebases, no force-pushes.
+- Tier-A / Tier-B / Tier-C conformance harness fixtures (TASK-003H / TASK-004 / TASK-005 / TASK-006) all pass: byte-equal canonical envelopes between CLI subprocess and in-process `_run_*` paths for each fixture pair.
+- `git log` shows: one TASK-000A commit, one TASK-000B commit, one TASK-001 commit, one TASK-001B commit (plus the report artifact), one TASK-002 commit (codemod-applied), one commit each for TASK-003A–003G, plus per-task fixture commits — no rebases, no force-pushes.
 
 **Refinement summary (v1 → v2):**
 - Added `TASK-000A` (stabilize `_emit/_die` terminator contract) + `TASK-000B` (capture pre-codemod CLI baseline) as preconditions to the codemod itself, because the v1 substitution rule "`_emit(args, r)` → `return r`" is not semantics-preserving (`_emit` calls `sys.exit`).
@@ -253,7 +253,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
     _emit_or_die(args, result)
     ```
   - Insert `_read_stdin_text()` helper at module scope (one definition) if not already present.
-  - **Skip-list (functions left untouched in `--out`, surfaced to stderr and to the JSON report; hand-fixed in TASK-003):**
+  - **Skip-list (functions left untouched in `--out`, surfaced to stderr and to the JSON report; hand-fixed in TASK-003A–003F):**
   - `cmd_gates` — argparse mutex group (`mx_gates` at line 12938) requires mode collapse to `payload["mode"]` rather than three boolean flags.
   - `cmd_filter_schedule` — stdin-vs-file branch encoded by argparse default `--schedule-file` + `--stdin`; payload needs `input_source` discriminator.
   - `cmd_commit_task` — TWO mutex groups (`p_commit_rem_grp` at 12383, `p_commit_dis_grp` at 12425) PLUS cross-flag arg mutation in `main()` at line 13750 that converts `--dismissed-finding-ids` from str to `list[int]` before dispatch.
@@ -348,62 +348,181 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ---
 
-### TASK-003: Hand-fix the special-case functions
+### TASK-003A: Hand-fix `cmd_gates`
 
 - **Status:** Pending
 - **Priority:** high
 - **Files:**
-  - plugins/plan-executor/scripts/plan_ops.py (modify, the 9 skip-list functions)
-  - tests/scripts/fixtures/plan_ops_pure_core/cmd_gates_smoke.json (create — Tier-A smoke fixture pair for cmd_gates)
-  - tests/scripts/fixtures/plan_ops_pure_core/cmd_filter_schedule_smoke.json (create — Tier-A smoke fixture pair for cmd_filter_schedule)
+  - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_gates`, `_args_to_payload_gates`, `_run_gates`, and directly required helper tests)
+  - tests/scripts/test_plan_ops.py (modify focused gates tests only if needed)
 - **Dependencies:** TASK-002
-- **Test command:** `venv/bin/python -m pytest tests/scripts/ -k "gates or filter_schedule or commit_task or fail_task or audit or resolve_read_targets or build_claude_dispatch or build_codex_dispatch or build_gemini_dispatch"`
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k "gates or pure_core_baseline" -q`
 - **Acceptance criteria:**
-  - **cmd_gates (mutex group):** argparse mutex group `--list` / `--check` / `--certify` collapses into `payload["mode"]` (one of `"list"|"check"|"certify"`); shim derives `mode` from the boolean flags before calling `_run_gates(payload)`.
-  - **cmd_gates:** argparse layer keeps the mutex group for CLI ergonomics (preserves exit-code-2 banner on operator misuse); `_run_gates(payload)` validates `mode` against the closed enum and rejects other-mode flags via `errors[{"code":"gates-mode-mismatch"}]`.
-  - **cmd_gates:** Required-flag combinations for `mode == "certify"` (`--plan-file` + `--schedule-file` + `--mode {dry-run,execute}`) enforced INSIDE `_run_gates` (in addition to existing argparse check at lines 13675-13744 of `main()`), so MCP/pure callers without an argparse layer get the same validation. Returns `errors[{"code":"missing-required-flag", "flag":"plan-file"}]`.
-  - **cmd_gates:** `--certify` non-zero exit (line 11121-11130) preserved via `return _result(envelope, exit_code=1)` — NOT inferred from `errors[]` (the certify happy-path with all gates passing is exit 0; certify with failing gates is exit 1 even though `errors[]` may be empty).
-  - **cmd_filter_schedule (stdin-vs-file branch):** `payload["input_source"] in {"stdin","file"}` set by shim from resolved input source (`args.stdin` flag value AND `args.schedule_file` non-`None`); `_run_filter_schedule` branches on `input_source` identically to today's behavior at lines 5663+.
-  - **cmd_filter_schedule:** The `data.get("outcome")` relaxation (when `input_source == "stdin"`) at the original line ~5710 is preserved verbatim.
-  - **cmd_filter_schedule:** `payload["stdin_text"]` is set from raw stdin text only when `input_source == "stdin"`; file input populates `payload["schedule_text"]` from `Path(args.schedule_file).read_text()`. JSON parsing remains inside `_run_filter_schedule` so existing `json-decode` error envelopes stay byte-identical.
-  - **cmd_commit_task (two mutex groups + cross-flag arg mutation):** `main()`'s cross-flag validation block at lines 13675-13750 (parser.error banner for narrow-remediation/dismissed-finding-ids/d4-rescue/disagreement combos) PRESERVED VERBATIM in main() — this is the CLI ergonomics layer. Do NOT lift into `_run_commit_task`; do NOT rewrite via codemod.
-  - **cmd_commit_task:** For pure/MCP callers, introduce a sibling helper `_validate_commit_task_payload(payload: dict) -> list[dict]` that re-implements the same cross-flag invariants returning `errors[]` (does NOT call `parser.error`). `_args_to_payload_commit_task(args)` consumes already-validated `args.dismissed_finding_ids` (now `list[int]` post-`main()`) and emits a payload with the same shape as MCP callers would supply.
-  - **cmd_commit_task:** Mutex groups `p_commit_rem_grp` (12383) and `p_commit_dis_grp` (12425) preserved verbatim in argparse layer; pure-call validator handles equivalent rejection via `errors[]`.
-  - **cmd_commit_task:** The f-string `f"bad --task-id: {args.task_id!r}"` at line 6887 becomes `f"bad --task-id: {payload['task_id']!r}"` and asserts byte-equal stderr output.
-  - **cmd_fail_task (direct stdout+exit + `_die` mix):** The `--authorization-source` validation gate at lines 7626-7652 (the JSON-or-text emit-and-exit pattern) refactors to use `_emit_or_die`: emit the `errors[{"code":"authorization-source-required"}]` envelope and return non-zero. Body of `_run_fail_task` returns `errors[]` populated; shim calls `_emit_or_die(args, result)`.
-  - **cmd_fail_task:** The `--json` vs non-`--json` divergence is consolidated into `_emit_or_die` (which already handles both paths via the `args.json` branch in `_emit`).
-  - **cmd_fail_task:** The remainder of the body (using `_die`) rewrites mechanically per the codemod rules, but is hand-applied here.
-  - **cmd_fail_task:** `f"bad --task-id: {args.task_id!r}"` at line 7656 stays byte-equal post-rewrite.
-  - **cmd_audit (custom text renderer + `_emit` mix):** The non-`--json` path at lines 11060-11062 (`sys.stdout.write(_render_audit_text(report))` + `sys.exit(exit_code)`) cannot use generic `_emit_or_die` because `_emit`'s non-JSON path emits `k: v` lines, not `_render_audit_text(...)` output. Solution: keep the custom rendering branch as-is inside `_run_audit` by returning a special envelope with `{"__plan_ops_text_output__": _render_audit_text(report), "__plan_ops_exit_code__": exit_code}`; `_emit_or_die` detects the text-output key and writes-then-exits. Document the `__plan_ops_text_output__` key as a documented internal-only convention; `_emit_or_die` is updated in TASK-000A to also check for it.
-  - **cmd_audit:** Alternative considered (rejected): rewriting the audit rendering to flow through `_emit`'s plain-text path. Rejected because the current `_render_audit_text` output is rich (multi-line tables) and changing that would break operator-facing output.
-  - **cmd_audit:** The `--json` path uses `_emit_or_die` cleanly (rewrites mechanically post-hand-fix).
-  - **cmd_resolve_read_targets (custom success-emit):** The success path at lines 11673-11674 (`sys.stdout.write("\n")` + `sys.exit(0)`) returns the same envelope as `_die` paths at line 11666 — both go through the same shim using `_emit_or_die` with a uniform JSON envelope containing the resolved-targets list. The `sys.stdout.write("\n")` was a quirk of mixing direct write with `json.dump`; `_emit` already adds the trailing `\n` correctly so this is removable.
-  - **cmd_build_claude_dispatch_input (env reads + private terminator + sentinel `--output -`):** `os.environ["UNATTENDED_REVERT_POLICY"]` reads at lines 11734 + 12021 lift into `_args_to_payload_build_claude_dispatch_input(args)` so MCP callers without env access supply the policy explicitly. Shim reads env and sets `payload["unattended_revert_policy"]`. Validation moves into `_run_build_claude_dispatch_input` which returns `errors[{"code":"unattended-revert-policy-invalid"}]` when invalid.
-  - **cmd_build_claude_dispatch_input:** `_bcdi_emit_error` and `_bcdi_emit_envelope` private terminators are RENAMED to `_bcdi_to_error_result` and `_bcdi_to_envelope_result` and refactored to RETURN `_result(...)` dicts instead of calling `sys.exit`. All 12 call sites become `return _bcdi_to_error_result(code, message)`. The private helpers become pure functions consumed by the shim's `_emit_or_die` call.
-  - **cmd_build_claude_dispatch_input:** `--output -` sentinel: `payload["output"]` stays a `str` (NOT Path-wrapped); the body checks `payload["output"] == "-"` for stdout-mode, else `Path(payload["output"]).write_text(envelope_json)` for file-mode.
-  - **cmd_build_claude_dispatch_input:** File-output mode preserves the current either/or CLI contract: `--output <path>` writes only the file and emits no stdout. Implement this by returning a result with `__plan_ops_stdout_suppressed__=True`, `__plan_ops_exit_code__=0`, and structured metadata such as `wrote_path` / `bytes_written` for MCP callers. `--output -` returns the envelope for stdout emission with no suppression marker.
-  - **cmd_build_codex_dispatch_input + cmd_build_gemini_dispatch_input:** Same `_bcdi_to_error_result`/`_bcdi_to_envelope_result` migration; the bodies are tiny (13 LoC and 12 LoC) so the hand rewrite is straightforward once the helpers are pure.
-  - **cmd_build_codex_dispatch_input + cmd_build_gemini_dispatch_input:** Same `--output -` sentinel handling and same no-stdout file-output contract as `cmd_build_claude_dispatch_input`.
-  - **Cross-cutting:** All 9 skip-list functions pass their existing tests post-rewrite (per-function regression).
-  - **Cross-cutting:** The TASK-000B baseline test remains passing (no CLI envelope drift).
-  - **Cross-cutting:** cmd_gates / cmd_filter_schedule each get one smoke-fixture pair added to the TASK-004 Tier-A suite (see TASK-004 AC).
-  - **Cross-cutting:** Each hand-fix is committed in a SEPARATE commit (one per function or per logical group), referencing this plan + TASK-002's commit sha. This makes each special-case revertable independently.
-  - **Cross-cutting:** All other `cmd_*` are unaffected.
+  - `cmd_gates` is a shim over `_args_to_payload_gates(args)` → `_run_gates(payload)` → `_emit_or_die(args, result)`.
+  - Argparse mutex group `--list` / `--check` / `--certify` remains intact for CLI ergonomics.
+  - `_args_to_payload_gates` collapses the mutex group into `payload["mode"] in {"list","check","certify"}`.
+  - `_run_gates` validates invalid mode and mismatched mode flags via structured `errors[]`, not argparse exits.
+  - `certify` required-flag combinations are enforced inside `_run_gates` for pure/MCP callers.
+  - `certify` failing gates preserve non-zero exit via `_result(envelope, exit_code=1)` rather than inferred `errors[]`.
+  - Existing gates tests and the TASK-000B baseline stay green.
+  - Commit only this task's files; no other skip-list function is changed.
 
-**Description:** The 25-30% the codemod can't do. Nine functions across four shape clusters: mutex-groups (cmd_gates, cmd_commit_task), stdin-vs-file (cmd_filter_schedule), private-terminator family (`_bcdi_*` helpers + cmd_build_*_dispatch_input × 3), mixed-pattern (cmd_fail_task, cmd_audit, cmd_resolve_read_targets). The primary work here is making the private terminators pure (return-result instead of sys.exit), preserving no-stdout file-output mode for dispatch builders, and lifting env reads into the payload. Estimated edit surface: ~300-450 LoC across 9 functions + the `_bcdi_*` helper rename. Single-implementer dispatch is comfortable because each shape cluster is small.
+**Description:** First special-case hand-fix, scoped to one mutex-group command.
 
-**Reversion guidance:** Per-commit revert for each cluster. The codemod's mechanical rewrite (TASK-002) survives a partial TASK-003 revert.
+**Reversion guidance:** Revert the single TASK-003A commit; TASK-002 remains intact.
 
 ---
 
-### TASK-003B: Shared pure-core conformance harness
+### TASK-003B: Hand-fix `cmd_filter_schedule`
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_filter_schedule`, `_args_to_payload_filter_schedule`, `_run_filter_schedule`, and directly required helper tests)
+  - tests/scripts/test_plan_ops.py (modify focused filter-schedule tests only if needed)
+- **Dependencies:** TASK-003A
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k "filter_schedule or pure_core_baseline" -q`
+- **Acceptance criteria:**
+  - `cmd_filter_schedule` is a shim over `_args_to_payload_filter_schedule(args)` → `_run_filter_schedule(payload)` → `_emit_or_die(args, result)`.
+  - Shim sets `payload["input_source"] in {"stdin","file"}` from the resolved input path.
+  - Stdin mode reads raw text once into `payload["stdin_text"]`; file mode reads `payload["schedule_text"]`.
+  - JSON parsing remains inside `_run_filter_schedule` so decode-error envelopes stay byte-equal.
+  - The stdin-mode `data.get("outcome")` relaxation is preserved.
+  - Existing filter-schedule tests and the TASK-000B baseline stay green.
+  - Commit only this task's files; no other skip-list function is changed.
+
+**Description:** Isolates the stdin-vs-file branch so it can be reviewed independently.
+
+**Reversion guidance:** Revert the single TASK-003B commit.
+
+---
+
+### TASK-003C: Hand-fix `cmd_commit_task`
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_commit_task`, `_args_to_payload_commit_task`, `_run_commit_task`, and commit-task validation helpers)
+  - tests/scripts/test_plan_ops.py (modify focused commit-task tests only if needed)
+- **Dependencies:** TASK-003B
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k "commit_task or pure_core_baseline" -q`
+- **Acceptance criteria:**
+  - `main()`'s cross-flag `parser.error` validation remains intact for CLI misuse banners.
+  - `cmd_commit_task` is a shim over `_args_to_payload_commit_task(args)` → `_run_commit_task(payload)` → `_emit_or_die(args, result)`.
+  - Introduce `_validate_commit_task_payload(payload: dict) -> list[dict]` for pure/MCP callers; it mirrors CLI cross-flag invariants without calling `parser.error`.
+  - `_args_to_payload_commit_task` consumes already-normalized `args.dismissed_finding_ids` from `main()`.
+  - Mutex group behavior remains in argparse; pure callers get equivalent structured `errors[]`.
+  - The invalid task-id f-string output remains byte-equivalent after `args.task_id` becomes `payload["task_id"]`.
+  - Existing commit-task tests and the TASK-000B baseline stay green.
+  - Commit only this task's files; no other skip-list function is changed.
+
+**Description:** Isolates the highest-risk state-mutator special case.
+
+**Reversion guidance:** Revert the single TASK-003C commit.
+
+---
+
+### TASK-003D: Hand-fix direct-output commands
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_fail_task`, `cmd_audit`, `cmd_resolve_read_targets`, and their payload/run helpers)
+  - tests/scripts/test_plan_ops.py (modify focused tests only if needed)
+- **Dependencies:** TASK-003C
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k "fail_task or audit or resolve_read_targets or pure_core_baseline" -q`
+- **Acceptance criteria:**
+  - `cmd_fail_task`, `cmd_audit`, and `cmd_resolve_read_targets` become shims over `_run_*` payload cores.
+  - `cmd_fail_task` authorization-source validation returns structured `errors[]` and preserves JSON/non-JSON exit behavior through `_emit_or_die`.
+  - `cmd_fail_task` invalid task-id f-string output remains byte-equivalent.
+  - `cmd_audit` returns `__plan_ops_text_output__` for the custom non-JSON renderer and strips that key through `_public_result()`.
+  - `cmd_audit --json` flows through `_emit_or_die` without custom stdout writes.
+  - `cmd_resolve_read_targets` success and error paths use `_emit_or_die`; trailing-newline behavior remains byte-equivalent.
+  - Existing focused tests and the TASK-000B baseline stay green.
+  - Commit only this task's files; dispatch-builder commands are not changed here.
+
+**Description:** Groups the three direct-stdout/sys.exit commands because they share the `_emit_or_die` text/suppression boundary.
+
+**Reversion guidance:** Revert the single TASK-003D commit.
+
+---
+
+### TASK-003E: Hand-fix `cmd_build_claude_dispatch_input`
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/plan_ops.py (modify `_bcdi_*` helpers only as required by Claude dispatch input and `cmd_build_claude_dispatch_input`)
+  - tests/scripts/test_plan_ops.py (modify focused build-claude-dispatch tests only if needed)
+- **Dependencies:** TASK-003D
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k "build_claude_dispatch_input or pure_core_baseline" -q`
+- **Acceptance criteria:**
+  - `cmd_build_claude_dispatch_input` becomes a shim over `_args_to_payload_build_claude_dispatch_input(args)` → `_run_build_claude_dispatch_input(payload)` → `_emit_or_die(args, result)`.
+  - Env reads for `UNATTENDED_REVERT_POLICY` are lifted into the shim payload; pure callers supply the policy explicitly.
+  - Private `_bcdi_*` terminators used by this command return `_result(...)` dictionaries instead of calling `sys.exit`.
+  - `--output -` remains a string sentinel, not a `Path`.
+  - `--output <path>` writes only the file and emits no stdout by using `__plan_ops_stdout_suppressed__`.
+  - Existing build-claude-dispatch tests and the TASK-000B baseline stay green.
+  - Commit only this task's files; Codex/Gemini builders are not migrated here unless required helper signature changes make a no-op compatibility edit unavoidable.
+
+**Description:** Splits the largest private-terminator builder away from the two small sibling builders.
+
+**Reversion guidance:** Revert the single TASK-003E commit.
+
+---
+
+### TASK-003F: Hand-fix Codex/Gemini dispatch builders
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_build_codex_dispatch_input`, `cmd_build_gemini_dispatch_input`, and directly shared `_bcdi_*` helper call sites)
+  - tests/scripts/test_plan_ops.py (modify focused build-codex/build-gemini tests only if needed)
+- **Dependencies:** TASK-003E
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k "build_codex_dispatch_input or build_gemini_dispatch_input or pure_core_baseline" -q`
+- **Acceptance criteria:**
+  - Both commands become shims over `_args_to_payload_*` → `_run_*` → `_emit_or_die`.
+  - Both preserve `--output -` stdout-mode and `--output <path>` no-stdout file-output mode.
+  - Both use the pure `_bcdi_to_error_result` / `_bcdi_to_envelope_result` helpers from TASK-003E.
+  - Existing focused tests and the TASK-000B baseline stay green.
+  - Commit only this task's files.
+
+**Description:** Completes the private-terminator family after the larger Claude builder is stable.
+
+**Reversion guidance:** Revert the single TASK-003F commit.
+
+---
+
+### TASK-003G: Special-case completion audit
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/plan_ops.py (modify only if audit finds a small missed shim issue)
+  - docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD/00_INDEX.json (mark 003A-003F done only if not already updated by orchestrator)
+- **Dependencies:** TASK-003F
+- **Test command:** `venv/bin/python -m pytest tests/scripts/ -k "plan_ops" -q`
+- **Acceptance criteria:**
+  - All 9 TASK-001B skip-list functions now have `_args_to_payload_*`, `_run_*`, and `cmd_*` shim structure.
+  - No `sys.exit`, `sys.stdout.write`, `_emit`, or `_die` call remains inside those 9 `_run_*` bodies, except through documented helper boundaries returning `_result(...)`.
+  - The exact broad gate `venv/bin/python -m pytest tests/scripts/ -k "plan_ops" -q` is green.
+  - The TASK-000B baseline remains green.
+  - No unrelated files are changed beyond status metadata.
+
+**Description:** Explicitly prevents the next phase from starting on a partially migrated skip-list.
+
+**Reversion guidance:** Revert only the audit/status commit; individual 003A-003F commits remain independently revertable.
+
+---
+
+### TASK-003H: Shared pure-core conformance harness
 
 - **Status:** Pending
 - **Priority:** medium
 - **Files:**
   - tests/scripts/plan_ops_pure_harness.py (create — driver/utility, not a test file)
   - tests/scripts/test_plan_ops_pure_harness.py (create — meta-tests over the driver itself)
-- **Dependencies:** TASK-003
+- **Dependencies:** TASK-003G
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_harness.py`
 - **Acceptance criteria:**
   - Provides one reusable driver `run_conformance(subcommand: str, payload: dict, *, expected: dict, fixture_dir: Path) -> None` that:
@@ -415,7 +534,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
   - Self-tests of the harness cover: byte-equal happy path, deliberate stdin-text divergence detection, exit-code mismatch detection, JSON canonicalization equivalence (re-ordered keys equal), filesystem-snapshot diff detection.
   - The Tier-A/B/C fixture test files (TASK-004/005/006) import this driver and add ONLY fixture cases — no subprocess logic duplicated.
 
-**Description:** TASK-004/005/006 share substantial infrastructure (subprocess driver, JSON canonicalization, side-effect snapshotting). Without this shared harness, three divergent implementations would drift on canonicalization rules and assertion details — exactly the silent-divergence failure mode the conformance gate exists to catch. Single-session-tractable (small focused work).
+**Description:** TASK-004/005/006 share substantial infrastructure (subprocess driver, JSON canonicalization, side-effect snapshotting). Without this shared harness, three divergent implementations would drift on canonicalization rules and assertion details — exactly the silent-divergence failure mode the conformance gate exists to catch. This now depends on TASK-003G so the harness is written against the final skip-list pure-core shape, not a moving target.
 
 **Reversion guidance:** Delete the harness and self-test. Tier fixture tasks can be rescheduled to include their own local harness if needed.
 
@@ -428,7 +547,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Files:**
   - tests/scripts/test_plan_ops_pure_entrypoints_tier_a.py (create)
   - tests/scripts/fixtures/plan_ops_pure_core/tier_a/<sub>__<case>.{payload,expected}.json (create, ~30 pairs)
-- **Dependencies:** TASK-003B
+- **Dependencies:** TASK-003H
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_entrypoints_tier_a.py`
 - **Acceptance criteria:**
   - Conformance harness with subprocess vs in-process driver: one fixture file pair per case, asserts byte-equal envelopes after JSON canonicalization (sorted keys, normalized whitespace, deterministic timestamps stubbed).
@@ -454,7 +573,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Files:**
   - tests/scripts/test_plan_ops_pure_entrypoints_tier_b.py (create)
   - tests/scripts/fixtures/plan_ops_pure_core/tier_b/<sub>__<case>.{payload,expected}.json (create, ~10 pairs)
-- **Dependencies:** TASK-003B
+- **Dependencies:** TASK-003H
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_entrypoints_tier_b.py`
 - **Acceptance criteria:**
   - Reuses Tier-A harness, adds: byte-equal `wrote_path` file content assertion + filesystem-snapshot diff (no `.tmp.<random>` leftovers from `_atomic_write_text` rename dance).
@@ -479,7 +598,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Files:**
   - tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py (create)
   - tests/scripts/fixtures/plan_ops_pure_core/tier_c/<sub>__<case>.{payload,expected}.json (create, ~7-9 pairs)
-- **Dependencies:** TASK-003B
+- **Dependencies:** TASK-003H
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py`
 - **Acceptance criteria:**
   - Per-function tmp-git-repo fixture: byte-equal git history (`git log --oneline --all` plus tree-hashes of every commit), byte-equal `_run_log.jsonl` (validates hash-chain), byte-equal lock-state file, identical exit codes per error path, byte-equal directory snapshot for `cmd_decompose_plan` outputs — all on the **happy path only**.
@@ -545,15 +664,25 @@ This section tracks what the v2 refinement pass resolved and what still needs hu
   - Gemini code-search audit: dispatched twice (`/tmp/gemini_audit_prompt.txt`, `/tmp/gemini_audit_prompt2.txt`) — both runs hit a 429 rate limit on the Google API and produced no output. The orchestrator instead performed the equivalent ground-truth scan first-party (using grep + sample reads of `cmd_fail_task`, `cmd_audit`, `cmd_resolve_read_targets`, `cmd_build_*_dispatch_input`) which is what surfaced the +6 skip-list candidates beyond Codex's enumeration.
   - Ground-truth scan output (informal): captured in this conversation's working-memory; key citations baked into TASK-001/003 ACs (line numbers 7627-7652, 11060-11062, 11673-11674, 11734, 11741+, 12039-12042). Not persisted to a separate artifact because the plan body now carries the load-bearing references.
 
-## Task graph (v2)
+## Task graph (v4)
 
 ```
-TASK-000A (contract) ─┬─→ TASK-001 (codemod) ──→ TASK-001B (dry-run) ──→ TASK-002 (apply) ──→ TASK-003 (hand-fix) ──→ TASK-003B (harness) ──┬─→ TASK-004 (Tier-A fixtures)
-                      │                                                                                                                    ├─→ TASK-005 (Tier-B fixtures)
-TASK-000B (baseline) ─┘                                                                                                                    └─→ TASK-006 (Tier-C fixtures)
+TASK-000A (contract) ─┬─→ TASK-001 (codemod) ──→ TASK-001B (dry-run) ──→ TASK-002 (apply)
+                      │                                                          │
+TASK-000B (baseline) ─┘                                                          └─→ TASK-003A (gates)
+                                                                                       → TASK-003B (filter-schedule)
+                                                                                       → TASK-003C (commit-task)
+                                                                                       → TASK-003D (direct-output commands)
+                                                                                       → TASK-003E (Claude dispatch builder)
+                                                                                       → TASK-003F (Codex/Gemini builders)
+                                                                                       → TASK-003G (completion audit)
+                                                                                       → TASK-003H (harness)
+                                                                                         ├─→ TASK-004 (Tier-A fixtures)
+                                                                                         ├─→ TASK-005 (Tier-B fixtures)
+                                                                                         └─→ TASK-006 (Tier-C fixtures)
 ```
 
-8 tasks in v2 vs 6 in v1. TASK-004/005/006 can run in parallel after TASK-003B lands. Critical path: 000A → 001 → 001B → 002 → 003 → 003B → 004 (or 005, or 006). 000B runs in parallel with 001/001B.
+13 tasks in v4 vs 8 in v2. TASK-004/005/006 can run in parallel after TASK-003H lands. Critical path: 000A → 001 → 001B → 002 → 003A → 003B → 003C → 003D → 003E → 003F → 003G → 003H → 004 (or 005, or 006). 000B runs in parallel with 001/001B.
 
 ## Execution log — 20260430T145307 (paused)
 
