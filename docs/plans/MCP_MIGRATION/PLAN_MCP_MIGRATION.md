@@ -99,18 +99,21 @@ Tier 1 ships first (TASK-004) and unlocks the SKILL.md edit (TASK-007). Tier 2 (
 - TASK-010 end-to-end smoke runs a one-task fixture plan with the orchestrator path mocked to use MCP tools only (no `Bash plan_ops.py` invocations); asserts the run-log under `_run_log.jsonl` matches the byte-baseline produced by an equivalent bash-CLI run.
 - Manual acceptance: one real plan run with `--dry-run` and one for-real, both via MCP. The execution-log table and run-log deltas must match the pre-migration baseline; new server-startup events (`mcp_server_start`, `mcp_tool_called{tool}`) are the only allowed additions.
 
-## 6. Execution — parallel batches
+## 6. Execution — sequential and parallel batches
 
-Ten tasks, six batches. The hot file is `plan_ops_mcp_server.py` (TASKs 004/005/006 all mutate it), so those serialize. `plan_ops.py` is touched only by TASK-002 (refactor); subsequent tasks register against pure functions instead of editing it. Schema sidecars (TASK-003) live in their own directory. SKILL.md (TASK-007) and the drift-guard test (TASK-009) are independent files.
+Twelve dispatchable tasks (`00_INDEX.json` chunks: TASK-001 / 003 / 004–013); the original TASK-002 is retained in this markdown for audit but absent from `chunks[]` (see the "Retained for audit only" note in the TASK-002 block). TASK-001 and TASK-003 already shipped 2026-04-29 in commits `890b09b` / `9f174d5`. The hot files are `plan_ops.py` (TASKs 011/012/013 all mutate it) and `plan_ops_mcp_server.py` (TASKs 004/005/006 all mutate it), so each chain serializes. Schema sidecars (TASK-003) live in their own directory. SKILL.md (TASK-007) and the drift-guard test (TASK-009) are independent files. `build-tasks` against the directory yields 10 dispatchable tasks across 8 batches (verified `outcome: valid, errors: 0`).
 
-- **Batch 1 (parallel):** TASK-001 (server scaffolding, new file), TASK-002 (`plan_ops.py` pure-function audit), TASK-003 (schema sidecars, new files).
-- **Batch 2:** TASK-004 (Tier-1 tools) — needs 001+002+003.
-- **Batch 3:** TASK-005 (Tier-2 tools, same file as 004 → must follow 004).
-- **Batch 4:** TASK-006 (Tier-3 tools, same file as 005 → must follow 005).
-- **Batch 5 (parallel):** TASK-007 (SKILL.md rewrite, depends on 004+006 — full MCP surface must be registered before SKILL.md rewrites every orchestrator-facing `plan_ops.py` invocation as a `Tool: plan_ops__<name>` call), TASK-008 (conformance test, depends on 006 for full-surface coverage). Different files; parallel.
-- **Batch 6 (parallel):** TASK-009 (drift guard, depends on 006+007), TASK-010 (end-to-end smoke, depends on 007+008). Different files; parallel.
+- **Batch 1 (already shipped 2026-04-29):** TASK-001 (server scaffolding) and TASK-003 (schema sidecars). The originally-planned TASK-002 was deferred (`outcome: plan-incorrect`) and replaced by TASK-011 / 012 / 013.
+- **Batch 2:** TASK-011 (Tier A — read-only / no-mutation, 23 `cmd_*`, no deps).
+- **Batch 3:** TASK-012 (Tier B — single-file atomic writers, 5 `cmd_*`, depends on TASK-011 to keep `plan_ops.py` mutation serial).
+- **Batch 4:** TASK-013 (Tier C — state-mutating: locks, JSONL, git, subprocess; 10 `cmd_*`; highest risk; depends on TASK-012).
+- **Batch 5:** TASK-004 (Tier-1 MCP tools) — depends on TASK-001/003/011/012/013 (full pure-core surface required because Tier-1 includes `commit_task`/`fail_task`/`log_event` from Tier C).
+- **Batch 6:** TASK-005 (Tier-2 tools, same file as TASK-004 → must follow).
+- **Batch 7:** TASK-006 (Tier-3 tools, same file as TASK-005 → must follow).
+- **Batch 8 (parallel):** TASK-007 (SKILL.md rewrite, depends on TASK-004+006), TASK-008 (conformance test, depends on TASK-006). Different files; parallel.
+- **Batch 9 (parallel):** TASK-009 (drift guard, depends on TASK-006+007), TASK-010 (end-to-end smoke, depends on TASK-007+008). Different files; parallel.
 
-Single-session parallel execution within each batch is the target.
+The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parallel implementer dispatches against the same `plan_ops.py` would trigger the wrapper's known parallel-batch baseline race (false-positive `scope_violation` from sibling deltas leaking into per-task `observed_delta`), already observed twice on this plan and on PLAN_GEMINI_INTEGRATION_2026-04-25. The wrapper fix (per-task `git worktree` isolation OR scoped baseline OR sibling-write subtraction) is a separate plan. Single-session parallel execution within each parallel batch is the target where the file-mutation footprint allows it.
 
 ---
 
@@ -143,7 +146,10 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-002: `plan_ops.py` pure-function entrypoint audit
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** This block is preserved as a historical record of the original task and the rationale for the split. The successor work is in TASK-011 / TASK-012 / TASK-013, which is what `/implement-plan` actually dispatches. The plan-executor's `_build_tasks` does not currently filter `chunks[].status == "Superseded"`, so leaving a Superseded chunk in the index would put TASK-002 in batch 1 of the schedule. The audit trail therefore lives in this markdown body, not in the structured index.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** TASK-011 (Tier A — read-only / no-mutation, 23 fns), TASK-012 (Tier B — single-file atomic writers, 5 fns), TASK-013 (Tier C — state-mutating: locks, JSONL, git, subprocess, 10 fns)
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify)
@@ -160,7 +166,9 @@ Single-session parallel execution within each batch is the target.
 
 **Description:** Removes the remaining `_emit` / stdin / sys.exit entanglement so the MCP server can call the same cores the argparse shim does, with no behavior drift. Without this, TASK-004/005/006 would have to either duplicate logic or reach into private state. Most subcommands need only a 5–15 line shape change; a handful (`commit-task`, `fail-task`, `reconcile-batch`) carry larger I/O perimeters and are the riskiest sites.
 
-**Run note (2026-04-30, run 20260429T232737):** Implementer halted with `outcome: plan-incorrect`, no edits applied. Empirical scope contradicts the Description's "5–15 line shape change" estimate: `plan_ops.py` is 13,796 lines with 38 `cmd_*` functions spanning ~4,000 LoC and ~200 `_die`/`_emit` callsites interleaved through conditional branches. AC requires every `cmd_<sub>` to be the literal shim `cmd = _emit(_run_<sub>(payload))` with no `_emit`/`print`/`sys.exit` (and by extension no `_die`, since `_die = _emit(..., exit_code=1)`) and no `sys.stdin.read()` inside the pure core; even the AC's named already-pure example `cmd_review_route` is not literally `cmd = _emit(_run(payload))` today (it reads stdin, validates, calls `route(payload)`, then `_emit`). So the AC's literal shim shape is not present anywhere, requiring a full refactor of all 38 `cmd_*` sites including the supposedly-exempt ones. Behavior preservation is non-trivial: atomic writes, run-log JSONL appends, file-lock acquire/release, git operations, subprocess re-execution (`auto-validate-divergence`) all live inside `cmd_*` bodies and must move into `_run_*` without semantic drift; TASK-008's byte-equal conformance gate would surface any drift later as a hard-to-bisect failure across 38 simultaneous refactors. **Status remains Pending.** This task will be re-scoped (likely split into per-region or per-risk-tier sub-tasks, or have its AC narrowed) and re-attempted in a separate session.
+**Run note (2026-04-30, run 20260429T232737):** Implementer halted with `outcome: plan-incorrect`, no edits applied. Empirical scope contradicted the Description's "5–15 line shape change" estimate: `plan_ops.py` is 13,796 lines with 38 `cmd_*` functions spanning ~4,000 LoC and ~200 `_die`/`_emit` callsites interleaved through conditional branches. AC required every `cmd_<sub>` to be the literal shim `cmd = _emit(_run_<sub>(payload))` with no `_emit`/`print`/`sys.exit` (and by extension no `_die`, since `_die = _emit(..., exit_code=1)`) and no `sys.stdin.read()` inside the pure core. Behavior preservation was non-trivial: atomic writes, run-log JSONL appends, file-lock acquire/release, git operations, subprocess re-execution (`auto-validate-divergence`) all live inside `cmd_*` bodies and must move into `_run_*` without semantic drift; TASK-008's byte-equal conformance gate would surface any drift later as a hard-to-bisect failure across 38 simultaneous refactors.
+
+**Resolution (2026-04-29 plan refactor):** Status moved to **Superseded** with explicit `superseded_by` chain to TASK-011 → TASK-012 → TASK-013. The 38 `cmd_*` were classified by mutation/concurrency profile (verified line-by-line against the source, cross-validated by Gemini per-task review): Tier A (23 fns, no file mutation, no lock, no subprocess), Tier B (5 fns, single-file atomic writers), Tier C (10 fns, multi-file mutation / file-locks / JSONL hash chain / git / subprocess). The original Tier classification missed five mutations (`cmd_block_dependents`, `cmd_update_plan_header`, `cmd_finalize_execution_log`, `cmd_decompose_plan`, `cmd_reconcile_batch`); the new task split incorporates the corrected mapping. The successor tasks serialize (TASK-011 → TASK-012 → TASK-013) because `plan_ops.py` is a hot file and the wrapper's parallel-batch baseline races on shared working-tree deltas (a separate plan covers that wrapper bug).
 
 **Reversion guidance:** Per-subcommand revert: restore `cmd_*` to its prior shape and drop the `_run_*` indirection. The argparse map and CLI surface are unchanged regardless of revert depth.
 
@@ -199,7 +207,7 @@ Single-session parallel execution within each batch is the target.
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops_mcp_server.py (modify)
   - tests/scripts/test_plan_ops_mcp_tier1.py (create)
-- **Dependencies:** TASK-001, TASK-002, TASK-003
+- **Dependencies:** TASK-001, TASK-003, TASK-011, TASK-012, TASK-013
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_mcp_tier1.py`
 - **Acceptance criteria:**
   - The following 10 tools are registered with input/output schemas from TASK-003 and dispatch to the matching `_run_*` pure core: `plan_ops__review_route`, `plan_ops__batch_next`, `plan_ops__commit_task`, `plan_ops__fail_task`, `plan_ops__parse_schedule`, `plan_ops__log_event`, `plan_ops__claude_envelope_extract`, `plan_ops__parse_implementer_report`, `plan_ops__parse_plan_review_report`, `plan_ops__parse_d5_adjudication`.
@@ -347,6 +355,93 @@ Single-session parallel execution within each batch is the target.
 **Description:** The migration's smoke test. Proves the orchestrator no longer needs the bash CLI for a routine run, and proves the MCP server's failure modes are non-corrupting.
 
 **Reversion guidance:** Delete the test file and fixture. Bash-CLI e2e (PHASE_D TASK-008) remains the canonical regression smoke until this stabilizes.
+
+---
+
+### TASK-011: `plan_ops.py` pure-core extraction — Tier A (read-only / no-mutation)
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/plan_ops.py (modify)
+  - tests/scripts/test_plan_ops_pure_entrypoints_tier_a.py (create)
+- **Dependencies:** none
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_entrypoints_tier_a.py`
+- **Acceptance criteria:**
+  - Each of these 23 `cmd_<sub>` becomes the literal shim `cmd_<sub>(args) = _emit(args, _run_<sub>(_args_to_payload_<sub>(args)))` (or `_die(args, result)` if `result["errors"]` is non-empty): `cmd_batch_next`, `cmd_build_codex_dispatch_input`, `cmd_build_gemini_dispatch_input`, `cmd_build_tasks`, `cmd_check_plan_deps`, `cmd_claude_envelope_extract`, `cmd_compute_schedule`, `cmd_filter_schedule`, `cmd_gates`, `cmd_index_closure`, `cmd_lint_plans`, `cmd_list_global_lock_paths`, `cmd_normalize_task_id`, `cmd_order_triage_findings`, `cmd_parse_d5_adjudication`, `cmd_parse_implementer_report`, `cmd_parse_plan_review_report`, `cmd_parse_plan_review_triage_report`, `cmd_parse_schedule`, `cmd_path_info`, `cmd_resolve_read_targets`, `cmd_review_route`, `cmd_run_summary`.
+  - Each `_run_<sub>(payload: dict) -> dict` accepts a single dict (the union of argparse-derived flags + any stdin-JSON payload) and returns a single envelope dict containing at minimum `errors: list` and `warnings: list`. No `sys.stdin`, `_emit`, `_die`, `print`, or `sys.exit` inside any `_run_*`.
+  - Stdin-consuming subcommands read stdin once in the argparse shim via a small `_read_stdin_json()` helper; the parsed JSON is passed in the payload under a subcommand-appropriate key (`envelope`, `report`, `findings`, `payload`, `data`, etc.).
+  - The shim helper `_args_to_payload_<sub>(args: argparse.Namespace) -> dict` converts string paths to `pathlib.Path` objects in the payload (uniform contract — pure cores always receive `Path` objects, never `str`).
+  - `cmd_gates`'s mutex argparse group (`--list` / `--check` / `--certify`) collapses into a single `payload["mode"]`; `_run_gates` switches on the mode and rejects other-mode flags via `errors[]` entries rather than argparse-style halts. Required-flag combinations for `--certify` (`--plan-file` + `--schedule-file`) are enforced in `_run_gates`.
+  - `cmd_filter_schedule`'s conditional `data.get("outcome")` validation (relaxed when stdin-mode, near line ~5710) is preserved in `_run_filter_schedule`; the shim records the input source via `payload["input_source"] in {"stdin","file"}` so the pure core can branch identically. `cmd_parse_schedule` carries the same convention.
+  - Conformance test: per-function fixture set (`<sub>__<case>.payload.json`, `<sub>__<case>.expected.json`) drives `_run_<sub>(payload)` and the bash CLI (`python plan_ops.py <sub> --json …`) and asserts byte-equal envelopes after JSON canonicalization (sorted keys, normalized whitespace, deterministic timestamps stubbed).
+  - Multi-fixture coverage required: `cmd_filter_schedule` ≥ 4 cases (valid filter, dependency-cycle output triggering `_validate_schedule_dag`, stdin-vs-file `outcome=needs-enrichment` branch, unknown-task-id error); `cmd_gates` ≥ 4 cases (each of `--list` / `--check` / `--certify` modes plus a `--certify` missing-required-flag error); each `cmd_parse_*` ≥ 2 cases (happy path + structured-error path).
+  - Implementation order within this task: (1) `cmd_review_route` and `cmd_normalize_task_id` (smallest, simplest — establish the shim pattern and `_args_to_payload_*` helper); (2) the five `cmd_parse_*` (`cmd_parse_schedule`, `cmd_parse_d5_adjudication`, `cmd_parse_implementer_report`, `cmd_parse_plan_review_report`, `cmd_parse_plan_review_triage_report` — validates `_read_stdin_json` helper and the stdin payload pattern); (3) `cmd_gates` (validate mutex-group → `payload["mode"]` collapse pattern); (4) `cmd_filter_schedule` and `cmd_compute_schedule` (largest pure-logic bodies, refactored last when the harness is stable).
+  - Argparse map and CLI surface (subcommand names, flag names, flag types, `--json` placement) are untouched.
+  - No subcommand in this task writes files, acquires locks, runs MUTATING subprocesses, or appends to JSONL. Any function that does is in TASK-012 (Tier B) or TASK-013 (Tier C); the per-function test fixture asserts the absence of any filesystem mutation as a side effect. Read-only git introspection (`git log`, `git rev-parse`) via the existing `_load_feat_commit_ids` helper that `cmd_lint_plans` calls (and `cmd_audit` reuses in Tier B) is permitted because it cannot mutate state and therefore cannot drift the conformance comparison.
+
+**Description:** The low-risk bulk of the original TASK-002 split — 23 of 38 `cmd_*` are read-only pure transformations or near-pure parsers. `cmd_review_route` and `cmd_batch_next` are already very close to the target shape; the rest just need stdin parsing lifted to the shim and `_emit`/`_die` callsites moved to the perimeter. This task ships the shim infrastructure (`_args_to_payload_*`, `_read_stdin_json`, the `tmp_path`-rooted byte-equal conformance harness) that TASK-012 and TASK-013 reuse. Landing this first delivers ~60% of the cmd_* count at low risk and validates the conformance test pattern before the harder tiers.
+
+**Reversion guidance:** Per-function revert: restore `cmd_<sub>` to its prior shape and drop the matching `_run_<sub>` plus `_args_to_payload_<sub>`. The conformance fixtures are per-function so the test stays green at any partial-refactor point. Argparse map and CLI surface unaffected.
+
+---
+
+### TASK-012: `plan_ops.py` pure-core extraction — Tier B (single-file atomic writers)
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/plan_ops.py (modify)
+  - tests/scripts/test_plan_ops_pure_entrypoints_tier_b.py (create)
+- **Dependencies:** TASK-011
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_entrypoints_tier_b.py`
+- **Acceptance criteria:**
+  - Each of these 5 `cmd_<sub>` becomes the literal shim `cmd_<sub>(args) = _emit(args, _run_<sub>(_args_to_payload_<sub>(args)))`: `cmd_audit` (86 LoC), `cmd_build_claude_dispatch_input` (292 LoC), `cmd_finalize_execution_log` (43 LoC), `cmd_update_plan_header` (28 LoC), `cmd_write_schedule` (35 LoC).
+  - The atomic-write step (`_atomic_write_text` for `cmd_write_schedule` and `cmd_audit`'s `--report-file`; `_write_text` for `cmd_update_plan_header`, `cmd_finalize_execution_log`, and `cmd_build_claude_dispatch_input`) lives inside `_run_<sub>` so a single tool invocation completes the full subcommand semantics. Output dict includes `wrote_path` and `bytes_written` for the write so MCP and CLI callers observe the side effect deterministically.
+  - Strict validate-then-write atomicity: when `_run_<sub>` returns a non-empty `errors[]`, no write occurs and the on-disk file is byte-identical to its pre-call state. Implementations must complete all schema/path/value validation before opening the destination file for write.
+  - `cmd_audit --report-file`'s path-validation guards (parent-directory existence, target-not-a-directory, no path-traversal) run inside `_run_audit` before any write; the path is `payload["report_file"]` as a `pathlib.Path` (shim converts).
+  - `cmd_audit`'s read-only git introspection helper `_load_feat_commit_ids` (which subprocess-calls `git log --all --pretty=%s` and is non-mutating) is permitted to remain; the AC's "no subprocess" wording is intentionally relaxed for read-only `git log` / `git rev-parse` calls because they cannot drift the conformance comparison.
+  - `cmd_build_claude_dispatch_input`'s mutex variant flags (`--variant analyst|default|rework|narrow-remediation|role-swap|rework-variant-b`) collapse into a single `payload["variant"]` field; the variant-routing logic continues through the existing pure helpers — refactor is shape-only.
+  - Conformance test: per-function fixture set runs `_run_<sub>(payload)` in an isolated `tmp_path`-rooted directory and runs the bash CLI in a sibling tmp dir; asserts (a) byte-equal `--json` envelopes after canonicalization, (b) byte-equal file contents at `wrote_path`, (c) identical filesystem snapshot after the call (no extra writes, no `.tmp.<random>` leftovers from `_atomic_write_text`'s rename dance).
+  - The test sets a fixed clock via existing test fixtures so `cmd_audit` report timestamps and `cmd_write_schedule` schedule timestamps are deterministic.
+  - Implementation order within this task: (1) `cmd_write_schedule` (smallest, validates the side-effect-bearing pure-core pattern); (2) `cmd_update_plan_header` and `cmd_finalize_execution_log` (small plan-mutators using the shared `mutate_task_status` / append-table pattern); (3) `cmd_audit` (adds `--report-file` conditional write + read-only git subprocess); (4) `cmd_build_claude_dispatch_input` (largest, six variant branches, refactored last when the harness and pattern are mature).
+  - Conformance harness from TASK-011 is reused; only the file-content + filesystem-snapshot assertions are added.
+
+**Description:** Five functions, single-file atomic writers, no locking, no JSONL hash chain, no mutating subprocess. The risk over Tier A is preserving file-write semantics (validate-then-write atomicity, `_atomic_write_text` rename-dance cleanup) and the variant-collapse pattern in `cmd_build_claude_dispatch_input`. Sequencing AFTER TASK-011 ensures the conformance harness exists and the `_args_to_payload_*` / `_read_stdin_json` shim helpers are stable; sequencing BEFORE TASK-013 means write-side gotchas surface here under simpler semantics rather than entangled with locks/git/JSONL.
+
+**Reversion guidance:** Per-function revert: restore `cmd_<sub>` to the pre-TASK-012 shape and drop the matching `_run_<sub>`. Tier-A pure cores from TASK-011 remain intact. CLI surface is unaffected.
+
+---
+
+### TASK-013: `plan_ops.py` pure-core extraction — Tier C (state-mutating: locks, JSONL, git, subprocess)
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/plan_ops.py (modify)
+  - tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py (create)
+- **Dependencies:** TASK-012
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py`
+- **Acceptance criteria:**
+  - Each of these 10 `cmd_<sub>` becomes the literal shim `cmd_<sub>(args) = _emit(args, _run_<sub>(_args_to_payload_<sub>(args)))`: `cmd_acquire_lock` (52 LoC), `cmd_auto_validate_divergence` (161 LoC), `cmd_block_dependents` (374 LoC, multi-file plan write + per-id JSONL append), `cmd_commit_task` (308 LoC, git ops + V-check subprocess + JSONL), `cmd_decompose_plan` (23 LoC body; mutates via `_decompose_plan` helper that writes a sibling directory of `00_INDEX.json` + per-task TASK files), `cmd_fail_task` (182 LoC, git revert + plan mutation + JSONL), `cmd_log_event` (112 LoC, hash-chained JSONL append), `cmd_preflight` (179 LoC, stdin + subprocess), `cmd_reconcile_batch` (41 LoC body; mutates via `reconcile_batch` helper at line ~3991 which calls `_atomic_write_text(plan_path, mutated)` per envelope), `cmd_release_lock` (19 LoC).
+  - Side-effect ORDERING is preserved: `cmd_commit_task` and `cmd_fail_task` run their git operations (status check, add, commit, optional V-check subprocess, `git restore` / `git clean` revert paths) inside `_run_*`; the JSONL run-log append happens AFTER the git commit succeeds and BEFORE the envelope is returned, identically to today.
+  - `cmd_log_event`'s JSONL append uses the existing `_append_run_log` helper inside `_run_log_event`; the per-event hash chain is byte-identical between bash and MCP paths because the helper computes the hash from canonicalized JSON of the prior event. ALLOWED_LOG_EVENTS validation runs inside the pure core; rejected events return `errors[]` rather than `_die`.
+  - `cmd_acquire_lock` / `cmd_release_lock` retain on-disk file-lock semantics: the lock-file create/delete and the metadata write happen inside `_run_*` via the existing `FileLock` / `_atomic_write_json` helpers. Lock-already-held / stale-lock takeover paths return the same `errors[]` codes the bash CLI emits today; stale-lock detection logic at lines ~8096–8118 moves verbatim into `_run_acquire_lock`.
+  - `cmd_preflight` and `cmd_auto_validate_divergence` retain their subprocess re-execution paths (`subprocess.run` / `subprocess.Popen`) inside `_run_*`; timeout, return-code, stdout/stderr capture, and the `--auto-fail-on-divergence` semantics carry through unchanged. Subprocess invocation continues to use `_resolve_python()` and the same env propagation.
+  - **Subprocess re-entrancy guard:** `_run_auto_validate_divergence` sets `IN_PLAN_OPS_SUBPROCESS=1` in the child env before invoking the test command; `plan_ops.py main()` reads this var and refuses to recursively dispatch a subcommand that itself spawns a `plan_ops.py` child (returns `errors[{"code":"reentrant-plan-ops"}]`). Prevents infinite recursion if a fixture-supplied test command invokes `plan_ops.py auto-validate-divergence`.
+  - `cmd_decompose_plan` and `cmd_reconcile_batch` retain their multi-file write semantics: `_run_decompose_plan` writes the entire output directory (`00_INDEX.json` + N per-task markdowns) one-file-at-a-time via `_atomic_write_text`; `_run_reconcile_batch` writes per-envelope plan-status mutations and any schedule update via the same atomic helper.
+  - `cmd_block_dependents` retains its mutate-all-in-memory → single plan write per file → log-each-applied-id ordering (per the docstring at line ~7244 / TASK-004D mutation contract); the run-log JSONL appends still occur post-write, one event per applied id; `missing-plan-file` short-circuit error path is preserved verbatim.
+  - Conformance test: per-function fixture runs `_run_<sub>(payload)` in an isolated tmp git repo (`tmp_path / "repo"`) with a stub run-log and lock-state file, and runs the bash CLI in a parallel tmp git repo (`tmp_path / "repo_ref"`); asserts (a) byte-equal `--json` envelopes, (b) byte-equal `_run_log.jsonl`, (c) byte-equal git history (`git log --oneline --all` plus tree-hashes of every commit), (d) byte-equal lock-state file contents, (e) identical exit codes on every error path, (f) byte-equal directory snapshot for `cmd_decompose_plan` outputs.
+  - Required fixtures: clean-commit happy path, `cmd_fail_task` paused-run-with-authorization-source, `cmd_log_event` rejected-event, `cmd_acquire_lock` stale-lock-takeover, `cmd_auto_validate_divergence` test-command-fails / test-command-times-out, `cmd_commit_task` `out_of_scope_observed=true` reconciler-partition path, `cmd_decompose_plan` malformed-plan error path, `cmd_block_dependents` empty-cascade short-circuit + missing-plan-file error path.
+  - **Crash-recovery test:** at least one fixture per multi-step state mutator (`cmd_commit_task`, `cmd_block_dependents`) verifies that a `SIGTERM` between the git commit and the post-commit run-log append leaves the repo in a state from which the orchestrator can recover (commit present, run-log missing the trailing event); the test asserts the same observable state across bash and `_run_*` paths so the orchestrator's existing reconciliation logic continues to work.
+  - **Process-tree assertion:** subprocess fixtures (`cmd_preflight`, `cmd_auto_validate_divergence`) assert no orphan / zombie processes remain after the call, particularly on the timeout path. Use `psutil` (preferred) or `os.waitpid(-1, os.WNOHANG)` to verify.
+  - **Hermetic env:** the test harness scrubs `PATH`, `PYTHONPATH`, and `PYTHONHASHSEED` to a known fixed set before invoking either path so subprocess-driven divergence cannot mask drift in the byte-equal comparison.
+  - Implementation order within this task: (1) `cmd_release_lock` and `cmd_acquire_lock` (simplest; FileLock is already a contained helper); (2) `cmd_log_event` (validates the hash-chain invariant under the new shim path); (3) `cmd_auto_validate_divergence` (validates the subprocess re-entrancy guard); (4) `cmd_preflight` (similar subprocess pattern, plus stdin); (5) `cmd_decompose_plan` and `cmd_reconcile_batch` (multi-file atomic writers, orthogonal to git/lock semantics); (6) `cmd_block_dependents` (multi-file plan mutation + JSONL); (7) `cmd_fail_task` (git revert + plan mutation); (8) `cmd_commit_task` (largest, most state, refactored last with mature harness).
+  - Conformance harness from TASK-011/012 is reused; the per-task tmp-git-repo fixture and the SIGTERM/process-tree extensions are the new additions.
+
+**Description:** The high-risk core of the original TASK-002. These 10 functions hold the load-bearing side-effect semantics of the entire plan-executor: git atomicity, JSONL hash-chain ordering, file-lock invariants, subprocess re-execution and re-entrancy. Drift here is the failure mode TASK-008's byte-equal conformance gate is designed to catch — surfacing drift later as cross-tier regressions instead of inside this task is the worst-case outcome. Sequencing AFTER TASK-012 means the harness, helpers, and shim pattern are battle-tested on 28 lower-risk functions before being applied to these 10. The crash-recovery test, process-tree assertion, and subprocess re-entrancy guard are direct outputs of the per-task adversarial review and are mandatory; without them the conformance test only proves equivalence under the happy path.
+
+**Reversion guidance:** Per-function revert: restore `cmd_<sub>` to the pre-TASK-013 shape and drop the matching `_run_<sub>`. Tier-A and Tier-B pure cores from TASK-011/012 remain intact. CLI surface is unaffected. The byte-equal conformance fixtures are the audit trail for any post-revert investigation; the per-function structure means a single function's revert leaves the rest of the test suite green.
 
 ## Execution log — 20260429T232737 (paused)
 
