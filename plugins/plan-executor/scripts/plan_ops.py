@@ -5403,69 +5403,92 @@ def cmd_batch_next(args: argparse.Namespace) -> None:
     _emit_or_die(args, result)
 
 
-def cmd_filter_schedule(args: argparse.Namespace) -> None:
+def _args_to_payload_filter_schedule(args: argparse.Namespace) -> dict:
+    use_stdin = bool(getattr(args, "stdin", False))
+    sched_file = getattr(args, "schedule_file", None)
+    payload = {
+        "schedule_file": Path(sched_file) if sched_file else None,
+        "stdin": use_stdin,
+        "task_ids": args.task_ids,
+    }
+    if use_stdin and not sched_file:
+        payload["input_source"] = "stdin"
+        payload["stdin_text"] = _read_stdin_text()
+    elif sched_file and not use_stdin:
+        sched_path = Path(sched_file)
+        payload["input_source"] = "file"
+        payload["schedule_file_exists"] = sched_path.is_file()
+        if payload["schedule_file_exists"]:
+            payload["schedule_text"] = sched_path.read_text(encoding="utf-8")
+    return payload
+
+
+def _run_filter_schedule(payload: dict) -> dict:
     # 0. Input-mode selection. `--schedule-file` and `--stdin` are mutually
     # exclusive; exactly one MUST be supplied. `--stdin` was added so the
     # orchestrator's Phase 1 `--task-ids` branch can stay fully in-memory
     # without the round-3 pre-persist/filter/re-persist workaround.
-    use_stdin = bool(getattr(args, "stdin", False))
-    sched_file = getattr(args, "schedule_file", None)
+    input_source = payload.get("input_source")
+    use_stdin = input_source == "stdin" or (
+        input_source is None and bool(payload.get("stdin", False))
+    )
+    sched_file = payload.get("schedule_file")
     if use_stdin and sched_file:
-        _die(args, {"errors": [{
+        return _result({"errors": [{
             "path": "$",
             "code": "input-mode-conflict",
             "message": (
                 "--schedule-file and --stdin are mutually exclusive; "
                 "supply exactly one"
             ),
-        }]})
+        }]}, exit_code=1)
     if not use_stdin and not sched_file:
-        _die(args, {"errors": [{
+        return _result({"errors": [{
             "path": "$",
             "code": "input-mode-missing",
             "message": (
                 "filter-schedule requires exactly one of --schedule-file "
                 "or --stdin"
             ),
-        }]})
+        }]}, exit_code=1)
 
     if use_stdin:
-        raw = sys.stdin.read()
+        raw = payload["stdin_text"]
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
-            _die(args, {"errors": [{
+            return _result({"errors": [{
                 "path": "$",
                 "code": "json-decode",
                 "message": f"schedule json decode: {e}",
-            }]})
+            }]}, exit_code=1)
     else:
         sched_path = Path(sched_file)
-        if not sched_path.is_file():
-            _die(args, {"errors": [{
+        if "schedule_text" not in payload:
+            return _result({"errors": [{
                 "path": "$",
                 "code": "file-not-found",
                 "message": f"schedule file not found: {sched_path}",
-            }]})
+            }]}, exit_code=1)
         try:
-            data = json.loads(sched_path.read_text(encoding="utf-8"))
+            data = json.loads(payload["schedule_text"])
         except json.JSONDecodeError as e:
-            _die(args, {"errors": [{
+            return _result({"errors": [{
                 "path": "$",
                 "code": "json-decode",
                 "message": f"schedule json decode: {e}",
-            }]})
+            }]}, exit_code=1)
     if not isinstance(data, dict):
-        _die(args, {"errors": [{
+        return _result({"errors": [{
             "path": "$",
             "code": "top-level-not-object",
             "message": "top-level schedule must be an object",
-        }]})
+        }]}, exit_code=1)
 
     # 1. Source-schedule validation (mirror cmd_batch_next:1504-1506).
     errors, warnings = _validate_schedule(data)
     if errors:
-        _die(args, {"errors": errors, "warnings": warnings})
+        return _result({"errors": errors, "warnings": warnings}, exit_code=1)
 
     # 2. Source-not-valid rejection (V4). On the file path, filtering an
     # already-broken schedule is meaningless — the orchestrator should
@@ -5475,34 +5498,34 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
     # mapping) are accepted so Phase 1's `--task-ids` branch can filter
     # without round-tripping through a file.
     if not use_stdin and data.get("outcome") != "valid":
-        _die(args, {"errors": [{
+        return _result({"errors": [{
             "path": "$.outcome",
             "code": "source-not-valid",
             "message": (
                 f"filter-schedule requires source outcome='valid', "
                 f"got {data.get('outcome')!r}"
             ),
-        }]})
+        }]}, exit_code=1)
 
     # 3. --task-ids parse + normalize. Empty fragments (e.g. "1,,3") are
     # skipped silently; all-empty input is a hard error.
-    raw_ids = [s.strip() for s in (args.task_ids or "").split(",") if s.strip()]
+    raw_ids = [s.strip() for s in (payload.get("task_ids") or "").split(",") if s.strip()]
     requested: list[str] = []
     for r in raw_ids:
         norm = _normalize_task_id(r)
         if norm is None:
-            _die(args, {"errors": [{
+            return _result({"errors": [{
                 "path": "$.task_ids",
                 "code": "invalid-task-ids",
                 "message": f"could not normalize task id {r!r}",
-            }]})
+            }]}, exit_code=1)
         requested.append(norm)
     if not requested:
-        _die(args, {"errors": [{
+        return _result({"errors": [{
             "path": "$.task_ids",
             "code": "invalid-task-ids",
             "message": "no task ids provided",
-        }]})
+        }]}, exit_code=1)
 
     # Build tasks_by_id from the canonical `id` field. TASK-008 removed the
     # legacy `task_id` alias; schedules using it are rejected upstream by
@@ -5517,11 +5540,11 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
     # 4. Unknown requested id (V2). Case 1: "user typo".
     unknown = [tid for tid in requested if tid not in tasks_by_id]
     if unknown:
-        _die(args, {"errors": [{
+        return _result({"errors": [{
             "path": "$.task_ids",
             "code": "unknown-task-id",
             "message": f"unknown task id {tid}",
-        } for tid in unknown]})
+        } for tid in unknown]}, exit_code=1)
 
     # 5. Transitive closure with guarded indexing (V1, V3). Case 2: "schedule
     # is broken upstream" — a transitive dep that's absent from tasks[] MUST
@@ -5539,19 +5562,19 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
         if task is None:
             # Defensive: step 4 should have caught this for requested IDs;
             # for derived ones the dep-ref check below handles it first.
-            _die(args, {"errors": [{
+            return _result({"errors": [{
                 "path": "$.tasks",
                 "code": "missing-dependency",
                 "message": f"task depends on missing id {tid}",
-            }]})
+            }]}, exit_code=1)
         for dep in (task.get("dependencies") or []):
             dep_norm = _normalize_task_id(str(dep))
             if dep_norm is None or dep_norm not in tasks_by_id:
-                _die(args, {"errors": [{
+                return _result({"errors": [{
                     "path": f"$.tasks[id={tid}].dependencies",
                     "code": "missing-dependency",
                     "message": f"task {tid} depends on missing id {dep!r}",
-                }]})
+                }]}, exit_code=1)
             stack.append(dep_norm)
 
     # 6. Build output tasks/batches in source order. Drop batches whose
@@ -5576,12 +5599,12 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
     # write-schedule. Delegates to the shared `_validate_schedule_dag` helper.
     dag_errors = _validate_schedule_dag(out_tasks, out_batches)
     if dag_errors:
-        _die(args, {"errors": dag_errors})
+        return _result({"errors": dag_errors}, exit_code=1)
 
     # 8. Reference-integrity check on the filtered schedule.
     ref_errors = _validate_schedule_refs(out_tasks, out_batches)
     if ref_errors:
-        _die(args, {"errors": ref_errors})
+        return _result({"errors": ref_errors}, exit_code=1)
 
     # 9. Emit canonical schedule. On the file path, gaps=[] and risks=[]
     # are intentional — inheriting source-level gaps/risks would either
@@ -5616,22 +5639,27 @@ def cmd_filter_schedule(args: argparse.Namespace) -> None:
         filtered_gaps = [g for g in src_gaps if _gap_retained(g)]
         filtered_risks = [r for r in src_risks if _gap_retained(r)]
         out_outcome = "needs-enrichment" if filtered_gaps else "valid"
-        _emit(args, {
+        return _result({
             "outcome": out_outcome,
             "tasks": out_tasks,
             "batches": out_batches,
             "gaps": filtered_gaps,
             "risks": filtered_risks,
-        })
-        return
+        }, exit_code=0)
 
-    _emit(args, {
+    return _result({
         "outcome": "valid",
         "tasks": out_tasks,
         "batches": out_batches,
         "gaps": [],
         "risks": [],
-    })
+    }, exit_code=0)
+
+
+def cmd_filter_schedule(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_filter_schedule(args)
+    result = _run_filter_schedule(payload)
+    _emit_or_die(args, result)
 
 
 _LOG_BLOCK_RE = re.compile(

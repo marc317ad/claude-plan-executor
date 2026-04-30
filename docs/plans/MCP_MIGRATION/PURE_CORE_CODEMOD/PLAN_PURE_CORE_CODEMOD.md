@@ -375,7 +375,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-003B: Hand-fix `cmd_filter_schedule`
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_filter_schedule`, `_args_to_payload_filter_schedule`, `_run_filter_schedule`, and directly required helper tests)
