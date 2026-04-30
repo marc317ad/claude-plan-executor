@@ -554,3 +554,26 @@ TASK-000B (baseline) ─┘                                                     
 ```
 
 8 tasks in v2 vs 6 in v1. TASK-004/005/006 can run in parallel after TASK-003B lands. Critical path: 000A → 001 → 001B → 002 → 003 → 003B → 004 (or 005, or 006). 000B runs in parallel with 001/001B.
+
+## Execution log — 20260430T145307 (paused)
+
+Starting SHA: `e88d674f9d6e46d763c67ee96d596d39e4ca62ef`  → Ending SHA: `37b9b036f559dd9299abe189b27ddd37262d3b05`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 000A | codex | claude | ship [sandbox-divergence] | 2dde16003fc4 | _emit/_die terminator contract |
+| 001 | codex | claude | ship-with-fixes | d56aa412aec8 | libcst codemod |
+| 000B | codex | claude | ship-with-fixes | ccc102ef5a9e | CLI baseline 17 fixtures |
+| 001B | codex | claude | ship | 37b9b036f559 | dry-run report 29/9/0 |
+| 002 | codex | none | PAUSED | - | codemod applied + partial patches; 37 tests fail; awaiting user |
+
+## Operator follow-up — TASK-002 completion
+
+Claude/Codex paused on TASK-002 after applying the codemod with 37 remaining test failures and a missing codemod `--skip-from-report` implementation. Per user guidance, the operator completed the task by hand rather than reverting: added `--skip-from-report` support to `tools/codemods/plan_ops_pure_core_extract.py`, fixed generated `plan_ops.py` regressions, corrected review-schema/doc drift that blocked the existing suite, normalized `plan_ops.py` line endings/whitespace, and reran the gates.
+
+Completion commits: `78c3a9319969` (TASK-002 code/docs/tests) and `0ca67d2` (mark TASK-002 done in `00_INDEX.json`).
+
+Verification:
+
+- `venv/bin/python -m pytest tests/tools/test_plan_ops_pure_core_extract.py -q` → 7 passed.
+- `venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -q` → 1051 passed, 2 skipped.
