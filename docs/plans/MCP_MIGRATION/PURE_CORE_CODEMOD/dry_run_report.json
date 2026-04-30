@@ -1,0 +1,1474 @@
+{
+  "arg_specs": {
+    "acquire-lock": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "force",
+        "flag": "--force",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "audit": [
+      {
+        "dest": "list",
+        "flag": "--list",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "check",
+        "flag": "--check",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "strict",
+        "flag": "--strict",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "report_file",
+        "flag": "--report-file",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      }
+    ],
+    "auto-validate-divergence": [
+      {
+        "dest": "envelope_file",
+        "flag": "--envelope-file",
+        "required": false,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "test_command",
+        "flag": "--test-command",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "repo_root",
+        "flag": "--repo-root",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": false,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "task_id",
+        "flag": "--task-id",
+        "required": false,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "timeout",
+        "flag": "--timeout",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "int"
+      }
+    ],
+    "batch-next": [
+      {
+        "dest": "schedule_file",
+        "flag": "--schedule-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "locked_files",
+        "flag": "--locked-files",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "done",
+        "flag": "--done",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "failed",
+        "flag": "--failed",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "paused",
+        "flag": "--paused",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "parallel",
+        "flag": "--parallel",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "int"
+      },
+      {
+        "dest": "from_schedule_state",
+        "flag": "--from-schedule-state",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      }
+    ],
+    "block-dependents": [
+      {
+        "dest": "schedule_file",
+        "flag": "--schedule-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "failed",
+        "flag": "--failed",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "update_schedule_state",
+        "flag": "--update-schedule-state",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      }
+    ],
+    "build-claude-dispatch-input": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "task_id",
+        "flag": "--task-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "variant",
+        "flag": "--variant",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "repo_root",
+        "flag": "--repo-root",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "analyst_annotations",
+        "flag": "--analyst-annotations",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "target_task_id",
+        "flag": "--target-task-id",
+        "required": false,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "starting_sha",
+        "flag": "--starting-sha",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "dispatch_context",
+        "flag": "--dispatch-context",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": false,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "output",
+        "flag": "--output",
+        "required": false,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "json",
+        "flag": "--json",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "build-codex-dispatch-input": [
+      {
+        "dest": "output",
+        "flag": "--output",
+        "required": false,
+        "source": "override",
+        "value_kind": "string"
+      }
+    ],
+    "build-gemini-dispatch-input": [
+      {
+        "dest": "output",
+        "flag": "--output",
+        "required": false,
+        "source": "override",
+        "value_kind": "string"
+      }
+    ],
+    "build-tasks": [
+      {
+        "dest": "plans_dir",
+        "flag": "--plans-dir",
+        "required": true,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "filter_ids",
+        "flag": "--filter-ids",
+        "required": false,
+        "source": "override",
+        "value_kind": "csv-string"
+      }
+    ],
+    "check-plan-deps": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "plans_dir",
+        "flag": "--plans-dir",
+        "required": true,
+        "source": "override",
+        "value_kind": "path"
+      }
+    ],
+    "claude-envelope-extract": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "agent",
+        "flag": "--agent",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      }
+    ],
+    "commit-task": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "task_id",
+        "flag": "--task-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "files",
+        "flag": "--files",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "title",
+        "flag": "--title",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "diff_summary",
+        "flag": "--diff-summary",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "reviewer",
+        "flag": "--reviewer",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "reviewer_verdict",
+        "flag": "--reviewer-verdict",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "reviewer_minor_findings",
+        "flag": "--reviewer-minor-findings",
+        "required": false,
+        "source": "override",
+        "value_kind": "json-string"
+      },
+      {
+        "dest": "sandbox_divergence_tag",
+        "flag": "--sandbox-divergence-tag",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "dry_run",
+        "flag": "--dry-run",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "update_schedule_state",
+        "flag": "--update-schedule-state",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "v_check_timeout",
+        "flag": "--v-check-timeout",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "int"
+      }
+    ],
+    "compute-schedule": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "strict",
+        "flag": "--strict",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "decompose-plan": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "out_dir",
+        "flag": "--out-dir",
+        "required": false,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "force",
+        "flag": "--force",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "fail-task": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "task_id",
+        "flag": "--task-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "files",
+        "flag": "--files",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "stage",
+        "flag": "--stage",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "reason",
+        "flag": "--reason",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "authorization_source",
+        "flag": "--authorization-source",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "reviewer_findings",
+        "flag": "--reviewer-findings",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "reversion_guidance",
+        "flag": "--reversion-guidance",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "repo_root",
+        "flag": "--repo-root",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "dry_run",
+        "flag": "--dry-run",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "update_schedule_state",
+        "flag": "--update-schedule-state",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "retries_used",
+        "flag": "--retries-used",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      }
+    ],
+    "filter-schedule": [
+      {
+        "dest": "schedule_file",
+        "flag": "--schedule-file",
+        "required": false,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "task_ids",
+        "flag": "--task-ids",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      }
+    ],
+    "finalize-execution-log": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "starting_sha",
+        "flag": "--starting-sha",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "ending_sha",
+        "flag": "--ending-sha",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "rows_json",
+        "flag": "--rows-json",
+        "required": true,
+        "source": "override",
+        "value_kind": "json-string"
+      },
+      {
+        "dest": "outcome",
+        "flag": "--outcome",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      }
+    ],
+    "gates": [
+      {
+        "dest": "mode",
+        "flag": "--mode",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": false,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "schedule_file",
+        "flag": "--schedule-file",
+        "required": false,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "commit_sha",
+        "flag": "--commit-sha",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "task_id",
+        "flag": "--task-id",
+        "required": false,
+        "source": "override",
+        "value_kind": "string"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": false,
+        "source": "override",
+        "value_kind": "string"
+      }
+    ],
+    "index-closure": [
+      {
+        "dest": "plans_dir",
+        "flag": "--plans-dir",
+        "required": true,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "task_ids",
+        "flag": "--task-ids",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      }
+    ],
+    "lint-plans": [
+      {
+        "dest": "plans_dir",
+        "flag": "--plans-dir",
+        "required": true,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "run_log",
+        "flag": "--run-log",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "git_dir",
+        "flag": "--git-dir",
+        "required": false,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      }
+    ],
+    "list-global-lock-paths": [],
+    "log-event": [
+      {
+        "dest": "event",
+        "flag": "--event",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "fields_json",
+        "flag": "--fields-json",
+        "required": true,
+        "source": "override",
+        "value_kind": "json-string"
+      },
+      {
+        "dest": "findings_json",
+        "flag": "--findings-json",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      }
+    ],
+    "normalize-task-id": [
+      {
+        "dest": "id",
+        "flag": "--id",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      }
+    ],
+    "order-triage-findings": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "parse-d5-adjudication": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "codex_findings_count",
+        "flag": "--codex-findings-count",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "int"
+      }
+    ],
+    "parse-implementer-report": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "parse-plan-review-report": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "from_claude",
+        "flag": "--from-claude",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "parse-plan-review-triage-report": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "source",
+        "flag": "--source",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "findings_count",
+        "flag": "--findings-count",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "int"
+      }
+    ],
+    "parse-schedule": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "strict",
+        "flag": "--strict",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "path-info": [],
+    "preflight": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "strict_branch",
+        "flag": "--strict-branch",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "strict_scope",
+        "flag": "--strict-scope",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "unattended_revert_policy",
+        "flag": "--unattended-revert-policy",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      }
+    ],
+    "reconcile-batch": [
+      {
+        "dest": "repo_root",
+        "flag": "--repo-root",
+        "required": true,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "schedule_file",
+        "flag": "--schedule-file",
+        "required": false,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "out_of_scope_policy",
+        "flag": "--out-of-scope-policy",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "plans_dir",
+        "flag": "--plans-dir",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      }
+    ],
+    "release-lock": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      }
+    ],
+    "resolve-read-targets": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "task_file",
+        "flag": "--task-file",
+        "required": false,
+        "source": "override",
+        "value_kind": "path"
+      },
+      {
+        "dest": "json",
+        "flag": "--json",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "review-route": [
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ],
+    "run-summary": [
+      {
+        "dest": "section",
+        "flag": "--section",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      },
+      {
+        "dest": "run_id",
+        "flag": "--run-id",
+        "required": true,
+        "source": "override",
+        "value_kind": "string"
+      }
+    ],
+    "update-plan-header": [
+      {
+        "dest": "plan_file",
+        "flag": "--plan-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "status",
+        "flag": "--status",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "string"
+      }
+    ],
+    "write-schedule": [
+      {
+        "dest": "schedule_file",
+        "flag": "--schedule-file",
+        "required": true,
+        "source": "suffix-heuristic",
+        "value_kind": "path"
+      },
+      {
+        "dest": "stdin",
+        "flag": "--stdin",
+        "required": true,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      },
+      {
+        "dest": "strict",
+        "flag": "--strict",
+        "required": false,
+        "source": "argparse-type",
+        "value_kind": "bool"
+      }
+    ]
+  },
+  "rewritten": [
+    {
+      "argparse_flags": [
+        "--plan-file",
+        "--run-id",
+        "--force"
+      ],
+      "emit_die_count": 6,
+      "fstring_args_uses": 0,
+      "function": "cmd_acquire_lock",
+      "lines": [
+        8118,
+        8167
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--envelope-file",
+        "--test-command",
+        "--repo-root",
+        "--run-id",
+        "--task-id",
+        "--timeout"
+      ],
+      "emit_die_count": 7,
+      "fstring_args_uses": 0,
+      "function": "cmd_auto_validate_divergence",
+      "lines": [
+        13114,
+        13272
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--schedule-file",
+        "--locked-files",
+        "--done",
+        "--failed",
+        "--paused",
+        "--parallel",
+        "--from-schedule-state"
+      ],
+      "emit_die_count": 9,
+      "fstring_args_uses": 0,
+      "function": "cmd_batch_next",
+      "lines": [
+        5471,
+        5674
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--schedule-file",
+        "--plan-file",
+        "--failed",
+        "--run-id",
+        "--update-schedule-state"
+      ],
+      "emit_die_count": 17,
+      "fstring_args_uses": 1,
+      "function": "cmd_block_dependents",
+      "lines": [
+        7285,
+        7656
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--plans-dir",
+        "--filter-ids"
+      ],
+      "emit_die_count": 3,
+      "fstring_args_uses": 0,
+      "function": "cmd_build_tasks",
+      "lines": [
+        3563,
+        3619
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--plan-file",
+        "--plans-dir"
+      ],
+      "emit_die_count": 2,
+      "fstring_args_uses": 0,
+      "function": "cmd_check_plan_deps",
+      "lines": [
+        4517,
+        4521
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--stdin",
+        "--agent"
+      ],
+      "emit_die_count": 4,
+      "fstring_args_uses": 0,
+      "function": "cmd_claude_envelope_extract",
+      "lines": [
+        6430,
+        6493
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--stdin",
+        "--strict"
+      ],
+      "emit_die_count": 5,
+      "fstring_args_uses": 0,
+      "function": "cmd_compute_schedule",
+      "lines": [
+        5356,
+        5433
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--plan-file",
+        "--out-dir",
+        "--force"
+      ],
+      "emit_die_count": 2,
+      "fstring_args_uses": 0,
+      "function": "cmd_decompose_plan",
+      "lines": [
+        3055,
+        3075
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--plan-file",
+        "--run-id",
+        "--starting-sha",
+        "--ending-sha",
+        "--rows-json",
+        "--outcome"
+      ],
+      "emit_die_count": 4,
+      "fstring_args_uses": 4,
+      "function": "cmd_finalize_execution_log",
+      "lines": [
+        7869,
+        7909
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--plans-dir",
+        "--task-ids"
+      ],
+      "emit_die_count": 3,
+      "fstring_args_uses": 0,
+      "function": "cmd_index_closure",
+      "lines": [
+        4724,
+        4751
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--plans-dir",
+        "--run-log",
+        "--git-dir"
+      ],
+      "emit_die_count": 1,
+      "fstring_args_uses": 0,
+      "function": "cmd_lint_plans",
+      "lines": [
+        4927,
+        5037
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [],
+      "emit_die_count": 1,
+      "fstring_args_uses": 0,
+      "function": "cmd_list_global_lock_paths",
+      "lines": [
+        11008,
+        11018
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--event",
+        "--fields-json",
+        "--findings-json"
+      ],
+      "emit_die_count": 12,
+      "fstring_args_uses": 5,
+      "function": "cmd_log_event",
+      "lines": [
+        7912,
+        8021
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--id"
+      ],
+      "emit_die_count": 2,
+      "fstring_args_uses": 1,
+      "function": "cmd_normalize_task_id",
+      "lines": [
+        8024,
+        8028
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--stdin"
+      ],
+      "emit_die_count": 5,
+      "fstring_args_uses": 0,
+      "function": "cmd_order_triage_findings",
+      "lines": [
+        6496,
+        6555
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--stdin",
+        "--codex-findings-count"
+      ],
+      "emit_die_count": 5,
+      "fstring_args_uses": 0,
+      "function": "cmd_parse_d5_adjudication",
+      "lines": [
+        6767,
+        6841
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--stdin"
+      ],
+      "emit_die_count": 3,
+      "fstring_args_uses": 0,
+      "function": "cmd_parse_implementer_report",
+      "lines": [
+        5926,
+        6017
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--stdin",
+        "--from-claude"
+      ],
+      "emit_die_count": 10,
+      "fstring_args_uses": 0,
+      "function": "cmd_parse_plan_review_report",
+      "lines": [
+        6558,
+        6764
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--stdin",
+        "--source",
+        "--findings-count"
+      ],
+      "emit_die_count": 9,
+      "fstring_args_uses": 0,
+      "function": "cmd_parse_plan_review_triage_report",
+      "lines": [
+        6844,
+        6922
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--stdin",
+        "--strict"
+      ],
+      "emit_die_count": 4,
+      "fstring_args_uses": 0,
+      "function": "cmd_parse_schedule",
+      "lines": [
+        5272,
+        5353
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [],
+      "emit_die_count": 1,
+      "fstring_args_uses": 0,
+      "function": "cmd_path_info",
+      "lines": [
+        8189,
+        8198
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--plan-file",
+        "--strict-branch",
+        "--strict-scope",
+        "--unattended-revert-policy"
+      ],
+      "emit_die_count": 7,
+      "fstring_args_uses": 0,
+      "function": "cmd_preflight",
+      "lines": [
+        5093,
+        5269
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--repo-root",
+        "--schedule-file",
+        "--out-of-scope-policy",
+        "--plans-dir"
+      ],
+      "emit_die_count": 4,
+      "fstring_args_uses": 0,
+      "function": "cmd_reconcile_batch",
+      "lines": [
+        4353,
+        4391
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--plan-file",
+        "--run-id"
+      ],
+      "emit_die_count": 3,
+      "fstring_args_uses": 0,
+      "function": "cmd_release_lock",
+      "lines": [
+        8170,
+        8186
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--stdin"
+      ],
+      "emit_die_count": 3,
+      "fstring_args_uses": 0,
+      "function": "cmd_review_route",
+      "lines": [
+        13681,
+        13710
+      ],
+      "stdin_read": true
+    },
+    {
+      "argparse_flags": [
+        "--section",
+        "--run-id"
+      ],
+      "emit_die_count": 2,
+      "fstring_args_uses": 1,
+      "function": "cmd_run_summary",
+      "lines": [
+        13275,
+        13337
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--plan-file",
+        "--status"
+      ],
+      "emit_die_count": 3,
+      "fstring_args_uses": 2,
+      "function": "cmd_update_plan_header",
+      "lines": [
+        7841,
+        7866
+      ],
+      "stdin_read": false
+    },
+    {
+      "argparse_flags": [
+        "--schedule-file",
+        "--stdin",
+        "--strict"
+      ],
+      "emit_die_count": 5,
+      "fstring_args_uses": 0,
+      "function": "cmd_write_schedule",
+      "lines": [
+        5436,
+        5468
+      ],
+      "stdin_read": true
+    }
+  ],
+  "schema_version": 1,
+  "skipped": [
+    {
+      "evidence": "cmd_audit:11021",
+      "function": "cmd_audit",
+      "reason": "mixed-pattern"
+    },
+    {
+      "evidence": "cmd_build_claude_dispatch_input:11765",
+      "function": "cmd_build_claude_dispatch_input",
+      "reason": "private-terminator"
+    },
+    {
+      "evidence": "cmd_build_codex_dispatch_input:12086",
+      "function": "cmd_build_codex_dispatch_input",
+      "reason": "private-terminator"
+    },
+    {
+      "evidence": "cmd_build_gemini_dispatch_input:12100",
+      "function": "cmd_build_gemini_dispatch_input",
+      "reason": "private-terminator"
+    },
+    {
+      "evidence": "cmd_commit_task:6925",
+      "function": "cmd_commit_task",
+      "reason": "mutex-group"
+    },
+    {
+      "evidence": "cmd_fail_task:7659",
+      "function": "cmd_fail_task",
+      "reason": "direct-stdout-exit"
+    },
+    {
+      "evidence": "cmd_filter_schedule:5677",
+      "function": "cmd_filter_schedule",
+      "reason": "mixed-pattern"
+    },
+    {
+      "evidence": "cmd_gates:11107",
+      "function": "cmd_gates",
+      "reason": "mutex-group"
+    },
+    {
+      "evidence": "cmd_resolve_read_targets:11696",
+      "function": "cmd_resolve_read_targets",
+      "reason": "direct-stdout-exit"
+    }
+  ],
+  "summary": {
+    "ambiguous_arg_specs_count": 0,
+    "rewritten_count": 29,
+    "skipped_count": 9,
+    "total_cmd_x": 38
+  },
+  "warnings": []
+}

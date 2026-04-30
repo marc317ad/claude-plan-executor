@@ -285,7 +285,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-001B: Dry-run codemod and finalize skip-list + ARG_SPECS table
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high (gate before TASK-002 fires)
 - **Files:**
   - tools/codemods/plan_ops_pure_core_extract.py (modify if dry-run surfaces ambiguous flags or new skip candidates — operator updates the override table and re-runs)

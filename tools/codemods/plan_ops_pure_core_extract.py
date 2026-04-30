@@ -75,8 +75,6 @@ class ArgSpec:
         return {
             "flag": self.flag,
             "dest": self.dest,
-            "type": self.type,
-            "default": self.default,
             "required": self.required,
             "value_kind": self.value_kind,
             "source": self.source,
