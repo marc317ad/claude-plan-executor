@@ -1,6 +1,6 @@
 # Plan: `plan_ops.py` pure-core extraction via codemod
 
-**Status:** in-progress
+**Status:** partial
 **Author of draft:** orchestrator session under `/implement-plan docs/plans/MCP_MIGRATION` run `20260430T033005`; refined via paired `gemini` (code-search) and `codex exec` (coding-implications) deep dives plus first-party AST sampling of `plan_ops.py`.
 **Supersedes (proposed):** `docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` TASK-011, TASK-012, TASK-013
 **Does not supersede:** TASK-001, TASK-003, TASK-004, TASK-005, TASK-006, TASK-007, TASK-008, TASK-009, TASK-010 of the parent plan; this draft only re-shapes the pure-core extraction trio.
@@ -714,3 +714,11 @@ Starting SHA: `a1cf4760f65b53fe7055028a979631d243201e28`  → Ending SHA: `7d500
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 003A | codex | claude | ship | 7d5007cb | 3 minor nits recorded |
+
+## Execution log — 20260430T195058 (partial)
+
+Starting SHA: `d74bd63cec874a775b252ca17c08082c49695f5f`  → Ending SHA: `3caecb4e1e3ea5344c533f82c3cfc203842dcc6b`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003C | claude | codex | clean | 3caecb4e |  |
