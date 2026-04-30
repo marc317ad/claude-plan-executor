@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "plan-ops": {
+      "command": "${CLAUDE_PLUGIN_PYTHON}",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops_mcp_server.py"]
+    }
+  }
+}
