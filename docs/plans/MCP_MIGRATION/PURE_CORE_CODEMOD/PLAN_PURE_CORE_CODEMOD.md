@@ -473,7 +473,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-003F: Hand-fix Codex/Gemini dispatch builders
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_build_codex_dispatch_input`, `cmd_build_gemini_dispatch_input`, and directly shared `_bcdi_*` helper call sites)

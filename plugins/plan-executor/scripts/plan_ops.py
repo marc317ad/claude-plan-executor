@@ -11677,18 +11677,106 @@ def _bcdi_emit_envelope(envelope: dict, output: str) -> None:
     sys.exit(0)
 
 
+def _args_to_payload_build_codex_dispatch_input(
+    args: argparse.Namespace,
+) -> dict:
+    """Lift CLI args + `$UNATTENDED_REVERT_POLICY` into a pure payload
+    (TASK-003F). Mirrors `_args_to_payload_build_claude_dispatch_input`.
+    """
+    return {
+        # `--output -` is a string sentinel meaning stdout; only a real
+        # filesystem path is later wrapped as `Path(...)` for writing.
+        "output": args.output or "-",
+        "unattended_revert_policy_env": os.environ.get(
+            "UNATTENDED_REVERT_POLICY",
+        ),
+    }
+
+
+def _run_build_codex_dispatch_input(payload: dict) -> dict:
+    """Pure core for `cmd_build_codex_dispatch_input` (TASK-003F).
+
+    Validation failures return `_bcdi_to_error_result(...)` instead of
+    `sys.exit`. Success returns `_bcdi_to_envelope_result(...)` which
+    routes the envelope to stdout (`output == "-"`) or to a file
+    (`__plan_ops_stdout_suppressed__`).
+    """
+    raw_policy_env = payload.get("unattended_revert_policy_env")
+    if raw_policy_env is None or raw_policy_env == "":
+        policy: str | None = None
+    elif raw_policy_env in {"pause", "fail-fast", "preserve-only"}:
+        policy = raw_policy_env
+    else:
+        return _bcdi_to_error_result(
+            "unattended-revert-policy-invalid",
+            (
+                f"$UNATTENDED_REVERT_POLICY is not in the closed enum "
+                f"{{pause, fail-fast, preserve-only}}: "
+                f"{raw_policy_env!r}"
+            ),
+        )
+    envelope: dict = {}
+    if policy is not None:
+        envelope["unattended_revert_policy"] = policy
+    return _bcdi_to_envelope_result(envelope, payload["output"])
+
+
 def cmd_build_codex_dispatch_input(args: argparse.Namespace) -> None:
     """Emit the codex_dispatch_input.json envelope for one dispatch.
 
     Currently the only cross-wrapper field is ``unattended_revert_policy``;
     the codex wrapper consumes the rest via argparse. See
     ``schemas/codex_dispatch_input.json`` for the documented contract.
+
+    Thin shim over `_args_to_payload_build_codex_dispatch_input(args)` →
+    `_run_build_codex_dispatch_input(payload)` → `_emit_or_die`
+    (TASK-003F).
     """
-    policy = _bcdi_resolve_policy_or_die()
+    payload = _args_to_payload_build_codex_dispatch_input(args)
+    result = _run_build_codex_dispatch_input(payload)
+    args.json = True
+    _emit_or_die(args, result)
+
+
+def _args_to_payload_build_gemini_dispatch_input(
+    args: argparse.Namespace,
+) -> dict:
+    """Lift CLI args + `$UNATTENDED_REVERT_POLICY` into a pure payload
+    (TASK-003F). Mirrors `_args_to_payload_build_claude_dispatch_input`.
+    """
+    return {
+        "output": args.output or "-",
+        "unattended_revert_policy_env": os.environ.get(
+            "UNATTENDED_REVERT_POLICY",
+        ),
+    }
+
+
+def _run_build_gemini_dispatch_input(payload: dict) -> dict:
+    """Pure core for `cmd_build_gemini_dispatch_input` (TASK-003F).
+
+    Identical revert-policy validation and envelope shape as the codex
+    sibling; kept as a separate function so MCP tool registration can
+    bind a distinct subcommand handler per cross-wrapper contract.
+    """
+    raw_policy_env = payload.get("unattended_revert_policy_env")
+    if raw_policy_env is None or raw_policy_env == "":
+        policy: str | None = None
+    elif raw_policy_env in {"pause", "fail-fast", "preserve-only"}:
+        policy = raw_policy_env
+    else:
+        return _bcdi_to_error_result(
+            "unattended-revert-policy-invalid",
+            (
+                f"$UNATTENDED_REVERT_POLICY is not in the closed enum "
+                f"{{pause, fail-fast, preserve-only}}: "
+                f"{raw_policy_env!r}"
+            ),
+        )
     envelope: dict = {}
     if policy is not None:
         envelope["unattended_revert_policy"] = policy
-    _bcdi_emit_envelope(envelope, args.output or "-")
+    return _bcdi_to_envelope_result(envelope, payload["output"])
 
 
 def cmd_build_gemini_dispatch_input(args: argparse.Namespace) -> None:
@@ -11697,12 +11785,15 @@ def cmd_build_gemini_dispatch_input(args: argparse.Namespace) -> None:
     Currently the only cross-wrapper field is ``unattended_revert_policy``;
     the gemini wrapper consumes the rest via argparse. See
     ``schemas/gemini_dispatch_input.json`` for the documented contract.
+
+    Thin shim over `_args_to_payload_build_gemini_dispatch_input(args)` →
+    `_run_build_gemini_dispatch_input(payload)` → `_emit_or_die`
+    (TASK-003F).
     """
-    policy = _bcdi_resolve_policy_or_die()
-    envelope: dict = {}
-    if policy is not None:
-        envelope["unattended_revert_policy"] = policy
-    _bcdi_emit_envelope(envelope, args.output or "-")
+    payload = _args_to_payload_build_gemini_dispatch_input(args)
+    result = _run_build_gemini_dispatch_input(payload)
+    args.json = True
+    _emit_or_die(args, result)
 
 
 # ---------------------------------------------------------------------------
