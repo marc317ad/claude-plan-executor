@@ -1,0 +1,7 @@
+outcome: valid
+tasks: [{'id': '001', 'agent': 'codex', 'title': 'one', 'files': ['src/one.py'], 'dependencies': [], 'plan_file': 'TASK-001_one.md', 'global_lock': False}, {'id': '002', 'agent': 'claude', 'title': 'two', 'files': ['src/two.py'], 'dependencies': ['001'], 'plan_file': 'TASK-002_two.md', 'global_lock': False}]
+batches: [{'index': 1, 'task_ids': ['001'], 'file_locks': ['src/one.py']}, {'index': 2, 'task_ids': ['002'], 'file_locks': ['src/two.py']}]
+gaps: []
+risks: []
+warnings: []
+errors: []

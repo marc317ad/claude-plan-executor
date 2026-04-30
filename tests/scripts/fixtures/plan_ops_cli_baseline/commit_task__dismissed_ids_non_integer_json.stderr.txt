@@ -1,0 +1,3 @@
+usage: plan_ops.py [-h]
+                   {preflight,review-route,parse-schedule,decompose-plan,build-tasks,compute-schedule,write-schedule,batch-next,filter-schedule,parse-implementer-report,parse-plan-review-report,claude-envelope-extract,order-triage-findings,parse-plan-review-triage-report,parse-d5-adjudication,commit-task,fail-task,block-dependents,update-plan-header,finalize-execution-log,log-event,normalize-task-id,acquire-lock,release-lock,reconcile-batch,check-plan-deps,index-closure,path-info,list-global-lock-paths,resolve-read-targets,build-claude-dispatch-input,build-codex-dispatch-input,build-gemini-dispatch-input,lint-plans,audit,gates,auto-validate-divergence,run-summary} ...
+plan_ops.py: error: --dismissed-finding-ids entry 'x' is not a valid integer

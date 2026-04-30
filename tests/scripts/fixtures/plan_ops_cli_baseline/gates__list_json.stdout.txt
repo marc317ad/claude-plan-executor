@@ -1,0 +1,10 @@
+{
+  "gates": [
+    "schema-valid",
+    "schedule-valid",
+    "fixture-valid",
+    "execution-safe",
+    "review-safe",
+    "commit-safe"
+  ]
+}

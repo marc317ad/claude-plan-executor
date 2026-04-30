@@ -189,11 +189,11 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-000B: Capture pre-codemod CLI baseline
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high (regression gate for TASK-002)
 - **Files:**
   - tests/scripts/test_plan_ops_pure_core_baseline.py (create — captures the baseline once and asserts byte-equality on subsequent runs)
-  - tests/scripts/fixtures/plan_ops_cli_baseline/<sub>__<case>.{stdin,stdout,stderr,exit}.txt (create, ~12-15 fixture sets)
+  - tests/scripts/fixtures/plan_ops_cli_baseline/ (create — directory of ~12-15 fixture sets, each a quad of `<sub>__<case>.{stdin,stdout,stderr,exit}.txt` files)
 - **Dependencies:** TASK-000A
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_core_baseline.py`
 - **Acceptance criteria:**

@@ -1,0 +1,9 @@
+{
+  "divergence": false,
+  "applicable": false,
+  "task_id": "027C",
+  "target_test": null,
+  "sandbox_divergence": null,
+  "reason": "envelope outcome='failure' cause='scope_misreport' does not match independent_test_run_failed; auto-validate skipped",
+  "errors": []
+}

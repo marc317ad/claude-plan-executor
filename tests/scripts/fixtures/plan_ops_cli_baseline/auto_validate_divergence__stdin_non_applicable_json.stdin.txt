@@ -1,0 +1,11 @@
+{
+  "task_id": "027C",
+  "subcommand": "implement",
+  "outcome": "failure",
+  "cause": "scope_misreport",
+  "sandbox_test_stdout": "unused",
+  "sandbox_test_stderr": "unused",
+  "sandbox_test_command": "pytest -q tests/foo.py",
+  "sandbox_test_exit_code": 1,
+  "sandbox_test_attempt_count": 2
+}

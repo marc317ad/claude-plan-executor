@@ -1,0 +1,4 @@
+{
+  "released": false,
+  "reason": "no-lock-file"
+}

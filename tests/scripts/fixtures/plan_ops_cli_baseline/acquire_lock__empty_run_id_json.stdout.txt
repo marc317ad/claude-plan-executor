@@ -1,0 +1,9 @@
+{
+  "acquired": false,
+  "errors": [
+    {
+      "code": "lock-run-id-empty",
+      "message": "--run-id must be a non-empty string"
+    }
+  ]
+}

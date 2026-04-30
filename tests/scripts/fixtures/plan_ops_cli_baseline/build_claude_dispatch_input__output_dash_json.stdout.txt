@@ -1,0 +1,297 @@
+{
+  "schema_version": 1,
+  "agent": "plan-analyst",
+  "payload": {
+    "plan_path": "{SANDBOX}/TASK-001_analyst.md",
+    "repo_root": "{REPO_ROOT}",
+    "task_id": "001",
+    "target_task_id": null
+  },
+  "output_instructions": {
+    "format": "json",
+    "schema_path": "plugins/plan-executor/scripts/schemas/claude_dispatch_output.json",
+    "schema_inline": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "claude_dispatch_output",
+      "description": "Wire contract for the wrapper-level envelope emitted by plan_claude_dispatch.py (PLAN_NESTED_DISPATCH \u00a77).",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "schema_invalid",
+            "timeout",
+            "denied",
+            "backend_error",
+            "budget_exhausted",
+            "depth_exceeded",
+            "manifest_invalid",
+            "input_invalid",
+            "scope_violation",
+            "cleanup_failure"
+          ]
+        },
+        "status_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "tokens": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "input": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cache_read": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cache_creation": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "input",
+            "output",
+            "cache_read",
+            "cache_creation"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "description": "Inner agent's structured result, schema-validated. May be null when status != ok."
+        },
+        "result_raw_truncated": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stderr_tail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permission_denials": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "declared_files_changed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "observed_delta_tracked": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "observed_delta_untracked": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "scope_violation_detected": {
+              "type": "boolean"
+            },
+            "scope_misreport_detected": {
+              "type": "boolean"
+            },
+            "failed_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "TASK-004 hardening: paths the wrapper attempted to revert under delta-bounded cleanup but could not (per-file OSError on the revert path). Non-empty implies the working tree is in an unknown state and the envelope status MUST be cleanup_failure."
+            }
+          },
+          "required": [
+            "declared_files_changed",
+            "observed_delta_tracked",
+            "observed_delta_untracked",
+            "scope_violation_detected",
+            "scope_misreport_detected"
+          ],
+          "additionalProperties": false
+        },
+        "trace": {
+          "type": "object",
+          "properties": {
+            "run_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "span_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "parent_span_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "depth": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "call_chain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "started_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ended_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "run_id",
+            "span_id",
+            "parent_span_id",
+            "depth",
+            "call_chain",
+            "started_at",
+            "ended_at"
+          ],
+          "additionalProperties": false
+        },
+        "error": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string"
+            },
+            "retriable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retriable"
+          ],
+          "additionalProperties": false
+        },
+        "extra": {
+          "type": "object",
+          "description": "Wrapper-level diagnostics: wrapper_events, wrapper_autoclean_blocked, preserved_files, etc.",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "schema_version",
+        "status",
+        "status_reason",
+        "agent",
+        "model",
+        "session_id",
+        "duration_ms",
+        "cost_usd",
+        "tokens",
+        "result",
+        "result_raw_truncated",
+        "stderr_tail",
+        "permission_denials",
+        "scope",
+        "trace",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "max_bytes": 65536
+  },
+  "overrides": {
+    "model": "sonnet",
+    "timeout_sec": null,
+    "tools_allowed_extra": null,
+    "tools_disallowed_extra": null,
+    "cwd": null
+  },
+  "guardrails": {
+    "max_depth": 1,
+    "cost_cap_usd": null,
+    "network": "deny"
+  },
+  "trace": {
+    "run_id": "<orchestrator run_id>",
+    "parent_span_id": null,
+    "depth": 0,
+    "call_chain": [
+      "orchestrator"
+    ]
+  },
+  "declared_files_changed": []
+}
