@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__parse_schedule input",
+  "description": "Validate analyst JSON shape",
+  "type": "object",
+  "properties": {
+    "strict": {
+      "description": "Promote unknown nested fields from warning to error",
+      "type": "boolean"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Payload formerly delivered via --stdin; carries the JSON envelope body.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "payload"
+  ],
+  "x-cli-emits-json": true
+}

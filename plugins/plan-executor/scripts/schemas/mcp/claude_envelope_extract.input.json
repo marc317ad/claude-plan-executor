@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__claude_envelope_extract input",
+  "description": "TASK-006: extract a normalized routing payload from a v3 Claude wrapper envelope on stdin. Replaces the per-dispatch inline jq-style reads added in TASK-003/004/005.",
+  "type": "object",
+  "properties": {
+    "agent": {
+      "description": "Dispatch site: which agent the envelope is from",
+      "type": "string",
+      "enum": [
+        "plan-analyst",
+        "plan-implementer",
+        "plan-remediator"
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "description": "Payload formerly delivered via --stdin; carries the JSON envelope body.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "agent",
+    "payload"
+  ],
+  "x-cli-emits-json": true
+}

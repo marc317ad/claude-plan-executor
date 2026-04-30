@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__filter_schedule input",
+  "description": "Filter schedule by --task-ids and emit canonical schedule on stdout",
+  "type": "object",
+  "properties": {
+    "schedule_file": {
+      "description": "Path to source schedule JSON (mutually exclusive with --stdin)",
+      "type": "string"
+    },
+    "task_ids": {
+      "description": "CSV of task ids; canonical, plain, or TASK-NNN forms",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "description": "Payload formerly delivered via --stdin; carries the JSON envelope body.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "task_ids"
+  ],
+  "x-cli-emits-json": true
+}

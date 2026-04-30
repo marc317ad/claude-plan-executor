@@ -1,0 +1,234 @@
+{
+  "tool_names_ordered": [
+    "acquire_lock",
+    "audit",
+    "auto_validate_divergence",
+    "batch_next",
+    "block_dependents",
+    "build_claude_dispatch_input",
+    "build_codex_dispatch_input",
+    "build_gemini_dispatch_input",
+    "build_tasks",
+    "check_plan_deps",
+    "claude_envelope_extract",
+    "commit_task",
+    "compute_schedule",
+    "decompose_plan",
+    "fail_task",
+    "filter_schedule",
+    "finalize_execution_log",
+    "gates",
+    "index_closure",
+    "lint_plans",
+    "list_global_lock_paths",
+    "log_event",
+    "normalize_task_id",
+    "order_triage_findings",
+    "parse_d5_adjudication",
+    "parse_implementer_report",
+    "parse_plan_review_report",
+    "parse_plan_review_triage_report",
+    "parse_schedule",
+    "path_info",
+    "preflight",
+    "reconcile_batch",
+    "release_lock",
+    "resolve_read_targets",
+    "review_route",
+    "run_summary",
+    "update_plan_header",
+    "write_schedule"
+  ],
+  "tools": {
+    "plan_ops__acquire_lock": {
+      "input_schema": "acquire_lock.input.json",
+      "output_schema": "acquire_lock.output.json",
+      "subcommand": "acquire-lock"
+    },
+    "plan_ops__audit": {
+      "input_schema": "audit.input.json",
+      "output_schema": "audit.output.json",
+      "subcommand": "audit"
+    },
+    "plan_ops__auto_validate_divergence": {
+      "input_schema": "auto_validate_divergence.input.json",
+      "output_schema": "auto_validate_divergence.output.json",
+      "subcommand": "auto-validate-divergence"
+    },
+    "plan_ops__batch_next": {
+      "input_schema": "batch_next.input.json",
+      "output_schema": "batch_next.output.json",
+      "subcommand": "batch-next"
+    },
+    "plan_ops__block_dependents": {
+      "input_schema": "block_dependents.input.json",
+      "output_schema": "block_dependents.output.json",
+      "subcommand": "block-dependents"
+    },
+    "plan_ops__build_claude_dispatch_input": {
+      "input_schema": "build_claude_dispatch_input.input.json",
+      "output_schema": "build_claude_dispatch_input.output.json",
+      "subcommand": "build-claude-dispatch-input"
+    },
+    "plan_ops__build_codex_dispatch_input": {
+      "input_schema": "build_codex_dispatch_input.input.json",
+      "output_schema": "build_codex_dispatch_input.output.json",
+      "subcommand": "build-codex-dispatch-input"
+    },
+    "plan_ops__build_gemini_dispatch_input": {
+      "input_schema": "build_gemini_dispatch_input.input.json",
+      "output_schema": "build_gemini_dispatch_input.output.json",
+      "subcommand": "build-gemini-dispatch-input"
+    },
+    "plan_ops__build_tasks": {
+      "input_schema": "build_tasks.input.json",
+      "output_schema": "build_tasks.output.json",
+      "subcommand": "build-tasks"
+    },
+    "plan_ops__check_plan_deps": {
+      "input_schema": "check_plan_deps.input.json",
+      "output_schema": "check_plan_deps.output.json",
+      "subcommand": "check-plan-deps"
+    },
+    "plan_ops__claude_envelope_extract": {
+      "input_schema": "claude_envelope_extract.input.json",
+      "output_schema": "claude_envelope_extract.output.json",
+      "subcommand": "claude-envelope-extract"
+    },
+    "plan_ops__commit_task": {
+      "input_schema": "commit_task.input.json",
+      "output_schema": "commit_task.output.json",
+      "subcommand": "commit-task"
+    },
+    "plan_ops__compute_schedule": {
+      "input_schema": "compute_schedule.input.json",
+      "output_schema": "compute_schedule.output.json",
+      "subcommand": "compute-schedule"
+    },
+    "plan_ops__decompose_plan": {
+      "input_schema": "decompose_plan.input.json",
+      "output_schema": "decompose_plan.output.json",
+      "subcommand": "decompose-plan"
+    },
+    "plan_ops__fail_task": {
+      "input_schema": "fail_task.input.json",
+      "output_schema": "fail_task.output.json",
+      "subcommand": "fail-task"
+    },
+    "plan_ops__filter_schedule": {
+      "input_schema": "filter_schedule.input.json",
+      "output_schema": "filter_schedule.output.json",
+      "subcommand": "filter-schedule"
+    },
+    "plan_ops__finalize_execution_log": {
+      "input_schema": "finalize_execution_log.input.json",
+      "output_schema": "finalize_execution_log.output.json",
+      "subcommand": "finalize-execution-log"
+    },
+    "plan_ops__gates": {
+      "input_schema": "gates.input.json",
+      "output_schema": "gates.output.json",
+      "subcommand": "gates"
+    },
+    "plan_ops__index_closure": {
+      "input_schema": "index_closure.input.json",
+      "output_schema": "index_closure.output.json",
+      "subcommand": "index-closure"
+    },
+    "plan_ops__lint_plans": {
+      "input_schema": "lint_plans.input.json",
+      "output_schema": "lint_plans.output.json",
+      "subcommand": "lint-plans"
+    },
+    "plan_ops__list_global_lock_paths": {
+      "input_schema": "list_global_lock_paths.input.json",
+      "output_schema": "list_global_lock_paths.output.json",
+      "subcommand": "list-global-lock-paths"
+    },
+    "plan_ops__log_event": {
+      "input_schema": "log_event.input.json",
+      "output_schema": "log_event.output.json",
+      "subcommand": "log-event"
+    },
+    "plan_ops__normalize_task_id": {
+      "input_schema": "normalize_task_id.input.json",
+      "output_schema": "normalize_task_id.output.json",
+      "subcommand": "normalize-task-id"
+    },
+    "plan_ops__order_triage_findings": {
+      "input_schema": "order_triage_findings.input.json",
+      "output_schema": "order_triage_findings.output.json",
+      "subcommand": "order-triage-findings"
+    },
+    "plan_ops__parse_d5_adjudication": {
+      "input_schema": "parse_d5_adjudication.input.json",
+      "output_schema": "parse_d5_adjudication.output.json",
+      "subcommand": "parse-d5-adjudication"
+    },
+    "plan_ops__parse_implementer_report": {
+      "input_schema": "parse_implementer_report.input.json",
+      "output_schema": "parse_implementer_report.output.json",
+      "subcommand": "parse-implementer-report"
+    },
+    "plan_ops__parse_plan_review_report": {
+      "input_schema": "parse_plan_review_report.input.json",
+      "output_schema": "parse_plan_review_report.output.json",
+      "subcommand": "parse-plan-review-report"
+    },
+    "plan_ops__parse_plan_review_triage_report": {
+      "input_schema": "parse_plan_review_triage_report.input.json",
+      "output_schema": "parse_plan_review_triage_report.output.json",
+      "subcommand": "parse-plan-review-triage-report"
+    },
+    "plan_ops__parse_schedule": {
+      "input_schema": "parse_schedule.input.json",
+      "output_schema": "parse_schedule.output.json",
+      "subcommand": "parse-schedule"
+    },
+    "plan_ops__path_info": {
+      "input_schema": "path_info.input.json",
+      "output_schema": "path_info.output.json",
+      "subcommand": "path-info"
+    },
+    "plan_ops__preflight": {
+      "input_schema": "preflight.input.json",
+      "output_schema": "preflight.output.json",
+      "subcommand": "preflight"
+    },
+    "plan_ops__reconcile_batch": {
+      "input_schema": "reconcile_batch.input.json",
+      "output_schema": "reconcile_batch.output.json",
+      "subcommand": "reconcile-batch"
+    },
+    "plan_ops__release_lock": {
+      "input_schema": "release_lock.input.json",
+      "output_schema": "release_lock.output.json",
+      "subcommand": "release-lock"
+    },
+    "plan_ops__resolve_read_targets": {
+      "input_schema": "resolve_read_targets.input.json",
+      "output_schema": "resolve_read_targets.output.json",
+      "subcommand": "resolve-read-targets"
+    },
+    "plan_ops__review_route": {
+      "input_schema": "review_route.input.json",
+      "output_schema": "review_route.output.json",
+      "subcommand": "review-route"
+    },
+    "plan_ops__run_summary": {
+      "input_schema": "run_summary.input.json",
+      "output_schema": "run_summary.output.json",
+      "subcommand": "run-summary"
+    },
+    "plan_ops__update_plan_header": {
+      "input_schema": "update_plan_header.input.json",
+      "output_schema": "update_plan_header.output.json",
+      "subcommand": "update-plan-header"
+    },
+    "plan_ops__write_schedule": {
+      "input_schema": "write_schedule.input.json",
+      "output_schema": "write_schedule.output.json",
+      "subcommand": "write-schedule"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__write_schedule input",
+  "description": "Validate + atomically persist schedule JSON",
+  "type": "object",
+  "properties": {
+    "schedule_file": {
+      "description": "Destination path for persisted schedule JSON",
+      "type": "string"
+    },
+    "strict": {
+      "description": "Promote unknown nested fields from warning to error",
+      "type": "boolean"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Payload formerly delivered via --stdin; carries the JSON envelope body.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "payload",
+    "schedule_file"
+  ],
+  "x-cli-emits-json": true
+}

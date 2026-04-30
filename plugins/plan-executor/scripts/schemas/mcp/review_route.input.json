@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__review_route input",
+  "description": "Route a parsed Phase D review envelope to one orchestrator directive (TASK-001 PHASE_D_STATE_MACHINE). Reads the input envelope from stdin per review_route_input_schema.json; emits one directive per review_route_output_schema.json.",
+  "$ref": "../../review_route_input_schema.json"
+}

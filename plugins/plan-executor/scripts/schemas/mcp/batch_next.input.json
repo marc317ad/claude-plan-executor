@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__batch_next input",
+  "description": "Select next batch respecting file locks",
+  "type": "object",
+  "properties": {
+    "schedule_file": {
+      "description": "Path to schedule JSON",
+      "type": "string"
+    },
+    "locked_files": {
+      "description": "Comma-separated locked files",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "done": {
+      "description": "Comma-separated done task ids",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "failed": {
+      "description": "Comma-separated failed task ids",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "paused": {
+      "description": "Comma-separated paused task ids (TASK-002). Treated like --failed for pick eligibility (skip) but does NOT cascade block-dependents.",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "parallel": {
+      "description": "Max concurrent tasks",
+      "type": "integer"
+    },
+    "from_schedule_state": {
+      "description": "Merge done/failed/locked_files/blocked from the persisted schedule `state` block (\u00a73.2). Additive to --done/--failed/--locked-files; CLI-arg contract unchanged.",
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schedule_file"
+  ],
+  "x-cli-emits-json": true
+}

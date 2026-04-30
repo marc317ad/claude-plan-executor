@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__parse_plan_review_report input",
+  "description": "Validate a Phase 1.5 plan-review envelope against codex_plan_review_schema.json; surface verdict + findings. Default input is the Codex wrapper envelope; with --from-claude, stdin is the bare `parsed` payload emitted by the Phase 1.5-Claude `plan-reviewer` Agent.",
+  "type": "object",
+  "properties": {
+    "from_claude": {
+      "description": "Parse the bare `parsed` payload (Phase 1.5-Claude path) instead of the Codex wrapper envelope. Skips the envelope-level `subcommand`/`outcome`/`task_id` checks and validates stdin directly against codex_plan_review_schema.json.",
+      "type": "boolean"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Payload formerly delivered via --stdin; carries the JSON envelope body.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "payload"
+  ],
+  "x-cli-emits-json": true
+}

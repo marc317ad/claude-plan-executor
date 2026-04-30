@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__decompose_plan input",
+  "description": "Heuristic whole-plan \u2192 decomposed-directory split. Reads a `## TASK-NNN:` plan markdown file and writes a sibling directory with `00_INDEX.json` + one `TASK-NNN_<slug>.md` per task (H3 sub-heading grammar).",
+  "type": "object",
+  "properties": {
+    "plan_file": {
+      "description": "Path to the whole-plan markdown file to decompose",
+      "type": "string"
+    },
+    "out_dir": {
+      "description": "Destination directory; default <file-parent>/<file-stem>/. Refuses to overwrite a non-empty existing directory unless --force is set.",
+      "type": "string"
+    },
+    "force": {
+      "description": "Overwrite an existing non-empty --out-dir",
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "plan_file"
+  ],
+  "x-cli-emits-json": true
+}

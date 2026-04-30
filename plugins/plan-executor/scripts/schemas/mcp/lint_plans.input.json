@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__lint_plans input",
+  "description": "Cross-reference **Status:** done/partial task markers against commit_done run-log events and feat(TASK-NNN) git commits. Read-only; exit 1 on any finding.",
+  "type": "object",
+  "properties": {
+    "plans_dir": {
+      "description": "Directory containing plan markdown files (scanned recursively)",
+      "type": "string"
+    },
+    "run_log": {
+      "description": "Path to _run_log.jsonl; omitted = empty run log",
+      "type": "string"
+    },
+    "git_dir": {
+      "description": "Path to git work tree root; defaults to CWD",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "plans_dir"
+  ],
+  "x-cli-emits-json": true
+}

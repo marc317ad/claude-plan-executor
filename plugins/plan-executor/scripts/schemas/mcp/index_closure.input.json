@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__index_closure input",
+  "description": "Compute the transitive-prereq closure of --task-ids via 00_INDEX.json's structured chunks[].depends_on (pure-roster; never reads any *.md child).",
+  "type": "object",
+  "properties": {
+    "plans_dir": {
+      "description": "Directory containing 00_INDEX.json",
+      "type": "string"
+    },
+    "task_ids": {
+      "description": "Comma-separated task ids (any of `9`, `009`, `TASK-009` accepted; each is normalized before lookup).",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "plans_dir"
+  ],
+  "x-cli-emits-json": true
+}

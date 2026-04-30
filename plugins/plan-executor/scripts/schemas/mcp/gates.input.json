@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__gates input",
+  "description": "Run the six canonical phase gates (schema-valid, schedule-valid, fixture-valid, execution-safe, review-safe, commit-safe) either individually (--check) or as a dry-run/execute certification bundle (--certify).",
+  "type": "object",
+  "properties": {
+    "list": {
+      "description": "Emit the canonical list of gate names",
+      "type": "boolean"
+    },
+    "check": {
+      "description": "Comma-separated gate names to evaluate; fails with exit 1 if any checked gate returns status=fail",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "certify": {
+      "description": "Certify the promotion bundle for --mode (dry-run|execute); exit 1 if any required gate in the bundle returns status=fail",
+      "type": "boolean"
+    },
+    "mode": {
+      "description": "Required with --certify; selects the promotion bundle",
+      "type": "string",
+      "enum": [
+        "dry-run",
+        "execute"
+      ]
+    },
+    "plan_file": {
+      "description": "Path to plan markdown file (for schema-valid/fixture-valid)",
+      "type": "string"
+    },
+    "schedule_file": {
+      "description": "Path to schedule JSON file (for schedule-valid)",
+      "type": "string"
+    },
+    "commit_sha": {
+      "description": "Commit SHA to inspect for commit-safe",
+      "type": "string"
+    },
+    "task_id": {
+      "description": "Task id whose Files: list scopes commit-safe allowed paths",
+      "type": "string"
+    },
+    "run_id": {
+      "description": "Run identifier for certify-execute commit-safe verification",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "x-cli-emits-json": true
+}

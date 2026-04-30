@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__order_triage_findings input",
+  "description": "Sort plan-review findings by (blocking, severity, source_index) and annotate each with `source_index`; the orchestrator calls this before rendering the Phase 1.5.5 triage dispatch template",
+  "type": "object",
+  "properties": {
+    "payload": {
+      "type": "object",
+      "description": "Payload formerly delivered via --stdin; carries the JSON envelope body.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "payload"
+  ],
+  "x-cli-emits-json": true
+}

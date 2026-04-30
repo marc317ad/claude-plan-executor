@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__reconcile_batch input",
+  "description": "Reconcile observed out-of-scope writes from a completed batch",
+  "type": "object",
+  "properties": {
+    "repo_root": {
+      "description": "Absolute path to repo root",
+      "type": "string"
+    },
+    "schedule_file": {
+      "description": "Optional absolute path to the persisted schedule JSON. When supplied, reconciliation consults each dispatched task's normalised Files: list and PRESERVES envelope entries that are in fact in scope (wrapper false-positives). Without it, the function falls back to restore-everything behaviour.",
+      "type": "string"
+    },
+    "out_of_scope_policy": {
+      "description": "How to handle envelopes with out_of_scope_observed=true. `pause` (default): mark the task `paused` and return four options to the user; do NOT touch the working tree. `reconcile-and-revert`: legacy behaviour (restore tracked, unlink untracked) \u2014 used in cron/CI when --unattended-revert-policy is fail-fast or preserve-only.",
+      "type": "string",
+      "enum": [
+        "pause",
+        "reconcile-and-revert"
+      ]
+    },
+    "plans_dir": {
+      "description": "Directory containing the per-task plan markdown files. Used by --out-of-scope-policy=pause to resolve each task's plan_file (from the schedule) and mutate its status to `paused`. Without it, the pause path returns the four options but leaves plan-status mutation to the caller.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "repo_root"
+  ],
+  "x-cli-emits-json": true
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__update_plan_header input",
+  "description": "Mutate **Status:** in plan header block",
+  "type": "object",
+  "properties": {
+    "plan_file": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "in-progress",
+        "partial"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "plan_file",
+    "status"
+  ],
+  "x-cli-emits-json": true
+}

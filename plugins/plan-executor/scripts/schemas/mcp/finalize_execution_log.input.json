@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__finalize_execution_log input",
+  "description": "Append \u00a75 execution-log markdown table to plan file",
+  "type": "object",
+  "properties": {
+    "plan_file": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "starting_sha": {
+      "type": "string"
+    },
+    "ending_sha": {
+      "type": "string"
+    },
+    "rows_json": {
+      "description": "JSON array of row dicts",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "outcome": {
+      "description": "Run outcome recorded in the execution-log header. `paused` signals a D.2a.5 awaiting-user halt; the next conversation turn decides disposition. Optional; omitted preserves the legacy (unlabelled) header for callers that have not yet migrated.",
+      "type": "string",
+      "enum": [
+        "failed",
+        "partial",
+        "paused",
+        "success"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "ending_sha",
+    "plan_file",
+    "rows_json",
+    "run_id",
+    "starting_sha"
+  ],
+  "x-cli-emits-json": true
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__run_summary input",
+  "description": "End-of-run report subsections. Emits the TASK-008 'Sandbox divergences' list when --section sandbox-divergences is selected.",
+  "type": "object",
+  "properties": {
+    "section": {
+      "description": "Which subsection of the run summary to emit.",
+      "type": "string",
+      "enum": [
+        "sandbox-divergences"
+      ]
+    },
+    "run_id": {
+      "description": "Run identifier to scope the run-log scan.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "section"
+  ],
+  "x-cli-emits-json": true
+}

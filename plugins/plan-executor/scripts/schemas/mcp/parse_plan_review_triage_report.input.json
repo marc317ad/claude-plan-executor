@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__parse_plan_review_triage_report input",
+  "description": "Parse the plan-review triage markdown report, extract the last fenced JSON payload, and validate the shared verdict contract against the supplied source/count context",
+  "type": "object",
+  "properties": {
+    "source": {
+      "description": "Evidence source: plan-analyst gaps or codex-plan-review findings",
+      "type": "string"
+    },
+    "findings_count": {
+      "description": "Length of the evidence array the triage report is indexing (plan-analyst gaps[] or codex-plan-review findings[])",
+      "type": "integer"
+    },
+    "payload": {
+      "type": "string",
+      "description": "Payload formerly delivered via --stdin; carries the report markdown text body."
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "payload"
+  ],
+  "x-cli-emits-json": true
+}

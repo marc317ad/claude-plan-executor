@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__release_lock input",
+  "description": "Release run-lock for this plan file",
+  "type": "object",
+  "properties": {
+    "plan_file": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "plan_file",
+    "run_id"
+  ],
+  "x-cli-emits-json": true
+}

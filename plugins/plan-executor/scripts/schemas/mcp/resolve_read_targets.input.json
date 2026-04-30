@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__resolve_read_targets input",
+  "description": "Resolve **Read targets:** / **Symbol targets:** from a task block (stdin or --task-file) into a structured JSON payload the dispatcher embeds under `## Pre-read excerpts`.",
+  "type": "object",
+  "properties": {
+    "task_file": {
+      "description": "Path to a task-block markdown file (mutually exclusive with --stdin)",
+      "type": "string"
+    },
+    "payload": {
+      "type": "string",
+      "description": "Payload formerly delivered via --stdin; carries the report markdown text body."
+    }
+  },
+  "additionalProperties": false,
+  "x-cli-emits-json": true
+}

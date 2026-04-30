@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__build_codex_dispatch_input input",
+  "description": "Emit the codex_dispatch_input.json envelope for one dispatch. Currently only carries cross-wrapper unattended_revert_policy.",
+  "type": "object",
+  "properties": {
+    "output": {
+      "description": "Output path (default '-' = stdout)",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

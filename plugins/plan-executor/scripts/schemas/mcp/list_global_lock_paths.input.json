@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__list_global_lock_paths input",
+  "description": "Emit the effective globally-locked path set (defaults + optional YAML override)",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false,
+  "x-cli-emits-json": true
+}

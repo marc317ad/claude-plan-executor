@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__build_claude_dispatch_input input",
+  "description": "Emit the canonical claude_dispatch_input.json for one dispatch. Pipe stdout into `plan_claude_dispatch.py run --input -`.",
+  "type": "object",
+  "properties": {
+    "plan_file": {
+      "description": "Absolute path to the (child) plan file",
+      "type": "string"
+    },
+    "task_id": {
+      "description": "TASK-NNN id (or NNN / N) the dispatch targets",
+      "type": "string"
+    },
+    "variant": {
+      "description": "Dispatch variant; selects agent, model, payload shape",
+      "type": "string",
+      "enum": [
+        "default",
+        "rework",
+        "role-swap",
+        "narrow-remediation",
+        "analyst"
+      ]
+    },
+    "repo_root": {
+      "description": "Repo root; defaults to cwd",
+      "type": "string"
+    },
+    "analyst_annotations": {
+      "description": "Path to JSON file with analyst annotations",
+      "type": "string"
+    },
+    "target_task_id": {
+      "description": "target_task_id for shared-file children (TASK-007)",
+      "type": "string"
+    },
+    "starting_sha": {
+      "description": "Orchestrator's starting_sha for the run",
+      "type": "string"
+    },
+    "dispatch_context": {
+      "description": "Path to JSON file forwarded as payload.dispatch_context (required for variant=rework | narrow-remediation)",
+      "type": "string"
+    },
+    "run_id": {
+      "description": "Orchestrator run_id stamped into trace.run_id",
+      "type": "string"
+    },
+    "output": {
+      "description": "Output path (default '-' = stdout)",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "plan_file",
+    "task_id",
+    "variant"
+  ],
+  "x-cli-emits-json": true
+}

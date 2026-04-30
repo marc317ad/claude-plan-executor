@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__block_dependents input",
+  "description": "Cascade `blocked` status onto dependents of a failed task. Mutates the plan markdown (single read, single write) and appends `blocked` run-log events.",
+  "type": "object",
+  "properties": {
+    "schedule_file": {
+      "description": "Path to schedule JSON",
+      "type": "string"
+    },
+    "plan_file": {
+      "description": "Absolute path to plan file",
+      "type": "string"
+    },
+    "failed": {
+      "description": "Task id whose failure triggers the cascade",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "run_id": {
+      "description": "Run id for log events",
+      "type": "string"
+    },
+    "update_schedule_state": {
+      "description": "Path to the schedule JSON. After a successful cascade, atomically populates `state.blocked` with the cascaded task ids.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "failed",
+    "plan_file",
+    "run_id",
+    "schedule_file"
+  ],
+  "x-cli-emits-json": true
+}

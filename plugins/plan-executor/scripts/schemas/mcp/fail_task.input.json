@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__fail_task input",
+  "description": "Restore files + status flip + run log append",
+  "type": "object",
+  "properties": {
+    "plan_file": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "files": {
+      "description": "Comma-separated files to git restore",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "commit",
+        "implement",
+        "review"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "authorization_source": {
+      "description": "Authorized path that sanctions this fail-task invocation. Required. See ALLOWED_FAIL_AUTHORIZATION_SOURCES in plan_ops.py.",
+      "type": "string",
+      "enum": [
+        "phase-c-empty-diff",
+        "phase-d4-rescue-failed",
+        "phase-d4-review-failure",
+        "reconcile-out-of-scope-user-instruction",
+        "unattended-fail-fast",
+        "user-instruction"
+      ]
+    },
+    "reviewer_findings": {
+      "description": "JSON blob of reviewer findings (stage=review)",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "reversion_guidance": {
+      "description": "Implementer-supplied reversion guidance (stage=implement)",
+      "type": "string"
+    },
+    "repo_root": {
+      "description": "Repo root for path resolution; defaults to CWD",
+      "type": "string"
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "update_schedule_state": {
+      "description": "Path to the schedule JSON. Atomically appends `task_id` to `state.failed` and persists `--retries-used` (if supplied) under `state.retries_used[task_id]`.",
+      "type": "string"
+    },
+    "retries_used": {
+      "description": "JSON object recording the retry-budget consumption for this task (e.g. {\"bounded_remediation\": true}). Persisted into `state.retries_used[task_id]` when `--update-schedule-state` is set.",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "plan_file",
+    "reason",
+    "run_id",
+    "stage",
+    "task_id"
+  ],
+  "x-cli-emits-json": true
+}

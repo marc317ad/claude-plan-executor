@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__audit input",
+  "description": "Self-audit the executor for protocol drift (status vocabulary, schedule wire format, implementer-report labels, execution-log columns, schemas, portable tier, wrapper isolation, design-doc orphans).",
+  "type": "object",
+  "properties": {
+    "list": {
+      "description": "Emit the canonical list of audit check names + tiers",
+      "type": "boolean"
+    },
+    "check": {
+      "description": "Comma-separated subset of checks to run; overrides tier filtering so advisory checks may be requested by name",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "strict": {
+      "description": "Include advisory checks (e.g. portable_tier pre-TASK-008) in the overall verdict",
+      "type": "boolean"
+    },
+    "report_file": {
+      "description": "Optional path; writes a Markdown table report alongside the stdout JSON/summary",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "x-cli-emits-json": true
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__parse_d5_adjudication input",
+  "description": "Validate a D.5 adjudication payload and surface the structured dispatch fields (verdict, summary, load_bearing, dismissed). Partial-agreement payloads are checked for disjoint, in-range index splits; malformed splits exit with partial-agreement-invalid-split / -unknown-index codes.",
+  "type": "object",
+  "properties": {
+    "codex_findings_count": {
+      "description": "Length of the Codex parsed.findings[] array the D.5 reviewer was adjudicating; partial-agreement indices must stay within range(0, count).",
+      "type": "integer"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Payload formerly delivered via --stdin; carries the JSON envelope body.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "codex_findings_count",
+    "payload"
+  ],
+  "x-cli-emits-json": true
+}

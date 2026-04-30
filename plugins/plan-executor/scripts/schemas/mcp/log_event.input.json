@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__log_event input",
+  "description": "Append JSONL event with && tail -1 verification",
+  "type": "object",
+  "properties": {
+    "event": {
+      "description": "Event name",
+      "type": "string"
+    },
+    "fields_json": {
+      "description": "JSON fields dict",
+      "type": "object"
+    },
+    "findings_json": {
+      "description": "Optional JSON array of reviewer findings to embed verbatim under key 'findings' in the log line. Validated via the reviewer-minor-findings schema.",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "event",
+    "fields_json"
+  ],
+  "x-cli-emits-json": true
+}

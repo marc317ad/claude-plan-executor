@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__path_info input",
+  "description": "Emit configured plan_dir + derived run_log/run_lock/schedule_glob paths",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false,
+  "x-cli-emits-json": true
+}

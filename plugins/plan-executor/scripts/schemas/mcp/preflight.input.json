@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__preflight input",
+  "description": "Smart dirty-tree + codex + run-id",
+  "type": "object",
+  "properties": {
+    "plan_file": {
+      "description": "Absolute path to plan file",
+      "type": "string"
+    },
+    "strict_branch": {
+      "description": "Halt (not warn) if current branch != plan's Base branch",
+      "type": "boolean"
+    },
+    "strict_scope": {
+      "description": "Halt if any dirty file lies within the plan's declared scope",
+      "type": "boolean"
+    },
+    "unattended_revert_policy": {
+      "description": "Policy that controls how new pause paths behave under unattended execution. Required when stdin is not a TTY: cron/CI callers MUST pass an explicit value (pause | fail-fast | preserve-only). When stdin IS a TTY and the flag is absent, defaults to 'pause'. The resolved value is echoed back on the JSON envelope as unattended_revert_policy so the orchestrator can pin it as $UNATTENDED_REVERT_POLICY for the rest of the run.",
+      "type": "string",
+      "enum": [
+        "pause",
+        "fail-fast",
+        "preserve-only"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "plan_file"
+  ],
+  "x-cli-emits-json": true
+}

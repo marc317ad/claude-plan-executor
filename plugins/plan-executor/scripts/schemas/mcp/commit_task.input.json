@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__commit_task input",
+  "description": "Narrow commit + status flip + run log append",
+  "type": "object",
+  "properties": {
+    "plan_file": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "files": {
+      "description": "Comma-separated files to commit",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Comma-separated CSV form"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "diff_summary": {
+      "type": "string"
+    },
+    "reviewer": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "claude",
+        "none"
+      ]
+    },
+    "reviewer_verdict": {
+      "type": "string"
+    },
+    "reviewer_minor_findings": {
+      "description": "JSON array of minor findings",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "remediation_tag": {
+      "description": "Mark commit as a D.2a.5 post-remediation retry. Appends a [remediation] tag line to the commit body.",
+      "type": "boolean"
+    },
+    "narrow_remediation_tag": {
+      "description": "Mark commit as a D.2a.6 narrow-remediation retry. Appends a [narrow-remediation] tag line to the commit body (adjacent to the [disagreement: i,j] trailer). Mutually exclusive with --remediation-tag; requires a non-empty --dismissed-finding-ids.",
+      "type": "boolean"
+    },
+    "d4_rescue_tag": {
+      "description": "Mark commit as a TASK-005 D.4-rescue retry. Appends a [d4-rescue] tag line to the commit body. Mutually exclusive with --remediation-tag and --narrow-remediation-tag; also mutually exclusive with --disagreement-tag and --dismissed-finding-ids (D.4 rescue does not invoke D.5 and does not carry dismissed findings). Bare use (no companion flag) is the canonical successful-rescue commit signature.",
+      "type": "boolean"
+    },
+    "disagreement_tag": {
+      "description": "Mark commit as \u00a78.4 disagreement (bare [disagreement] tag)",
+      "type": "boolean"
+    },
+    "dismissed_finding_ids": {
+      "description": "Comma-separated integer indices of Codex findings that D.5 dismissed on the partial-agreement path (0-based into the original Codex findings array). Emits a [disagreement: I,J,K] trailer adjacent to the [narrow-remediation] tag. Requires --narrow-remediation-tag; mutually exclusive with --disagreement-tag.",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "sandbox_divergence_tag": {
+      "description": "Mark commit as TASK-008 sandbox-divergence-validated. Appends a [sandbox-divergence] tag line to the commit body. Set by the orchestrator's auto-validate branch when the wrapper sandbox test failed but the same test command passed in the target environment. Does NOT relax the reviewer-verdict whitelist.",
+      "type": "boolean"
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "update_schedule_state": {
+      "description": "Path to the schedule JSON. After a successful commit, atomically apply the commit transition to the schedule's `state` block (`state.done`, `state.committed`, `state.locked_files`).",
+      "type": "string"
+    },
+    "v_check_timeout": {
+      "description": "Timeout in seconds for the opt-in acceptance_v_check. Default 300. Ignored if the plan has no frontmatter key.",
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "diff_summary",
+    "files",
+    "plan_file",
+    "run_id",
+    "task_id",
+    "title"
+  ],
+  "x-cli-emits-json": true
+}

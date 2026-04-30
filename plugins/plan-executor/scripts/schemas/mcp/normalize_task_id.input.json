@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__normalize_task_id input",
+  "description": "Canonicalize task id to 3-digit form",
+  "type": "object",
+  "properties": {
+    "id": {
+      "description": "Accepts 1 | 001 | TASK-001",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "id"
+  ],
+  "x-cli-emits-json": true
+}
