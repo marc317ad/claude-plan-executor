@@ -99,25 +99,56 @@ Tier 1 ships first (TASK-004) and unlocks the SKILL.md edit (TASK-007). Tier 2 (
 - TASK-010 end-to-end smoke runs a one-task fixture plan with the orchestrator path mocked to use MCP tools only (no `Bash plan_ops.py` invocations); asserts the run-log under `_run_log.jsonl` matches the byte-baseline produced by an equivalent bash-CLI run.
 - Manual acceptance: one real plan run with `--dry-run` and one for-real, both via MCP. The execution-log table and run-log deltas must match the pre-migration baseline; new server-startup events (`mcp_server_start`, `mcp_tool_called{tool}`) are the only allowed additions.
 
-## 6. Execution — sequential and parallel batches
+## 6. Execution — sequential and parallel batches (v3, post-2026-04-30 consolidation)
 
-Twelve dispatchable tasks (`00_INDEX.json` chunks: TASK-001 / 003 / 004–013); the original TASK-002 is retained in this markdown for audit but absent from `chunks[]` (see the "Retained for audit only" note in the TASK-002 block). TASK-001 and TASK-003 already shipped 2026-04-29 in commits `890b09b` / `9f174d5`. The hot files are `plan_ops.py` (TASKs 011/012/013 all mutate it) and `plan_ops_mcp_server.py` (TASKs 004/005/006 all mutate it), so each chain serializes. Schema sidecars (TASK-003) live in their own directory. SKILL.md (TASK-007) and the drift-guard test (TASK-009) are independent files. `build-tasks` against the directory yields 10 dispatchable tasks across 8 batches (verified `outcome: valid, errors: 0`).
+The original 7-task tail (TASK-004 through TASK-010) and the 3-task `plan_ops.py` refactor split (TASK-011/012/013) are absorbed into a 5-task post-codemod sequence (TASK-014 through TASK-018). The consolidation is enabled by `PURE_CORE_CODEMOD` (sub-plan at `docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD/PLAN_PURE_CORE_CODEMOD.md`) which ships 38 `_run_<sub>(payload) -> dict` pure cores + 38 `_args_to_payload_<sub>` shim helpers + 47-49 conformance fixtures via deterministic AST rewrite — eliminating the per-tier complexity gradient that motivated the original split. See the v3 consolidation note at the top of §Tasks for the rationale and per-task mapping.
 
-- **Batch 1 (already shipped 2026-04-29):** TASK-001 (server scaffolding) and TASK-003 (schema sidecars). The originally-planned TASK-002 was deferred (`outcome: plan-incorrect`) and replaced by TASK-011 / 012 / 013.
-- **Batch 2:** TASK-011 (Tier A — read-only / no-mutation, 23 `cmd_*`, no deps).
-- **Batch 3:** TASK-012 (Tier B — single-file atomic writers, 5 `cmd_*`, depends on TASK-011 to keep `plan_ops.py` mutation serial).
-- **Batch 4:** TASK-013 (Tier C — state-mutating: locks, JSONL, git, subprocess; 10 `cmd_*`; highest risk; depends on TASK-012).
-- **Batch 5:** TASK-004 (Tier-1 MCP tools) — depends on TASK-001/003/011/012/013 (full pure-core surface required because Tier-1 includes `commit_task`/`fail_task`/`log_event` from Tier C).
-- **Batch 6:** TASK-005 (Tier-2 tools, same file as TASK-004 → must follow).
-- **Batch 7:** TASK-006 (Tier-3 tools, same file as TASK-005 → must follow).
-- **Batch 8 (parallel):** TASK-007 (SKILL.md rewrite, depends on TASK-004+006), TASK-008 (conformance test, depends on TASK-006). Different files; parallel.
-- **Batch 9 (parallel):** TASK-009 (drift guard, depends on TASK-006+007), TASK-010 (end-to-end smoke, depends on TASK-007+008). Different files; parallel.
+Five dispatchable tasks (`00_INDEX.json` chunks: TASK-001 / 003 / 014–018); TASK-001 and TASK-003 already shipped 2026-04-29 in commits `890b09b` / `9f174d5`. TASK-002, TASK-004 through TASK-010, and TASK-011 through TASK-013 are retained in this markdown for audit but absent from `chunks[]`. The codemod sub-plan is wired via `depends_on_plans` in the parent `00_INDEX.json` so the orchestrator's `check-plan-deps` blocks parent-plan dispatch until the codemod completes.
 
-The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parallel implementer dispatches against the same `plan_ops.py` would trigger the wrapper's known parallel-batch baseline race (false-positive `scope_violation` from sibling deltas leaking into per-task `observed_delta`), already observed twice on this plan and on PLAN_GEMINI_INTEGRATION_2026-04-25. The wrapper fix (per-task `git worktree` isolation OR scoped baseline OR sibling-write subtraction) is a separate plan. Single-session parallel execution within each parallel batch is the target where the file-mutation footprint allows it.
+- **Batch 1 (already shipped 2026-04-29):** TASK-001 (server scaffolding) and TASK-003 (schema sidecars).
+- **Cross-plan precondition:** PURE_CORE_CODEMOD must complete (delivers 38 `_run_*` cores + Tier-A/B/C fixture pack). Wired via `depends_on_plans` in this plan's `00_INDEX.json`.
+- **Batch 2:** TASK-014 (MCP tool registration via `_index.json`-driven codegen). Single dispatchable task replacing TASK-004/005/006.
+- **Batch 3 (parallel):** TASK-015 (SKILL.md migration, depends on TASK-014) and TASK-016 (MCP↔CLI conformance test, depends on TASK-014). Different files (SKILL.md vs new test file); parallel-safe.
+- **Batch 4:** TASK-017 (drift guard, depends on TASK-014 + TASK-015).
+- **Batch 5:** TASK-018 (end-to-end smoke, depends on TASK-015 + TASK-016).
+
+Total: 5 dispatchable tasks across 5 batches (1 already shipped + 4 post-codemod). The original 12-task / 8-batch structure is reduced by ~58% on dispatch count; ~50% on LLM-implementer dispatch budget (the 36 tool-registration LLM passes become a single codegen script; the parent's "errors[]-producing input per tool" requirement is reframed to reuse the codemod's existing fixtures plus per-tool semantic-invalid additions only where `_run_*` has body-level error paths).
+
+The serialization risk that motivated the TASK-011→012→013 chain (wrapper's parallel-batch baseline race against the same `plan_ops.py`) is moved into the codemod sub-plan and applies there only; the parent-plan tail no longer mutates `plan_ops.py` so parallel-batch dispatch is safe within the constraints noted per-batch above.
 
 ---
 
 ## Tasks
+
+### v3 consolidation note (2026-04-30) — TASK-004..010 + TASK-011..013 superseded by TASK-014..018
+
+The original 7-task tail (TASK-004 through TASK-010) and the 3-task `plan_ops.py` pure-core split (TASK-011 / 012 / 013) are absorbed into 5 post-codemod tasks (TASK-014 through TASK-018). Two consecutive scope-bloat halts during /implement-plan dispatch (TASK-002 run `20260429T232737`, TASK-011 run `20260430T033005`) surfaced that the original task structure under-estimated implementer scope on the `_run_*` extraction surface. The user pass on 2026-04-30 produced the `PURE_CORE_CODEMOD` sub-plan (`docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD/PLAN_PURE_CORE_CODEMOD.md`) which replaces the LLM-implemented refactor with a deterministic AST-rewrite codemod, and a parent-plan consolidation that reduces the post-refactor surface from 7 LLM-implemented tasks to 5 (with one being a codegen script and two being parametrized harnesses).
+
+**Mapping:**
+
+| Old | Status | New | Rationale |
+|---|---|---|---|
+| TASK-002 | Superseded (was 2026-04-29) | PURE_CORE_CODEMOD/TASK-001..006 | Original LLM refactor → deterministic codemod. |
+| TASK-011 | Superseded | PURE_CORE_CODEMOD/TASK-001..006 | Tier-A read-only pure-core extraction → folded into codemod's full-surface AST rewrite. |
+| TASK-012 | Superseded | PURE_CORE_CODEMOD/TASK-001..006 | Tier-B atomic-writer extraction → folded into codemod. |
+| TASK-013 | Superseded | PURE_CORE_CODEMOD/TASK-001..006 | Tier-C state-mutating extraction → folded into codemod. |
+| TASK-004 + TASK-005 + TASK-006 | Superseded | TASK-014 | 36 tier-partitioned MCP tool registrations → single `_index.json`-driven codegen pass (data-table emit + single dispatcher). |
+| TASK-007 | Superseded | TASK-015 | SKILL.md prose rewrite → mechanical regex + per-Phase manual pass. |
+| TASK-008 | Superseded | TASK-016 | 36-tool conformance test with hand-authored fixtures → parametrized over `_index.json` × codemod fixtures + conditional semantic-invalid coverage. |
+| TASK-009 | Superseded | TASK-017 | Drift guard extension → drift guard + codegen-as-truth check. |
+| TASK-010 | Superseded | TASK-018 | E2E smoke (unchanged in spirit; description note about parametrizable inner loop). |
+
+**Why the consolidation works:**
+
+- The on-disk `_index.json` registry at `plugins/plan-executor/scripts/schemas/mcp/_index.json` (38 tools, schema paths) makes MCP tool registration table-driven. The original tier partition (10 + 9 + 17) was a risk-management artifact for the now-superseded `_run_*` extraction; with the codemod establishing every `_run_<sub>` uniformly, every registration is identical boilerplate.
+- The codemod plan delivers Tier-A/B/C conformance fixtures (47-49 pairs) covering happy-path round-tripping and per-tier error fixtures. TASK-016's parametrized harness reuses these directly; new fixtures are required only for tools with body-level error paths that schema validation can't reach (a small named subset, NOT every Tier-A tool — see TASK-016 AC for the full conditional).
+- The MCP server pattern uses a single `@server.list_tools()` and single `@server.call_tool()` dispatcher driven by `_index.json`, NOT decorator-per-tool — making the codegen a data-table emit rather than 38 individual decorated functions.
+
+**Codex double-check (2026-04-30):** Two independent codex-rescue passes (codegen feasibility + design review) signed off on the consolidation with three structural fixes folded into the v3 ACs: (a) schema-validation failure surfaces as `isError=True` `CallToolResult`, NOT a JSON-RPC error frame; (b) the conditional reinstatement of "errors[]-producing input per tool" for tools with body-level error paths; (c) explicit lock-semantics + subprocess-timeout preservation ACs.
+
+The original task bodies for TASK-004 through TASK-013 are retained below for audit, mirroring the TASK-002 retained-for-audit pattern. The `00_INDEX.json` chunks[] array contains only TASK-001 / 003 / 014 / 015 / 016 / 017 / 018.
+
+---
 
 ### TASK-001: MCP server scaffolding
 
@@ -202,7 +233,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-004: Register Tier-1 tools (high-frequency orchestrator surface)
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by TASK-014 (single `_index.json`-driven codegen pass). See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** TASK-014 (MCP tool registration via codegen)
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops_mcp_server.py (modify)
@@ -225,7 +259,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-005: Register Tier-2 tools (medium-frequency)
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by TASK-014. See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** TASK-014 (MCP tool registration via codegen)
 - **Priority:** medium
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops_mcp_server.py (modify)
@@ -247,7 +284,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-006: Register Tier-3 tools (low-frequency / lifecycle)
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by TASK-014. See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** TASK-014 (MCP tool registration via codegen)
 - **Priority:** medium
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops_mcp_server.py (modify)
@@ -269,7 +309,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-007: SKILL.md migration to MCP tool calls
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by TASK-015 (mechanical regex + per-Phase manual pass). See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** TASK-015 (SKILL.md migration via mechanical script + per-Phase manual pass)
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md (modify)
@@ -294,7 +337,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-008: MCP↔CLI conformance test (full surface)
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by TASK-016 (parametrized over `_index.json` × codemod fixtures + conditional semantic-invalid coverage). See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** TASK-016 (parametrized MCP↔CLI conformance test)
 - **Priority:** high
 - **Files:**
   - tests/scripts/test_plan_ops_mcp_conformance.py (create)
@@ -316,7 +362,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-009: Drift guard — argparse ↔ MCP registration ↔ SKILL parity
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by TASK-017 (drift guard + codegen-as-truth check). See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** TASK-017 (drift guard + codegen-as-truth)
 - **Priority:** medium
 - **Files:**
   - tests/scripts/test_skill_cli_reference_drift.py (modify — extend existing PHASE_D drift guard)
@@ -338,7 +387,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-010: End-to-end smoke — orchestrator runs through MCP only
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by TASK-018 (unchanged in spirit; description note about parametrizable inner loop). See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** TASK-018 (e2e smoke)
 - **Priority:** high
 - **Files:**
   - tests/scripts/test_implement_plan_mcp_e2e.py (create)
@@ -360,7 +412,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-011: `plan_ops.py` pure-core extraction — Tier A (read-only / no-mutation)
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by `PURE_CORE_CODEMOD/TASK-001..006` (deterministic AST-rewrite codemod covering all 38 `cmd_*`). See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** `docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD/PLAN_PURE_CORE_CODEMOD.md` (TASK-001..006)
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify)
@@ -388,7 +443,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-012: `plan_ops.py` pure-core extraction — Tier B (single-file atomic writers)
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by `PURE_CORE_CODEMOD/TASK-001..006`. See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** `docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD/PLAN_PURE_CORE_CODEMOD.md` (TASK-001..006)
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify)
@@ -415,7 +473,10 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 
 ### TASK-013: `plan_ops.py` pure-core extraction — Tier C (state-mutating: locks, JSONL, git, subprocess)
 
-- **Status:** Pending
+> **Retained for audit only — NOT in `00_INDEX.json` chunks[].** Superseded by `PURE_CORE_CODEMOD/TASK-001..006`. See v3 consolidation note above.
+
+- **Status:** Superseded (markdown-body only; absent from index)
+- **Superseded by:** `docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD/PLAN_PURE_CORE_CODEMOD.md` (TASK-001..006)
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify)
@@ -442,6 +503,146 @@ The TASK-011 → TASK-012 → TASK-013 chain is intentionally serialized: parall
 **Description:** The high-risk core of the original TASK-002. These 10 functions hold the load-bearing side-effect semantics of the entire plan-executor: git atomicity, JSONL hash-chain ordering, file-lock invariants, subprocess re-execution and re-entrancy. Drift here is the failure mode TASK-008's byte-equal conformance gate is designed to catch — surfacing drift later as cross-tier regressions instead of inside this task is the worst-case outcome. Sequencing AFTER TASK-012 means the harness, helpers, and shim pattern are battle-tested on 28 lower-risk functions before being applied to these 10. The crash-recovery test, process-tree assertion, and subprocess re-entrancy guard are direct outputs of the per-task adversarial review and are mandatory; without them the conformance test only proves equivalence under the happy path.
 
 **Reversion guidance:** Per-function revert: restore `cmd_<sub>` to the pre-TASK-013 shape and drop the matching `_run_<sub>`. Tier-A and Tier-B pure cores from TASK-011/012 remain intact. CLI surface is unaffected. The byte-equal conformance fixtures are the audit trail for any post-revert investigation; the per-function structure means a single function's revert leaves the rest of the test suite green.
+
+---
+
+### TASK-014: MCP tool registration via `_index.json`-driven codegen
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - plugins/plan-executor/scripts/_codegen/mcp_tool_registrations.py (create) — the generator
+  - plugins/plan-executor/scripts/plan_ops_mcp_server.py (modify) — add the AUTOGENERATED registration block
+  - tests/scripts/test_plan_ops_mcp_registrations.py (create)
+- **Dependencies:** TASK-001, TASK-003; PURE_CORE_CODEMOD complete (cross-plan, wired via `00_INDEX.json` `depends_on_plans`)
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_mcp_registrations.py`
+- **Acceptance criteria:**
+  - Generator script reads `plugins/plan-executor/scripts/schemas/mcp/_index.json`. The registry's `tool_names_ordered` array holds bare subcommand names (e.g., `acquire_lock`, `audit`, `auto_validate_divergence`); the codegen derives the prefixed MCP tool key as `plan_ops__<name>` for each entry. The `tools` map in `_index.json` already uses the prefixed-key form and points to `<name>.input.json` / `<name>.output.json` schema sidecars + the original argparse `subcommand` string.
+  - For each tool, the generator emits an entry in a single `TOOL_REGISTRY` Python data structure: `{tool_key, input_schema, output_schema, subcommand, run_callable_name, args_to_payload_callable_name, description_help}`. Schema bodies are loaded from disk (the JSON file contents). `description_help` is the matching argparse subparser's `help=` string (the generator imports `plan_ops` and introspects its argparse subparser map).
+  - **Single-dispatcher pattern:** the MCP server uses one `@server.list_tools()` handler returning a `list[mcp.types.Tool]` built from the registry, and one `@server.call_tool(name, arguments)` handler that looks up the entry by `name`, marshals `arguments` via `_args_to_payload_<sub>` (path strings → `pathlib.Path`, mutex/variant collapse, stdin-payload injection), invokes `_run_<sub>(payload)`, and returns the result. NOT one decorator per tool; the SDK supports loop-based registration (`mcp.server.lowlevel.Server` accepts a function returning `list[types.Tool]` and refreshes a tool cache).
+  - The registration block in `plan_ops_mcp_server.py` is fenced as:
+    ```
+    # BEGIN AUTOGENERATED — do not edit by hand. Run plugins/plan-executor/scripts/_codegen/mcp_tool_registrations.py to regenerate.
+    ...
+    # END AUTOGENERATED
+    ```
+    `build_server()` calls into the generated registration helper; everything outside the fence is hand-maintained. Generator output is deterministic: tools emitted in `tool_names_ordered` order; whitespace, import ordering, and intra-block formatting are byte-stable across re-runs.
+  - On `_run_<sub>` returning a dict with non-empty `errors[]` (a body-level error from in-schema input), the MCP tool response is an `isError=True` `CallToolResult` with the structured error payload carried verbatim in the content list. **Note:** SDK schema-validation failures (out-of-schema input) ALSO surface as `isError=True` `CallToolResult` with plain text content, NOT as a JSON-RPC error frame; tests in TASK-016/017 must assert the `CallToolResult` shape, not a JSON-RPC envelope.
+  - Tools accepting JSON-string flags (`--reviewer-minor-findings`, `--rows-json`, `--retries-used`, etc.) accept structured objects/arrays at the MCP edge — the input schema sidecar from TASK-003 already encodes this; the generator surfaces it without re-translation.
+  - `--stdin` payloads are surfaced as a top-level `payload` property on the tool input (consistent with the schema sidecars).
+  - Special-case argparse mutex groups (`gates --list/--check/--certify`, `build_claude_dispatch_input --variant ...`) are encoded as `oneOf` / `enum` in the schema sidecars; `_args_to_payload_<sub>` (from PURE_CORE_CODEMOD) collapses them into a single `payload["mode"]` / `payload["variant"]` key. The MCP layer does not re-handle them.
+  - **Lock semantics + subprocess timeouts preserved (codex#2 fix):** `acquire_lock` / `release_lock` retain their on-disk `FileLock` semantics through the MCP path (lock-file create/delete and metadata write happen inside `_run_*` via the existing `FileLock` / `_atomic_write_json` helpers — verified by the conformance test in TASK-016). `auto_validate_divergence` retains its subprocess re-execution path including timeout enforcement; the MCP server's call-tool handler does not re-implement timeout policy — `_run_auto_validate_divergence` owns it.
+  - **Sanitizer perimeter note (codex#2 confirmed):** `parse_implementer_report` is NOT fed raw Codex stdout via the MCP path. The Codex envelope sanitizer (`plan_codex_dispatch.py:1429-1437`) runs wrapper-side, before the parsed envelope reaches any MCP-tool-callable surface. The MCP `parse_implementer_report` tool consumes already-sanitized input from the orchestrator's parsed-envelope flow.
+  - Test asserts: `tools/list` over the in-process stdio transport (driven via `mcp.client.session.ClientSession + stdio_client`, which spawns the server as a subprocess — matching production transport, per the existing pattern at `tests/scripts/test_plan_ops_mcp_scaffolding.py:137-156`) returns exactly 38 tools; each one's input schema validates against JSON Schema 2020-12; each handler dispatches to a real `_run_<sub>` (no orphan registrations); calling each tool with the corresponding Tier-A/B/C happy-path fixture from PURE_CORE_CODEMOD returns a non-error `CallToolResult`.
+  - **Codegen-as-truth check:** re-running `mcp_tool_registrations.py` produces output byte-identical to the AUTOGENERATED block in `plan_ops_mcp_server.py`. The test fails CI if the in-repo file is stale relative to `_index.json` or `plan_ops.py`'s argparse map. The same check is enforced from a different angle by TASK-017's drift guard.
+  - Run-log appends emitted by `commit_task` / `fail_task` / `log_event` arrive identically when the call originates from MCP vs bash (same fields, same order, same hashes). Verified by re-using PURE_CORE_CODEMOD's Tier-C fixtures.
+
+**Description:** Replaces TASK-004 + TASK-005 + TASK-006. The original tier partition (10 + 9 + 17) was a risk-management artifact for the now-superseded `_run_*` extraction; with PURE_CORE_CODEMOD's deterministic AST rewrite establishing every `_run_<sub>` uniformly, every MCP tool registration is identical boilerplate. One codegen pass replaces three LLM-implemented tasks. The single-dispatcher pattern (one `list_tools` + one `call_tool` handler driven by a `TOOL_REGISTRY` data table) avoids decorator-per-tool boilerplate entirely — the registration plumbing is hand-written once, and the generator's job reduces to emitting a data table. SKILL.md migration (TASK-015) is only safe after this lands, exactly as in the original plan.
+
+**Reversion guidance:** Delete the generator, the test, and the AUTOGENERATED block from `plan_ops_mcp_server.py`. Server falls back to TASK-001's empty-tool-set scaffolding. SKILL.md remains on bash path until TASK-015 lands.
+
+---
+
+### TASK-015: SKILL.md migration to MCP tool calls (mechanical script + per-Phase manual pass)
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - tools/skill_md_mcp_migration.py (create) — one-shot mechanical regex pass
+  - plugins/plan-executor/skills/implement-plan/SKILL.md (modify) — per-Phase manual surgery
+  - plugins/plan-executor/skills/implement-plan/plan_ops_cheatsheet.md (delete or reduce to 1-line pointer)
+- **Dependencies:** TASK-014
+- **Test command:** deferred to TASK-017 drift guard + TASK-018 e2e smoke
+- **Acceptance criteria:**
+  - Step 1 — mechanical pass via `tools/skill_md_mcp_migration.py`: every orchestrator-facing single-line `Bash: $PYTHON … plan_ops.py <sub> [--flags] --json` invocation in SKILL.md is rewritten to `Tool: plan_ops__<sub> with input { … }` with the input dict reconstructed from the flag set. Multiline commands and bootstrap `python3 …` calls (which don't match the simple pattern) are flagged in the script's stdout for manual review during Step 2; the script does NOT silently leave them on the bash path.
+  - Wrapper-internal invocations (`plan_codex_dispatch.py`, `plan_claude_dispatch.py`, dispatch templates) are explicitly NOT touched — they stay on bash because they run inside subprocesses the orchestrator never sees mid-stream. The mechanical script's regex restricts substitutions to sections that are not inside the wrapper-internal subprocess walkthroughs (a path-and-anchor list at the top of the script names the protected sections).
+  - Step 2 — per-Phase manual pass (default approach, NOT a fallback): the prose surgery is staged per-Phase walkthrough, allowing the LLM-implementer to dispatch each Phase independently if scope-bloat surfaces. Phase boundaries follow SKILL.md's existing `## Phase X` / `### Step Y` headers (Phase 0 preflight at lines ~187-279, Phase 1 analysis at ~290+, Phase 1.5 plan-review, Phase 1-triage, Phase A-E loop at ~500+, Phase D dispatch at ~607+). The implementer is authorized to spawn one re-dispatch per remaining Phase if a single dispatch hits scope-bloat indicators (≥2K tokens of un-applied edits, partial AC coverage on prior dispatches).
+  - The "## plan_ops.py CLI reference" section (currently SKILL.md:76-117, ~120 lines) is replaced by a single paragraph: "All plan operations are reachable as MCP tools `plan_ops__<subcommand-with-underscores>`. Tool input/output schemas are the source of truth; consult `tools/list` after a context compaction." No per-subcommand prose remains.
+  - The "Cache hygiene rules" subsection's rule about re-running `--help` after compaction is removed; schema-in-tool-context replaces it.
+  - `plan_ops_cheatsheet.md` is either deleted (preferred) or reduced to a one-line pointer at the MCP tool list.
+  - HEREDOC patterns, `--json` placement reminders, and stdin-pipe worked examples are removed from orchestrator-facing prose.
+  - SKILL clearly demarcates "orchestrator path: MCP tools" vs "wrapper-internal: bash" (one explicit subsection or a single bold callout).
+  - Net SKILL.md character reduction ≥25% (`wc -c` before vs after).
+  - Hard rules in the "Rules" / "Universal invariants" / "Universal post-D-state" sections are preserved verbatim or strengthened (never weakened). The mechanical script's regex MUST NOT touch these sections — the script restricts substitutions to the parts of the doc that contain `$PYTHON` shell calls.
+  - The mechanical script itself is committed alongside the result so the diff is fully auditable; it is a one-shot tool, not a long-lived codegen step.
+
+**Description:** Replaces TASK-007. The originally-flagged scope-bloat risk (Gemini called this the highest-risk task; codex#1 confirmed 60/40 mech/prose, with the bulk of the prose work inside Phase 0→E walkthroughs at SKILL.md:187-279, :363, :577-700) is mitigated by two layers: (a) the mechanical-script split — ~17 fenced bash invocations + 2 inline pipelines are regex-rewritable, eliminating the rote 60% of the work; (b) the per-Phase manual pass as default — each Phase walkthrough is independently rewritable, so partial implementation is verifiable and a single dispatch's scope-bloat doesn't block the whole task. Worst-case is ~40% of the doc rewritten across 6-7 Phase dispatches; best-case is one dispatch finishing the manual pass after the script lands.
+
+**Reversion guidance:** Restore SKILL.md and `plan_ops_cheatsheet.md` from the prior commit on the branch. Mechanical script can be deleted. No code rollback needed; MCP tools remain registered and re-adoptable in a future SKILL edit.
+
+---
+
+### TASK-016: MCP↔CLI conformance test — parametrized over `_index.json` × codemod fixtures + conditional semantic-invalid coverage
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - tests/scripts/test_plan_ops_mcp_conformance.py (create)
+  - tests/scripts/fixtures/mcp_conformance/semantic_invalid/<sub>.json (create — only for tools with body-level error paths; small named subset, NOT 36)
+- **Dependencies:** TASK-014; PURE_CORE_CODEMOD's Tier-A/B/C fixtures
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_mcp_conformance.py`
+- **Acceptance criteria:**
+  - Parametrized over `_index.json["tool_names_ordered"]`. For each tool: pick the corresponding Tier-A/B/C fixture set (path convention: `tests/scripts/fixtures/plan_ops_pure_core/tier_<a|b|c>/<sub>__<case>.{payload,expected}.json` per PURE_CORE_CODEMOD's TASK-004/005/006); for each fixture, run the bash CLI (`$PYTHON plan_ops.py <sub> ... --json`, with stdin-payload tools fed via stdin) AND the MCP path (subprocess stdio transport, driven via `mcp.client.session.ClientSession + stdio_client`, matching the existing pattern at `tests/scripts/test_plan_ops_mcp_scaffolding.py:137-156`) on the same payload; assert byte-equal `--json` envelopes after canonicalization (sorted keys, normalized whitespace, deterministic timestamps stubbed).
+  - Side-effect-bearing tools — `commit_task`, `fail_task`, `log_event`, `block_dependents`, `update_plan_header`, `acquire_lock`, `release_lock`, `write_schedule`, `finalize_execution_log`, `auto_validate_divergence`, `decompose_plan`, `reconcile_batch` — run inside an isolated tmp-git-repo per fixture; assert (a) byte-equal `--json` envelopes, (b) byte-equal filesystem deltas (file content + directory snapshot), (c) byte-equal `_run_log.jsonl` between bash and MCP paths, (d) byte-equal lock-state file contents for `acquire_lock` / `release_lock`, (e) `auto_validate_divergence` subprocess timeout enforcement matches between paths (timeout-path test asserts non-zero exit + bounded wall-clock under both surfaces).
+  - Tools that resolve `$PYTHON` resolve to the same path under both surfaces.
+  - Test runtime under 90s.
+  - **errors[]-producing-input coverage (codex#2 fix — STRUCTURAL):** the parent's original AC ("`errors[]`-producing input per tool") is reinstated as a CONDITIONAL requirement, NOT collapsed into schema-rejection alone. Schema-rejection at the MCP edge is sufficient ONLY for tools whose `_run_*` has no body-level error path on in-schema input. For tools where `_run_*` emits structured `errors[]` or `{"error":...}` from in-schema input — confirmed by code-grounded audit on `cmd_normalize_task_id` (`plan_ops.py:7983-7987`, emits `{"error":...}` for unnormalizable strings that pass schema), `cmd_review_route` (`plan_ops.py:13333-13383, 13660-13665`, emits structured `errors[]` for missing/wrong fields), and similar — a semantic-invalid fixture is REQUIRED in this task's parametrized suite. The fixture set lives under `tests/scripts/fixtures/mcp_conformance/semantic_invalid/<sub>.json` and is reviewed for completeness during implementation.
+  - The named tools requiring semantic-invalid fixtures (initial set, audited from `plan_ops.py`): `cmd_normalize_task_id`, `cmd_review_route`. Implementation MUST audit each Tier-A function during the implementer pass and add fixtures for any function emitting body-level errors[] from in-schema input. The audit is a small grep (`grep -n '\\"errors\\":\\s*\\[' plan_ops.py | head -200`) cross-referenced against the schema's input constraint set. Implementation must not collapse this audit step.
+  - For schema-rejection cases (out-of-schema input on tools with no body-level error path): the test asserts the bash CLI's argparse layer returns non-zero exit with argparse error text on stderr, AND the MCP path returns an `isError=True` `CallToolResult` with plain-text content describing the schema mismatch (per the SDK's behavior at `mcp/server/lowlevel/server.py:467-473, 527-532` — NOT a JSON-RPC error frame). The two failure shapes are not byte-equal (bash returns argparse stderr; MCP returns CallToolResult with plain text); the test asserts both surfaces reject and that the rejection messages name the offending field.
+  - On a deliberate MCP server crash injected mid-call (e.g., `_run_*` raises an unexpected exception), the test asserts: bash side gets non-zero exit with the exception text on stderr; MCP path receives an MCP-protocol-level error (the SDK's crash handling, distinct from `isError=True` CallToolResult); never half-executes a tool.
+  - The fixture-discovery loop fails with a clear message if a `_index.json` tool has zero matching fixtures across both Tier-A/B/C (codemod) and semantic_invalid (this task) — surfaces missing coverage early.
+
+**Description:** Replaces TASK-008. The contract lock — without this, drift between MCP and bash creeps in silently and the bash CLI quietly stops being a valid fallback. The original AC's "create 36 input fixtures" is split: codemod fixtures cover the structural happy + per-tier error surface; this task adds semantic-invalid fixtures only where `_run_*` has a body-level error path that schema validation cannot reach. The conditional structure was a structural rework imposed by codex#2's review — the prior schema-rejection-as-sufficient argument was unsound for tools like `cmd_normalize_task_id` that accept any string in schema but emit `{"error":...}` for unnormalizable inputs.
+
+**Reversion guidance:** Delete this test file and the semantic_invalid fixture directory. Codemod fixtures remain in place for the codemod plan's own smoke gate.
+
+---
+
+### TASK-017: Drift guard — argparse ↔ MCP registry ↔ SKILL parity ↔ codegen-up-to-date
+
+- **Status:** Pending
+- **Priority:** medium
+- **Files:**
+  - tests/scripts/test_skill_cli_reference_drift.py (modify — extend the existing PHASE_D drift guard)
+- **Dependencies:** TASK-014, TASK-015
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_skill_cli_reference_drift.py`
+- **Acceptance criteria:**
+  - Existing PHASE_D-era assertion (argparse subcommand list vs SKILL.md CLI-reference table parity) is updated: when TASK-015 has deleted the CLI-reference section, the assertion switches from "table parity" to "every argparse subcommand has a matching MCP tool registered". A clean cutover with no transitional gap.
+  - New assertion: every argparse subcommand in `plan_ops.py` has a matching MCP tool registration in `plan_ops_mcp_server.py` (introspect via `mcp.types.Tool` extraction from a freshly-built server, OR via static AST parse of the AUTOGENERATED block; either is acceptable as long as the assertion is sound).
+  - New assertion: every MCP tool registered has a matching argparse subcommand (no orphans on the MCP side).
+  - New assertion: every `plan_ops__<name>` reference in SKILL.md corresponds to a registered MCP tool name.
+  - New assertion: `_index.json` enumerates exactly the registered tools (intersection equality on `tool_names_ordered` array vs derived registry keys after stripping the `plan_ops__` prefix).
+  - **New assertion (codegen-as-truth):** running `python plugins/plan-executor/scripts/_codegen/mcp_tool_registrations.py` (TASK-014's generator) in a fresh process produces output that is byte-identical to the AUTOGENERATED block currently in `plan_ops_mcp_server.py`. The test fails CI if the in-repo file is stale relative to `_index.json` or `plan_ops.py`'s argparse map.
+  - Failure messages name the offending subcommand/tool/SKILL line for fast diagnosis.
+
+**Description:** Replaces TASK-009. Keeps four documentation surfaces (argparse, MCP registry, SKILL prose, codegen output) in sync mechanically. Every future `plan_ops.py` subcommand addition mechanically requires running the generator and updating the corresponding schema sidecar — the test fails until both happen. Modeled on the existing 90-LoC PHASE_D drift guard at `tests/scripts/test_skill_cli_reference_drift.py:25-90`; extended by ~50-80 LoC.
+
+**Reversion guidance:** Restore the prior version of this test file from the branch. The new assertions disappear; the existing PHASE_D-era assertions remain valid as long as TASK-015 has not run.
+
+---
+
+### TASK-018: End-to-end smoke — orchestrator runs through MCP only
+
+- **Status:** Pending
+- **Priority:** high
+- **Files:**
+  - tests/scripts/test_implement_plan_mcp_e2e.py (create)
+  - tests/scripts/fixtures/mcp_e2e_plan.md (create)
+- **Dependencies:** TASK-015, TASK-016
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_implement_plan_mcp_e2e.py`
+- **Acceptance criteria:**
+  - Drives a one-task fixture plan through Phase 0 → Phase E with all plan operations going through MCP tools, no `Bash $PYTHON … plan_ops.py …` invocations on the orchestrator path. Subagent dispatches (Codex/Claude) are stubbed, identical to PHASE_D TASK-008's pattern.
+  - Asserts the `_run_log.jsonl` byte-baseline matches a parallel run that uses the bash CLI throughout, modulo new server-startup events `mcp_server_start{pid,python_path}` and per-tool `mcp_tool_called{tool}` events emitted by the MCP server.
+  - Covers: clean-commit path; `review_route` returning every action value; `commit-safe` gate post-commit; `reconcile_batch` partition under a stub envelope with `out_of_scope_observed=true`; `fail_task` with the correct authorization-source.
+  - Run completes in under 30 s.
+  - On a deliberate MCP server crash injected mid-run, the orchestrator path receives an error frame and pauses cleanly (no half-committed state, run-log integrity preserved).
+  - **Inner-loop split (codex#1 finding D):** the per-tool run-log event sequence comparison is parametrized over `_index.json` (codegen-friendly inner loop). The outer Phase 0→E orchestration wrapper that drives phase transitions, stubs Codex/Claude, and compares `_run_log.jsonl` event sequences is hand-coded narrative. The split keeps the test tractable; the inner loop is data-driven over the registry rather than per-tool hand-coded.
+
+**Description:** Replaces TASK-010, unchanged in spirit. The migration's smoke test — proves the orchestrator no longer needs the bash CLI for a routine run, and proves the MCP server's failure modes are non-corrupting. This is the only remaining narrative-style integration test in the consolidated plan; everything else is codegen or unit-scoped.
+
+**Reversion guidance:** Delete the test file and fixture. Bash-CLI e2e (PHASE_D TASK-008) remains the canonical regression smoke until this stabilizes.
+
+---
 
 ## Execution log — 20260429T232737 (paused)
 

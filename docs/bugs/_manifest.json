@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 147,
+  "next_id": 148,
   "content_fingerprints": {},
   "groups": {
     "BASH-DISPATCH-MIGRATION": {
@@ -13,6 +13,17 @@
       "external_deps_into_group": [],
       "created_at": "2026-04-28",
       "updated_at": "2026-04-28"
+    },
+    "WRAPPER-PLAN-REVIEW-LATENT": {
+      "bug_ids": [
+        147
+      ],
+      "primary_subsystem": "wrapper-plan-review-latent",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-04-30",
+      "updated_at": "2026-04-30"
     },
     "IMP-PLAN": {
       "bug_ids": [
@@ -95,6 +106,7 @@
     "143": "minor",
     "144": "critical",
     "145": "minor",
-    "146": "minor"
+    "146": "minor",
+    "147": "minor"
   }
 }
