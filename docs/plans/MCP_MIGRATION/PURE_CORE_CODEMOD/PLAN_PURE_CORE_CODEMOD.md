@@ -517,7 +517,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-003H: Shared pure-core conformance harness
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - tests/scripts/plan_ops_pure_harness.py (create — driver/utility, not a test file)
@@ -730,3 +730,11 @@ Starting SHA: `e7c870820265dae908e933d0591288fb09f60526`  → Ending SHA: `cbb87
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 003E | claude | codex | clean | cbb87b6 |  |
+
+## Execution log — 20260430T220154 (paused)
+
+Starting SHA: `67036d6afaa8f6a0b0cf439a6caeade9b7448ee1`  → Ending SHA: `67036d6afaa8f6a0b0cf439a6caeade9b7448ee1`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003H | claude | codex | needs-rework [narrow-remediation] | - | D.5 partial-agreement; narrow-remediation succeeded; binding re-review still needs-rework; paused for user instruction |
