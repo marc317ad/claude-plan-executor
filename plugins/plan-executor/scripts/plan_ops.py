@@ -2061,11 +2061,7 @@ def _emit_or_die(args, result: dict) -> None:
 
     if stdout_suppressed:
         sys.exit(exit_code)
-    if (
-        isinstance(text_output, str)
-        and text_output
-        and not getattr(args, "json", False)
-    ):
+    if isinstance(text_output, str) and text_output:
         sys.stdout.write(text_output)
         sys.exit(exit_code)
     _emit(args, result, exit_code=exit_code)
@@ -10457,6 +10453,7 @@ def _args_to_payload_audit(args: argparse.Namespace) -> dict:
         "check": getattr(args, "check", None),
         "strict": bool(getattr(args, "strict", False)),
         "report_file": getattr(args, "report_file", None),
+        "json": bool(getattr(args, "json", False)),
     }
 
 
@@ -10542,9 +10539,13 @@ def _run_audit(payload: dict) -> dict:
     exit_code = 0 if overall == "pass" else 1
     # Non-JSON path uses a structured plaintext renderer via the
     # `__plan_ops_text_output__` marker on `_emit_or_die`; `--json` still
-    # emits the canonical JSON document as before.
+    # emits the canonical JSON document as before. The `json` switch is
+    # decided here in the pure core (rather than gated inside
+    # `_emit_or_die`) so the marker contract from TASK-000A — "text output
+    # is verbatim and internal-only" — stays unconditional.
     result = _result(report, exit_code=exit_code)
-    result["__plan_ops_text_output__"] = _render_audit_text(report)
+    if not payload["json"]:
+        result["__plan_ops_text_output__"] = _render_audit_text(report)
     return result
 
 
@@ -11284,18 +11285,6 @@ _BCDI_VARIANT_SCHEMA_PATH = {
 }
 
 
-def _bcdi_emit_error(code: str, message: str) -> None:
-    """Legacy CLI-only terminator retained for codex/gemini sibling
-    builders pending TASK-003F migration onto the pure helpers below.
-    `cmd_build_claude_dispatch_input` no longer reaches this path; it
-    routes through `_bcdi_to_error_result` → `_emit_or_die`.
-    """
-    payload = {"errors": [{"code": code, "message": message}]}
-    json.dump(payload, sys.stdout, indent=2, sort_keys=False)
-    sys.stdout.write("\n")
-    sys.exit(1)
-
-
 def _bcdi_to_error_result(code: str, message: str) -> dict:
     """Pure terminator: return a marker-bearing error result dict.
 
@@ -11646,35 +11635,6 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
 # cross-wrapper contract envelope (codex_dispatch_input.json /
 # gemini_dispatch_input.json) and is also useful for orchestrator audit.
 # ---------------------------------------------------------------------------
-
-
-def _bcdi_resolve_policy_or_die():
-    """Read $UNATTENDED_REVERT_POLICY, validate against the closed enum,
-    and either return the value, return None when unset, or fail-fast via
-    ``_bcdi_emit_error`` with code ``unattended-revert-policy-invalid``.
-    """
-    raw = os.environ.get("UNATTENDED_REVERT_POLICY")
-    if raw is None or raw == "":
-        return None
-    if raw in {"pause", "fail-fast", "preserve-only"}:
-        return raw
-    _bcdi_emit_error(
-        "unattended-revert-policy-invalid",
-        (
-            f"$UNATTENDED_REVERT_POLICY is not in the closed enum "
-            f"{{pause, fail-fast, preserve-only}}: {raw!r}"
-        ),
-    )
-    return None  # unreachable; _bcdi_emit_error sys.exits
-
-
-def _bcdi_emit_envelope(envelope: dict, output: str) -> None:
-    text = json.dumps(envelope, indent=2, sort_keys=False) + "\n"
-    if output == "-":
-        sys.stdout.write(text)
-    else:
-        Path(output).write_text(text, encoding="utf-8")
-    sys.exit(0)
 
 
 def _args_to_payload_build_codex_dispatch_input(
