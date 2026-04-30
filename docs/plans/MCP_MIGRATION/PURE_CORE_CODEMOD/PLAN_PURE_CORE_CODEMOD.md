@@ -223,7 +223,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-001: Build the AST-rewrite codemod script
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - tools/codemods/plan_ops_pure_core_extract.py (create)
