@@ -2,36 +2,34 @@
   "outcome": "needs-enrichment",
   "tasks": [
     {
-      "id": "003D",
-      "title": "Hand-fix direct-output commands",
-      "agent": "claude",
+      "id": "003E",
+      "title": "Hand-fix `cmd_build_claude_dispatch_input`",
       "files": [
-        "plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_fail_task`, `cmd_audit`, `cmd_resolve_read_targets`, and their payload/run helpers)",
-        "tests/scripts/test_plan_ops.py (modify focused tests only if needed)"
+        "plugins/plan-executor/scripts/plan_ops.py (modify `_bcdi_*` helpers only as required by Claude dispatch input and `cmd_build_claude_dispatch_input`)",
+        "tests/scripts/test_plan_ops.py (modify focused build-claude-dispatch tests only if needed)"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k \"fail_task or audit or resolve_read_targets or pure_core_baseline\" -q",
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k \"build_claude_dispatch_input or pure_core_baseline\" -q",
       "priority": "high",
       "plan_file": "PLAN_PURE_CORE_CODEMOD.md",
-      "description": "Groups the three direct-stdout/sys.exit commands because they share the `_emit_or_die` text/suppression boundary.",
+      "description": "Splits the largest private-terminator builder away from the two small sibling builders.",
       "acceptance_criteria": [
-        "`cmd_fail_task`, `cmd_audit`, and `cmd_resolve_read_targets` become shims over `_run_*` payload cores.",
-        "`cmd_fail_task` authorization-source validation returns structured `errors[]` and preserves JSON/non-JSON exit behavior through `_emit_or_die`.",
-        "`cmd_fail_task` invalid task-id f-string output remains byte-equivalent.",
-        "`cmd_audit` returns `__plan_ops_text_output__` for the custom non-JSON renderer and strips that key through `_public_result()`.",
-        "`cmd_audit --json` flows through `_emit_or_die` without custom stdout writes.",
-        "`cmd_resolve_read_targets` success and error paths use `_emit_or_die`; trailing-newline behavior remains byte-equivalent.",
-        "Existing focused tests and the TASK-000B baseline stay green.",
-        "Commit only this task's files; dispatch-builder commands are not changed here."
+        "`cmd_build_claude_dispatch_input` becomes a shim over `_args_to_payload_build_claude_dispatch_input(args)` \u2192 `_run_build_claude_dispatch_input(payload)` \u2192 `_emit_or_die(args, result)`.",
+        "Env reads for `UNATTENDED_REVERT_POLICY` are lifted into the shim payload; pure callers supply the policy explicitly.",
+        "Private `_bcdi_*` terminators used by this command return `_result(...)` dictionaries instead of calling `sys.exit`.",
+        "`--output -` remains a string sentinel, not a `Path`.",
+        "`--output <path>` writes only the file and emits no stdout by using `__plan_ops_stdout_suppressed__`.",
+        "Existing build-claude-dispatch tests and the TASK-000B baseline stay green.",
+        "Commit only this task's files; Codex/Gemini builders are not migrated here unless required helper signature changes make a no-op compatibility edit unavoidable."
       ],
-      "classification_reason": "complex hand-fix consistent with TASK-003A/B/C pattern; preserves byte-equivalence and the _emit_or_die boundary"
+      "agent": "claude"
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "003D"
+        "003E"
       ],
       "file_locks": [
         "plugins/plan-executor/scripts/plan_ops.py",
@@ -41,7 +39,7 @@
   ],
   "gaps": [
     {
-      "task_id": "003D",
+      "task_id": "003E",
       "type": "extra-task-heading",
       "severity": "soft",
       "detail": "PLAN_PURE_CORE_CODEMOD.md carries 16 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
