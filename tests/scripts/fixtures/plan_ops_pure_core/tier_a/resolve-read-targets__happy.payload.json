@@ -1,0 +1,7 @@
+{
+  "payload": {
+    "stdin": true,
+    "stdin_text": "### TASK-001: example\n\n- **Status:** Pending\n- **Priority:** medium\n- **Files:**\n  - src/one.py\n- **Dependencies:**\n- **Test command:** `none`\n- **Acceptance criteria:**\n  - x\n\n**Description:** Resolve targets test.\n"
+  },
+  "subcommand": "resolve-read-targets"
+}

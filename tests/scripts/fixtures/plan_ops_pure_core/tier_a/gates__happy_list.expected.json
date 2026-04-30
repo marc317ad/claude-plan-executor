@@ -1,0 +1,9 @@
+{
+  "cli_argv": [
+    "--list",
+    "--json"
+  ],
+  "exit_code": 0,
+  "fs_invariant": true,
+  "stderr_policy": "empty"
+}

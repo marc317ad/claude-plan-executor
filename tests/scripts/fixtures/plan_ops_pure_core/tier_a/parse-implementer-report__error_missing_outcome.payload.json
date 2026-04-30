@@ -1,0 +1,7 @@
+{
+  "payload": {
+    "stdin": true,
+    "stdin_text": "## TASK-001 implementation report\n\nNo outcome here.\n"
+  },
+  "subcommand": "parse-implementer-report"
+}

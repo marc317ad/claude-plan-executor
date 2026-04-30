@@ -1,0 +1,15 @@
+{
+  "payload": {
+    "certify": false,
+    "certify_mode": null,
+    "check": null,
+    "commit_sha": null,
+    "list": true,
+    "mode": "list",
+    "plan_file": null,
+    "run_id": null,
+    "schedule_file": null,
+    "task_id": null
+  },
+  "subcommand": "gates"
+}

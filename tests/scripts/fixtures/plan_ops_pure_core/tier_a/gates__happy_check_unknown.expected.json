@@ -1,0 +1,10 @@
+{
+  "cli_argv": [
+    "--check",
+    "totally-bogus",
+    "--json"
+  ],
+  "exit_code": 1,
+  "fs_invariant": true,
+  "stderr_policy": "empty"
+}

@@ -1,0 +1,8 @@
+{
+  "payload": {
+    "stdin": true,
+    "stdin_text": "{not json",
+    "strict": false
+  },
+  "subcommand": "parse-schedule"
+}

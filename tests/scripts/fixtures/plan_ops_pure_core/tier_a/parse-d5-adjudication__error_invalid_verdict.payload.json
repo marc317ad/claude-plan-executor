@@ -1,0 +1,8 @@
+{
+  "payload": {
+    "codex_findings_count": 0,
+    "stdin": true,
+    "stdin_text": "{\"verdict\": \"totally-bogus\", \"summary\": \"x\"}"
+  },
+  "subcommand": "parse-d5-adjudication"
+}

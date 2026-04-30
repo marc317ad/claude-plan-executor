@@ -1,0 +1,8 @@
+{
+  "payload": {
+    "from_claude": true,
+    "stdin": true,
+    "stdin_text": "{\"plan_file\": \"docs/plans/PLAN.md\", \"verdict\": \"approved\", \"findings\": [], \"notes\": [], \"schedule_ok\": true, \"summary\": \"ok\"}"
+  },
+  "subcommand": "parse-plan-review-report"
+}

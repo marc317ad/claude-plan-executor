@@ -1,0 +1,15 @@
+{
+  "payload": {
+    "_files": {
+      "plans/.keep": ""
+    },
+    "git_dir": {
+      "__path__": "{FIXTURE_DIR}"
+    },
+    "plans_dir": {
+      "__path__": "{FIXTURE_DIR}/plans"
+    },
+    "run_log": null
+  },
+  "subcommand": "lint-plans"
+}

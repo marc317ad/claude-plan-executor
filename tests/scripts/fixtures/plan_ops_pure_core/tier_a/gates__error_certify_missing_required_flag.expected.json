@@ -1,0 +1,11 @@
+{
+  "cli_argv": [
+    "--certify",
+    "--mode",
+    "dry-run",
+    "--json"
+  ],
+  "exit_code": 1,
+  "fs_invariant": true,
+  "stderr_policy": "empty"
+}

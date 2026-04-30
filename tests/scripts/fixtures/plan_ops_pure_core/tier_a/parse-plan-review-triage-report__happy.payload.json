@@ -1,0 +1,9 @@
+{
+  "payload": {
+    "findings_count": 0,
+    "source": "codex-plan-review",
+    "stdin": true,
+    "stdin_text": "# Triage report\n\nSome prose.\n\n```json\n{\n  \"verdict\": \"ship\",\n  \"load_bearing\": [],\n  \"dismissed\": [],\n  \"summary\": \"ok\"\n}\n```\n"
+  },
+  "subcommand": "parse-plan-review-triage-report"
+}

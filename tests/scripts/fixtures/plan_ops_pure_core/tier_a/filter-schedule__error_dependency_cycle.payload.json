@@ -1,0 +1,8 @@
+{
+  "payload": {
+    "stdin": true,
+    "stdin_text": "{\"outcome\": \"valid\", \"tasks\": [{\"id\": \"001\", \"agent\": \"claude\", \"title\": \"one\", \"files\": [\"src/one.py\"], \"dependencies\": [\"002\"], \"plan_file\": \"TASK-001_one.md\"}, {\"id\": \"002\", \"agent\": \"claude\", \"title\": \"two\", \"files\": [\"src/two.py\"], \"dependencies\": [\"001\"], \"plan_file\": \"TASK-002_two.md\"}], \"batches\": [{\"index\": 1, \"task_ids\": [\"001\", \"002\"], \"file_locks\": []}], \"gaps\": [], \"risks\": []}",
+    "task_ids": "1"
+  },
+  "subcommand": "filter-schedule"
+}

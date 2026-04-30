@@ -1,0 +1,7 @@
+{
+  "payload": {
+    "stdin": true,
+    "stdin_text": "## TASK-001 implementation report\n\n**Outcome:** success\n\n**Files changed:**\n- src/one.py\n\n**Diff summary:**\n- did stuff\n\n**Test command:** none\n**Test outcome:** not-run\n\n**Acceptance criteria check:**\n- [x] one is one \u2014 see src/one.py:1\n\n**Plan adaptations:**\n- None.\n\n**Concerns for reviewer:**\n- None.\n"
+  },
+  "subcommand": "parse-implementer-report"
+}

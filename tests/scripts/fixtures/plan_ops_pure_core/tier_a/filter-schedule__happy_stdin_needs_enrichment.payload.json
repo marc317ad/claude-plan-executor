@@ -1,0 +1,8 @@
+{
+  "payload": {
+    "stdin": true,
+    "stdin_text": "{\"outcome\": \"needs-enrichment\", \"tasks\": [{\"id\": \"001\", \"agent\": \"claude\", \"title\": \"one\", \"files\": [\"src/one.py\"], \"dependencies\": [], \"plan_file\": \"TASK-001_one.md\"}], \"batches\": [{\"index\": 1, \"task_ids\": [\"001\"], \"file_locks\": [\"src/one.py\"]}], \"gaps\": [{\"type\": \"missing-description\", \"task_id\": \"001\", \"severity\": \"soft\", \"message\": \"no description\"}], \"risks\": []}",
+    "task_ids": "1"
+  },
+  "subcommand": "filter-schedule"
+}

@@ -1,0 +1,15 @@
+{
+  "payload": {
+    "_files": {
+      "plans/00_INDEX.json": "{\"schema_version\": 1, \"chunks\": [{\"task_id\": \"001\", \"file\": \"TASK-001_one.md\", \"depends_on\": [], \"status\": \"Pending\", \"superseded_by\": []}, {\"task_id\": \"002\", \"file\": \"TASK-002_two.md\", \"depends_on\": [\"001\"], \"status\": \"Pending\", \"superseded_by\": []}]}",
+      "plans/TASK-001_one.md": "### TASK-001: one\n\n- **Status:** Pending\n- **Priority:** medium\n- **Files:**\n  - src/one.py\n- **Dependencies:**\n- **Test command:** `none`\n- **Acceptance criteria:**\n  - one is one.\n\n**Description:** Stub child plan.\n"
+    },
+    "plan_file": {
+      "__path__": "{FIXTURE_DIR}/plans/TASK-001_one.md"
+    },
+    "plans_dir": {
+      "__path__": "{FIXTURE_DIR}/plans"
+    }
+  },
+  "subcommand": "check-plan-deps"
+}

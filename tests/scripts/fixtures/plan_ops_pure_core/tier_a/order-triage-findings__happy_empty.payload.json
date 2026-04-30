@@ -1,0 +1,7 @@
+{
+  "payload": {
+    "stdin": true,
+    "stdin_text": "[]"
+  },
+  "subcommand": "order-triage-findings"
+}

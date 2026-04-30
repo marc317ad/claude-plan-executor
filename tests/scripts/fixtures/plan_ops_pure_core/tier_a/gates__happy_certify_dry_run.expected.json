@@ -1,0 +1,15 @@
+{
+  "cli_argv": [
+    "--certify",
+    "--mode",
+    "dry-run",
+    "--plan-file",
+    "{FIXTURE_DIR}/fake_plan.md",
+    "--schedule-file",
+    "{FIXTURE_DIR}/fake_schedule.json",
+    "--json"
+  ],
+  "exit_code": 1,
+  "fs_invariant": true,
+  "stderr_policy": "empty"
+}

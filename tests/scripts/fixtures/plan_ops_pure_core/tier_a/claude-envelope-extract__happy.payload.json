@@ -1,0 +1,8 @@
+{
+  "payload": {
+    "agent": "plan-implementer",
+    "stdin": true,
+    "stdin_text": "{\"status\": \"ok\", \"result\": {\"outcome\": \"success\"}, \"scope\": {\"scope_violation_detected\": false}}"
+  },
+  "subcommand": "claude-envelope-extract"
+}

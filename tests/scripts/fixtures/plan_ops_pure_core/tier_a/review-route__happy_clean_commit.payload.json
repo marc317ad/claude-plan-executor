@@ -1,0 +1,7 @@
+{
+  "payload": {
+    "stdin": true,
+    "stdin_text": "{\"task_id\": \"001\", \"implementer\": \"claude\", \"reviewer_envelope\": {\"verdict\": \"clean\", \"findings\": [], \"summary\": \"\"}, \"retries_used\": {}, \"flags\": {}}"
+  },
+  "subcommand": "review-route"
+}

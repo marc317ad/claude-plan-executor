@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "_files": {
+      "plans/00_INDEX.json": "{\"schema_version\": 1, \"chunks\": [{\"task_id\": \"001\", \"file\": \"TASK-001_one.md\", \"depends_on\": [], \"status\": \"Pending\", \"superseded_by\": []}, {\"task_id\": \"002\", \"file\": \"TASK-002_two.md\", \"depends_on\": [\"001\"], \"status\": \"Pending\", \"superseded_by\": []}]}"
+    },
+    "plans_dir": {
+      "__path__": "{FIXTURE_DIR}/plans"
+    },
+    "task_ids": "001"
+  },
+  "subcommand": "index-closure"
+}

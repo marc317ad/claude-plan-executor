@@ -1,0 +1,8 @@
+{
+  "payload": {
+    "from_claude": false,
+    "stdin": true,
+    "stdin_text": "{\"subcommand\": \"plan-review\", \"outcome\": \"success\", \"reviewer\": \"codex\", \"parsed\": {\"verdict\": \"bogus\"}}"
+  },
+  "subcommand": "parse-plan-review-report"
+}
