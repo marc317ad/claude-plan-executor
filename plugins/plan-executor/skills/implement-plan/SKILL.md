@@ -94,6 +94,9 @@ One-line purpose per subcommand. All accept `--json`. **Run `$PYTHON plan_ops.py
 | `batch-next` | Pick next file-disjoint batch from `.schedule.json` state. |
 | `review-route` | Map a (verdict, claude_only, flags) tuple to a routing action. |
 | `reconcile-batch` | Batch-join out-of-scope reconciliation across wrapper envelopes. |
+| `build-claude-dispatch-input` | Build canonical Claude wrapper input JSON for Phase B / D.2a.5 / D.2a.6 dispatches. |
+| `build-codex-dispatch-input` | Build canonical Codex wrapper input JSON for Phase D.1 / 1.5 dispatches. |
+| `build-gemini-dispatch-input` | Build canonical Gemini wrapper input JSON for fallback dispatches. |
 | `parse-implementer-report` | Extract outcome/files_changed/diagnostics from implementer markdown. |
 | `parse-plan-review-report` | Validate Phase 1.5 Codex plan-review envelope. |
 | `claude-envelope-extract` | Normalize a v3 Claude wrapper envelope to `{status, outcome, result, scope_violation, scope_misreport, error}`. |
