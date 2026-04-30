@@ -2,25 +2,23 @@
   "outcome": "needs-enrichment",
   "tasks": [
     {
-      "id": "003E",
-      "title": "Hand-fix `cmd_build_claude_dispatch_input`",
+      "id": "003F",
+      "title": "Hand-fix Codex/Gemini dispatch builders",
       "files": [
-        "plugins/plan-executor/scripts/plan_ops.py (modify `_bcdi_*` helpers only as required by Claude dispatch input and `cmd_build_claude_dispatch_input`)",
-        "tests/scripts/test_plan_ops.py (modify focused build-claude-dispatch tests only if needed)"
+        "plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_build_codex_dispatch_input`, `cmd_build_gemini_dispatch_input`, and directly shared `_bcdi_*` helper call sites)",
+        "tests/scripts/test_plan_ops.py (modify focused build-codex/build-gemini tests only if needed)"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k \"build_claude_dispatch_input or pure_core_baseline\" -q",
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k \"build_codex_dispatch_input or build_gemini_dispatch_input or pure_core_baseline\" -q",
       "priority": "high",
       "plan_file": "PLAN_PURE_CORE_CODEMOD.md",
-      "description": "Splits the largest private-terminator builder away from the two small sibling builders.",
+      "description": "Completes the private-terminator family after the larger Claude builder is stable.",
       "acceptance_criteria": [
-        "`cmd_build_claude_dispatch_input` becomes a shim over `_args_to_payload_build_claude_dispatch_input(args)` \u2192 `_run_build_claude_dispatch_input(payload)` \u2192 `_emit_or_die(args, result)`.",
-        "Env reads for `UNATTENDED_REVERT_POLICY` are lifted into the shim payload; pure callers supply the policy explicitly.",
-        "Private `_bcdi_*` terminators used by this command return `_result(...)` dictionaries instead of calling `sys.exit`.",
-        "`--output -` remains a string sentinel, not a `Path`.",
-        "`--output <path>` writes only the file and emits no stdout by using `__plan_ops_stdout_suppressed__`.",
-        "Existing build-claude-dispatch tests and the TASK-000B baseline stay green.",
-        "Commit only this task's files; Codex/Gemini builders are not migrated here unless required helper signature changes make a no-op compatibility edit unavoidable."
+        "Both commands become shims over `_args_to_payload_*` \u2192 `_run_*` \u2192 `_emit_or_die`.",
+        "Both preserve `--output -` stdout-mode and `--output <path>` no-stdout file-output mode.",
+        "Both use the pure `_bcdi_to_error_result` / `_bcdi_to_envelope_result` helpers from TASK-003E.",
+        "Existing focused tests and the TASK-000B baseline stay green.",
+        "Commit only this task's files."
       ],
       "agent": "claude"
     }
@@ -29,7 +27,7 @@
     {
       "index": 1,
       "task_ids": [
-        "003E"
+        "003F"
       ],
       "file_locks": [
         "plugins/plan-executor/scripts/plan_ops.py",
@@ -39,7 +37,7 @@
   ],
   "gaps": [
     {
-      "task_id": "003E",
+      "task_id": "003F",
       "type": "extra-task-heading",
       "severity": "soft",
       "detail": "PLAN_PURE_CORE_CODEMOD.md carries 16 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
