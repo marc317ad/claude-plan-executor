@@ -449,7 +449,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-003E: Hand-fix `cmd_build_claude_dispatch_input`
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify `_bcdi_*` helpers only as required by Claude dispatch input and `cmd_build_claude_dispatch_input`)

@@ -11285,30 +11285,89 @@ _BCDI_VARIANT_SCHEMA_PATH = {
 
 
 def _bcdi_emit_error(code: str, message: str) -> None:
+    """Legacy CLI-only terminator retained for codex/gemini sibling
+    builders pending TASK-003F migration onto the pure helpers below.
+    `cmd_build_claude_dispatch_input` no longer reaches this path; it
+    routes through `_bcdi_to_error_result` → `_emit_or_die`.
+    """
     payload = {"errors": [{"code": code, "message": message}]}
     json.dump(payload, sys.stdout, indent=2, sort_keys=False)
     sys.stdout.write("\n")
     sys.exit(1)
 
 
-def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
-    """Emit the canonical `claude_dispatch_input.json` shape for one dispatch.
+def _bcdi_to_error_result(code: str, message: str) -> dict:
+    """Pure terminator: return a marker-bearing error result dict.
 
-    The orchestrator (or any direct CLI caller) pipes this stdout into
-    ``plan_claude_dispatch.py run --input -``.
+    Used by `_run_build_claude_dispatch_input` (TASK-003E) so pure / MCP
+    callers receive structured `errors[]` envelopes instead of a
+    `sys.exit(1)`.
     """
-    # PLAN_WRAPPER_REVERT_POLICY_GATE TASK-002: validate the
-    # orchestrator-pinned $UNATTENDED_REVERT_POLICY env var before doing
-    # any plan-file work so an invalid value fails fast (parallel to
-    # cmd_preflight's --unattended-revert-policy validation).
-    raw_policy_env = os.environ.get("UNATTENDED_REVERT_POLICY")
+    return _result(
+        {"errors": [{"code": code, "message": message}]}, exit_code=1,
+    )
+
+
+def _bcdi_to_envelope_result(envelope: dict, output: str) -> dict:
+    """Pure terminator: return a marker-bearing envelope result dict.
+
+    When ``output`` is the stdout sentinel ``"-"`` the envelope is
+    returned for `_emit_or_die` to JSON-render. When ``output`` is a
+    filesystem path, the envelope is written there and
+    ``__plan_ops_stdout_suppressed__`` is set so the CLI exits 0 with
+    no stdout (preserving the pre-codemod byte image).
+    """
+    result = _result(envelope, exit_code=0)
+    if output != "-":
+        text = json.dumps(envelope, indent=2, sort_keys=False) + "\n"
+        Path(output).write_text(text, encoding="utf-8")
+        result["__plan_ops_stdout_suppressed__"] = True
+    return result
+
+
+def _args_to_payload_build_claude_dispatch_input(
+    args: argparse.Namespace,
+) -> dict:
+    """Lift CLI args + the `$UNATTENDED_REVERT_POLICY` env var into a
+    pure payload. Pure / MCP callers can construct this dict directly
+    without going through argparse or the process environment.
+    """
+    return {
+        "plan_file": args.plan_file,
+        "task_id": args.task_id,
+        "variant": args.variant,
+        "repo_root": args.repo_root,
+        "analyst_annotations": args.analyst_annotations,
+        "target_task_id": args.target_task_id,
+        "starting_sha": args.starting_sha,
+        "dispatch_context": args.dispatch_context,
+        "run_id": args.run_id,
+        # `--output -` is a string sentinel meaning stdout; only a real
+        # filesystem path is later wrapped as `Path(...)` for writing.
+        "output": args.output or "-",
+        "unattended_revert_policy_env": os.environ.get(
+            "UNATTENDED_REVERT_POLICY",
+        ),
+    }
+
+
+def _run_build_claude_dispatch_input(payload: dict) -> dict:
+    """Pure core: build the canonical `claude_dispatch_input.json`
+    envelope from a payload dict and return a marker-bearing result.
+
+    Validation failures return `_bcdi_to_error_result(...)` instead of
+    calling `sys.exit`. Success returns `_bcdi_to_envelope_result(...)`
+    which routes the envelope to stdout (`output == "-"`) or to a file
+    (`__plan_ops_stdout_suppressed__`).
+    """
+    raw_policy_env = payload.get("unattended_revert_policy_env")
     unattended_revert_policy = None
     if raw_policy_env is None or raw_policy_env == "":
         unattended_revert_policy = None
     elif raw_policy_env in {"pause", "fail-fast", "preserve-only"}:
         unattended_revert_policy = raw_policy_env
     else:
-        _bcdi_emit_error(
+        return _bcdi_to_error_result(
             "unattended-revert-policy-invalid",
             (
                 f"$UNATTENDED_REVERT_POLICY is not in the closed enum "
@@ -11316,25 +11375,22 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
                 f"{raw_policy_env!r}"
             ),
         )
-        return
 
-    variant = args.variant
-    plan_file = Path(args.plan_file)
+    variant = payload["variant"]
+    plan_file = Path(payload["plan_file"])
     if not plan_file.is_file():
-        _bcdi_emit_error(
+        return _bcdi_to_error_result(
             "plan-file-not-found",
             f"plan file not found: {plan_file}",
         )
-        return  # unreachable
     plan_text = _load_text(plan_file)
 
-    normalized_task_id = _normalize_task_id(args.task_id)
+    normalized_task_id = _normalize_task_id(payload["task_id"])
     if normalized_task_id is None:
-        _bcdi_emit_error(
+        return _bcdi_to_error_result(
             "task-id-invalid",
-            f"task id is not parseable: {args.task_id!r}",
+            f"task id is not parseable: {payload['task_id']!r}",
         )
-        return
 
     agent = _BCDI_VARIANT_AGENT[variant]
     model = _BCDI_VARIANT_MODEL[variant]
@@ -11345,14 +11401,13 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
     else:
         files = _extract_task_files_from_plan(plan_text, normalized_task_id)
         if files is None:
-            _bcdi_emit_error(
+            return _bcdi_to_error_result(
                 "task-not-found",
                 (
                     f"task {normalized_task_id} not present in plan "
                     f"{plan_file}"
                 ),
             )
-            return
         declared_files = [p for p in files if p]
         if not declared_files:
             sys.stderr.write(
@@ -11362,69 +11417,69 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
                 "guard.\n"
             )
 
-    repo_root = str(Path(args.repo_root).resolve()) if args.repo_root else str(Path.cwd().resolve())
+    repo_root = (
+        str(Path(payload["repo_root"]).resolve())
+        if payload["repo_root"]
+        else str(Path.cwd().resolve())
+    )
 
-    payload: dict = {
+    inner_payload: dict = {
         "plan_path": str(plan_file.resolve()),
         "repo_root": repo_root,
     }
-    payload["task_id"] = normalized_task_id
-    if args.target_task_id:
-        normalized_tt = _normalize_task_id(args.target_task_id)
+    inner_payload["task_id"] = normalized_task_id
+    if payload["target_task_id"]:
+        normalized_tt = _normalize_task_id(payload["target_task_id"])
         if normalized_tt is None:
-            _bcdi_emit_error(
+            return _bcdi_to_error_result(
                 "target-task-id-invalid",
-                f"target task id is not parseable: {args.target_task_id!r}",
+                f"target task id is not parseable: {payload['target_task_id']!r}",
             )
-            return
-        payload["target_task_id"] = normalized_tt
+        inner_payload["target_task_id"] = normalized_tt
     else:
-        payload["target_task_id"] = None
+        inner_payload["target_task_id"] = None
     if variant != "analyst":
         if variant in ("default", "rework", "role-swap"):
-            if args.analyst_annotations:
-                ann_path = Path(args.analyst_annotations)
+            if payload["analyst_annotations"]:
+                ann_path = Path(payload["analyst_annotations"])
                 if not ann_path.is_file():
-                    _bcdi_emit_error(
+                    return _bcdi_to_error_result(
                         "analyst-annotations-not-found",
                         f"analyst annotations file not found: {ann_path}",
                     )
-                    return
                 try:
-                    payload["analyst_annotations"] = json.loads(
+                    inner_payload["analyst_annotations"] = json.loads(
                         _load_text(ann_path)
                     )
                 except json.JSONDecodeError as e:
-                    _bcdi_emit_error(
+                    return _bcdi_to_error_result(
                         "analyst-annotations-invalid-json",
                         f"analyst annotations file is not valid JSON: {e}",
                     )
-                    return
             else:
-                payload["analyst_annotations"] = None
-            payload["starting_sha"] = args.starting_sha or ""
+                inner_payload["analyst_annotations"] = None
+            inner_payload["starting_sha"] = payload["starting_sha"] or ""
         if variant in ("rework", "narrow-remediation"):
-            if not args.dispatch_context:
-                _bcdi_emit_error(
+            if not payload["dispatch_context"]:
+                return _bcdi_to_error_result(
                     "dispatch-context-required",
                     f"--dispatch-context is required for variant {variant!r}",
                 )
-                return
-            ctx_path = Path(args.dispatch_context)
+            ctx_path = Path(payload["dispatch_context"])
             if not ctx_path.is_file():
-                _bcdi_emit_error(
+                return _bcdi_to_error_result(
                     "dispatch-context-not-found",
                     f"dispatch context file not found: {ctx_path}",
                 )
-                return
             try:
-                payload["dispatch_context"] = json.loads(_load_text(ctx_path))
+                inner_payload["dispatch_context"] = json.loads(
+                    _load_text(ctx_path)
+                )
             except json.JSONDecodeError as e:
-                _bcdi_emit_error(
+                return _bcdi_to_error_result(
                     "dispatch-context-invalid-json",
                     f"dispatch context file is not valid JSON: {e}",
                 )
-                return
 
     # BUG-146: inline the result schema content (not just its path) so the
     # implementer/remediator/analyst agent has no choice but to follow the
@@ -11443,17 +11498,15 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
         try:
             schema_inline_obj = json.loads(_load_text(schema_abs))
         except json.JSONDecodeError as e:
-            _bcdi_emit_error(
+            return _bcdi_to_error_result(
                 "schema-inline-invalid-json",
                 f"result schema file is not valid JSON ({schema_abs}): {e}",
             )
-            return
     else:
-        _bcdi_emit_error(
+        return _bcdi_to_error_result(
             "schema-inline-not-found",
             f"result schema file not found at {schema_abs}",
         )
-        return
 
     if variant != "analyst":
         prompt_lines = [
@@ -11523,15 +11576,15 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
             "",
             "Structured dispatch payload (verbatim, for reference):",
             "```json",
-            json.dumps(payload, indent=2, default=str),
+            json.dumps(inner_payload, indent=2, default=str),
             "```",
         ]
-        payload["prompt"] = "\n".join(prompt_lines)
+        inner_payload["prompt"] = "\n".join(prompt_lines)
 
     envelope = {
         "schema_version": 1,
         "agent": agent,
-        "payload": payload,
+        "payload": inner_payload,
         "output_instructions": {
             "format": "json",
             "schema_path": schema_path,
@@ -11551,7 +11604,7 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
             "network": "deny",
         },
         "trace": {
-            "run_id": args.run_id or "<orchestrator run_id>",
+            "run_id": payload["run_id"] or "<orchestrator run_id>",
             "parent_span_id": None,
             "depth": 0,
             "call_chain": ["orchestrator"],
@@ -11564,13 +11617,25 @@ def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
     if unattended_revert_policy is not None:
         envelope["unattended_revert_policy"] = unattended_revert_policy
 
-    output = args.output or "-"
-    text = json.dumps(envelope, indent=2, sort_keys=False) + "\n"
-    if output == "-":
-        sys.stdout.write(text)
-    else:
-        Path(output).write_text(text, encoding="utf-8")
-    sys.exit(0)
+    return _bcdi_to_envelope_result(envelope, payload["output"])
+
+
+def cmd_build_claude_dispatch_input(args: argparse.Namespace) -> None:
+    """Emit the canonical `claude_dispatch_input.json` shape for one dispatch.
+
+    The orchestrator (or any direct CLI caller) pipes this stdout into
+    ``plan_claude_dispatch.py run --input -``. This is a thin shim over
+    `_args_to_payload_build_claude_dispatch_input(args)` →
+    `_run_build_claude_dispatch_input(payload)` → `_emit_or_die`.
+    """
+    payload = _args_to_payload_build_claude_dispatch_input(args)
+    result = _run_build_claude_dispatch_input(payload)
+    # `--json` is the default + only emission for this subcommand; route
+    # success and error envelopes through `_emit_or_die` with JSON forced
+    # so the trailing-newline byte image stays identical to the
+    # pre-codemod handler (mirrors `cmd_resolve_read_targets`).
+    args.json = True
+    _emit_or_die(args, result)
 
 
 # ---------------------------------------------------------------------------
