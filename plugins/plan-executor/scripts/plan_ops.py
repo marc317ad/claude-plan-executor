@@ -10347,7 +10347,62 @@ def cmd_audit(args: argparse.Namespace) -> None:
     _emit(args, report, exit_code=exit_code)
 
 
-def cmd_gates(args: argparse.Namespace) -> None:
+def _args_to_payload_gates(args: argparse.Namespace) -> dict:
+    if args.list:
+        mode = "list"
+    elif args.check:
+        mode = "check"
+    elif args.certify:
+        mode = "certify"
+    else:
+        mode = None
+    return {
+        "mode": mode,
+        "list": args.list,
+        "check": args.check,
+        "certify": args.certify,
+        "certify_mode": args.mode,
+        "plan_file": args.plan_file,
+        "schedule_file": args.schedule_file,
+        "commit_sha": args.commit_sha,
+        "task_id": args.task_id,
+        "run_id": args.run_id,
+    }
+
+
+def _validate_gates_mode(payload: dict) -> list[dict]:
+    errors: list[dict] = []
+    mode = payload.get("mode")
+    if mode not in {"list", "check", "certify"}:
+        errors.append({
+            "path": "$.mode",
+            "code": "invalid-mode",
+            "message": "gates mode must be one of list, check, certify",
+        })
+
+    flag_modes: list[str] = []
+    if payload.get("list"):
+        flag_modes.append("list")
+    if payload.get("check"):
+        flag_modes.append("check")
+    if payload.get("certify"):
+        flag_modes.append("certify")
+    if len(flag_modes) > 1:
+        errors.append({
+            "path": "$",
+            "code": "mutually-exclusive-mode-flags",
+            "message": "gates accepts only one of list, check, certify",
+        })
+    if flag_modes and mode in {"list", "check", "certify"} and flag_modes[0] != mode:
+        errors.append({
+            "path": "$.mode",
+            "code": "mismatched-mode-flag",
+            "message": f"mode {mode!r} does not match {flag_modes[0]!r} flag",
+        })
+    return errors
+
+
+def _run_gates(payload: dict) -> dict:
     """Phase-gate CLI: --list | --check <csv> | --certify --mode <m>.
 
     --list emits the six canonical gate names.
@@ -10356,42 +10411,45 @@ def cmd_gates(args: argparse.Namespace) -> None:
     --certify runs the dry-run or execute bundle against a plan file;
       emits `{certified: bool, gates: {...}}`.
     """
-    if args.list:
-        _emit(args, {"gates": list(GATE_NAMES)})
-        return
+    mode_errors = _validate_gates_mode(payload)
+    if mode_errors:
+        return _result({"errors": mode_errors}, exit_code=1)
 
-    if args.certify:
-        if args.mode not in {"dry-run", "execute"}:
-            _die(args, {"error": "mode must be dry-run|execute"})
-        if not args.plan_file:
-            _die(args, {"error": "--certify requires --plan-file"})
+    if payload["mode"] == "list":
+        return _result({"gates": list(GATE_NAMES)}, exit_code=0)
+
+    if payload["mode"] == "certify":
+        if payload.get("certify_mode") not in {"dry-run", "execute"}:
+            return _result({"error": "mode must be dry-run|execute"}, exit_code=1)
+        if not payload.get("plan_file"):
+            return _result({"error": "--certify requires --plan-file"}, exit_code=1)
         # `schedule-valid` is a required member of the certification bundle
         # (acceptance criteria: dry-run pass requires it green; execute is
         # the dry-run set plus commit-safe). Skipping it when --schedule-file
         # is absent produced a false-positive certification path, so fail
         # fast at the CLI seam instead of emitting `not_applicable`.
-        if not args.schedule_file:
-            _die(args, {"error": "--certify requires --schedule-file"})
-        if args.mode == "dry-run":
-            gates = _certify_dry_run(args.plan_file, args.schedule_file)
+        if not payload.get("schedule_file"):
+            return _result({"error": "--certify requires --schedule-file"}, exit_code=1)
+        if payload["certify_mode"] == "dry-run":
+            gates = _certify_dry_run(payload["plan_file"], payload["schedule_file"])
         else:
             # Execute certification re-verifies commit-safe per landed
             # commit; without a --run-id there is no way to identify the
             # bundle of commits to check, so certification would silently
             # report commit-safe: not_applicable and pass.
-            if not args.run_id:
-                _die(args, {
+            if not payload.get("run_id"):
+                return _result({
                     "error": "--certify --mode execute requires --run-id",
-                })
+                }, exit_code=1)
             gates = _certify_execute(
-                args.plan_file, args.run_id, args.schedule_file,
+                payload["plan_file"], payload["run_id"], payload["schedule_file"],
             )
         # Directory-mode certify (per SKILL.md §99-106): when --plan-file
         # resolves to a directory containing 00_INDEX.json, the report
         # carries `plan_mode: "directory"` and any gate that aggregates
         # subchecks (schema-valid per chunk, commit-safe per commit_done
         # event) emits a `subresults` array for attribution.
-        plan_mode = "directory" if _is_directory_mode_plan(args.plan_file) else "single-file"
+        plan_mode = "directory" if _is_directory_mode_plan(payload["plan_file"]) else "single-file"
         by_name: dict[str, dict] = {}
         for g in gates:
             entry = {"status": g["status"], "reason": g["reason"]}
@@ -10402,33 +10460,27 @@ def cmd_gates(args: argparse.Namespace) -> None:
         # Certification passes iff every applicable gate is `pass`; a
         # `not_applicable` gate does not block certification.
         certified = all(g["status"] in {"pass", "not_applicable"} for g in gates)
-        _emit(
-            args,
+        return _result(
             {
                 "certified": certified,
-                "mode": args.mode,
+                "mode": payload["certify_mode"],
                 "plan_mode": plan_mode,
                 "gates": by_name,
             },
             exit_code=0 if certified else 1,
         )
-        return
 
-    if not args.check:
-        _die(args, {
-            "error": "gates requires one of --list, --check, or --certify",
-        })
-    requested = [s.strip() for s in args.check.split(",") if s.strip()]
+    requested = [s.strip() for s in str(payload.get("check", "")).split(",") if s.strip()]
     unknown = [g for g in requested if g not in GATE_NAMES]
     if unknown:
-        _die(args, {"error": f"unknown gate name(s): {unknown}; known: {list(GATE_NAMES)}"})
+        return _result({"error": f"unknown gate name(s): {unknown}; known: {list(GATE_NAMES)}"}, exit_code=1)
 
     results: list[dict] = []
     for name in requested:
         if name == "schema-valid":
-            results.append(_gate_schema_valid(args.plan_file))
+            results.append(_gate_schema_valid(payload.get("plan_file")))
         elif name == "schedule-valid":
-            results.append(_gate_schedule_valid(args.schedule_file))
+            results.append(_gate_schedule_valid(payload.get("schedule_file")))
         elif name == "fixture-valid":
             # The gate invariant is about the canonical sample fixture
             # (see `CANONICAL_CONTRACT.fixture_path`), not the user's plan
@@ -10444,14 +10496,19 @@ def cmd_gates(args: argparse.Namespace) -> None:
             results.append(_gate_review_safe())
         elif name == "commit-safe":
             results.append(_gate_commit_safe(
-                args.commit_sha, args.task_id, args.plan_file,
+                payload.get("commit_sha"), payload.get("task_id"), payload.get("plan_file"),
             ))
     any_failed = any(r["status"] == "fail" for r in results)
-    _emit(
-        args,
+    return _result(
         {"gates": results, "failed": any_failed},
         exit_code=1 if any_failed else 0,
     )
+
+
+def cmd_gates(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_gates(args)
+    result = _run_gates(payload)
+    _emit_or_die(args, result)
 
 
 # ---------------------------------------------------------------------------

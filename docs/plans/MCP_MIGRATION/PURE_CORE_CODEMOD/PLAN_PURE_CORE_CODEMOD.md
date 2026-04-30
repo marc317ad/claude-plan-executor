@@ -350,7 +350,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-003A: Hand-fix `cmd_gates`
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_gates`, `_args_to_payload_gates`, `_run_gates`, and directly required helper tests)

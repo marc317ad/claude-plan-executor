@@ -14395,6 +14395,56 @@ class TestGatesCli:
             "commit-safe",
         )
 
+    def test_gates_args_payload_collapses_mutex_mode(self) -> None:
+        args = type("Args", (), {
+            "list": False,
+            "check": "schema-valid",
+            "certify": False,
+            "mode": None,
+            "plan_file": "PLAN.md",
+            "schedule_file": None,
+            "commit_sha": None,
+            "task_id": None,
+            "run_id": None,
+        })()
+
+        payload = plan_ops._args_to_payload_gates(args)
+
+        assert payload["mode"] == "check"
+        assert payload["check"] == "schema-valid"
+
+    def test_gates_core_rejects_invalid_mode_with_errors(self) -> None:
+        result = plan_ops._run_gates({"mode": "bogus"})
+
+        assert result["__plan_ops_exit_code__"] == 1
+        assert result["errors"][0]["code"] == "invalid-mode"
+
+    def test_gates_core_rejects_mismatched_mode_flags_with_errors(self) -> None:
+        result = plan_ops._run_gates({
+            "mode": "check",
+            "list": True,
+            "check": "schema-valid",
+            "certify": False,
+        })
+
+        codes = {error["code"] for error in result["errors"]}
+        assert result["__plan_ops_exit_code__"] == 1
+        assert "mutually-exclusive-mode-flags" in codes
+        assert "mismatched-mode-flag" in codes
+
+    def test_gates_core_enforces_certify_required_flags(self) -> None:
+        result = plan_ops._run_gates({
+            "mode": "certify",
+            "certify": True,
+            "certify_mode": "execute",
+            "plan_file": "PLAN.md",
+            "schedule_file": "schedule.json",
+            "run_id": None,
+        })
+
+        assert result["__plan_ops_exit_code__"] == 1
+        assert "run-id" in result["error"]
+
     def test_unknown_gate_name_errors(self, tmp_path: Path) -> None:
         """--check rejects gate names outside the canonical set."""
         plan = _write_gates_plan(tmp_path)
