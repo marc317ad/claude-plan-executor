@@ -2,5 +2,9 @@
   "/mnt/d/claude-plan-executor/docs/plans/prohibit_silent_revert/prohibit_silent_revert": {
     "run_id": "20260426T151634",
     "acquired_at": "2026-04-26T15:17:04Z"
+  },
+  "/mnt/d/claude-plan-executor/docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD": {
+    "run_id": "20260430T192352",
+    "acquired_at": "2026-04-30T19:24:12Z"
   }
 }

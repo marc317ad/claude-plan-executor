@@ -1,0 +1,42 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "003A",
+      "title": "Hand-fix `cmd_gates`",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py (modify only `cmd_gates`, `_args_to_payload_gates`, `_run_gates`, and directly required helper tests)",
+        "tests/scripts/test_plan_ops.py (modify focused gates tests only if needed)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -k \"gates or pure_core_baseline\" -q",
+      "priority": "high",
+      "plan_file": "PLAN_PURE_CORE_CODEMOD.md",
+      "description": "First special-case hand-fix, scoped to one mutex-group command.",
+      "acceptance_criteria": [
+        "`cmd_gates` is a shim over `_args_to_payload_gates(args)` \u2192 `_run_gates(payload)` \u2192 `_emit_or_die(args, result)`.",
+        "Argparse mutex group `--list` / `--check` / `--certify` remains intact for CLI ergonomics.",
+        "`_args_to_payload_gates` collapses the mutex group into `payload[\"mode\"] in {\"list\",\"check\",\"certify\"}`.",
+        "`_run_gates` validates invalid mode and mismatched mode flags via structured `errors[]`, not argparse exits.",
+        "`certify` required-flag combinations are enforced inside `_run_gates` for pure/MCP callers.",
+        "`certify` failing gates preserve non-zero exit via `_result(envelope, exit_code=1)` rather than inferred `errors[]`.",
+        "Existing gates tests and the TASK-000B baseline stay green.",
+        "Commit only this task's files; no other skip-list function is changed."
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "003A"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

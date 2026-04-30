@@ -1,6 +1,6 @@
 # Plan: `plan_ops.py` pure-core extraction via codemod
 
-**Status:** Draft v3 (refined 2026-04-30 with Codex coding-implications review + orchestrator ground-truth audit + Gemini/Code review follow-up corrections; still awaiting one final user pass)
+**Status:** in-progress
 **Author of draft:** orchestrator session under `/implement-plan docs/plans/MCP_MIGRATION` run `20260430T033005`; refined via paired `gemini` (code-search) and `codex exec` (coding-implications) deep dives plus first-party AST sampling of `plan_ops.py`.
 **Supersedes (proposed):** `docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` TASK-011, TASK-012, TASK-013
 **Does not supersede:** TASK-001, TASK-003, TASK-004, TASK-005, TASK-006, TASK-007, TASK-008, TASK-009, TASK-010 of the parent plan; this draft only re-shapes the pure-core extraction trio.
@@ -706,3 +706,11 @@ Verification:
 
 - `venv/bin/python -m pytest tests/tools/test_plan_ops_pure_core_extract.py -q` → 7 passed.
 - `venv/bin/python -m pytest tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_pure_core_baseline.py -q` → 1051 passed, 2 skipped.
+
+## Execution log — 20260430T192352 (partial)
+
+Starting SHA: `a1cf4760f65b53fe7055028a979631d243201e28`  → Ending SHA: `7d5007cb4ffe257aa1f430065fccbe0a74ed9ae4`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003A | codex | claude | ship | 7d5007cb | 3 minor nits recorded |
