@@ -57,6 +57,156 @@ def _parse_json(cp: subprocess.CompletedProcess) -> dict:
         )
 
 
+def _ns(*, json_output: bool) -> object:
+    return type("Args", (), {"json": json_output})()
+
+
+class TestEmitOrDieContract:
+    """TASK-000A: marker-bearing terminator contract."""
+
+    def _invoke(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        result: dict,
+        *,
+        json_output: bool,
+    ) -> tuple[int, str, str]:
+        with pytest.raises(SystemExit) as exc_info:
+            plan_ops._emit_or_die(_ns(json_output=json_output), result)
+        captured = capsys.readouterr()
+        code = exc_info.value.code
+        assert isinstance(code, int)
+        return code, captured.out, captured.err
+
+    def test_result_adds_internal_exit_marker_without_mutating_payload(self) -> None:
+        payload = {"ok": True}
+        result = plan_ops._result(payload, exit_code=0)
+        assert result == {"ok": True, "__plan_ops_exit_code__": 0}
+        assert payload == {"ok": True}
+
+    def test_happy_path_exit_zero_json_strips_marker(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        result = {"ok": True, "__plan_ops_exit_code__": 0}
+        code, out, err = self._invoke(capsys, result, json_output=True)
+        assert code == 0
+        assert json.loads(out) == {"ok": True}
+        assert "__plan_ops_exit_code__" not in out
+        assert "__plan_ops_exit_code__" not in err
+        assert err == ""
+        assert "__plan_ops_exit_code__" not in result
+
+    def test_top_level_error_defaults_nonzero_and_non_json_stderr(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        code, out, err = self._invoke(
+            capsys, {"error": "bad input"}, json_output=False,
+        )
+        assert code == 1
+        assert out == ""
+        assert err == "ERROR: bad input\n"
+
+    def test_errors_list_defaults_nonzero_and_json_envelope_unchanged(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        payload = {"errors": [{"code": "bad", "message": "nope"}]}
+        code, out, err = self._invoke(capsys, dict(payload), json_output=True)
+        assert code == 1
+        assert json.loads(out) == payload
+        assert err == ""
+
+    def test_explicit_nonzero_exit_code_overrides_success_shape(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        code, out, err = self._invoke(
+            capsys,
+            {"ok": True, "__plan_ops_exit_code__": 7},
+            json_output=True,
+        )
+        assert code == 7
+        assert json.loads(out) == {"ok": True}
+        assert err == ""
+
+    def test_json_and_non_json_error_paths_keep_legacy_divergence(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        json_code, json_out, json_err = self._invoke(
+            capsys,
+            {"error": "bad input", "__plan_ops_exit_code__": 3},
+            json_output=True,
+        )
+        text_code, text_out, text_err = self._invoke(
+            capsys,
+            {"error": "bad input", "__plan_ops_exit_code__": 3},
+            json_output=False,
+        )
+
+        assert json_code == 3
+        assert json.loads(json_out) == {"error": "bad input"}
+        assert json_err == ""
+        assert text_code == 3
+        assert text_out == ""
+        assert text_err == "ERROR: bad input\n"
+
+    def test_text_output_is_verbatim_and_internal_only(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        result = {
+            "overall": "pass",
+            "__plan_ops_exit_code__": 0,
+            "__plan_ops_text_output__": "audit: pass\n",
+        }
+        public = plan_ops._public_result(result)
+        code, out, err = self._invoke(capsys, result, json_output=True)
+
+        assert code == 0
+        assert out == "audit: pass\n"
+        assert err == ""
+        assert not out.startswith("{")
+        assert "__plan_ops_text_output__" not in out
+        assert "__plan_ops_text_output__" not in err
+        assert public == {"overall": "pass"}
+
+    def test_stdout_suppressed_exits_zero_without_stdout(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        code, out, err = self._invoke(
+            capsys,
+            {
+                "written": "dispatch.md",
+                "__plan_ops_exit_code__": 0,
+                "__plan_ops_stdout_suppressed__": True,
+            },
+            json_output=True,
+        )
+        assert code == 0
+        assert out == ""
+        assert err == ""
+
+    def test_public_result_strips_internal_keys_without_mutating_original(self) -> None:
+        result = {
+            "ok": True,
+            "__plan_ops_exit_code__": 0,
+            "__plan_ops_text_output__": "audit: pass\n",
+            "__plan_ops_stdout_suppressed__": True,
+        }
+        public = plan_ops._public_result(result)
+        assert public == {"ok": True}
+        assert result == {
+            "ok": True,
+            "__plan_ops_exit_code__": 0,
+            "__plan_ops_text_output__": "audit: pass\n",
+            "__plan_ops_stdout_suppressed__": True,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Helpers: fixtures + sample plan body builder
 # ---------------------------------------------------------------------------

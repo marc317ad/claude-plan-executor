@@ -18,14 +18,16 @@
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {
       "task_id": "000B",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "high",
-      "depends_on": ["000A"],
+      "depends_on": [
+        "000A"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -33,7 +35,9 @@
       "task_id": "001",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "high",
-      "depends_on": ["000A"],
+      "depends_on": [
+        "000A"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -41,7 +45,9 @@
       "task_id": "001B",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "high",
-      "depends_on": ["001"],
+      "depends_on": [
+        "001"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -49,7 +55,10 @@
       "task_id": "002",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "high",
-      "depends_on": ["000B", "001B"],
+      "depends_on": [
+        "000B",
+        "001B"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -57,7 +66,9 @@
       "task_id": "003",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "high",
-      "depends_on": ["002"],
+      "depends_on": [
+        "002"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -65,7 +76,9 @@
       "task_id": "003B",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "medium",
-      "depends_on": ["003"],
+      "depends_on": [
+        "003"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -73,7 +86,9 @@
       "task_id": "004",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "medium",
-      "depends_on": ["003B"],
+      "depends_on": [
+        "003B"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -81,7 +96,9 @@
       "task_id": "005",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "medium",
-      "depends_on": ["003B"],
+      "depends_on": [
+        "003B"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -89,7 +106,9 @@
       "task_id": "006",
       "file": "PLAN_PURE_CORE_CODEMOD.md",
       "priority": "medium",
-      "depends_on": ["003B"],
+      "depends_on": [
+        "003B"
+      ],
       "status": "Pending",
       "superseded_by": []
     }

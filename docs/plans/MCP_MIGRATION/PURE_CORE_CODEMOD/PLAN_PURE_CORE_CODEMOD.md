@@ -5,6 +5,19 @@
 **Supersedes (proposed):** `docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` TASK-011, TASK-012, TASK-013
 **Does not supersede:** TASK-001, TASK-003, TASK-004, TASK-005, TASK-006, TASK-007, TASK-008, TASK-009, TASK-010 of the parent plan; this draft only re-shapes the pure-core extraction trio.
 
+## Goal
+
+Extract a deterministic AST-codemod-driven pure-core (`_run_X(payload) -> dict`) layer for all 38 `cmd_*` functions in `plugins/plan-executor/scripts/plan_ops.py`, replacing the failed monolithic TASK-011/012/013 split with a reproducible pipeline: stabilize the terminator contract → capture a CLI byte-equal baseline → build + dry-run a libcst codemod → apply it in one commit → hand-fix the 9 skip-list functions → ship per-tier conformance fixtures. End state: every `cmd_X` is a 3-line shim over `_run_X(payload)`, unblocking parent-plan TASK-004/005/006 (MCP tool registration) and TASK-007/008/009/010 (SKILL migration / conformance / drift guard / E2E).
+
+## Verification
+
+- The full existing `tests/scripts/test_plan_ops*.py` suite passes after every individual task and at end-of-plan (no semantic drift).
+- The `tests/scripts/test_plan_ops_pure_core_baseline.py` byte-equal CLI baseline (created in TASK-000B) passes against the post-codemod `plan_ops.py` (TASK-002) and again after every TASK-003 hand-fix commit.
+- `python plugins/plan-executor/scripts/plan_ops.py --help` lists 38 subcommands; `python plugins/plan-executor/scripts/plan_ops.py <sub> --help` returns the same `option_strings` list per-subcommand as the pre-codemod baseline.
+- `dry_run_report.json` (TASK-001B) shows `summary.total_cmd_x == 38`, the 9-function skip-list (or its expansion if the dry-run discovers more), and zero `ambiguous_arg_specs_count`.
+- Tier-A / Tier-B / Tier-C conformance harness fixtures (TASK-003B / TASK-004 / TASK-005 / TASK-006) all pass: byte-equal canonical envelopes between CLI subprocess and in-process `_run_*` paths for each fixture pair.
+- `git log` shows: one TASK-000A commit, one TASK-000B commit, one TASK-001 commit, one TASK-001B commit (plus the report artifact), one TASK-002 commit (codemod-applied), N TASK-003 per-cluster commits, plus per-task fixture commits — no rebases, no force-pushes.
+
 **Refinement summary (v1 → v2):**
 - Added `TASK-000A` (stabilize `_emit/_die` terminator contract) + `TASK-000B` (capture pre-codemod CLI baseline) as preconditions to the codemod itself, because the v1 substitution rule "`_emit(args, r)` → `return r`" is not semantics-preserving (`_emit` calls `sys.exit`).
 - Added `TASK-001B` (dry-run codemod + finalize skip-list and `ARG_SPECS` type table) so the single large `TASK-002` diff lands against a reviewed plan, not a discovery one.
@@ -150,13 +163,13 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-000A: Stabilize the `_emit` / `_die` terminator contract
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high (precondition for the codemod itself)
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify — add `_result()` and `_emit_or_die()` helpers near the existing `_emit/_die` definitions at lines 2011-2026)
   - tests/scripts/test_plan_ops.py (modify — add unit tests for new helpers)
 - **Dependencies:** none
-- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k "emit or release_lock or acquire_lock or gates" --no-cov`
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k "emit or release_lock or acquire_lock or gates"`
 - **Acceptance criteria:**
   - `_emit(args, result, *, exit_code=0)` and `_die(args, result, *, exit_code=1)` retain their current behavior byte-identically (JSON path and non-JSON path both unchanged for callers that pass through them today).
   - New helper `_result(payload: dict, *, exit_code: int = 0) -> dict` returns a copy of `payload` with `__plan_ops_exit_code__` set. The marker is internal-only and deliberately uses a collision-resistant name instead of `_exit_code`.
@@ -181,28 +194,30 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Files:**
   - tests/scripts/test_plan_ops_pure_core_baseline.py (create — captures the baseline once and asserts byte-equality on subsequent runs)
   - tests/scripts/fixtures/plan_ops_cli_baseline/<sub>__<case>.{stdin,stdout,stderr,exit}.txt (create, ~12-15 fixture sets)
-- **Dependencies:** TASK-000A (uses `_emit_or_die` semantics, but does not require codemod to have run)
-- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_core_baseline.py --no-cov`
+- **Dependencies:** TASK-000A
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_core_baseline.py`
 - **Acceptance criteria:**
   - For each fixture, captures pre-codemod stdout, stderr, AND exit code via `subprocess.run([sys.executable, "plan_ops.py", *argv], input=stdin_text, capture_output=True)`.
   - Baseline fixture set covers terminator-sensitive branches (one per non-trivial pattern):
-    - `normalize-task-id 1` (happy) and `normalize-task-id bogus` (validation error path)
-    - `release-lock` no-lock-file branch (terminator at line 8132)
-    - `release-lock` run-id-mismatch branch (terminator at line 8139)
-    - `acquire-lock` empty-`--run-id` branch (terminator at line 8079)
-    - `gates --list` (terminator)
-    - `gates --certify --mode execute` missing `--run-id` (cross-flag argparse error → exit 2)
-    - `parse-schedule --stdin` happy path
-    - `filter-schedule --stdin` happy path (stdin-vs-file branch)
-    - `build-claude-dispatch-input --output -` (sentinel-bearing path flag)
-    - `commit-task --narrow-remediation-tag --dismissed-finding-ids 1,x` (cross-flag argparse error mid-`main()` at line 13750)
-    - `auto-validate-divergence --stdin` non-applicable envelope path
-    - `--json` and non-`--json` shapes for at least three of the above (stresses the `args.json` formatting branch in `_emit`)
+  - `normalize-task-id 1` (happy) and `normalize-task-id bogus` (validation error path)
+  - `release-lock` no-lock-file branch (terminator at line 8132)
+  - `release-lock` run-id-mismatch branch (terminator at line 8139)
+  - `acquire-lock` empty-`--run-id` branch (terminator at line 8079)
+  - `gates --list` (terminator)
+  - `gates --certify --mode execute` missing `--run-id` (cross-flag argparse error → exit 2)
+  - `parse-schedule --stdin` happy path
+  - `filter-schedule --stdin` happy path (stdin-vs-file branch)
+  - `build-claude-dispatch-input --output -` (sentinel-bearing path flag)
+  - `commit-task --narrow-remediation-tag --dismissed-finding-ids 1,x` (cross-flag argparse error mid-`main()` at line 13750)
+  - `auto-validate-divergence --stdin` non-applicable envelope path
+  - `--json` and non-`--json` shapes for at least three of the above (stresses the `args.json` formatting branch in `_emit`)
   - All fixtures isolated under `tmp_path`; no test depends on the developer's live `_run_log.jsonl` or lock file.
   - Baseline test runs in <30 s.
   - File format: one fixture per case, plain text on disk, no canonicalization (this is the raw byte-image — TASK-002 must reproduce it byte-equally after codemod application).
-- **Description:** The existing `plan_ops` test suite asserts behavior at the helper / function level but does NOT lock down the exact stdout/stderr/exit triple at the CLI surface. Without that snapshot, TASK-002's codemod application could pass all unit tests while introducing silent stderr divergence (e.g. an `args.X` → `payload["X"]` substitution inside an f-string with `!r`) or formatting drift. This task creates the before-image that TASK-002 must match.
-- **Reversion guidance:** Delete the test and fixture directory. Production code is untouched.
+
+**Description:** The existing `plan_ops` test suite asserts behavior at the helper / function level but does NOT lock down the exact stdout/stderr/exit triple at the CLI surface. Without that snapshot, TASK-002's codemod application could pass all unit tests while introducing silent stderr divergence (e.g. an `args.X` → `payload["X"]` substitution inside an f-string with `!r`) or formatting drift. This task creates the before-image that TASK-002 must match.
+
+**Reversion guidance:** Delete the test and fixture directory. Production code is untouched.
 
 ---
 
@@ -218,49 +233,49 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Acceptance criteria:**
   - Script accepts `--in <plan_ops.py>` and `--out <plan_ops.py>` (may be the same path; in-place rewrite is supported); also accepts `--dry-run` (writes nothing, prints the diff and the per-function classification) and `--report <path>` (writes a machine-readable JSON report consumed by TASK-001B).
   - Uses `libcst` (preferred — round-trippable formatting) or `ast`+`astor` (fallback) to:
-    - Find every `def cmd_X(args: argparse.Namespace) -> None:` definition.
-    - Locate `build_parser()` (currently around line 12077; argparse registration lives there, NOT in `main()`). Enumerate each `subparsers.add_parser(...)` block and its `add_argument(...)` calls. This is the source of truth for the flag list, types, and `required=` flags.
-    - Build a unified `ARG_SPECS` table (in-memory, dumped into the report) of `{subcommand: [{flag, dest, type, default, required, value_kind}]}`. `value_kind` is one of `"path" | "string" | "int" | "bool" | "json-string" | "csv-string"` and is determined by argparse `type=`/`action=` first, then by an explicit override list, then by suffix-heuristic as a last resort.
-    - Generate `def _args_to_payload_X(args: argparse.Namespace) -> dict:` mapping each flag to a dict entry per `value_kind`. Path values are wrapped `pathlib.Path(args.X) if args.X else None` ONLY for `value_kind == "path"`.
-    - Generate `def _run_X(payload: dict) -> dict:` with the original cmd_X body, identifier-substituted (`args.X` → `payload["X"]` via CST node replacement, NOT textual substitution — preserves `!r`, `%s`, `repr`, and f-string conversion specifiers byte-equally) and with terminator calls rewritten:
-      - `_emit(args, expr)` → `return _result(expr, exit_code=0)`
-      - `_emit(args, expr, exit_code=N)` → `return _result(expr, exit_code=N)`
-      - `_die(args, expr)` → `return _result(expr, exit_code=1)` (default `_die` exit is 1)
-      - `_die(args, expr, exit_code=N)` → `return _result(expr, exit_code=N)`
-      - These rewrites apply to mid-body terminators AS WELL AS terminal terminators (no special-casing for "last statement").
-    - Replace stdin reads (`sys.stdin.read()`) with `payload["stdin_text"]`; the shim populates `stdin_text` from `_read_stdin_text()` for subcommands whose argparse parser declares `--stdin`. The codemod MUST NOT parse JSON in the shim. Existing command bodies keep their own `json.loads(raw)` calls and `JSONDecodeError` handling after `raw = payload["stdin_text"]`, and raw-markdown commands such as `cmd_parse_implementer_report` keep receiving text.
-    - Replace cmd_X body with the literal shim, **preserving the original `cmd_X` docstring on the shim** (operator/help-text contract):
-      ```python
-      def cmd_X(args: argparse.Namespace) -> None:
-          """<original cmd_X docstring, preserved verbatim>"""
-          payload = _args_to_payload_X(args)
-          result = _run_X(payload)
-          _emit_or_die(args, result)
-      ```
-    - Insert `_read_stdin_text()` helper at module scope (one definition) if not already present.
+  - Find every `def cmd_X(args: argparse.Namespace) -> None:` definition.
+  - Locate `build_parser()` (currently around line 12077; argparse registration lives there, NOT in `main()`). Enumerate each `subparsers.add_parser(...)` block and its `add_argument(...)` calls. This is the source of truth for the flag list, types, and `required=` flags.
+  - Build a unified `ARG_SPECS` table (in-memory, dumped into the report) of `{subcommand: [{flag, dest, type, default, required, value_kind}]}`. `value_kind` is one of `"path" | "string" | "int" | "bool" | "json-string" | "csv-string"` and is determined by argparse `type=`/`action=` first, then by an explicit override list, then by suffix-heuristic as a last resort.
+  - Generate `def _args_to_payload_X(args: argparse.Namespace) -> dict:` mapping each flag to a dict entry per `value_kind`. Path values are wrapped `pathlib.Path(args.X) if args.X else None` ONLY for `value_kind == "path"`.
+  - Generate `def _run_X(payload: dict) -> dict:` with the original cmd_X body, identifier-substituted (`args.X` → `payload["X"]` via CST node replacement, NOT textual substitution — preserves `!r`, `%s`, `repr`, and f-string conversion specifiers byte-equally) and with terminator calls rewritten:
+  - `_emit(args, expr)` → `return _result(expr, exit_code=0)`
+  - `_emit(args, expr, exit_code=N)` → `return _result(expr, exit_code=N)`
+  - `_die(args, expr)` → `return _result(expr, exit_code=1)` (default `_die` exit is 1)
+  - `_die(args, expr, exit_code=N)` → `return _result(expr, exit_code=N)`
+  - These rewrites apply to mid-body terminators AS WELL AS terminal terminators (no special-casing for "last statement").
+  - Replace stdin reads (`sys.stdin.read()`) with `payload["stdin_text"]`; the shim populates `stdin_text` from `_read_stdin_text()` for subcommands whose argparse parser declares `--stdin`. The codemod MUST NOT parse JSON in the shim. Existing command bodies keep their own `json.loads(raw)` calls and `JSONDecodeError` handling after `raw = payload["stdin_text"]`, and raw-markdown commands such as `cmd_parse_implementer_report` keep receiving text.
+  - Replace cmd_X body with the literal shim, **preserving the original `cmd_X` docstring on the shim** (operator/help-text contract):
+    ```python
+    def cmd_X(args: argparse.Namespace) -> None:
+    """<original cmd_X docstring, preserved verbatim>"""
+    payload = _args_to_payload_X(args)
+    result = _run_X(payload)
+    _emit_or_die(args, result)
+    ```
+  - Insert `_read_stdin_text()` helper at module scope (one definition) if not already present.
   - **Skip-list (functions left untouched in `--out`, surfaced to stderr and to the JSON report; hand-fixed in TASK-003):**
-    - `cmd_gates` — argparse mutex group (`mx_gates` at line 12938) requires mode collapse to `payload["mode"]` rather than three boolean flags.
-    - `cmd_filter_schedule` — stdin-vs-file branch encoded by argparse default `--schedule-file` + `--stdin`; payload needs `input_source` discriminator.
-    - `cmd_commit_task` — TWO mutex groups (`p_commit_rem_grp` at 12383, `p_commit_dis_grp` at 12425) PLUS cross-flag arg mutation in `main()` at line 13750 that converts `--dismissed-finding-ids` from str to `list[int]` before dispatch.
-    - `cmd_fail_task` — direct `sys.stdout.write+sys.exit` at lines 7627-7652 (the `--authorization-source` validation gate writes JSON to stdout and exits without going through `_emit/_die`); only the rest of the body uses `_die`.
-    - `cmd_audit` — direct `sys.stdout.write(_render_audit_text(report))` + `sys.exit(exit_code)` at lines 11060-11062 for the non-`--json` path; `_emit` is used only for the `--json` path. Mixed pattern.
-    - `cmd_resolve_read_targets` — custom success-emit `sys.stdout.write("\n")` + `sys.exit(0)` at lines 11673-11674 (no `_emit/_die` call for the success path).
-    - `cmd_build_claude_dispatch_input` — reads `os.environ["UNATTENDED_REVERT_POLICY"]` at lines 11734 + 12021, uses private `_bcdi_emit_error(code, message)` terminator at 12 call sites (not `_emit/_die`), AND has a sentinel-bearing path flag `--output -`.
-    - `cmd_build_codex_dispatch_input` — uses `_bcdi_emit_envelope(envelope, output)` private terminator (lines 12039-12042); same `--output -` sentinel.
-    - `cmd_build_gemini_dispatch_input` — uses `_bcdi_resolve_policy_or_die()` and `_bcdi_emit_envelope(envelope, output)` private terminators (entire 13-line body); same `--output -` sentinel.
-    - The codemod's dry-run report (TASK-001B) MUST surface any additional skip candidates discovered during AST inspection.
+  - `cmd_gates` — argparse mutex group (`mx_gates` at line 12938) requires mode collapse to `payload["mode"]` rather than three boolean flags.
+  - `cmd_filter_schedule` — stdin-vs-file branch encoded by argparse default `--schedule-file` + `--stdin`; payload needs `input_source` discriminator.
+  - `cmd_commit_task` — TWO mutex groups (`p_commit_rem_grp` at 12383, `p_commit_dis_grp` at 12425) PLUS cross-flag arg mutation in `main()` at line 13750 that converts `--dismissed-finding-ids` from str to `list[int]` before dispatch.
+  - `cmd_fail_task` — direct `sys.stdout.write+sys.exit` at lines 7627-7652 (the `--authorization-source` validation gate writes JSON to stdout and exits without going through `_emit/_die`); only the rest of the body uses `_die`.
+  - `cmd_audit` — direct `sys.stdout.write(_render_audit_text(report))` + `sys.exit(exit_code)` at lines 11060-11062 for the non-`--json` path; `_emit` is used only for the `--json` path. Mixed pattern.
+  - `cmd_resolve_read_targets` — custom success-emit `sys.stdout.write("\n")` + `sys.exit(0)` at lines 11673-11674 (no `_emit/_die` call for the success path).
+  - `cmd_build_claude_dispatch_input` — reads `os.environ["UNATTENDED_REVERT_POLICY"]` at lines 11734 + 12021, uses private `_bcdi_emit_error(code, message)` terminator at 12 call sites (not `_emit/_die`), AND has a sentinel-bearing path flag `--output -`.
+  - `cmd_build_codex_dispatch_input` — uses `_bcdi_emit_envelope(envelope, output)` private terminator (lines 12039-12042); same `--output -` sentinel.
+  - `cmd_build_gemini_dispatch_input` — uses `_bcdi_resolve_policy_or_die()` and `_bcdi_emit_envelope(envelope, output)` private terminators (entire 13-line body); same `--output -` sentinel.
+  - The codemod's dry-run report (TASK-001B) MUST surface any additional skip candidates discovered during AST inspection.
   - **`ARG_SPECS` value_kind override table (initial; TASK-001B refines):**
-    - Path-typed flags that DO NOT match the `_file/_path/_dir` suffix heuristic — must be declared `path`:
-      `update_schedule_state`, `from_schedule_state`, `repo_root`, `plans_dir`, `task_file`, `analyst_annotations`, `dispatch_context`, `report_file`, `baseline_file`, `out`, `baseline`.
-    - String-typed flags that DO match the suffix heuristic but are NOT paths — must be declared `string`:
-      `output` (sentinel `"-"` for stdout; body converts non-sentinel values to `Path` only when writing), `task_id`, `target_task_id`, `run_id`, `parent_run_id`, `fields_json` (JSON literal), `rows_json` (JSON literal), `reviewer_minor_findings` (JSON literal), `dismissed_finding_ids` (post-`main()` becomes `list[int]`; pre-`main()` it's a CSV string).
-    - All other flags: codemod uses argparse's declared `type=` if present, else suffix heuristic, else `string`.
+  - Path-typed flags that DO NOT match the `_file/_path/_dir` suffix heuristic — must be declared `path`:
+    `update_schedule_state`, `from_schedule_state`, `repo_root`, `plans_dir`, `task_file`, `analyst_annotations`, `dispatch_context`, `report_file`, `baseline_file`, `out`, `baseline`.
+  - String-typed flags that DO match the suffix heuristic but are NOT paths — must be declared `string`:
+    `output` (sentinel `"-"` for stdout; body converts non-sentinel values to `Path` only when writing), `task_id`, `target_task_id`, `run_id`, `parent_run_id`, `fields_json` (JSON literal), `rows_json` (JSON literal), `reviewer_minor_findings` (JSON literal), `dismissed_finding_ids` (post-`main()` becomes `list[int]`; pre-`main()` it's a CSV string).
+  - All other flags: codemod uses argparse's declared `type=` if present, else suffix heuristic, else `string`.
   - Idempotent: re-running on already-refactored code is a no-op (detect already-shimmed cmd_X by AST shape match — body is exactly the 4-line shim shape).
   - Unit tests:
-    - Golden-file test: feed a small synthetic `cmd_X` body covering each rewrite shape (mid-body `_emit`, mid-body `_die`, f-string with `!r` on `args.X`, `%s` interpolation, raw stdin read, `json.loads(raw)` after stdin read, raw markdown/text stdin read, `args.json` access in shim), assert byte-equal rewritten output.
-    - Real-file dry-run regression test: run codemod on the real `plan_ops.py` (read-only), assert (a) `ast.parse` succeeds on output, (b) all 38 cmd_X enumerated in the report (rewritten OR skipped — no silent omissions), (c) every original `_emit`/`_die` call site in non-skipped functions is accounted for as a `return _result(...)` in the rewritten body (count match), (d) no `args.<attr>` access remains in `_run_*` bodies (sanity check on identifier substitution), (e) `python -m py_compile <out>` succeeds, (f) `python <out> --help` lists the same 38 subcommand names as pre-codemod, (g) `python <out> <subcmd> --help` for each subcommand returns the same `option_strings` list as pre-codemod (argparse contract preserved).
-    - Targeted regression: assert `cmd_release_lock`'s `no-lock-file` and `run-id-mismatch` branches do NOT fall through after rewrite (mock `_atomic_write_json` to raise — if the rewritten body falls through, the mock fires; otherwise the early-return `return _result(...)` short-circuits).
-    - F-string preservation regression: assert that `cmd_commit_task`'s `f"bad --task-id: {args.task_id!r}"` (line 6887) and `cmd_fail_task`'s `f"bad --task-id: {args.task_id!r}"` (line 7656) stay byte-equal after rewrite (these are intentionally NOT rewritten in this task because both functions are in the skip list, but the codemod must demonstrate the rewrite shape works on a synthetic cmd_X body with the same construct).
+  - Golden-file test: feed a small synthetic `cmd_X` body covering each rewrite shape (mid-body `_emit`, mid-body `_die`, f-string with `!r` on `args.X`, `%s` interpolation, raw stdin read, `json.loads(raw)` after stdin read, raw markdown/text stdin read, `args.json` access in shim), assert byte-equal rewritten output.
+  - Real-file dry-run regression test: run codemod on the real `plan_ops.py` (read-only), assert (a) `ast.parse` succeeds on output, (b) all 38 cmd_X enumerated in the report (rewritten OR skipped — no silent omissions), (c) every original `_emit`/`_die` call site in non-skipped functions is accounted for as a `return _result(...)` in the rewritten body (count match), (d) no `args.<attr>` access remains in `_run_*` bodies (sanity check on identifier substitution), (e) `python -m py_compile <out>` succeeds, (f) `python <out> --help` lists the same 38 subcommand names as pre-codemod, (g) `python <out> <subcmd> --help` for each subcommand returns the same `option_strings` list as pre-codemod (argparse contract preserved).
+  - Targeted regression: assert `cmd_release_lock`'s `no-lock-file` and `run-id-mismatch` branches do NOT fall through after rewrite (mock `_atomic_write_json` to raise — if the rewritten body falls through, the mock fires; otherwise the early-return `return _result(...)` short-circuits).
+  - F-string preservation regression: assert that `cmd_commit_task`'s `f"bad --task-id: {args.task_id!r}"` (line 6887) and `cmd_fail_task`'s `f"bad --task-id: {args.task_id!r}"` (line 7656) stay byte-equal after rewrite (these are intentionally NOT rewritten in this task because both functions are in the skip list, but the codemod must demonstrate the rewrite shape works on a synthetic cmd_X body with the same construct).
 
 **Description:** This is the load-bearing investment. Once this script exists, every non-skipped `cmd_X` refactor becomes a deterministic operation with a reviewable diff. The implementer that writes this script is doing one focused job (AST rewriting) — no fixture authoring, no conformance harness, no pattern across N functions. Single-session tractable. Estimated codemod size: ~400–700 LoC of Python (libcst + argparse-introspection logic) + ~200–300 LoC of tests.
 
@@ -273,7 +288,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Status:** Pending
 - **Priority:** high (gate before TASK-002 fires)
 - **Files:**
-  - tools/codemods/plan_ops_pure_core_extract.py (read-only — produces a report; not modified here)
+  - tools/codemods/plan_ops_pure_core_extract.py (modify if dry-run surfaces ambiguous flags or new skip candidates — operator updates the override table and re-runs)
   - docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD/PLAN_PURE_CORE_CODEMOD.md (update — sync the skip list to the dry-run output)
   - docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD/dry_run_report.json (create — committed artifact)
 - **Dependencies:** TASK-001
@@ -282,12 +297,12 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
   - Dry-run produces `dry_run_report.json` with the schema:
     ```json
     {
-      "schema_version": 1,
-      "rewritten": [{"function": "cmd_X", "lines": [start, end], "emit_die_count": N, "stdin_read": true|false, "fstring_args_uses": M, "argparse_flags": [...]}],
-      "skipped": [{"function": "cmd_X", "reason": "<one-of: mutex-group | direct-stdout-exit | private-terminator | env-var-read | cross-flag-arg-mutation | mixed-pattern>", "evidence": "<file:line>"}],
-      "arg_specs": {"subcommand": [{"flag": "--X", "dest": "X", "value_kind": "path|string|int|bool|json-string|csv-string", "source": "argparse-type|override|suffix-heuristic", "required": true|false}]},
-      "warnings": ["<text>"],
-      "summary": {"total_cmd_x": 38, "rewritten_count": N, "skipped_count": M, "ambiguous_arg_specs_count": K}
+    "schema_version": 1,
+    "rewritten": [{"function": "cmd_X", "lines": [start, end], "emit_die_count": N, "stdin_read": true|false, "fstring_args_uses": M, "argparse_flags": [...]}],
+    "skipped": [{"function": "cmd_X", "reason": "<one-of: mutex-group | direct-stdout-exit | private-terminator | env-var-read | cross-flag-arg-mutation | mixed-pattern>", "evidence": "<file:line>"}],
+    "arg_specs": {"subcommand": [{"flag": "--X", "dest": "X", "value_kind": "path|string|int|bool|json-string|csv-string", "source": "argparse-type|override|suffix-heuristic", "required": true|false}]},
+    "warnings": ["<text>"],
+    "summary": {"total_cmd_x": 38, "rewritten_count": N, "skipped_count": M, "ambiguous_arg_specs_count": K}
     }
     ```
   - Skip list in `dry_run_report.json` matches (or extends) the v3 plan's 9 candidates: `cmd_gates`, `cmd_filter_schedule`, `cmd_commit_task`, `cmd_fail_task`, `cmd_audit`, `cmd_resolve_read_targets`, `cmd_build_claude_dispatch_input`, `cmd_build_codex_dispatch_input`, `cmd_build_gemini_dispatch_input`. Any newly-discovered skip candidate is logged with reason + evidence and the plan's TASK-003 description is updated by hand to cover it. `cmd_parse_schedule` should be rewritten by the codemod unless dry-run evidence discovers a new non-mechanical blocker.
@@ -309,20 +324,20 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify, codemod-generated diff — single commit)
 - **Dependencies:** TASK-000A, TASK-000B, TASK-001, TASK-001B
-- **Test command:** `venv/bin/python -m pytest tests/scripts/ -k "plan_ops" --no-cov && venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_core_baseline.py --no-cov`
+- **Test command:** `venv/bin/python -m pytest tests/scripts/ -k "plan_ops" && venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_core_baseline.py`
 - **Acceptance criteria:**
   - Run codemod with the finalized skip list from `dry_run_report.json` (TASK-001B): `python tools/codemods/plan_ops_pure_core_extract.py --in plugins/plan-executor/scripts/plan_ops.py --out plugins/plan-executor/scripts/plan_ops.py --skip-from-report docs/plans/MCP_MIGRATION/PURE_CORE_CODEMOD/dry_run_report.json`. The codemod refuses to run if `dry_run_report.json` is older than the codemod script's git sha (forces a re-dry-run if codemod source changed).
   - The full existing `plan_ops` test suite continues to pass without modification (semantic-drift gate).
   - The TASK-000B baseline test (`test_plan_ops_pure_core_baseline.py`) passes — every captured stdout/stderr/exit-code triple is byte-equal post-codemod.
   - `python plan_ops.py --help` lists the same 38 subcommand names; `python plan_ops.py <subcommand> --help` for each subcommand returns the same `option_strings` list (argparse contract preserved per-subcommand). Help-text wording may differ ONLY where the codemod's docstring-preservation logic intentionally normalizes whitespace; any such difference is documented in the commit message.
   - Smoke matrix (extends TASK-000B's baseline; runs in CI):
-    - Read-only fast path: `review-route`, `batch-next`, `parse-schedule`, `compute-schedule`, `log-event`
-    - Terminator-sensitive: `release-lock` no-lock-file, `release-lock` run-id-mismatch, `acquire-lock` empty-`--run-id`
-    - Argparse cross-flag: `commit-task --narrow-remediation-tag --dismissed-finding-ids 1,x` (must continue to exit 2 with parser.error banner — `cmd_commit_task` is in skip list precisely so this is preserved)
-    - Sentinel path flag: `build-claude-dispatch-input --output -` (preserved-as-skipped)
-    - File-output sentinel family: `build-codex-dispatch-input --output <tmp_path>/codex.json` and `build-gemini-dispatch-input --output <tmp_path>/gemini.json` must preserve the existing contract of writing the file and emitting no stdout.
-    - Stdin path: `filter-schedule --stdin` (preserved-as-skipped); `parse-schedule --stdin` (codemod-rewritten raw-stdin JSON path)
-    - `--json` and non-`--json` for at least three of the above
+  - Read-only fast path: `review-route`, `batch-next`, `parse-schedule`, `compute-schedule`, `log-event`
+  - Terminator-sensitive: `release-lock` no-lock-file, `release-lock` run-id-mismatch, `acquire-lock` empty-`--run-id`
+  - Argparse cross-flag: `commit-task --narrow-remediation-tag --dismissed-finding-ids 1,x` (must continue to exit 2 with parser.error banner — `cmd_commit_task` is in skip list precisely so this is preserved)
+  - Sentinel path flag: `build-claude-dispatch-input --output -` (preserved-as-skipped)
+  - File-output sentinel family: `build-codex-dispatch-input --output <tmp_path>/codex.json` and `build-gemini-dispatch-input --output <tmp_path>/gemini.json` must preserve the existing contract of writing the file and emitting no stdout.
+  - Stdin path: `filter-schedule --stdin` (preserved-as-skipped); `parse-schedule --stdin` (codemod-rewritten raw-stdin JSON path)
+  - `--json` and non-`--json` for at least three of the above
   - **Codemod-diff review by `code-reviewer` subagent**: dispatch one-shot review of the entire diff before commit. Reviewer checks: (a) no `args.<attr>` references remain in `_run_*` bodies, (b) every original `_emit/_die` call site is accounted for as a `return _result(...)`, (c) docstrings preserved on `cmd_X` shims, (d) `ARG_SPECS`-derived `_args_to_payload_X` helpers correctly Path-wrap only declared-`path` flags. Reviewer report captured in commit message body.
   - Commit message lists the rewritten count (target ≈29 of 38) and explicitly enumerates the skip-list (target 9 of 38) referencing TASK-001B's `dry_run_report.json` sha.
   - **Reverter clearance**: at the time of commit, `git status` shows ONLY `plugins/plan-executor/scripts/plan_ops.py` modified (codemod must not introduce stray changes — fixture files, formatting drift in unrelated functions, etc.).
@@ -339,57 +354,41 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify, the 9 skip-list functions)
+  - tests/scripts/fixtures/plan_ops_pure_core/cmd_gates_smoke.json (create — Tier-A smoke fixture pair for cmd_gates)
+  - tests/scripts/fixtures/plan_ops_pure_core/cmd_filter_schedule_smoke.json (create — Tier-A smoke fixture pair for cmd_filter_schedule)
 - **Dependencies:** TASK-002
-- **Test command:** `venv/bin/python -m pytest tests/scripts/ -k "gates or filter_schedule or commit_task or fail_task or audit or resolve_read_targets or build_claude_dispatch or build_codex_dispatch or build_gemini_dispatch" --no-cov`
-- **Acceptance criteria (per skip-list function):**
-
-  **cmd_gates** (mutex group):
-  - argparse mutex group `--list` / `--check` / `--certify` collapses into `payload["mode"]` (one of `"list"|"check"|"certify"`); shim derives `mode` from the boolean flags before calling `_run_gates(payload)`.
-  - argparse layer keeps the mutex group for CLI ergonomics (preserves exit-code-2 banner on operator misuse); `_run_gates(payload)` validates `mode` against the closed enum and rejects other-mode flags via `errors[{"code":"gates-mode-mismatch"}]`.
-  - Required-flag combinations for `mode == "certify"` (`--plan-file` + `--schedule-file` + `--mode {dry-run,execute}`) enforced INSIDE `_run_gates` (in addition to existing argparse check at lines 13675-13744 of `main()`), so MCP/pure callers without an argparse layer get the same validation. Returns `errors[{"code":"missing-required-flag", "flag":"plan-file"}]`.
-  - `--certify` non-zero exit (line 11121-11130) preserved via `return _result(envelope, exit_code=1)` — NOT inferred from `errors[]` (the certify happy-path with all gates passing is exit 0; certify with failing gates is exit 1 even though `errors[]` may be empty).
-
-  **cmd_filter_schedule** (stdin-vs-file branch):
-  - `payload["input_source"] in {"stdin","file"}` set by shim from resolved input source (`args.stdin` flag value AND `args.schedule_file` non-`None`); `_run_filter_schedule` branches on `input_source` identically to today's behavior at lines 5663+.
-  - The `data.get("outcome")` relaxation (when `input_source == "stdin"`) at the original line ~5710 is preserved verbatim.
-  - `payload["stdin_text"]` is set from raw stdin text only when `input_source == "stdin"`; file input populates `payload["schedule_text"]` from `Path(args.schedule_file).read_text()`. JSON parsing remains inside `_run_filter_schedule` so existing `json-decode` error envelopes stay byte-identical.
-
-  **cmd_commit_task** (two mutex groups + cross-flag arg mutation):
-  - `main()`'s cross-flag validation block at lines 13675-13750 (parser.error banner for narrow-remediation/dismissed-finding-ids/d4-rescue/disagreement combos) PRESERVED VERBATIM in main() — this is the CLI ergonomics layer. Do NOT lift into `_run_commit_task`; do NOT rewrite via codemod.
-  - For pure/MCP callers, introduce a sibling helper `_validate_commit_task_payload(payload: dict) -> list[dict]` that re-implements the same cross-flag invariants returning `errors[]` (does NOT call `parser.error`). `_args_to_payload_commit_task(args)` consumes already-validated `args.dismissed_finding_ids` (now `list[int]` post-`main()`) and emits a payload with the same shape as MCP callers would supply.
-  - Mutex groups `p_commit_rem_grp` (12383) and `p_commit_dis_grp` (12425) preserved verbatim in argparse layer; pure-call validator handles equivalent rejection via `errors[]`.
-  - The f-string `f"bad --task-id: {args.task_id!r}"` at line 6887 becomes `f"bad --task-id: {payload['task_id']!r}"` and asserts byte-equal stderr output (proves the codemod's f-string preservation is sound when applied here, even though the function is in the skip list).
-
-  **cmd_fail_task** (direct stdout+exit + `_die` mix):
-  - The `--authorization-source` validation gate at lines 7626-7652 (the JSON-or-text emit-and-exit pattern) refactors to use `_emit_or_die`: emit the `errors[{"code":"authorization-source-required"}]` envelope and return non-zero. Body of `_run_fail_task` returns `errors[]` populated; shim calls `_emit_or_die(args, result)`.
-  - The `--json` vs non-`--json` divergence is consolidated into `_emit_or_die` (which already handles both paths via the `args.json` branch in `_emit`).
-  - The remainder of the body (using `_die`) rewrites mechanically per the codemod rules, but is hand-applied here.
-  - `f"bad --task-id: {args.task_id!r}"` at line 7656 stays byte-equal post-rewrite.
-
-  **cmd_audit** (custom text renderer + `_emit` mix):
-  - The non-`--json` path at lines 11060-11062 (`sys.stdout.write(_render_audit_text(report))` + `sys.exit(exit_code)`) cannot use generic `_emit_or_die` because `_emit`'s non-JSON path emits `k: v` lines, not `_render_audit_text(...)` output. Solution: keep the custom rendering branch as-is inside `_run_audit` by returning a special envelope with `{"__plan_ops_text_output__": _render_audit_text(report), "__plan_ops_exit_code__": exit_code}`; `_emit_or_die` detects the text-output key and writes-then-exits. Document the `__plan_ops_text_output__` key as a documented internal-only convention; `_emit_or_die` is updated in TASK-000A to also check for it.
-  - Alternative considered (rejected): rewriting the audit rendering to flow through `_emit`'s plain-text path. Rejected because the current `_render_audit_text` output is rich (multi-line tables) and changing that would break operator-facing output.
-  - The `--json` path uses `_emit_or_die` cleanly (rewrites mechanically post-hand-fix).
-
-  **cmd_resolve_read_targets** (custom success-emit):
-  - The success path at lines 11673-11674 (`sys.stdout.write("\n")` + `sys.exit(0)`) returns the same envelope as `_die` paths at line 11666 — both go through the same shim using `_emit_or_die` with a uniform JSON envelope containing the resolved-targets list. The `sys.stdout.write("\n")` was a quirk of mixing direct write with `json.dump`; `_emit` already adds the trailing `\n` correctly so this is removable.
-
-  **cmd_build_claude_dispatch_input** (env reads + `_bcdi_emit_error` private terminator + sentinel `--output -`):
-  - `os.environ["UNATTENDED_REVERT_POLICY"]` reads at lines 11734 + 12021 lift into `_args_to_payload_build_claude_dispatch_input(args)` so MCP callers without env access supply the policy explicitly. Shim reads env and sets `payload["unattended_revert_policy"]`. Validation moves into `_run_build_claude_dispatch_input` which returns `errors[{"code":"unattended-revert-policy-invalid"}]` when invalid.
-  - `_bcdi_emit_error` and `_bcdi_emit_envelope` private terminators are RENAMED to `_bcdi_to_error_result` and `_bcdi_to_envelope_result` and refactored to RETURN `_result(...)` dicts instead of calling `sys.exit`. All 12 call sites become `return _bcdi_to_error_result(code, message)`. The private helpers become pure functions consumed by the shim's `_emit_or_die` call.
-  - `--output -` sentinel: `payload["output"]` stays a `str` (NOT Path-wrapped); the body checks `payload["output"] == "-"` for stdout-mode, else `Path(payload["output"]).write_text(envelope_json)` for file-mode.
-  - File-output mode preserves the current either/or CLI contract: `--output <path>` writes only the file and emits no stdout. Implement this by returning a result with `__plan_ops_stdout_suppressed__=True`, `__plan_ops_exit_code__=0`, and structured metadata such as `wrote_path` / `bytes_written` for MCP callers. `--output -` returns the envelope for stdout emission with no suppression marker.
-
-  **cmd_build_codex_dispatch_input** + **cmd_build_gemini_dispatch_input**:
-  - Same `_bcdi_to_error_result`/`_bcdi_to_envelope_result` migration; the bodies are tiny (13 LoC and 12 LoC) so the hand rewrite is straightforward once the helpers are pure.
-  - Same `--output -` sentinel handling and same no-stdout file-output contract as `cmd_build_claude_dispatch_input`.
-
-- **Acceptance criteria (cross-cutting):**
-  - All 9 skip-list functions pass their existing tests post-rewrite (per-function regression).
-  - The TASK-000B baseline test remains passing (no CLI envelope drift).
-  - cmd_gates / cmd_filter_schedule each get one smoke-fixture pair added to the TASK-004 Tier-A suite (see TASK-004 AC).
-  - Each hand-fix is committed in a SEPARATE commit (one per function or per logical group), referencing this plan + TASK-002's commit sha. This makes each special-case revertable independently.
-  - All other `cmd_*` are unaffected.
+- **Test command:** `venv/bin/python -m pytest tests/scripts/ -k "gates or filter_schedule or commit_task or fail_task or audit or resolve_read_targets or build_claude_dispatch or build_codex_dispatch or build_gemini_dispatch"`
+- **Acceptance criteria:**
+  - **cmd_gates (mutex group):** argparse mutex group `--list` / `--check` / `--certify` collapses into `payload["mode"]` (one of `"list"|"check"|"certify"`); shim derives `mode` from the boolean flags before calling `_run_gates(payload)`.
+  - **cmd_gates:** argparse layer keeps the mutex group for CLI ergonomics (preserves exit-code-2 banner on operator misuse); `_run_gates(payload)` validates `mode` against the closed enum and rejects other-mode flags via `errors[{"code":"gates-mode-mismatch"}]`.
+  - **cmd_gates:** Required-flag combinations for `mode == "certify"` (`--plan-file` + `--schedule-file` + `--mode {dry-run,execute}`) enforced INSIDE `_run_gates` (in addition to existing argparse check at lines 13675-13744 of `main()`), so MCP/pure callers without an argparse layer get the same validation. Returns `errors[{"code":"missing-required-flag", "flag":"plan-file"}]`.
+  - **cmd_gates:** `--certify` non-zero exit (line 11121-11130) preserved via `return _result(envelope, exit_code=1)` — NOT inferred from `errors[]` (the certify happy-path with all gates passing is exit 0; certify with failing gates is exit 1 even though `errors[]` may be empty).
+  - **cmd_filter_schedule (stdin-vs-file branch):** `payload["input_source"] in {"stdin","file"}` set by shim from resolved input source (`args.stdin` flag value AND `args.schedule_file` non-`None`); `_run_filter_schedule` branches on `input_source` identically to today's behavior at lines 5663+.
+  - **cmd_filter_schedule:** The `data.get("outcome")` relaxation (when `input_source == "stdin"`) at the original line ~5710 is preserved verbatim.
+  - **cmd_filter_schedule:** `payload["stdin_text"]` is set from raw stdin text only when `input_source == "stdin"`; file input populates `payload["schedule_text"]` from `Path(args.schedule_file).read_text()`. JSON parsing remains inside `_run_filter_schedule` so existing `json-decode` error envelopes stay byte-identical.
+  - **cmd_commit_task (two mutex groups + cross-flag arg mutation):** `main()`'s cross-flag validation block at lines 13675-13750 (parser.error banner for narrow-remediation/dismissed-finding-ids/d4-rescue/disagreement combos) PRESERVED VERBATIM in main() — this is the CLI ergonomics layer. Do NOT lift into `_run_commit_task`; do NOT rewrite via codemod.
+  - **cmd_commit_task:** For pure/MCP callers, introduce a sibling helper `_validate_commit_task_payload(payload: dict) -> list[dict]` that re-implements the same cross-flag invariants returning `errors[]` (does NOT call `parser.error`). `_args_to_payload_commit_task(args)` consumes already-validated `args.dismissed_finding_ids` (now `list[int]` post-`main()`) and emits a payload with the same shape as MCP callers would supply.
+  - **cmd_commit_task:** Mutex groups `p_commit_rem_grp` (12383) and `p_commit_dis_grp` (12425) preserved verbatim in argparse layer; pure-call validator handles equivalent rejection via `errors[]`.
+  - **cmd_commit_task:** The f-string `f"bad --task-id: {args.task_id!r}"` at line 6887 becomes `f"bad --task-id: {payload['task_id']!r}"` and asserts byte-equal stderr output.
+  - **cmd_fail_task (direct stdout+exit + `_die` mix):** The `--authorization-source` validation gate at lines 7626-7652 (the JSON-or-text emit-and-exit pattern) refactors to use `_emit_or_die`: emit the `errors[{"code":"authorization-source-required"}]` envelope and return non-zero. Body of `_run_fail_task` returns `errors[]` populated; shim calls `_emit_or_die(args, result)`.
+  - **cmd_fail_task:** The `--json` vs non-`--json` divergence is consolidated into `_emit_or_die` (which already handles both paths via the `args.json` branch in `_emit`).
+  - **cmd_fail_task:** The remainder of the body (using `_die`) rewrites mechanically per the codemod rules, but is hand-applied here.
+  - **cmd_fail_task:** `f"bad --task-id: {args.task_id!r}"` at line 7656 stays byte-equal post-rewrite.
+  - **cmd_audit (custom text renderer + `_emit` mix):** The non-`--json` path at lines 11060-11062 (`sys.stdout.write(_render_audit_text(report))` + `sys.exit(exit_code)`) cannot use generic `_emit_or_die` because `_emit`'s non-JSON path emits `k: v` lines, not `_render_audit_text(...)` output. Solution: keep the custom rendering branch as-is inside `_run_audit` by returning a special envelope with `{"__plan_ops_text_output__": _render_audit_text(report), "__plan_ops_exit_code__": exit_code}`; `_emit_or_die` detects the text-output key and writes-then-exits. Document the `__plan_ops_text_output__` key as a documented internal-only convention; `_emit_or_die` is updated in TASK-000A to also check for it.
+  - **cmd_audit:** Alternative considered (rejected): rewriting the audit rendering to flow through `_emit`'s plain-text path. Rejected because the current `_render_audit_text` output is rich (multi-line tables) and changing that would break operator-facing output.
+  - **cmd_audit:** The `--json` path uses `_emit_or_die` cleanly (rewrites mechanically post-hand-fix).
+  - **cmd_resolve_read_targets (custom success-emit):** The success path at lines 11673-11674 (`sys.stdout.write("\n")` + `sys.exit(0)`) returns the same envelope as `_die` paths at line 11666 — both go through the same shim using `_emit_or_die` with a uniform JSON envelope containing the resolved-targets list. The `sys.stdout.write("\n")` was a quirk of mixing direct write with `json.dump`; `_emit` already adds the trailing `\n` correctly so this is removable.
+  - **cmd_build_claude_dispatch_input (env reads + private terminator + sentinel `--output -`):** `os.environ["UNATTENDED_REVERT_POLICY"]` reads at lines 11734 + 12021 lift into `_args_to_payload_build_claude_dispatch_input(args)` so MCP callers without env access supply the policy explicitly. Shim reads env and sets `payload["unattended_revert_policy"]`. Validation moves into `_run_build_claude_dispatch_input` which returns `errors[{"code":"unattended-revert-policy-invalid"}]` when invalid.
+  - **cmd_build_claude_dispatch_input:** `_bcdi_emit_error` and `_bcdi_emit_envelope` private terminators are RENAMED to `_bcdi_to_error_result` and `_bcdi_to_envelope_result` and refactored to RETURN `_result(...)` dicts instead of calling `sys.exit`. All 12 call sites become `return _bcdi_to_error_result(code, message)`. The private helpers become pure functions consumed by the shim's `_emit_or_die` call.
+  - **cmd_build_claude_dispatch_input:** `--output -` sentinel: `payload["output"]` stays a `str` (NOT Path-wrapped); the body checks `payload["output"] == "-"` for stdout-mode, else `Path(payload["output"]).write_text(envelope_json)` for file-mode.
+  - **cmd_build_claude_dispatch_input:** File-output mode preserves the current either/or CLI contract: `--output <path>` writes only the file and emits no stdout. Implement this by returning a result with `__plan_ops_stdout_suppressed__=True`, `__plan_ops_exit_code__=0`, and structured metadata such as `wrote_path` / `bytes_written` for MCP callers. `--output -` returns the envelope for stdout emission with no suppression marker.
+  - **cmd_build_codex_dispatch_input + cmd_build_gemini_dispatch_input:** Same `_bcdi_to_error_result`/`_bcdi_to_envelope_result` migration; the bodies are tiny (13 LoC and 12 LoC) so the hand rewrite is straightforward once the helpers are pure.
+  - **cmd_build_codex_dispatch_input + cmd_build_gemini_dispatch_input:** Same `--output -` sentinel handling and same no-stdout file-output contract as `cmd_build_claude_dispatch_input`.
+  - **Cross-cutting:** All 9 skip-list functions pass their existing tests post-rewrite (per-function regression).
+  - **Cross-cutting:** The TASK-000B baseline test remains passing (no CLI envelope drift).
+  - **Cross-cutting:** cmd_gates / cmd_filter_schedule each get one smoke-fixture pair added to the TASK-004 Tier-A suite (see TASK-004 AC).
+  - **Cross-cutting:** Each hand-fix is committed in a SEPARATE commit (one per function or per logical group), referencing this plan + TASK-002's commit sha. This makes each special-case revertable independently.
+  - **Cross-cutting:** All other `cmd_*` are unaffected.
 
 **Description:** The 25-30% the codemod can't do. Nine functions across four shape clusters: mutex-groups (cmd_gates, cmd_commit_task), stdin-vs-file (cmd_filter_schedule), private-terminator family (`_bcdi_*` helpers + cmd_build_*_dispatch_input × 3), mixed-pattern (cmd_fail_task, cmd_audit, cmd_resolve_read_targets). The primary work here is making the private terminators pure (return-result instead of sys.exit), preserving no-stdout file-output mode for dispatch builders, and lifting env reads into the payload. Estimated edit surface: ~300-450 LoC across 9 functions + the `_bcdi_*` helper rename. Single-implementer dispatch is comfortable because each shape cluster is small.
 
@@ -405,13 +404,13 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
   - tests/scripts/plan_ops_pure_harness.py (create — driver/utility, not a test file)
   - tests/scripts/test_plan_ops_pure_harness.py (create — meta-tests over the driver itself)
 - **Dependencies:** TASK-003
-- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_harness.py --no-cov`
+- **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_harness.py`
 - **Acceptance criteria:**
   - Provides one reusable driver `run_conformance(subcommand: str, payload: dict, *, expected: dict, fixture_dir: Path) -> None` that:
-    - Invokes both `subprocess.run([sys.executable, "plan_ops.py", subcommand, *cli_argv_from(payload)], input=stdin_text, capture_output=True)` (CLI subprocess path)
-    - AND `_public_result(_run_<subcommand>(payload))` (in-process pure-core path, with CLI-only internal markers stripped)
-    - Asserts byte-equal exit code, stderr policy (text-vs-empty), and stdout JSON parseability AS SEPARATE assertions BEFORE any canonicalization comparison.
-    - After parseability passes, canonicalizes both envelopes (sorted keys, normalized whitespace, deterministic-timestamp stubs) and asserts byte-equal canonical form.
+  - Invokes both `subprocess.run([sys.executable, "plan_ops.py", subcommand, *cli_argv_from(payload)], input=stdin_text, capture_output=True)` (CLI subprocess path)
+  - AND `_public_result(_run_<subcommand>(payload))` (in-process pure-core path, with CLI-only internal markers stripped)
+  - Asserts byte-equal exit code, stderr policy (text-vs-empty), and stdout JSON parseability AS SEPARATE assertions BEFORE any canonicalization comparison.
+  - After parseability passes, canonicalizes both envelopes (sorted keys, normalized whitespace, deterministic-timestamp stubs) and asserts byte-equal canonical form.
   - Supports per-fixture: stdin payloads (text), temp file inputs (writes payload's `_files` map under `tmp_path`), expected filesystem snapshots (asserts pre-call vs post-call directory snapshot equality for Tier-A read-only invariant), fixed clock injection (monkeypatches `_now()`), and command-specific payload builders (defers to `_args_to_payload_<subcommand>`).
   - Self-tests of the harness cover: byte-equal happy path, deliberate stdin-text divergence detection, exit-code mismatch detection, JSON canonicalization equivalence (re-ordered keys equal), filesystem-snapshot diff detection.
   - The Tier-A/B/C fixture test files (TASK-004/005/006) import this driver and add ONLY fixture cases — no subprocess logic duplicated.
@@ -435,9 +434,9 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
   - Conformance harness with subprocess vs in-process driver: one fixture file pair per case, asserts byte-equal envelopes after JSON canonicalization (sorted keys, normalized whitespace, deterministic timestamps stubbed).
   - One happy-path fixture per Tier-A function (23 fns).
   - Special branch coverage:
-    - `cmd_filter_schedule`: 4 cases (valid filter, dependency-cycle triggering `_validate_schedule_dag`, stdin-vs-file `outcome=needs-enrichment` branch, unknown-task-id error).
-    - `cmd_gates`: 4 cases (each of `list` / `check` / `certify` modes plus a `certify`-missing-required-flag error).
-    - Each `cmd_parse_*` (5 fns): 2 cases (happy path + structured-error path).
+  - `cmd_filter_schedule`: 4 cases (valid filter, dependency-cycle triggering `_validate_schedule_dag`, stdin-vs-file `outcome=needs-enrichment` branch, unknown-task-id error).
+  - `cmd_gates`: 4 cases (each of `list` / `check` / `certify` modes plus a `certify`-missing-required-flag error).
+  - Each `cmd_parse_*` (5 fns): 2 cases (happy path + structured-error path).
   - Asserts no filesystem mutation as side effect (Tier-A invariant) — fixture runs in `tmp_path`, post-call directory snapshot must equal pre-call.
   - Test runtime under 30s.
   - Fixture authoring may be split into 2–3 sub-dispatches per function-cluster if budget pressure surfaces; each cluster (the 5 cmd_parse_*, the 4 schedule-graph fns, the long tail) is independently tractable.
@@ -455,7 +454,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Files:**
   - tests/scripts/test_plan_ops_pure_entrypoints_tier_b.py (create)
   - tests/scripts/fixtures/plan_ops_pure_core/tier_b/<sub>__<case>.{payload,expected}.json (create, ~10 pairs)
-- **Dependencies:** TASK-003B (harness reuse — independent of TASK-004 once harness exists; can run in parallel with TASK-004)
+- **Dependencies:** TASK-003B
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_entrypoints_tier_b.py`
 - **Acceptance criteria:**
   - Reuses Tier-A harness, adds: byte-equal `wrote_path` file content assertion + filesystem-snapshot diff (no `.tmp.<random>` leftovers from `_atomic_write_text` rename dance).
@@ -480,18 +479,18 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 - **Files:**
   - tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py (create)
   - tests/scripts/fixtures/plan_ops_pure_core/tier_c/<sub>__<case>.{payload,expected}.json (create, ~7-9 pairs)
-- **Dependencies:** TASK-003B (harness reuse — independent of TASK-005 once harness exists; can run in parallel with TASK-004 and TASK-005)
+- **Dependencies:** TASK-003B
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_pure_entrypoints_tier_c.py`
 - **Acceptance criteria:**
   - Per-function tmp-git-repo fixture: byte-equal git history (`git log --oneline --all` plus tree-hashes of every commit), byte-equal `_run_log.jsonl` (validates hash-chain), byte-equal lock-state file, identical exit codes per error path, byte-equal directory snapshot for `cmd_decompose_plan` outputs — all on the **happy path only**.
   - Required fixtures (named, happy-path-shaped):
-    - cmd_commit_task: clean-commit happy path; `out_of_scope_observed=true` reconciler-partition path
-    - cmd_fail_task: paused-run-with-authorization-source (codifies the hand-fix from TASK-003)
-    - cmd_log_event: rejected-event (not in `ALLOWED_LOG_EVENTS`) — exercises `errors[]` round-trip
-    - cmd_acquire_lock: stale-lock-takeover (codifies TASK-003's `_run_acquire_lock` shape)
-    - cmd_auto_validate_divergence: applicable-envelope happy path (no test-command-times-out — that's underlying behavior, not codemod equivalence)
-    - cmd_decompose_plan: malformed-plan error path (exercises `_run_*` error-envelope shape)
-    - cmd_block_dependents: empty-cascade short-circuit (exercises early-return `_run_*` shape)
+  - cmd_commit_task: clean-commit happy path; `out_of_scope_observed=true` reconciler-partition path
+  - cmd_fail_task: paused-run-with-authorization-source (codifies the hand-fix from TASK-003)
+  - cmd_log_event: rejected-event (not in `ALLOWED_LOG_EVENTS`) — exercises `errors[]` round-trip
+  - cmd_acquire_lock: stale-lock-takeover (codifies TASK-003's `_run_acquire_lock` shape)
+  - cmd_auto_validate_divergence: applicable-envelope happy path (no test-command-times-out — that's underlying behavior, not codemod equivalence)
+  - cmd_decompose_plan: malformed-plan error path (exercises `_run_*` error-envelope shape)
+  - cmd_block_dependents: empty-cascade short-circuit (exercises early-return `_run_*` shape)
   - **`cmd_commit_task` dismissed-finding-ids fixture:** at least one happy-path fixture for the `--narrow-remediation-tag` + `--dismissed-finding-ids 1,2,3` combo proving that `_validate_commit_task_payload` (introduced by TASK-003) returns `errors[]` for invalid combos and the CLI's argparse layer keeps producing exit-code-2 banners for the same combos. Asserts both paths reject `--dismissed-finding-ids 1,x` (CLI: exit 2 + banner; pure: `errors[{"code":"dismissed-finding-ids-not-int"}]`).
   - **commit-task body f-string preservation:** byte-equal stderr verification on `bad --task-id: <invalid>` error path (line 6887 / its hand-fixed equivalent post-TASK-003) — directly load-bearing for codemod correctness.
 

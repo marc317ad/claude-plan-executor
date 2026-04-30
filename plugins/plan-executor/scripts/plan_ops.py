@@ -2025,6 +2025,47 @@ def _die(args, result: dict, *, exit_code: int = 1) -> None:
     _emit(args, result, exit_code=exit_code)
 
 
+def _result(payload: dict, *, exit_code: int = 0) -> dict:
+    result = dict(payload)
+    result["__plan_ops_exit_code__"] = exit_code
+    return result
+
+
+def _public_result(result: dict) -> dict:
+    return {
+        key: value
+        for key, value in result.items()
+        if not key.startswith("__plan_ops_")
+    }
+
+
+def _emit_or_die(args, result: dict) -> None:
+    """Emit a marker-bearing result envelope and exit.
+
+    Internal-only ``__plan_ops_*__`` keys are a closed vocabulary:
+    ``__plan_ops_exit_code__`` overrides the process exit code;
+    ``__plan_ops_text_output__`` writes a non-empty string verbatim to stdout
+    instead of JSON/dict rendering, currently allowed only for ``cmd_audit``;
+    ``__plan_ops_stdout_suppressed__`` exits without stdout for file-output
+    commands such as the ``cmd_build_*_dispatch_input`` family.
+    """
+    exit_marker = result.pop("__plan_ops_exit_code__", None)
+    text_output = result.pop("__plan_ops_text_output__", None)
+    stdout_suppressed = bool(result.pop("__plan_ops_stdout_suppressed__", False))
+
+    if exit_marker is None:
+        exit_code = 1 if result.get("errors") or result.get("error") else 0
+    else:
+        exit_code = int(exit_marker)
+
+    if stdout_suppressed:
+        sys.exit(exit_code)
+    if isinstance(text_output, str) and text_output:
+        sys.stdout.write(text_output)
+        sys.exit(exit_code)
+    _emit(args, result, exit_code=exit_code)
+
+
 def _normalize_task_id(raw: str) -> str | None:
     if raw is None:
         return None
