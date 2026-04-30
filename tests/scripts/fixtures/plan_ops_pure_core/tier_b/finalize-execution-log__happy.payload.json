@@ -1,0 +1,14 @@
+{
+  "payload": {
+    "_files": {
+      "plan.md": "# Plan\n\n## Tasks\n\nbody\n"
+    },
+    "ending_sha": "bbb",
+    "outcome": "success",
+    "plan_file": "{FIXTURE_DIR}/plan.md",
+    "rows_json": "[{\"task\": \"001\", \"agent\": \"claude\", \"reviewer\": \"codex\", \"verdict\": \"ship\", \"commit\": \"abc1234\", \"notes\": \"ok\"}]",
+    "run_id": "PINNED-RUN-ID",
+    "starting_sha": "aaa"
+  },
+  "subcommand": "finalize-execution-log"
+}

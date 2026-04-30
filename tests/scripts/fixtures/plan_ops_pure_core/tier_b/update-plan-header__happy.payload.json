@@ -1,0 +1,10 @@
+{
+  "payload": {
+    "_files": {
+      "plan.md": "# Plan\n\n- **Status:** Pending\n\n## Context\n\nBody\n\n## Tasks\n\n### TASK-001: x\n"
+    },
+    "plan_file": "{FIXTURE_DIR}/plan.md",
+    "status": "complete"
+  },
+  "subcommand": "update-plan-header"
+}

@@ -1,0 +1,10 @@
+{
+  "payload": {
+    "check": null,
+    "json": true,
+    "list": true,
+    "report_file": null,
+    "strict": false
+  },
+  "subcommand": "audit"
+}

@@ -1,0 +1,7 @@
+{
+  "payload": {
+    "plan_file": "{FIXTURE_DIR}/missing.md",
+    "status": "complete"
+  },
+  "subcommand": "update-plan-header"
+}

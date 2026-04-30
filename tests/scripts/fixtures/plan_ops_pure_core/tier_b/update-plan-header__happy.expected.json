@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "expected_writes": [
+    "plan.md"
+  ],
+  "fs_invariant": false,
+  "stderr_policy": "empty"
+}

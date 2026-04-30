@@ -1,0 +1,14 @@
+{
+  "payload": {
+    "_files": {
+      "schedule.json": "PRE-EXISTING\n"
+    },
+    "schedule_file": {
+      "__path__": "{FIXTURE_DIR}/schedule.json"
+    },
+    "stdin": true,
+    "stdin_text": "{not json",
+    "strict": false
+  },
+  "subcommand": "write-schedule"
+}

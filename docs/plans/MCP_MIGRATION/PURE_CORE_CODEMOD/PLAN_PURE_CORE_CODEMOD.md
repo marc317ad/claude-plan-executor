@@ -568,7 +568,7 @@ This plan addresses TASK-011/012/013 (and indirectly de-risks 008 by providing a
 
 ### TASK-005: Tier-B conformance fixtures + atomic-write assertions
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - tests/scripts/test_plan_ops_pure_entrypoints_tier_b.py (create)

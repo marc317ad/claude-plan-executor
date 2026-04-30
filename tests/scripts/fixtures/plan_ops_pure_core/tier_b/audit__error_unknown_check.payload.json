@@ -1,0 +1,13 @@
+{
+  "payload": {
+    "_files": {
+      "target.md": "pre-existing\n"
+    },
+    "check": "totally-bogus-check-name",
+    "json": true,
+    "list": false,
+    "report_file": "{FIXTURE_DIR}/target.md",
+    "strict": false
+  },
+  "subcommand": "audit"
+}

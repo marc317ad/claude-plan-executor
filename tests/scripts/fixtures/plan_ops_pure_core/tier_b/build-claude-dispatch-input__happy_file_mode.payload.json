@@ -1,0 +1,18 @@
+{
+  "payload": {
+    "_files": {
+      "plan.md": "# Tier-B test plan\n\n- **Status:** Pending\n\n## Context\n\nStub.\n\n## Tasks\n\n### TASK-001: example\n\n- **Status:** Pending\n- **Priority:** medium\n- **Files:**\n  - src/one.py\n- **Dependencies:**\n- **Test command:** `none`\n- **Acceptance criteria:**\n  - x\n\n**Description:** Stub child plan.\n"
+    },
+    "analyst_annotations": null,
+    "dispatch_context": null,
+    "output": "{FIXTURE_DIR}/dispatch.json",
+    "plan_file": "{FIXTURE_DIR}/plan.md",
+    "repo_root": "{REPO_ROOT}",
+    "run_id": "PINNED-RUN-ID",
+    "starting_sha": "deadbeef",
+    "target_task_id": null,
+    "task_id": "1",
+    "variant": "default"
+  },
+  "subcommand": "build-claude-dispatch-input"
+}

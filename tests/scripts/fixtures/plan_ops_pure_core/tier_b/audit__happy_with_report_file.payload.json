@@ -1,0 +1,10 @@
+{
+  "payload": {
+    "check": "status_vocabulary",
+    "json": true,
+    "list": false,
+    "report_file": "{FIXTURE_DIR}/audit_report.md",
+    "strict": false
+  },
+  "subcommand": "audit"
+}

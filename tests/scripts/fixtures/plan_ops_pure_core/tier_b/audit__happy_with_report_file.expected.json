@@ -1,0 +1,9 @@
+{
+  "exit_code": 0,
+  "expected_writes": [
+    "audit_report.md"
+  ],
+  "fixed_now": "2026-04-30T00:00:00Z",
+  "fs_invariant": false,
+  "stderr_policy": "empty"
+}

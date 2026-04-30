@@ -1,0 +1,11 @@
+{
+  "payload": {
+    "schedule_file": {
+      "__path__": "{FIXTURE_DIR}/schedule.json"
+    },
+    "stdin": true,
+    "stdin_text": "{\"outcome\": \"valid\", \"tasks\": [{\"id\": \"001\", \"agent\": \"claude\", \"title\": \"one\", \"files\": [\"src/one.py\"], \"dependencies\": [], \"plan_file\": \"TASK-001_one.md\"}], \"batches\": [{\"index\": 1, \"task_ids\": [\"001\"], \"file_locks\": [\"src/one.py\"]}], \"gaps\": [], \"risks\": []}",
+    "strict": false
+  },
+  "subcommand": "write-schedule"
+}

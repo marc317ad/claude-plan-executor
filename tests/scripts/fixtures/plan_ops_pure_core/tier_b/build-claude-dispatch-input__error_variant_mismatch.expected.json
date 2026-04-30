@@ -1,0 +1,7 @@
+{
+  "compare_stdout_envelope": true,
+  "exit_code": 1,
+  "fixed_now": "2026-04-30T00:00:00Z",
+  "fs_invariant": true,
+  "stderr_policy": "empty"
+}
