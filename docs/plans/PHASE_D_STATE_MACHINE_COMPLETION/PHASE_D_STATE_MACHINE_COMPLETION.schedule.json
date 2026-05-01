@@ -1,0 +1,52 @@
+{
+  "outcome": "needs-enrichment",
+  "tasks": [
+    {
+      "id": "002",
+      "title": "Encode binding and unattended-policy decisions in `review-route`",
+      "agent": "codex",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/review_route_input_schema.json",
+        "plugins/plan-executor/scripts/review_route_output_schema.json",
+        "tests/scripts/test_plan_ops_review_route.py"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops_review_route.py",
+      "priority": "high",
+      "plan_file": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md",
+      "description": "Moves the last policy-sensitive Phase D routing decision out of SKILL prose and into the deterministic router.",
+      "acceptance_criteria": [
+        "`review-route` accepts `unattended_revert_policy: \"pause\" | \"fail-fast\" | \"preserve-only\"` in the payload, defaulting to `\"pause\"` for backward compatibility.",
+        "`codex_review_binding=true` plus Codex or Gemini `needs-rework` on Claude work returns `pause_awaiting_user` with `stage:\"post_binding_block\"` when policy is `\"pause\"`.",
+        "The same binding branch returns `fail` only when policy is `\"fail-fast\"` or `\"preserve-only\"`, and the output carries an explicit `authorization_source` or equivalent machine-readable field for the follow-on `fail-task` path.",
+        "D.4 fail/rescue entries are distinguishable from binding-policy entries in the output payload so the SKILL does not have to inspect free-text `fail_reason`.",
+        "Tests cover all three policies and assert that no D.5/remediation actions are reachable from the binding branch."
+      ],
+      "classification_reason": "plan body explicitly mandates codex implementer for every task; classifier verdict overridden"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/review_route_input_schema.json",
+        "plugins/plan-executor/scripts/review_route_output_schema.json",
+        "tests/scripts/test_plan_ops_review_route.py"
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "task_id": "002",
+      "type": "extra-task-heading",
+      "severity": "soft",
+      "detail": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md carries 5 ### TASK-NNN: headings; only the matching one is parsed. This chunk MUST be dispatched with target_task_id set so the renderer auto-injects the disambiguator (TASK-007)."
+    }
+  ],
+  "risks": []
+}

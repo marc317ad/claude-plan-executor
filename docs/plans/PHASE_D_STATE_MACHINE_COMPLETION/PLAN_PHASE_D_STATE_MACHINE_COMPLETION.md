@@ -1,7 +1,7 @@
 # Plan: Phase D State Machine Completion
 
 **Created:** 2026-04-30
-**Status:** partial
+**Status:** in-progress
 **Base branch:** main
 **Related:**
 - `docs/plans/archive/PHASE_D_STATE_MACHINE/PLAN_PHASE_D_STATE_MACHINE.md`
@@ -203,3 +203,11 @@ Starting SHA: `eaf18d3b4bb094798163b53241c0996101a6c8b4`  → Ending SHA: `5de62
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | TASK-001 | claude (codex-fallback) | codex | needs-rework [disagreement] | 5de62e8b | D.5 dismissed lone finding; reviewer=none gating filed as upstream contract follow-up |
+
+## Execution log — 20260501T161933 (success)
+
+Starting SHA: `86b123f482fce325628f70bf776e8f4858f12401`  → Ending SHA: `4400948cff64b265400af90b27aef2c61181fbdb`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | codex | claude | ship-with-fixes | 4400948cff64 | 3 minor findings (1 minor, 2 nits) on pre-existing issues; commit proceeded |
