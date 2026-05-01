@@ -547,6 +547,7 @@ The original task bodies for TASK-004 through TASK-013 are retained below for au
 ### TASK-015: SKILL.md migration to MCP tool calls (mechanical script + per-Phase manual pass)
 
 - **Status:** Pending
+- **Agent:** codex
 - **Priority:** high
 - **Files:**
   - tools/skill_md_mcp_migration.py (create) — one-shot mechanical regex pass
@@ -576,6 +577,7 @@ The original task bodies for TASK-004 through TASK-013 are retained below for au
 ### TASK-016: MCP↔CLI conformance test — parametrized over `_index.json` × codemod fixtures + conditional semantic-invalid coverage
 
 - **Status:** Pending
+- **Agent:** codex
 - **Priority:** high
 - **Files:**
   - tests/scripts/test_plan_ops_mcp_conformance.py (create)
@@ -603,6 +605,7 @@ The original task bodies for TASK-004 through TASK-013 are retained below for au
 ### TASK-017: Drift guard — argparse ↔ MCP registry ↔ SKILL parity ↔ codegen-up-to-date
 
 - **Status:** Pending
+- **Agent:** codex
 - **Priority:** medium
 - **Files:**
   - tests/scripts/test_skill_cli_reference_drift.py (modify — extend the existing PHASE_D drift guard)
@@ -626,6 +629,7 @@ The original task bodies for TASK-004 through TASK-013 are retained below for au
 ### TASK-018: End-to-end smoke — orchestrator runs through MCP only
 
 - **Status:** Pending
+- **Agent:** codex
 - **Priority:** high
 - **Files:**
   - tests/scripts/test_implement_plan_mcp_e2e.py (create)
