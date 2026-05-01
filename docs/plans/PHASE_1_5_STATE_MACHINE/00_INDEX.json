@@ -13,6 +13,7 @@
       "task_id": "001",
       "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
       "priority": "high",
+      "implementer": "codex",
       "depends_on": [],
       "status": "Pending",
       "superseded_by": []
@@ -21,6 +22,7 @@
       "task_id": "002",
       "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
       "priority": "high",
+      "implementer": "codex",
       "depends_on": [],
       "status": "Pending",
       "superseded_by": []
@@ -29,6 +31,7 @@
       "task_id": "003",
       "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
       "priority": "high",
+      "implementer": "codex",
       "depends_on": [],
       "status": "Pending",
       "superseded_by": []
@@ -37,6 +40,7 @@
       "task_id": "004",
       "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
       "priority": "high",
+      "implementer": "codex",
       "depends_on": [
         "001",
         "002"
@@ -48,6 +52,7 @@
       "task_id": "005",
       "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
       "priority": "medium",
+      "implementer": "codex",
       "depends_on": [
         "004"
       ],
@@ -58,6 +63,7 @@
       "task_id": "006",
       "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
       "priority": "medium",
+      "implementer": "codex",
       "depends_on": [
         "001",
         "004"
@@ -69,6 +75,7 @@
       "task_id": "007",
       "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
       "priority": "high",
+      "implementer": "codex",
       "depends_on": [
         "001",
         "002",

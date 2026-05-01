@@ -3,15 +3,14 @@
 Covers the acceptance criteria from
 ``docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md`` TASK-001:
 
-* Server starts, ``tools/list`` returns ``[]``, ``tools/call`` for any
-  name returns ``MethodNotFound``, and the process exits 0 on stdin
-  EOF.
+* Server starts, ``tools/list`` returns the registered ``plan_ops`` tools,
+  ``tools/call`` for an unknown name returns ``MethodNotFound``, and the
+  process exits 0 on stdin EOF.
 * ``$PYTHON`` is resolved via ``plan_ops._resolve_python`` and surfaced
   under a ``python_path`` server capability.
 * Uncaught crashes emit a single JSON error frame and exit non-zero.
 * The plugin manifest registers the server under name ``plan-ops`` with
-  the canonical ``${CLAUDE_PLUGIN_PYTHON}`` / ``${CLAUDE_PLUGIN_ROOT}``
-  command shape.
+  the canonical ``${CLAUDE_PLUGIN_ROOT}`` launcher/server path shape.
 * ``_subcommand_to_mcp_tool_name`` is a unit-tested pure helper.
 """
 
@@ -72,10 +71,10 @@ def test_manifest_registers_plan_ops_server():
     assert "plan-ops" in servers, f"expected 'plan-ops' entry, got {list(servers)!r}"
     entry = servers["plan-ops"]
     # Acceptance criterion (verbatim from TASK-001):
-    #   command ["${CLAUDE_PLUGIN_PYTHON}",
+    #   command ["${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh",
     #            "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops_mcp_server.py"]
     # Encoded canonically as Claude Code expects: command + args.
-    assert entry["command"] == "${CLAUDE_PLUGIN_PYTHON}"
+    assert entry["command"] == "${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh"
     assert entry["args"] == [
         "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops_mcp_server.py"
     ]
@@ -132,7 +131,7 @@ def _run_server_stdio_session(coro):
 
 
 @requires_mcp
-def test_tools_list_returns_empty_array_and_exits_clean_on_eof():
+def test_tools_list_returns_registered_tools_and_exits_clean_on_eof():
     """Drive the server end-to-end: connect, list tools, disconnect."""
     from mcp.client.session import ClientSession  # type: ignore[import-not-found]
     from mcp.client.stdio import (  # type: ignore[import-not-found]
@@ -150,10 +149,10 @@ def test_tools_list_returns_empty_array_and_exits_clean_on_eof():
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 result = await session.list_tools()
-                # Tools registry is empty at TASK-001 scaffolding time.
-                assert list(result.tools) == [], (
-                    f"expected empty tools list at scaffolding stage, got {result.tools!r}"
-                )
+                names = {tool.name for tool in result.tools}
+                assert "plan_ops__preflight" in names
+                assert "plan_ops__review_route" in names
+                assert "plan_ops__commit_task" in names
 
     _run_server_stdio_session(_drive)
 

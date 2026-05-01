@@ -236,6 +236,7 @@ Single-session parallel execution within each batch is the target.
 ### TASK-001: Add `plan_ops.py plan-review-route` subcommand
 
 - **Status:** Pending
+- **Implementer:** codex
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify)
@@ -267,6 +268,7 @@ Single-session parallel execution within each batch is the target.
 ### TASK-002: Persist Phase 1.5 state in `.schedule.json`
 
 - **Status:** Pending
+- **Implementer:** codex
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (modify)
@@ -290,6 +292,7 @@ Single-session parallel execution within each batch is the target.
 ### TASK-003: Wrapper sanitizer perimeter — plan-review field expansion
 
 - **Status:** Pending
+- **Implementer:** codex
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/_codex_envelope_sanitizer.py (modify)
@@ -313,6 +316,7 @@ Single-session parallel execution within each batch is the target.
 ### TASK-004: SKILL.md rewrite — Phase 1.5 / Phase 1.5.5 collapse, LLM roles
 
 - **Status:** Pending
+- **Implementer:** codex
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/SKILL.md (modify)
@@ -340,6 +344,7 @@ Single-session parallel execution within each batch is the target.
 ### TASK-005: Drift guard — extend SKILL ↔ argparse parity test for `plan-review-route`
 
 - **Status:** Pending
+- **Implementer:** codex
 - **Priority:** medium
 - **Files:**
   - tests/scripts/test_skill_cli_reference_drift.py (modify)
@@ -359,6 +364,7 @@ Single-session parallel execution within each batch is the target.
 ### TASK-006: Dispatch-templates alignment for Phase 1.5 / Phase 1.5.5
 
 - **Status:** Pending
+- **Implementer:** codex
 - **Priority:** medium
 - **Files:**
   - plugins/plan-executor/skills/implement-plan/dispatch-templates.md (modify)
@@ -382,6 +388,7 @@ Single-session parallel execution within each batch is the target.
 ### TASK-007: End-to-end smoke — full Phase 1.5 → Phase 1.5.5 → Phase 2 loop with stubs
 
 - **Status:** Pending
+- **Implementer:** codex
 - **Priority:** high
 - **Files:**
   - tests/scripts/test_phase_1_5_e2e.py (create)
