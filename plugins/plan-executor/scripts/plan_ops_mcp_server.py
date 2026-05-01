@@ -122,7 +122,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'acquire-lock',
   'run_callable_name': '_run_acquire_lock',
@@ -175,7 +174,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'audit',
   'run_callable_name': '_run_audit',
@@ -242,7 +240,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'auto-validate-divergence',
   'run_callable_name': '_run_auto_validate_divergence',
@@ -313,7 +310,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'batch-next',
   'run_callable_name': '_run_batch_next',
@@ -366,7 +362,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'block-dependents',
   'run_callable_name': '_run_block_dependents',
@@ -437,7 +432,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'build-claude-dispatch-input',
   'run_callable_name': '_run_build_claude_dispatch_input',
@@ -471,7 +465,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'build-codex-dispatch-input',
   'run_callable_name': '_run_build_codex_dispatch_input',
@@ -505,7 +498,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'build-gemini-dispatch-input',
   'run_callable_name': '_run_build_gemini_dispatch_input',
@@ -559,7 +551,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'build-tasks',
   'run_callable_name': '_run_build_tasks',
@@ -599,7 +590,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'check-plan-deps',
   'run_callable_name': '_run_check_plan_deps',
@@ -644,7 +634,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'claude-envelope-extract',
   'run_callable_name': '_run_claude_envelope_extract',
@@ -789,7 +778,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'commit-task',
   'run_callable_name': '_run_commit_task',
@@ -829,7 +817,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'compute-schedule',
   'run_callable_name': '_run_compute_schedule',
@@ -875,7 +862,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'decompose-plan',
   'run_callable_name': '_run_decompose_plan',
@@ -963,7 +949,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'fail-task',
   'run_callable_name': '_run_fail_task',
@@ -1012,7 +997,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'filter-schedule',
   'run_callable_name': '_run_filter_schedule',
@@ -1061,7 +1045,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'finalize-execution-log',
   'run_callable_name': '_run_finalize_execution_log',
@@ -1128,7 +1111,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'gates',
   'run_callable_name': '_run_gates',
@@ -1175,7 +1157,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'index-closure',
   'run_callable_name': '_run_index_closure',
@@ -1219,7 +1200,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'lint-plans',
   'run_callable_name': '_run_lint_plans',
@@ -1254,7 +1234,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'list-global-lock-paths',
   'run_callable_name': '_run_list_global_lock_paths',
@@ -1298,7 +1277,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'log-event',
   'run_callable_name': '_run_log_event',
@@ -1332,7 +1310,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'normalize-task-id',
   'run_callable_name': '_run_normalize_task_id',
@@ -1371,7 +1348,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'order-triage-findings',
   'run_callable_name': '_run_order_triage_findings',
@@ -1422,7 +1398,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'parse-d5-adjudication',
   'run_callable_name': '_run_parse_d5_adjudication',
@@ -1461,7 +1436,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'parse-implementer-report',
   'run_callable_name': '_run_parse_implementer_report',
@@ -1511,7 +1485,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'parse-plan-review-report',
   'run_callable_name': '_run_parse_plan_review_report',
@@ -1560,7 +1533,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'parse-plan-review-triage-report',
   'run_callable_name': '_run_parse_plan_review_triage_report',
@@ -1602,7 +1574,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'parse-schedule',
   'run_callable_name': '_run_parse_schedule',
@@ -1635,7 +1606,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'path-info',
   'run_callable_name': '_run_path_info',
@@ -1704,7 +1674,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'preflight',
   'run_callable_name': '_run_preflight',
@@ -1779,7 +1748,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'reconcile-batch',
   'run_callable_name': '_run_reconcile_batch',
@@ -1812,7 +1780,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'release-lock',
   'run_callable_name': '_run_release_lock',
@@ -1852,7 +1819,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'resolve-read-targets',
   'run_callable_name': '_run_resolve_read_targets',
@@ -1867,10 +1833,12 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                   'directive (TASK-001 PHASE_D_STATE_MACHINE). Reads the input '
                                   'envelope from stdin per review_route_input_schema.json; emits '
                                   'one directive per review_route_output_schema.json.',
+                   'type': 'object',
                    '$ref': '../../review_route_input_schema.json'},
   'output_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                     'title': 'plan_ops__review_route output',
                     'description': 'Output envelope for plan_ops `review-route` subcommand',
+                    'type': 'object',
                     '$ref': '../../review_route_output_schema.json'},
   'subcommand': 'review-route',
   'run_callable_name': '_run_review_route',
@@ -1914,7 +1882,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'run-summary',
   'run_callable_name': '_run_run_summary',
@@ -1950,7 +1917,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'update-plan-header',
   'run_callable_name': '_run_update_plan_header',
@@ -1993,7 +1959,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
                                                               "'valid', 'needs-enrichment')."}},
-                    'required': ['errors', 'warnings'],
                     'additionalProperties': True},
   'subcommand': 'write-schedule',
   'run_callable_name': '_run_write_schedule',
@@ -2062,14 +2027,15 @@ def _payload_from_mcp_arguments(entry: dict[str, Any], arguments: dict[str, Any]
 
 
 def _error_tool_result(result: dict[str, Any]) -> mcp_types.CallToolResult:
+    public = plan_ops._public_result(result)
     return mcp_types.CallToolResult(
         content=[
             mcp_types.TextContent(
                 type='text',
-                text=json.dumps(result, indent=2, sort_keys=False),
+                text=json.dumps(public, indent=2, sort_keys=False),
             )
         ],
-        structuredContent=result,
+        structuredContent=public,
         isError=True,
     )
 
@@ -2149,6 +2115,182 @@ async def _serve() -> None:
         await server.run(read_stream, write_stream, init_options)
 
 
+def _jsonrpc_response(request_id: Any, result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _jsonrpc_error(
+    request_id: Any,
+    *,
+    code: int,
+    message: str,
+    data: Any | None = None,
+) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": request_id, "error": error}
+
+
+def _manual_initialize_result(params: dict[str, Any]) -> dict[str, Any]:
+    requested = params.get("protocolVersion")
+    protocol_version = (
+        requested
+        if requested in {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
+        else mcp_types.LATEST_PROTOCOL_VERSION
+    )
+    return {
+        "protocolVersion": protocol_version,
+        "capabilities": {"tools": {"listChanged": False}},
+        "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+    }
+
+
+def _call_tool_result_payload(result: dict[str, Any] | mcp_types.CallToolResult) -> dict[str, Any]:
+    if isinstance(result, mcp_types.CallToolResult):
+        return result.model_dump(by_alias=True, exclude_none=True)
+    public = plan_ops._public_result(result)
+    return mcp_types.CallToolResult(
+        content=[
+            mcp_types.TextContent(
+                type="text",
+                text=json.dumps(public, indent=2, sort_keys=False),
+            )
+        ],
+        structuredContent=public,
+        isError=bool(public.get("errors")),
+    ).model_dump(by_alias=True, exclude_none=True)
+
+
+def _handle_jsonrpc_message(message: dict[str, Any]) -> dict[str, Any] | None:
+    method = message.get("method")
+    request_id = message.get("id")
+    params = message.get("params") if isinstance(message.get("params"), dict) else {}
+
+    try:
+        if method == "initialize":
+            return _jsonrpc_response(request_id, _manual_initialize_result(params))
+        if method == "notifications/initialized":
+            return None
+        if method == "ping":
+            return _jsonrpc_response(request_id, {})
+        if method == "tools/list":
+            tools = [
+                tool.model_dump(by_alias=True, exclude_none=True)
+                for tool in _registered_mcp_tools()
+            ]
+            return _jsonrpc_response(request_id, {"tools": tools})
+        if method == "tools/call":
+            name = params.get("name")
+            arguments = params.get("arguments")
+            if not isinstance(name, str):
+                return _jsonrpc_error(
+                    request_id,
+                    code=mcp_types.INVALID_PARAMS,
+                    message="tools/call requires params.name",
+                )
+            if arguments is not None and not isinstance(arguments, dict):
+                return _jsonrpc_error(
+                    request_id,
+                    code=mcp_types.INVALID_PARAMS,
+                    message="tools/call params.arguments must be an object",
+                )
+            result = asyncio.run(_dispatch_registered_tool(name, arguments or {}))
+            return _jsonrpc_response(request_id, _call_tool_result_payload(result))
+        return _jsonrpc_error(
+            request_id,
+            code=mcp_types.METHOD_NOT_FOUND,
+            message=f"Unknown method: {method!r}",
+        )
+    except McpError as exc:
+        err = exc.error
+        return _jsonrpc_error(
+            request_id,
+            code=err.code,
+            message=err.message,
+            data=err.data,
+        )
+    except BaseException as exc:  # noqa: BLE001 - JSON-RPC boundary
+        return _jsonrpc_error(
+            request_id,
+            code=mcp_types.INTERNAL_ERROR,
+            message=f"plan-ops MCP server error: {exc!r}",
+            data={"traceback": traceback.format_exc().splitlines()[-20:]},
+        )
+
+
+def _read_header_block(first_line: bytes) -> tuple[dict[str, str], bytes] | None:
+    headers: dict[str, str] = {}
+    line = first_line
+    while True:
+        if line in {b"\r\n", b"\n", b""}:
+            return headers, line
+        try:
+            key, value = line.decode("ascii").strip().split(":", 1)
+        except ValueError:
+            return None
+        headers[key.lower()] = value.strip()
+        line = sys.stdin.buffer.readline()
+
+
+def _stdio_jsonrpc_frames():
+    while True:
+        first = sys.stdin.buffer.readline()
+        if first == b"":
+            return
+        if not first.strip():
+            continue
+        if first.lower().startswith(b"content-length:"):
+            parsed = _read_header_block(first)
+            if parsed is None:
+                yield None, "content-length"
+                continue
+            headers, _blank = parsed
+            try:
+                length = int(headers["content-length"])
+            except (KeyError, ValueError):
+                yield None, "content-length"
+                continue
+            payload = sys.stdin.buffer.read(length)
+            yield payload.decode("utf-8", errors="replace"), "content-length"
+        else:
+            yield first.decode("utf-8", errors="replace"), "line"
+
+
+def _write_jsonrpc_response(response: dict[str, Any], framing: str) -> None:
+    blob = json.dumps(response, separators=(",", ":")).encode("utf-8")
+    if framing == "content-length":
+        sys.stdout.buffer.write(f"Content-Length: {len(blob)}\r\n\r\n".encode("ascii"))
+        sys.stdout.buffer.write(blob)
+        sys.stdout.buffer.flush()
+    else:
+        sys.stdout.write(blob.decode("utf-8") + "\n")
+        sys.stdout.flush()
+
+
+def _serve_stdio_jsonrpc() -> None:
+    for raw, framing in _stdio_jsonrpc_frames():
+        if raw is None:
+            response = _jsonrpc_error(
+                None,
+                code=mcp_types.PARSE_ERROR,
+                message="invalid JSON-RPC frame header",
+            )
+        else:
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                response = _jsonrpc_error(
+                    None,
+                    code=mcp_types.PARSE_ERROR,
+                    message=f"invalid JSON-RPC frame: {exc}",
+                )
+            else:
+                response = _handle_jsonrpc_message(message)
+        if response is not None:
+            _write_jsonrpc_response(response, framing)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Module entry point.
 
@@ -2156,7 +2298,7 @@ def main(argv: list[str] | None = None) -> int:
     uncaught crash (with a JSON error frame already emitted).
     """
     try:
-        asyncio.run(_serve())
+        _serve_stdio_jsonrpc()
         return 0
     except KeyboardInterrupt:  # pragma: no cover
         return 0

@@ -2,5 +2,6 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "plan_ops__review_route output",
   "description": "Output envelope for plan_ops `review-route` subcommand",
+  "type": "object",
   "$ref": "../../review_route_output_schema.json"
 }

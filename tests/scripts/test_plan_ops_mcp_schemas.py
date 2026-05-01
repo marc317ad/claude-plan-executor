@@ -138,6 +138,19 @@ def test_meta_schema_validation(index: dict) -> None:
             Draft202012Validator.check_schema(doc)
 
 
+def test_registered_tool_schemas_advertise_top_level_object(index: dict) -> None:
+    """Claude Code rejects tools/list entries whose schemas do not advertise
+    a literal top-level object type, even when the real schema is behind $ref.
+    """
+    for tool_name, entry in index["tools"].items():
+        for key in ("input_schema", "output_schema"):
+            path = MCP_DIR / entry[key]
+            doc = _load(path)
+            assert doc.get("type") == "object", (
+                f"{tool_name}: {key} must advertise top-level type=object"
+            )
+
+
 # ---------- input-schema semantics ------------------------------------------
 
 
@@ -260,6 +273,9 @@ def test_output_schemas_declare_errors_and_warnings(index: dict) -> None:
         assert "warnings" in properties, f"{tool_name}: output missing `warnings`"
         assert properties["errors"].get("type") == "array"
         assert properties["warnings"].get("type") == "array"
+        required = set(doc.get("required", []))
+        assert "errors" not in required, f"{tool_name}: output must not require `errors`"
+        assert "warnings" not in required, f"{tool_name}: output must not require `warnings`"
 
 
 # ---------- $ref reuse ------------------------------------------------------
@@ -271,8 +287,44 @@ def test_review_route_reuses_existing_sidecar(index: dict) -> None:
     out = _load(MCP_DIR / entry["output_schema"])
     assert inp.get("$ref", "").endswith("review_route_input_schema.json")
     assert out.get("$ref", "").endswith("review_route_output_schema.json")
+    # Top-level `type: "object"` sits alongside `$ref` so Claude Code's
+    # MCP client tools/list validator (which requires the literal string
+    # "object" at inputSchema.type / outputSchema.type) accepts the tool
+    # entry; without it, the entire tools/list response is rejected and
+    # no plan_ops tool surfaces to the session.
+    assert inp.get("type") == "object"
+    assert out.get("type") == "object"
     # Resolve the $ref and confirm the existing sidecar still parses.
     referenced_in = _resolve_ref(MCP_DIR / entry["input_schema"], inp)
     referenced_out = _resolve_ref(MCP_DIR / entry["output_schema"], out)
     assert isinstance(referenced_in, dict)
     assert isinstance(referenced_out, dict)
+
+
+def test_review_route_output_schema_matches_plan_ops_envelope(index: dict) -> None:
+    pytest.importorskip("jsonschema")
+    from jsonschema import Draft7Validator
+
+    entry = index["tools"]["plan_ops__review_route"]
+    out = _load(MCP_DIR / entry["output_schema"])
+    referenced_out = _resolve_ref(MCP_DIR / entry["output_schema"], out)
+    result = plan_ops._run_review_route(
+        {
+            "stdin_text": json.dumps(
+                {
+                    "task_id": "002",
+                    "implementer": "claude",
+                    "reviewer": "codex",
+                    "claude_only": False,
+                    "reviewer_envelope": {"verdict": "clean"},
+                    "d5_envelope": None,
+                    "retries_used": {},
+                    "flags": {},
+                }
+            )
+        }
+    )
+    result = plan_ops._public_result(result)
+
+    errors = sorted(Draft7Validator(referenced_out).iter_errors(result), key=str)
+    assert not errors, [error.message for error in errors]

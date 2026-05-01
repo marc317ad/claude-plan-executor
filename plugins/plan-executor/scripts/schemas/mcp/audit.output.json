@@ -29,9 +29,5 @@
       "description": "Subcommand-specific outcome label when the envelope carries one (e.g. 'valid', 'needs-enrichment')."
     }
   },
-  "required": [
-    "errors",
-    "warnings"
-  ],
   "additionalProperties": true
 }
