@@ -1,7 +1,7 @@
 # Plan: Phase D State Machine Completion
 
 **Created:** 2026-04-30
-**Status:** in-progress
+**Status:** complete
 **Base branch:** main
 **Related:**
 - `docs/plans/archive/PHASE_D_STATE_MACHINE/PLAN_PHASE_D_STATE_MACHINE.md`
@@ -220,3 +220,11 @@ Starting SHA: `d5a603866c72ab89fa44e91695dd4963271b91bf`  → Ending SHA: `8a4dc
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | TASK-003 | codex | claude | ship | 8a4dcbf | review_route_called now in ALLOWED_LOG_EVENTS with structured payload validation; e2e emits via public log-event. |
+
+## Execution log — 20260501T175558 (success)
+
+Starting SHA: `29451804a52d38e211c83af3992eb4f6c32be63f`  → Ending SHA: `3b0cbcf6bfc9b4af27125d0c1df2950621ed6c7f`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | codex | claude | ship | 3b0cbcf6 | All 5 ACs met; 25 pytest cases passed. Pre-existing cleanup nits filed as follow-ups. |

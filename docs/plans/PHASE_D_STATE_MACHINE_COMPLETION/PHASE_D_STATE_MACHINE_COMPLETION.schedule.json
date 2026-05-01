@@ -2,56 +2,50 @@
   "outcome": "needs-enrichment",
   "tasks": [
     {
-      "id": "004",
-      "title": "Bring MCP conformance up to the completed route contract",
+      "id": "005",
+      "title": "Update SKILL and e2e smoke to use the completed MCP route contract",
       "files": [
-        "`plugins/plan-executor/scripts/schemas/mcp/review_route.input.json`",
-        "`plugins/plan-executor/scripts/schemas/mcp/review_route.output.json`",
-        "`plugins/plan-executor/scripts/schemas/mcp/_index.json`",
-        "`plugins/plan-executor/scripts/plan_ops_mcp_server.py`",
-        "`tests/scripts/test_plan_ops_mcp_conformance.py`",
-        "`tests/scripts/test_plan_ops_mcp_registrations.py`",
-        "`tests/scripts/test_plan_ops_mcp_schemas.py`"
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md`",
+        "`tests/scripts/test_phase_d_e2e.py`",
+        "`tests/scripts/test_plan_gemini_dispatch_review.py`"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops_mcp_conformance.py tests/scripts/test_plan_ops_mcp_registrations.py tests/scripts/test_plan_ops_mcp_schemas.py",
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_phase_d_e2e.py tests/scripts/test_plan_gemini_dispatch_review.py",
       "priority": "medium",
       "plan_file": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md",
-      "description": "Keeps the landed MCP migration aligned with the now-complete Phase D router.",
+      "description": "Makes the reduced SKILL depend on the Python/MCP state machine for the final edge cases, preserving the token-saving intent of the original Phase D migration.",
       "acceptance_criteria": [
-        "`plan_ops__review_route` MCP input/output schemas expose the TASK-001 and TASK-002 fields with the same defaults and enums as the CLI schema.",
-        "`_index.json` still maps `plan_ops__review_route` to subcommand `review-route`; regenerated server callables continue to dispatch `_run_review_route`.",
-        "MCP conformance fixtures cover Codex, Gemini, Claude-only, binding pause, binding fail-fast, skip-review, and unknown-state cases.",
-        "Schema-invalid MCP payloads return MCP tool errors; semantically unknown states return normal `unknown_state` results.",
-        "Argparse/MCP drift tests fail if the CLI and MCP contracts diverge on reviewer identity, policy fields, or output action shapes."
+        "Phase D.2 SKILL prose names the canonical `review-route` payload fields: `implementer`, `reviewer`, `claude_only`, `unattended_revert_policy`, `flags`, `retries_used`, `reviewer_envelope`, and optional `d5_envelope`.",
+        "SKILL no longer relies on prose-only special cases for Claude-only, Gemini fallback, binding mode, or skip-review routing when those cases can be expressed in the route payload.",
+        "E2e coverage includes at least one MCP-backed `plan_ops__review_route` call path or the local MCP server harness equivalent.",
+        "Gemini fallback review is validated through the wrapper tests and through a route test proving Gemini `clean | minor-findings | needs-rework` maps like Codex on Claude-implemented work.",
+        "`dispatch-templates.md` remains aligned with the route output `dispatch_context` shape after any naming changes introduced by TASK-001/TASK-002."
       ],
       "agent": "codex",
-      "classification_reason": "explicit Implementer: codex directive in task block"
+      "classification_reason": "Implementer explicitly declared as codex"
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "004"
+        "005"
       ],
       "file_locks": [
-        "plugins/plan-executor/scripts/plan_ops_mcp_server.py",
-        "plugins/plan-executor/scripts/schemas/mcp/_index.json",
-        "plugins/plan-executor/scripts/schemas/mcp/review_route.input.json",
-        "plugins/plan-executor/scripts/schemas/mcp/review_route.output.json",
-        "tests/scripts/test_plan_ops_mcp_conformance.py",
-        "tests/scripts/test_plan_ops_mcp_registrations.py",
-        "tests/scripts/test_plan_ops_mcp_schemas.py"
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_phase_d_e2e.py",
+        "tests/scripts/test_plan_gemini_dispatch_review.py"
       ]
     }
   ],
   "gaps": [
     {
-      "task_id": "004",
+      "task_id": "005",
       "type": "extra-task-heading",
       "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md carries 5 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the disambiguator."
+      "detail": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md carries 5 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
     }
   ],
   "risks": []
