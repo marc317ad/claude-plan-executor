@@ -237,7 +237,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-001: Add `plan_ops.py plan-review-route` subcommand
 
-- **Status:** Pending
+- **Status:** done
 - **Implementer:** codex
 - **Priority:** high
 - **Files:**

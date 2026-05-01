@@ -582,6 +582,7 @@ CANONICAL_CONTRACT: dict[str, object] = {
         "batch-next",
         "filter-schedule",
         "parse-implementer-report",
+        "plan-review-route",
         "parse-plan-review-report",
         "claude-envelope-extract",
         "order-triage-findings",
@@ -11935,6 +11936,18 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Read review-route input JSON from stdin")
     _add_json(p_rr)
 
+    p_pr_route = sub.add_parser(
+        "plan-review-route",
+        help=(
+            "Route Phase 1.5 / 1.5.5 plan-review state to one "
+            "orchestrator directive. Reads plan_review_route_input_schema.json "
+            "from stdin and emits plan_review_route_output_schema.json."
+        ),
+    )
+    p_pr_route.add_argument("--stdin", action="store_true", required=True,
+                            help="Read plan-review-route input JSON from stdin")
+    _add_json(p_pr_route)
+
     p_sched = sub.add_parser("parse-schedule", help="Validate analyst JSON shape")
     p_sched.add_argument("--stdin", action="store_true", required=True,
                          help="Read JSON schedule from stdin")
@@ -13117,7 +13130,331 @@ def _unknown(reason: str, *, task_id: str | None = None,
     return {"action": "unknown_state", "reason": reason, "args": args}
 
 
-def route(payload: dict) -> dict:
+_PLAN_REVIEW_ROUTE_ACTIONS = {
+    "skip_plan_review",
+    "dispatch_claude_reviewer",
+    "dispatch_codex_reviewer",
+    "proceed_to_phase_2",
+    "dispatch_triage",
+    "dispatch_plan_author_per_finding",
+    "rerun_analyst_then_review",
+    "halt_plan_review_failed",
+    "pause_awaiting_user",
+    "unknown_state",
+}
+
+_PLAN_REVIEW_ROUTE_STAGES = {
+    "pre_dispatch",
+    "post_review",
+    "post_triage",
+    "post_plan_author",
+    "manual_pause",
+}
+_PLAN_REVIEW_TRIAGE_VERDICTS = {
+    "ship",
+    "ship-with-fixes",
+    "partial-agreement",
+    "needs-rework",
+}
+_PLAN_REVIEW_FAILURE_OUTCOMES = {"timeout", "parse_error", "failure"}
+
+
+def _plan_review_unknown(reason: str) -> dict:
+    return {"action": "unknown_state", "reason": reason, "args": {}}
+
+
+def _plan_review_route_attempt(payload: dict) -> int:
+    raw = payload.get("attempt")
+    if raw is None:
+        state = payload.get("plan_review_state")
+        if isinstance(state, dict):
+            raw = state.get("attempt")
+            if raw is None and state.get("auto_revise_round_completed") is True:
+                return 2
+    if isinstance(raw, bool):
+        return 1
+    if isinstance(raw, int):
+        return raw
+    return 1
+
+
+def _plan_review_route_findings(payload: dict) -> list:
+    env = payload.get("plan_review_envelope")
+    if isinstance(env, dict) and isinstance(env.get("findings"), list):
+        return env["findings"]
+    parsed = env.get("parsed") if isinstance(env, dict) else None
+    if isinstance(parsed, dict) and isinstance(parsed.get("findings"), list):
+        return parsed["findings"]
+    findings = payload.get("findings")
+    if isinstance(findings, list):
+        return findings
+    return []
+
+
+def _plan_review_route_reviewer(payload: dict) -> str | None:
+    raw = payload.get("reviewer")
+    if isinstance(raw, str):
+        return raw
+    env = payload.get("plan_review_envelope")
+    if isinstance(env, dict) and isinstance(env.get("reviewer"), str):
+        return env["reviewer"]
+    if payload.get("claude_only") is True:
+        return "claude"
+    return None
+
+
+def _plan_review_route_child_file(payload: dict, task_id: object) -> object:
+    if not isinstance(task_id, str):
+        return None
+    state = payload.get("plan_review_state")
+    if not isinstance(state, dict):
+        return None
+    mapping = state.get("task_plan_file_map")
+    if not isinstance(mapping, dict):
+        return None
+    return mapping.get(task_id) or mapping.get(_normalize_task_id(task_id) or task_id)
+
+
+def _plan_review_route_dispatches(payload: dict, findings: list) -> list[dict]:
+    dispatches: list[dict] = []
+    for index, finding in enumerate(findings):
+        target_task_id = None
+        if isinstance(finding, dict):
+            target_task_id = finding.get("target_task_id")
+        dispatches.append({
+            "source_index": (
+                finding.get("source_index", index)
+                if isinstance(finding, dict)
+                else index
+            ),
+            "finding": finding,
+            "target_task_id": target_task_id,
+            "variant": "A" if target_task_id is not None else "B",
+            "child_plan_file": _plan_review_route_child_file(
+                payload, target_task_id,
+            ),
+        })
+    return dispatches
+
+
+def _plan_review_route(payload: dict) -> dict:
+    """Pure deterministic router for Phase 1.5 / 1.5.5 plan review."""
+    if not isinstance(payload, dict):
+        return _plan_review_unknown("input must be a JSON object")
+
+    stage = payload.get("stage")
+    if stage not in _PLAN_REVIEW_ROUTE_STAGES:
+        return _plan_review_unknown(
+            f"unrecognized plan-review route stage {stage!r}; "
+            f"expected one of {sorted(_PLAN_REVIEW_ROUTE_STAGES)!r}"
+        )
+
+    flags = payload.get("flags") or {}
+    if not isinstance(flags, dict):
+        return _plan_review_unknown("flags must be an object")
+
+    if stage == "pre_dispatch":
+        if flags.get("skip_plan_review") is True:
+            return {
+                "action": "skip_plan_review",
+                "reason": "flag",
+                "args": {"reason": "flag"},
+            }
+        if payload.get("claude_only") is True:
+            return {"action": "dispatch_claude_reviewer", "args": {}}
+        if payload.get("claude_only") is False:
+            return {
+                "action": "dispatch_codex_reviewer",
+                "args": {
+                    "dispatch_context": {
+                        "allow_gaps_demotion": bool(flags.get("allow_gaps", False)),
+                    },
+                },
+                "dispatch_context": {
+                    "allow_gaps_demotion": bool(flags.get("allow_gaps", False)),
+                },
+            }
+        return _plan_review_unknown("pre_dispatch requires claude_only boolean")
+
+    if stage == "post_review":
+        env = payload.get("plan_review_envelope")
+        if not isinstance(env, dict):
+            return _plan_review_unknown("post_review requires plan_review_envelope")
+        outcome = env.get("outcome")
+        reviewer = _plan_review_route_reviewer(payload)
+        if outcome in _PLAN_REVIEW_FAILURE_OUTCOMES:
+            reason = (
+                "claude_review_failure"
+                if outcome == "failure" and reviewer == "claude"
+                else "codex_unavailable"
+            )
+            return {
+                "action": "skip_plan_review",
+                "reason": reason,
+                "args": {"reason": reason, "outcome": outcome},
+            }
+        verdict = env.get("verdict")
+        if outcome not in (None, "success"):
+            return _plan_review_unknown(
+                f"unrecognized plan-review outcome {outcome!r}"
+            )
+        if verdict not in ALLOWED_PLAN_REVIEW_VERDICTS:
+            return _plan_review_unknown(
+                f"unrecognized plan-review verdict {verdict!r}; "
+                f"expected one of {sorted(ALLOWED_PLAN_REVIEW_VERDICTS)!r}"
+            )
+        if verdict in {"approved", "approved-with-notes"}:
+            return {
+                "action": "proceed_to_phase_2",
+                "args": {
+                    "summary_section": {
+                        "findings_count": len(_plan_review_route_findings(payload)),
+                        "notes_count": len(env.get("notes") or [])
+                        if isinstance(env.get("notes"), list)
+                        else 0,
+                    },
+                },
+                "summary_section": {
+                    "findings_count": len(_plan_review_route_findings(payload)),
+                    "notes_count": len(env.get("notes") or [])
+                    if isinstance(env.get("notes"), list)
+                    else 0,
+                },
+            }
+
+        # verdict == needs-replan
+        if flags.get("codex_plan_review_binding") is True:
+            return {
+                "action": "halt_plan_review_failed",
+                "reason": "needs-replan with binding plan review",
+                "args": {"reason_detail": "binding_flag"},
+            }
+        if flags.get("no_auto_revise") is True:
+            return {
+                "action": "halt_plan_review_failed",
+                "reason": "needs-replan with auto-revise disabled",
+                "args": {"reason_detail": "no_auto_revise"},
+            }
+        attempt = _plan_review_route_attempt(payload)
+        if attempt == 1:
+            return {
+                "action": "dispatch_triage",
+                "args": {
+                    "dispatch_context": {
+                        "findings_for_payload": _plan_review_route_findings(payload),
+                    },
+                },
+                "dispatch_context": {
+                    "findings_for_payload": _plan_review_route_findings(payload),
+                },
+            }
+        if attempt == 2:
+            return {
+                "action": "halt_plan_review_failed",
+                "reason": "second plan-review pass still needs replan",
+                "args": {"reason_detail": "second_needs_replan"},
+            }
+        return _plan_review_unknown(
+            f"unsupported plan-review attempt {attempt!r}; expected 1 or 2"
+        )
+
+    if stage == "post_plan_author":
+        return {
+            "action": "rerun_analyst_then_review",
+            "args": {
+                "next_attempt": 2,
+                "binding_second_pass": True,
+            },
+        }
+
+    if stage == "manual_pause":
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason:
+            reason = "plan-review routing requested a user pause"
+        return {
+            "action": "pause_awaiting_user",
+            "reason": reason,
+            "args": {"pause_payload": {"stage": "plan_review", "reason": reason}},
+        }
+
+    # stage == post_triage
+    triage = payload.get("triage_envelope") or payload.get("plan_review_triage_envelope")
+    if not isinstance(triage, dict):
+        return _plan_review_unknown("post_triage requires triage_envelope")
+    verdict = triage.get("verdict")
+    if verdict not in _PLAN_REVIEW_TRIAGE_VERDICTS:
+        return _plan_review_unknown(
+            f"unrecognized plan-review triage verdict {verdict!r}; "
+            f"expected one of {sorted(_PLAN_REVIEW_TRIAGE_VERDICTS)!r}"
+        )
+    if verdict == "ship":
+        return {
+            "action": "proceed_to_phase_2",
+            "args": {
+                "summary_section": {
+                    "banner": "[plan-review-disagreement]",
+                    "triage_summary": triage.get("summary", ""),
+                },
+            },
+            "summary_section": {
+                "banner": "[plan-review-disagreement]",
+                "triage_summary": triage.get("summary", ""),
+            },
+        }
+    if verdict == "ship-with-fixes":
+        return {
+            "action": "proceed_to_phase_2",
+            "args": {
+                "summary_section": {
+                    "notes_section": "Plan review notes",
+                    "triage_summary": triage.get("summary", ""),
+                },
+            },
+            "summary_section": {
+                "notes_section": "Plan review notes",
+                "triage_summary": triage.get("summary", ""),
+            },
+        }
+
+    findings = _plan_review_route_findings(payload)
+    if verdict == "partial-agreement":
+        load_bearing = [
+            i for i in (triage.get("load_bearing") or [])
+            if isinstance(i, int) and 0 <= i < len(findings)
+        ]
+        load_bearing_set = set(load_bearing)
+        findings_for_payload = [findings[i] for i in load_bearing]
+        dismissed_for_context = [
+            findings[i] for i in range(len(findings)) if i not in load_bearing_set
+        ]
+    else:
+        findings_for_payload = list(findings)
+        dismissed_for_context = []
+
+    return {
+        "action": "dispatch_plan_author_per_finding",
+        "args": {
+            "dispatch_context": {
+                "findings_for_payload": findings_for_payload,
+                "dismissed_for_context": dismissed_for_context,
+                "per_finding_dispatches": _plan_review_route_dispatches(
+                    payload, findings_for_payload,
+                ),
+                "triage_summary": triage.get("summary", ""),
+            },
+        },
+        "dispatch_context": {
+            "findings_for_payload": findings_for_payload,
+            "dismissed_for_context": dismissed_for_context,
+            "per_finding_dispatches": _plan_review_route_dispatches(
+                payload, findings_for_payload,
+            ),
+            "triage_summary": triage.get("summary", ""),
+        },
+    }
+
+
+def _route_review_route(payload: dict) -> dict:
     """Pure routing function for SKILL Phase D.
 
     Maps `(implementer, reviewer_verdict, d5_verdict, retries_used, flags)`
@@ -13511,6 +13848,17 @@ def route(payload: dict) -> dict:
     }
 
 
+def route(payload: dict) -> dict:
+    """Pure routing entry point.
+
+    Payloads carrying a top-level ``stage`` use the Phase 1.5 plan-review
+    router. Legacy Phase D review-route payloads keep their existing behavior.
+    """
+    if isinstance(payload, dict) and "stage" in payload:
+        return _plan_review_route(payload)
+    return _route_review_route(payload)
+
+
 def _args_to_payload_review_route(args: argparse.Namespace) -> dict:
     payload = {
         "stdin": args.stdin,
@@ -13534,6 +13882,139 @@ def cmd_review_route(args: argparse.Namespace) -> None:
     'Thin stdin/_emit shim around `route()`.\n\n    Reads the review-route input envelope from stdin, validates structure,\n    and emits the routing directive on stdout. Schema violations exit\n    non-zero with a structured `errors[*]` payload. Unrecognized enum\n    values (verdicts outside the documented vocabularies) are routed to\n    `action: unknown_state` by `route()` itself with exit 0 — the\n    orchestrator pauses and returns to the user on that output.\n    '
     payload = _args_to_payload_review_route(args)
     result = _run_review_route(payload)
+    _emit_or_die(args, result)
+
+
+def _validate_plan_review_route_input(payload: object) -> list[dict]:
+    errors: list[dict] = []
+    if not isinstance(payload, dict):
+        return [{
+            "path": "$",
+            "code": "invalid-type",
+            "message": "input must be a JSON object",
+        }]
+    required = ("stage", "flags")
+    for key in required:
+        if key not in payload:
+            errors.append({
+                "path": f"$.{key}",
+                "code": "missing-field",
+                "message": f"required field {key!r} missing",
+            })
+    stage = payload.get("stage")
+    if "stage" in payload and not isinstance(stage, str):
+        errors.append({
+            "path": "$.stage",
+            "code": "invalid-type",
+            "message": "stage must be a string",
+        })
+    flags = payload.get("flags")
+    if "flags" in payload and not isinstance(flags, dict):
+        errors.append({
+            "path": "$.flags",
+            "code": "invalid-type",
+            "message": "flags must be an object",
+        })
+    elif isinstance(flags, dict):
+        for key in (
+            "skip_plan_review",
+            "codex_plan_review_binding",
+            "no_auto_revise",
+            "allow_gaps",
+        ):
+            if key in flags and not isinstance(flags[key], bool):
+                errors.append({
+                    "path": f"$.flags.{key}",
+                    "code": "invalid-type",
+                    "message": f"flags.{key} must be a boolean",
+                })
+    if "claude_only" in payload and not isinstance(payload["claude_only"], bool):
+        errors.append({
+            "path": "$.claude_only",
+            "code": "invalid-type",
+            "message": "claude_only must be a boolean",
+        })
+    if "attempt" in payload and (
+        not isinstance(payload["attempt"], int)
+        or isinstance(payload["attempt"], bool)
+    ):
+        errors.append({
+            "path": "$.attempt",
+            "code": "invalid-type",
+            "message": "attempt must be an integer",
+        })
+    if stage == "post_review":
+        env = payload.get("plan_review_envelope")
+        if not isinstance(env, dict):
+            errors.append({
+                "path": "$.plan_review_envelope",
+                "code": "missing-field",
+                "message": "post_review requires plan_review_envelope object",
+            })
+        elif "verdict" in env and not (env["verdict"] is None or isinstance(env["verdict"], str)):
+            errors.append({
+                "path": "$.plan_review_envelope.verdict",
+                "code": "invalid-type",
+                "message": "verdict must be a string or null",
+            })
+    if stage == "post_triage":
+        env = payload.get("plan_review_envelope")
+        if not isinstance(env, dict):
+            errors.append({
+                "path": "$.plan_review_envelope",
+                "code": "missing-field",
+                "message": "post_triage requires plan_review_envelope object",
+            })
+        triage = payload.get("triage_envelope") or payload.get("plan_review_triage_envelope")
+        if not isinstance(triage, dict):
+            errors.append({
+                "path": "$.triage_envelope",
+                "code": "missing-field",
+                "message": "post_triage requires triage_envelope object",
+            })
+        elif "verdict" in triage and not isinstance(triage["verdict"], str):
+            errors.append({
+                "path": "$.triage_envelope.verdict",
+                "code": "invalid-type",
+                "message": "verdict must be a string",
+            })
+    return errors
+
+
+def _args_to_payload_plan_review_route(args: argparse.Namespace) -> dict:
+    payload = {
+        "stdin": args.stdin,
+    }
+    payload["stdin_text"] = _read_stdin_text()
+    return payload
+
+
+def _run_plan_review_route(payload: dict) -> dict:
+    raw = payload["stdin_text"]
+    try:
+        route_payload = json.loads(raw) if raw.strip() else None
+    except json.JSONDecodeError as exc:
+        return _result({
+            "errors": [{
+                "path": "$",
+                "code": "json-decode",
+                "message": f"stdin is not valid JSON: {exc}",
+            }],
+        }, exit_code=1)
+    errors = _validate_plan_review_route_input(route_payload)
+    if errors:
+        return _result({
+            "error": "plan-review-route input schema violation",
+            "errors": errors,
+        }, exit_code=1)
+    assert isinstance(route_payload, dict)
+    directive = route(route_payload)
+    return _result(directive, exit_code=0)
+
+
+def cmd_plan_review_route(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_plan_review_route(args)
+    result = _run_plan_review_route(payload)
     _emit_or_die(args, result)
 
 
@@ -13619,6 +14100,7 @@ def main(argv: list[str] | None = None) -> None:
     handlers = {
         "preflight": cmd_preflight,
         "review-route": cmd_review_route,
+        "plan-review-route": cmd_plan_review_route,
         "parse-schedule": cmd_parse_schedule,
         "decompose-plan": cmd_decompose_plan,
         "build-tasks": cmd_build_tasks,

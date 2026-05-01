@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "plan-review-route output",
+  "description": "One routing directive emitted by `plan_ops.py plan-review-route` for Phase 1.5 / 1.5.5 plan-review routing.",
+  "type": "object",
+  "required": ["action", "args"],
+  "additionalProperties": true,
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "skip_plan_review",
+        "dispatch_claude_reviewer",
+        "dispatch_codex_reviewer",
+        "proceed_to_phase_2",
+        "dispatch_triage",
+        "dispatch_plan_author_per_finding",
+        "rerun_analyst_then_review",
+        "halt_plan_review_failed",
+        "pause_awaiting_user",
+        "unknown_state"
+      ]
+    },
+    "reason": {"type": "string"},
+    "args": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "reason": {"type": "string"},
+        "reason_detail": {"type": "string"},
+        "dispatch_context": {"type": "object"},
+        "summary_section": {"type": "object"}
+      }
+    },
+    "dispatch_context": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "allow_gaps_demotion": {"type": "boolean"},
+        "findings_for_payload": {"type": "array"},
+        "dismissed_for_context": {"type": "array"},
+        "per_finding_dispatches": {"type": "array"}
+      }
+    },
+    "summary_section": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "banner": {"type": "string"},
+        "notes_section": {"type": "string"}
+      }
+    }
+  }
+}

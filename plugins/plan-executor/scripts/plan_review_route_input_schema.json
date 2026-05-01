@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "plan-review-route input",
+  "description": "Input envelope consumed by `plan_ops.py plan-review-route`. The router maps Phase 1.5 / 1.5.5 plan-review state to one orchestrator action.",
+  "type": "object",
+  "required": ["stage", "flags"],
+  "additionalProperties": true,
+  "properties": {
+    "stage": {
+      "type": "string",
+      "enum": [
+        "pre_dispatch",
+        "post_review",
+        "post_triage",
+        "post_plan_author",
+        "manual_pause"
+      ]
+    },
+    "claude_only": {"type": "boolean"},
+    "reviewer": {"type": "string"},
+    "attempt": {"type": "integer", "minimum": 1},
+    "flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skip_plan_review": {"type": "boolean", "default": false},
+        "codex_plan_review_binding": {"type": "boolean", "default": false},
+        "no_auto_revise": {"type": "boolean", "default": false},
+        "allow_gaps": {"type": "boolean", "default": false}
+      }
+    },
+    "plan_review_envelope": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "outcome": {"type": "string"},
+        "reviewer": {"type": "string"},
+        "verdict": {"type": ["string", "null"]},
+        "findings": {"type": "array"},
+        "notes": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string"},
+        "schedule_ok": {"type": ["boolean", "null"]}
+      }
+    },
+    "triage_envelope": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "verdict": {"type": "string"},
+        "load_bearing": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        "dismissed": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        "summary": {"type": "string"}
+      }
+    },
+    "plan_review_state": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "auto_revise_round_completed": {"type": "boolean"},
+        "task_plan_file_map": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    }
+  }
+}
