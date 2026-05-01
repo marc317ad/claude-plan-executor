@@ -628,7 +628,7 @@ The original task bodies for TASK-004 through TASK-013 are retained below for au
 
 ### TASK-018: End-to-end smoke — orchestrator runs through MCP only
 
-- **Status:** Pending
+- **Status:** done
 - **Agent:** codex
 - **Priority:** high
 - **Files:**
