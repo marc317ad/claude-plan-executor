@@ -604,7 +604,7 @@ The original task bodies for TASK-004 through TASK-013 are retained below for au
 
 ### TASK-017: Drift guard — argparse ↔ MCP registry ↔ SKILL parity ↔ codegen-up-to-date
 
-- **Status:** Pending
+- **Status:** done
 - **Agent:** codex
 - **Priority:** medium
 - **Files:**
