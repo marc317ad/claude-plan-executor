@@ -1,7 +1,7 @@
 # Plan: Phase 1.5 State Machine + Sanitizer Extension
 
 **Created:** 2026-04-28
-**Status:** Pending
+**Status:** in-progress
 **Base branch:** main
 **Related:**
 - `plugins/plan-executor/skills/implement-plan/SKILL.md` (Phase 1.5 / Phase 1.5.5 sections)
@@ -408,3 +408,11 @@ Single-session parallel execution within each batch is the target.
 **Description:** The safety net. Locks in the orchestrator ↔ `plan-review-route` contract so future SKILL edits cannot silently regress Phase 1.5 / Phase 1.5.5 routing.
 
 **Reversion guidance:** Delete the test file + fixture directory.
+
+## Execution log — 20260501T185733 (success)
+
+Starting SHA: `8c57335f2e89a4336db10169433dcd0a9a542432`  → Ending SHA: `e6cf17ccbe2f8906558f870a86df7a7172f8a3aa`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | codex | claude | ship-with-fixes | e6cf17c | Plumbing: plan-review-route subcommand + 2 schemas + 24 tests; 71/71 tests pass on combined suite. 10 minor findings (no blockers): JSON-decode error shape, redundant route-arg duplication, schema/validator additionalProperties drift, dispatch_context shape duplication, attempt-coercion silent demote, stage-set vs schema enum drift, reviewer-fallback heuristic undocumented, defensive finding-extraction, missing CLI not-JSON test, plan-doc line-ref drift. |
