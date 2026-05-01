@@ -1,7 +1,7 @@
 # Plan: Phase D State Machine Completion
 
 **Created:** 2026-04-30
-**Status:** pending
+**Status:** partial
 **Base branch:** main
 **Related:**
 - `docs/plans/archive/PHASE_D_STATE_MACHINE/PLAN_PHASE_D_STATE_MACHINE.md`
@@ -193,3 +193,11 @@ Five tasks, five batches:
 **Description:** Makes the reduced SKILL depend on the Python/MCP state machine for the final edge cases, preserving the token-saving intent of the original Phase D migration.
 
 **Reversion guidance:** Revert SKILL and test edits. Runtime router changes from prior tasks remain usable through direct callers.
+
+## Execution log — 20260501T151343 (partial)
+
+Starting SHA: `eaf18d3b4bb094798163b53241c0996101a6c8b4`  → Ending SHA: `5de62e8b0f6bc7990f5b79115c0c0e300361013b`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-001 | claude (codex-fallback) | codex | needs-rework [disagreement] | 5de62e8b | D.5 dismissed lone finding; reviewer=none gating filed as upstream contract follow-up |
