@@ -249,6 +249,7 @@ ALLOWED_LOG_EVENTS = {
     "implement_done",
     "review_start",
     "review_done",
+    "review_route_called",
     "commit_done",
     "failed",
     "disagreement",
@@ -340,6 +341,15 @@ HANDFIX_GATED_EVENTS = frozenset({"remediation_start", "narrow_remediation_start
 # guard by switching field name or punctuation.
 HANDFIX_FIELDS = ("mechanism", "mode")
 HANDFIX_TOKEN = "handfix"
+REVIEW_ROUTE_CALLED_REQUIRED_FIELDS = (
+    "run_id",
+    "task_id",
+    "action",
+    "reviewer",
+    "implementer",
+    "route_reason",
+)
+REVIEW_ROUTE_REASON_MAX_CHARS = 160
 
 
 def _is_handfix_intent(fields: dict) -> bool:
@@ -359,6 +369,98 @@ def _is_handfix_intent(fields: dict) -> bool:
         if HANDFIX_TOKEN in normalized:
             return True
     return False
+
+
+def _validate_review_route_called_fields(fields: dict) -> list[dict]:
+    """Validate the public run-log shape for `review_route_called`.
+
+    The event is an audit breadcrumb for the state-machine call, so it keeps
+    reviewer identity and the routed action while intentionally avoiding raw
+    reviewer prose. `route_reason` is bounded to a short, single-line summary
+    suitable for logs.
+    """
+    errors: list[dict] = []
+    for key in REVIEW_ROUTE_CALLED_REQUIRED_FIELDS:
+        if key not in fields:
+            errors.append({
+                "path": f"$.{key}",
+                "code": "required",
+                "message": f"{key} is required for review_route_called",
+            })
+            continue
+        if not isinstance(fields[key], str) or not fields[key].strip():
+            errors.append({
+                "path": f"$.{key}",
+                "code": "non-empty-string-required",
+                "message": f"{key} must be a non-empty string for review_route_called",
+            })
+
+    task_id = fields.get("task_id")
+    if isinstance(task_id, str) and task_id.strip() and _normalize_task_id(task_id) is None:
+        errors.append({
+            "path": "$.task_id",
+            "code": "bad-task-id",
+            "message": "task_id must be a valid task identifier (expected NNN, NNNX, or TASK-NNN[X])",
+        })
+
+    action = fields.get("action")
+    if isinstance(action, str) and action.strip() and action not in _REVIEW_ROUTE_ACTIONS:
+        errors.append({
+            "path": "$.action",
+            "code": "unknown-review-route-action",
+            "message": f"action must be one of {sorted(_REVIEW_ROUTE_ACTIONS)}",
+        })
+
+    reviewer = fields.get("reviewer")
+    if isinstance(reviewer, str) and reviewer.strip() and reviewer not in _ALLOWED_REVIEWERS:
+        errors.append({
+            "path": "$.reviewer",
+            "code": "unknown-reviewer",
+            "message": f"reviewer must be one of {sorted(_ALLOWED_REVIEWERS)}",
+        })
+
+    implementer = fields.get("implementer")
+    if isinstance(implementer, str) and implementer.strip() and implementer not in {"claude", "codex"}:
+        errors.append({
+            "path": "$.implementer",
+            "code": "unknown-implementer",
+            "message": "implementer must be one of ['claude', 'codex']",
+        })
+
+    route_reason = fields.get("route_reason")
+    if isinstance(route_reason, str):
+        if "\n" in route_reason or "\r" in route_reason:
+            errors.append({
+                "path": "$.route_reason",
+                "code": "route-reason-multiline",
+                "message": "route_reason must be a compact single-line summary",
+            })
+        if len(route_reason) > REVIEW_ROUTE_REASON_MAX_CHARS:
+            errors.append({
+                "path": "$.route_reason",
+                "code": "route-reason-too-long",
+                "message": f"route_reason must be at most {REVIEW_ROUTE_REASON_MAX_CHARS} characters",
+            })
+
+    raw_text_keys = sorted(
+        key for key in fields
+        if isinstance(key, str)
+        and (
+            key.startswith("raw_")
+            or key in {"summary", "reviewer_summary", "review_text", "reviewer_text"}
+        )
+    )
+    if raw_text_keys:
+        errors.append({
+            "path": "$",
+            "code": "raw-reviewer-text-forbidden",
+            "message": (
+                "review_route_called must not copy raw reviewer free text; "
+                f"remove fields {raw_text_keys}"
+            ),
+        })
+
+    return errors
 
 # TASK-010: Globally-locked dependency / environment paths. Tasks whose
 # `files` set intersects this default set (or globs, or operator-supplied
@@ -7380,6 +7482,10 @@ def _run_log_event(payload: dict) -> dict:
         return _result({'error': '--fields-json must be a JSON object'}, exit_code=1)
     if payload['event'] not in ALLOWED_LOG_EVENTS:
         return _result({'errors': [{'path': '$.event', 'code': 'unknown-event-type', 'message': f"event {payload['event']!r} is not in the allowlist {sorted(ALLOWED_LOG_EVENTS)}"}]}, exit_code=1)
+    if payload['event'] == "review_route_called":
+        errors = _validate_review_route_called_fields(fields)
+        if errors:
+            return _result({'errors': errors}, exit_code=1)
     if payload['event'] in HANDFIX_GATED_EVENTS and _is_handfix_intent(fields):
         run_id = fields.get('run_id')
         task_id = fields.get('task_id')

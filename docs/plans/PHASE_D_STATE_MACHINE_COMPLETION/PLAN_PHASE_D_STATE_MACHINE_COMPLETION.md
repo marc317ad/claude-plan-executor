@@ -122,7 +122,7 @@ Five tasks, five batches:
 
 ### TASK-003: Make `review_route_called` a first-class run-log event
 
-- **Status:** Pending
+- **Status:** done
 - **Implementer:** codex
 - **Priority:** high
 - **Files:**

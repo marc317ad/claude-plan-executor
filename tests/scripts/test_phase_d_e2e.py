@@ -1,7 +1,7 @@
 """End-to-end smoke for the Phase D state machine (TASK-008 PHASE_D_STATE_MACHINE).
 
 Drives the full A→E loop against a one-task fixture plan with subagent
-outputs injected via stub — no real Codex or Claude spawn. Exercises:
+outputs injected via stub -- no real Codex or Claude spawn. Exercises:
 
     plan_ops.py preflight
         → parse-schedule
@@ -154,6 +154,22 @@ def _route_input(
         "retries_used": retries if retries is not None else _retries(),
         "flags": flags if flags is not None else _flags(),
     }
+
+
+def _review_route_reason(payload: dict, directive: dict) -> str:
+    reviewer = payload.get("reviewer")
+    if reviewer is None:
+        reviewer = "codex" if payload.get("implementer") == "claude" else "claude"
+    envelope = payload.get("reviewer_envelope") or {}
+    verdict = envelope.get("verdict", "unknown")
+    d5 = payload.get("d5_envelope") or {}
+    d5_verdict = d5.get("verdict")
+    reason = (
+        f"{payload.get('implementer')}->{reviewer} {verdict}"
+        f"{' d5=' + d5_verdict if d5_verdict else ''}"
+        f" => {directive.get('action')}"
+    )
+    return reason[:160]
 
 
 def _stub_implementer_report() -> str:
@@ -316,11 +332,10 @@ def test_chain_preflight_parse_write_batch_next(smoke_repo: dict) -> None:
 
 def _emit_basic_events(run_log: Path, *, run_id: str, task_id: str = "001",
                        sanitizer_flags: list | None = None) -> None:
-    """Emit run_start → batch_start → implement_done → review_done →
-    review_route_called as the orchestrator would. ``review_route_called``
-    is not in ``ALLOWED_LOG_EVENTS`` so we go through ``_append_run_log``
-    directly (the smoke owns the run-log seam). The other events are
-    in-allowlist; we still use ``_append_run_log`` for symmetry + speed.
+    """Emit run_start -> batch_start -> implement_done -> review_done.
+
+    The route decision itself is emitted by `_emit_review_route_called` via
+    the public `log-event` path after `plan_ops.route()` returns.
     """
     plan_ops._append_run_log("run_start", {"run_id": run_id})
     plan_ops._append_run_log("batch_start", {"run_id": run_id, "batch_index": 1})
@@ -336,10 +351,35 @@ def _emit_basic_events(run_log: Path, *, run_id: str, task_id: str = "001",
     if sanitizer_flags is not None:
         review_fields["extra"] = {"sanitizer_flags": sanitizer_flags}
     plan_ops._append_run_log("review_done", review_fields)
-    plan_ops._append_run_log(
-        "review_route_called",
-        {"run_id": run_id, "task_id": task_id},
+
+
+def _emit_review_route_called(
+    repo: Path,
+    *,
+    run_id: str,
+    payload: dict,
+    directive: dict,
+    task_id: str = "001",
+) -> None:
+    reviewer = payload.get("reviewer")
+    if reviewer is None:
+        reviewer = "codex" if payload.get("implementer") == "claude" else "claude"
+    fields = {
+        "run_id": run_id,
+        "task_id": task_id,
+        "action": directive["action"],
+        "reviewer": reviewer,
+        "implementer": payload["implementer"],
+        "route_reason": _review_route_reason(payload, directive),
+    }
+    cp = _run(
+        "log-event",
+        "--event", "review_route_called",
+        "--fields-json", json.dumps(fields),
+        "--json",
+        cwd=repo,
     )
+    assert cp.returncode == 0, f"log-event failed: {cp.stderr}\n{cp.stdout}"
 
 
 def _commit_via_subprocess(repo: Path, plan_child: Path, *,
@@ -395,9 +435,11 @@ def test_scenario_clean_verdict_commits(smoke_repo: dict) -> None:
 
     _emit_basic_events(run_log, run_id="R1")
 
-    out = plan_ops.route(_route_input(verdict="clean"))
+    payload = _route_input(verdict="clean")
+    out = plan_ops.route(payload)
     assert out["action"] == "commit"
     assert out["args"]["commit_flags"]["disagreement_tag"] is False
+    _emit_review_route_called(repo, run_id="R1", payload=payload, directive=out)
 
     body = _commit_via_subprocess(
         repo, smoke_repo["plan_child"], run_id="R1", schedule_file=schedule_file,
@@ -414,6 +456,15 @@ def test_scenario_clean_verdict_commits(smoke_repo: dict) -> None:
         "run_start", "batch_start", "implement_done", "review_done",
         "review_route_called", "commit_done", "batch_done", "run_end",
     ], f"event order mismatch: {names}"
+    route_event = events[names.index("review_route_called")]
+    assert route_event["run_id"] == "R1"
+    assert route_event["task_id"] == "001"
+    assert route_event["action"] == "commit"
+    assert route_event["reviewer"] == "codex"
+    assert route_event["implementer"] == "claude"
+    assert route_event["route_reason"] == "claude->codex clean => commit"
+    assert "summary" not in route_event
+    assert "reviewer_text" not in route_event
 
 
 # ---- Scenario 2: minor-findings → commit-with-notes ----------------------
@@ -426,9 +477,13 @@ def test_scenario_minor_findings_commits_with_notes(smoke_repo: dict) -> None:
     schedule_file.write_text(json.dumps({**_bare_schedule(""), "state": plan_ops._empty_schedule_state()}), encoding="utf-8")
 
     _emit_basic_events(run_log, run_id="R2")
-    out = plan_ops.route(_route_input(verdict="minor-findings",
-                                      findings=[{"index": 0, "message": "nit"}]))
+    payload = _route_input(
+        verdict="minor-findings",
+        findings=[{"index": 0, "message": "nit"}],
+    )
+    out = plan_ops.route(payload)
     assert out["action"] == "commit"
+    _emit_review_route_called(repo, run_id="R2", payload=payload, directive=out)
 
     minor = json.dumps([{
         "severity": "minor",
@@ -474,14 +529,16 @@ def test_scenario_d5_ship_commits_with_disagreement_tag(smoke_repo: dict) -> Non
     schedule_file.write_text(json.dumps({**_bare_schedule(""), "state": plan_ops._empty_schedule_state()}), encoding="utf-8")
 
     _emit_basic_events(run_log, run_id="R3")
-    out = plan_ops.route(_route_input(
+    payload = _route_input(
         verdict="needs-rework",
         findings=[{"i": 0, "msg": "x"}],
         d5={"verdict": "ship", "load_bearing": [], "dismissed": [],
             "summary": "D5 disagrees"},
-    ))
+    )
+    out = plan_ops.route(payload)
     assert out["action"] == "commit"
     assert out["args"]["commit_flags"]["disagreement_tag"] is True
+    _emit_review_route_called(repo, run_id="R3", payload=payload, directive=out)
 
     body = _commit_via_subprocess(
         repo, smoke_repo["plan_child"], run_id="R3",
@@ -523,8 +580,10 @@ def test_scenario_narrow_remediation_success_commits_with_narrow_tag(
     # First-pass narrow dispatch happens in scenario 4. Here the retry
     # cleared all load-bearing findings; the binding-clean re-review now
     # routes to commit with --narrow-remediation-tag + dismissed indices.
-    out = plan_ops.route(_route_input(verdict="clean"))
+    payload = _route_input(verdict="clean")
+    out = plan_ops.route(payload)
     assert out["action"] == "commit"
+    _emit_review_route_called(repo, run_id="R5", payload=payload, directive=out)
 
     args = [
         "commit-task",
@@ -561,14 +620,18 @@ def test_scenario_narrow_second_failure_pauses_awaiting_user(
 ) -> None:
     run_log = smoke_repo["run_log"]
     _emit_basic_events(run_log, run_id="R6")
-    out = plan_ops.route(_route_input(
+    payload = _route_input(
         verdict="needs-rework",
         findings=[{"i": 0}],
         d5={"verdict": "partial-agreement", "load_bearing": [0],
             "dismissed": [], "summary": "still loaded"},
         retries=_retries(narrow_remediation=True),
-    ))
+    )
+    out = plan_ops.route(payload)
     assert out["action"] == "pause_awaiting_user"
+    _emit_review_route_called(
+        smoke_repo["repo_root"], run_id="R6", payload=payload, directive=out,
+    )
     pp = out["args"]["pause_payload"]
     assert pp["stage"] == "post_narrow_remediation_review"
     assert pp["codex_findings"] == [{"i": 0}]
@@ -602,16 +665,24 @@ def test_scenario_d5_needs_rework_retry_success_commits_with_remediation_tag(
 
     _emit_basic_events(run_log, run_id="R7")
     # First pass: D.5 agrees → bounded remediation dispatched.
-    first = plan_ops.route(_route_input(
+    first_payload = _route_input(
         verdict="needs-rework", findings=[{"i": 0}],
         d5={"verdict": "needs-rework", "load_bearing": [], "dismissed": [],
             "summary": "agree"},
-    ))
+    )
+    first = plan_ops.route(first_payload)
     assert first["action"] == "dispatch_bounded_remediation"
+    _emit_review_route_called(
+        repo, run_id="R7", payload=first_payload, directive=first,
+    )
 
     # Retry pass: post-remediation review now clean.
-    second = plan_ops.route(_route_input(verdict="clean"))
+    second_payload = _route_input(verdict="clean")
+    second = plan_ops.route(second_payload)
     assert second["action"] == "commit"
+    _emit_review_route_called(
+        repo, run_id="R7", payload=second_payload, directive=second,
+    )
 
     body = _commit_via_subprocess(
         repo, smoke_repo["plan_child"], run_id="R7",
@@ -630,14 +701,18 @@ def test_scenario_d5_needs_rework_retry_fail_pauses_awaiting_user(
 ) -> None:
     run_log = smoke_repo["run_log"]
     _emit_basic_events(run_log, run_id="R8")
-    out = plan_ops.route(_route_input(
+    payload = _route_input(
         verdict="needs-rework",
         findings=[{"i": 0}],
         d5={"verdict": "needs-rework", "load_bearing": [], "dismissed": [],
             "summary": "still bad"},
         retries=_retries(bounded_remediation=True),
-    ))
+    )
+    out = plan_ops.route(payload)
     assert out["action"] == "pause_awaiting_user"
+    _emit_review_route_called(
+        smoke_repo["repo_root"], run_id="R8", payload=payload, directive=out,
+    )
     pp = out["args"]["pause_payload"]
     assert pp["stage"] == "post_remediation_review"
 
@@ -668,8 +743,10 @@ def test_scenario_sanitizer_flags_surface_in_run_log(smoke_repo: dict) -> None:
     ]
     _emit_basic_events(run_log, run_id="R9", sanitizer_flags=sanitizer_flags)
 
-    out = plan_ops.route(_route_input(verdict="clean"))
+    payload = _route_input(verdict="clean")
+    out = plan_ops.route(payload)
     assert out["action"] == "commit"
+    _emit_review_route_called(repo, run_id="R9", payload=payload, directive=out)
 
     body = _commit_via_subprocess(
         repo, smoke_repo["plan_child"], run_id="R9", schedule_file=schedule_file,
@@ -705,8 +782,10 @@ def test_full_run_log_event_order_clean_path(smoke_repo: dict) -> None:
     schedule_file.write_text(json.dumps({**_bare_schedule(""), "state": plan_ops._empty_schedule_state()}), encoding="utf-8")
 
     _emit_basic_events(run_log, run_id="ORDER")
-    out = plan_ops.route(_route_input(verdict="clean"))
+    payload = _route_input(verdict="clean")
+    out = plan_ops.route(payload)
     assert out["action"] == "commit"
+    _emit_review_route_called(repo, run_id="ORDER", payload=payload, directive=out)
     _commit_via_subprocess(repo, smoke_repo["plan_child"], run_id="ORDER",
                            schedule_file=schedule_file)
     plan_ops._append_run_log("batch_done", {"run_id": "ORDER", "batch_index": 1})

@@ -8846,6 +8846,95 @@ class TestLogEventAllowlist:
         codes = [e["code"] for e in body.get("errors", [])]
         assert "unknown-event-type" in codes
 
+    def test_accepts_review_route_called(self, isolated_plan: Path) -> None:
+        assert "review_route_called" in plan_ops.ALLOWED_LOG_EVENTS
+        fields = {
+            "run_id": "R1",
+            "task_id": "001",
+            "action": "commit",
+            "reviewer": "codex",
+            "implementer": "claude",
+            "route_reason": "claude->codex clean => commit",
+        }
+        cp = _run(
+            "log-event",
+            "--event", "review_route_called",
+            "--fields-json", json.dumps(fields),
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        body = _parse_json(cp)
+        rec = json.loads(body["written_line"])
+        assert rec["event"] == "review_route_called"
+        for key, value in fields.items():
+            assert rec[key] == value
+
+    @pytest.mark.parametrize(
+        ("fields", "code"),
+        [
+            (
+                {
+                    "run_id": "R1",
+                    "task_id": "001",
+                    "reviewer": "codex",
+                    "implementer": "claude",
+                    "route_reason": "missing action",
+                },
+                "required",
+            ),
+            (
+                {
+                    "run_id": "R1",
+                    "task_id": "001",
+                    "action": "not-a-route-action",
+                    "reviewer": "codex",
+                    "implementer": "claude",
+                    "route_reason": "bad action",
+                },
+                "unknown-review-route-action",
+            ),
+            (
+                {
+                    "run_id": "R1",
+                    "task_id": "001",
+                    "action": "commit",
+                    "reviewer": "codex",
+                    "implementer": "claude",
+                    "route_reason": "clean\nraw details",
+                },
+                "route-reason-multiline",
+            ),
+            (
+                {
+                    "run_id": "R1",
+                    "task_id": "001",
+                    "action": "commit",
+                    "reviewer": "codex",
+                    "implementer": "claude",
+                    "route_reason": "clean",
+                    "reviewer_text": "raw reviewer free text",
+                },
+                "raw-reviewer-text-forbidden",
+            ),
+        ],
+    )
+    def test_rejects_malformed_review_route_called(
+        self,
+        isolated_plan: Path,
+        fields: dict,
+        code: str,
+    ) -> None:
+        cp = _run(
+            "log-event",
+            "--event", "review_route_called",
+            "--fields-json", json.dumps(fields),
+            "--json",
+        )
+        assert cp.returncode == 1
+        body = _parse_json(cp)
+        codes = [e["code"] for e in body.get("errors", [])]
+        assert code in codes
+
 
 class TestFinalizeExecutionLogOutcome:
     """`finalize-execution-log --outcome paused` must be accepted per

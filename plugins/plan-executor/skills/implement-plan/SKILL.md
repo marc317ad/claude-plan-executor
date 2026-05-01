@@ -629,6 +629,7 @@ plan_review_triage_done
 plan_review_triage_start
 remediation_start
 review_done
+review_route_called
 review_skipped
 review_start
 run_end
