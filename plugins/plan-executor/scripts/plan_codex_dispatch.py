@@ -1132,7 +1132,12 @@ def _handle_timeout_cleanup(
     out_of_scope_observed = bool(out_of_scope_tracked or out_of_scope_untracked)
 
     if restore_tracked or delete_untracked:
-        _restore_in_scope(restore_tracked, delete_untracked, repo_root)
+        _restore_in_scope(
+            restore_tracked,
+            delete_untracked,
+            repo_root,
+            authorization_source="wrapper_internal_cleanup_explicit_declaration",
+        )
 
     return {
         "cleanup_strategy": "in_scope_only",
