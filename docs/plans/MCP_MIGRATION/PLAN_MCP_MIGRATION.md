@@ -1,7 +1,7 @@
 # Plan: `plan_ops.py` MCP Tool-Server Migration
 
 **Created:** 2026-04-28
-**Status:** in-progress
+**Status:** complete
 **Base branch:** main
 **Related:**
 - `plugins/plan-executor/scripts/plan_ops.py` (~13.3K lines, 36 subcommands)
@@ -706,3 +706,11 @@ Starting SHA: `aaf4a5004c829eadb70a1afc3c31fe4a844f936a`  → Ending SHA: `89135
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 017 | codex | claude | ship | 891351714e45 | 4-assertion drift guard; 1 minor finding recorded |
+
+## Execution log — 20260501T023102 (success)
+
+Starting SHA: `63a00f0b6d59989fddcf2f8fcd5e1666efa56dc7`  → Ending SHA: `b19f4a7842da9442311976a5c51c5b5394cd2c10`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 018 | codex | claude | ship-with-fixes | b19f4a7 | 4 minor findings (see review_done event); inner-loop split on schemas/mcp/_index.json; outer narrative covers Phase 0->E, review_route action surfaces, commit-safe, reconcile partition, fail_task auth, MCP crash pause |
