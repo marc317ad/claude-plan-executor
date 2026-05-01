@@ -2,50 +2,56 @@
   "outcome": "needs-enrichment",
   "tasks": [
     {
-      "id": "003",
-      "title": "Make `review_route_called` a first-class run-log event",
-      "agent": "codex",
+      "id": "004",
+      "title": "Bring MCP conformance up to the completed route contract",
       "files": [
-        "plugins/plan-executor/scripts/plan_ops.py",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md",
-        "tests/scripts/test_phase_d_e2e.py",
-        "tests/scripts/test_plan_ops.py"
+        "`plugins/plan-executor/scripts/schemas/mcp/review_route.input.json`",
+        "`plugins/plan-executor/scripts/schemas/mcp/review_route.output.json`",
+        "`plugins/plan-executor/scripts/schemas/mcp/_index.json`",
+        "`plugins/plan-executor/scripts/plan_ops_mcp_server.py`",
+        "`tests/scripts/test_plan_ops_mcp_conformance.py`",
+        "`tests/scripts/test_plan_ops_mcp_registrations.py`",
+        "`tests/scripts/test_plan_ops_mcp_schemas.py`"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_phase_d_e2e.py tests/scripts/test_plan_ops.py -k 'log_event or phase_d or review_route_called'",
-      "priority": "high",
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops_mcp_conformance.py tests/scripts/test_plan_ops_mcp_registrations.py tests/scripts/test_plan_ops_mcp_schemas.py",
+      "priority": "medium",
       "plan_file": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md",
-      "description": "The original Phase D plan expected this event, but the current implementation only smokes it through a private helper. This task makes the audit event real.",
+      "description": "Keeps the landed MCP migration aligned with the now-complete Phase D router.",
       "acceptance_criteria": [
-        "`review_route_called` is added to `ALLOWED_LOG_EVENTS` and to the SKILL's post-compaction allowlist reference.",
-        "Phase D e2e emits `review_route_called` through the public `log-event` subcommand or pure-core equivalent, not by calling `_append_run_log` directly.",
-        "The event payload records `run_id`, `task_id`, `action`, `reviewer`, `implementer`, and a compact route reason without copying raw reviewer free text.",
-        "Existing event-order assertions remain strict and pass through the public logging path.",
-        "Run-log validation rejects malformed `review_route_called` payloads with structured errors if such validation exists for adjacent events."
+        "`plan_ops__review_route` MCP input/output schemas expose the TASK-001 and TASK-002 fields with the same defaults and enums as the CLI schema.",
+        "`_index.json` still maps `plan_ops__review_route` to subcommand `review-route`; regenerated server callables continue to dispatch `_run_review_route`.",
+        "MCP conformance fixtures cover Codex, Gemini, Claude-only, binding pause, binding fail-fast, skip-review, and unknown-state cases.",
+        "Schema-invalid MCP payloads return MCP tool errors; semantically unknown states return normal `unknown_state` results.",
+        "Argparse/MCP drift tests fail if the CLI and MCP contracts diverge on reviewer identity, policy fields, or output action shapes."
       ],
-      "classification_reason": "plan body explicitly mandates codex implementer for every task; classifier verdict overridden"
+      "agent": "codex",
+      "classification_reason": "explicit Implementer: codex directive in task block"
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "003"
+        "004"
       ],
       "file_locks": [
-        "plugins/plan-executor/scripts/plan_ops.py",
-        "plugins/plan-executor/skills/implement-plan/SKILL.md",
-        "tests/scripts/test_phase_d_e2e.py",
-        "tests/scripts/test_plan_ops.py"
+        "plugins/plan-executor/scripts/plan_ops_mcp_server.py",
+        "plugins/plan-executor/scripts/schemas/mcp/_index.json",
+        "plugins/plan-executor/scripts/schemas/mcp/review_route.input.json",
+        "plugins/plan-executor/scripts/schemas/mcp/review_route.output.json",
+        "tests/scripts/test_plan_ops_mcp_conformance.py",
+        "tests/scripts/test_plan_ops_mcp_registrations.py",
+        "tests/scripts/test_plan_ops_mcp_schemas.py"
       ]
     }
   ],
   "gaps": [
     {
-      "task_id": "003",
+      "task_id": "004",
       "type": "extra-task-heading",
       "severity": "soft",
-      "detail": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md carries 5 ### TASK-NNN: headings; only the matching one is parsed. This chunk MUST be dispatched with target_task_id set so the renderer auto-injects the disambiguator (TASK-007)."
+      "detail": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md carries 5 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the disambiguator."
     }
   ],
   "risks": []
