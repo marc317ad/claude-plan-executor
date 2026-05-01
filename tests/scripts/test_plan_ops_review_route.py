@@ -63,8 +63,9 @@ def _payload(*, implementer: str, verdict: str,
              d5: dict | None = None,
              retries: dict | None = None,
              flags: dict | None = None,
+             unattended_revert_policy: str | None = None,
              task_id: str = "001") -> dict:
-    return {
+    payload = {
         "task_id": task_id,
         "implementer": implementer,
         "reviewer_envelope": {
@@ -76,6 +77,9 @@ def _payload(*, implementer: str, verdict: str,
         "retries_used": retries if retries is not None else _retries(),
         "flags": flags if flags is not None else _flags(),
     }
+    if unattended_revert_policy is not None:
+        payload["unattended_revert_policy"] = unattended_revert_policy
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -108,15 +112,54 @@ def test_claude_codex_needs_rework_no_d5_dispatches_d5() -> None:
     assert "wrapper_checks" in ctx
 
 
-def test_codex_review_binding_routes_to_fail_no_d5() -> None:
-    """AC: `flags.codex_review_binding=true` + Codex `needs-rework` → fail."""
+def test_codex_review_binding_defaults_to_pause_no_d5() -> None:
+    """Binding mode defaults to `pause` for backward compatibility."""
     out = plan_ops.route(_payload(
         implementer="claude", verdict="needs-rework",
         flags=_flags(codex_review_binding=True),
     ))
-    assert out["action"] == "fail"
-    assert out["args"]["fail_stage"] == "review"
-    assert "codex-review-binding" in out["args"]["fail_reason"]
+    assert out["action"] == "pause_awaiting_user"
+    assert out["args"]["policy_kind"] == "binding_policy"
+    assert out["args"]["unattended_revert_policy"] == "pause"
+    assert out["args"]["pause_payload"]["stage"] == "post_binding_block"
+    assert "dispatch_context" not in out["args"]
+
+
+@pytest.mark.parametrize(
+    ("policy", "action", "authorization_source"),
+    [
+        ("pause", "pause_awaiting_user", None),
+        ("fail-fast", "fail", "unattended-fail-fast"),
+        ("preserve-only", "fail", "unattended-preserve-only"),
+    ],
+)
+def test_codex_review_binding_respects_unattended_policy(
+    policy: str, action: str, authorization_source: str | None,
+) -> None:
+    out = plan_ops.route(_payload(
+        implementer="claude", verdict="needs-rework",
+        findings=[{"i": 0}],
+        flags=_flags(codex_review_binding=True),
+        unattended_revert_policy=policy,
+    ))
+    assert out["action"] == action
+    assert out["action"] not in {
+        "dispatch_d5",
+        "dispatch_bounded_remediation",
+        "dispatch_narrow_remediation",
+    }
+    assert out["args"]["policy_kind"] == "binding_policy"
+    assert out["args"]["unattended_revert_policy"] == policy
+    assert "dispatch_context" not in out["args"]
+    if action == "pause_awaiting_user":
+        assert out["args"]["pause_payload"]["stage"] == "post_binding_block"
+        assert out["args"]["pause_payload"]["policy_kind"] == "binding_policy"
+        assert out["args"]["pause_payload"]["codex_findings"] == [{"i": 0}]
+        assert "authorization_source" not in out["args"]
+    else:
+        assert out["args"]["fail_stage"] == "review"
+        assert out["args"]["authorization_source"] == authorization_source
+        assert "codex-review-binding" in out["args"]["fail_reason"]
 
 
 @pytest.mark.parametrize("d5_verdict", ["ship", "ship-with-fixes"])
@@ -369,10 +412,13 @@ def _payload_v2(*, implementer: str, reviewer: str | None, verdict: str,
                 d5: dict | None = None,
                 retries: dict | None = None,
                 flags: dict | None = None,
+                unattended_revert_policy: str | None = None,
                 task_id: str = "001") -> dict:
     payload = _payload(
         implementer=implementer, verdict=verdict, findings=findings,
-        d5=d5, retries=retries, flags=flags, task_id=task_id,
+        d5=d5, retries=retries, flags=flags,
+        unattended_revert_policy=unattended_revert_policy,
+        task_id=task_id,
     )
     if reviewer is not None:
         payload["reviewer"] = reviewer
@@ -415,6 +461,8 @@ def test_claude_only_claude_reviewer_needs_rework_routes_to_d4_fail() -> None:
     ))
     assert out["action"] == "fail"
     assert out["args"]["fail_stage"] == "review"
+    assert out["args"]["policy_kind"] == "d4_review_failure"
+    assert out["args"]["authorization_source"] == "phase-d4-review-failure"
     assert "claude_only" in out["args"]["fail_reason"]
     # D.5/D.2a.5/D.2a.6 are unreachable — directive carries no dispatch_context.
     assert "dispatch_context" not in out["args"]
@@ -456,6 +504,38 @@ def test_gemini_reviewer_needs_rework_dispatches_d5_like_codex() -> None:
     ))
     assert out["action"] == "dispatch_d5"
     assert out["args"]["dispatch_context"]["template"] == "PhaseD5"
+
+
+@pytest.mark.parametrize(
+    ("policy", "action", "authorization_source"),
+    [
+        ("pause", "pause_awaiting_user", None),
+        ("fail-fast", "fail", "unattended-fail-fast"),
+        ("preserve-only", "fail", "unattended-preserve-only"),
+    ],
+)
+def test_gemini_review_binding_matches_codex_policy_branch(
+    policy: str, action: str, authorization_source: str | None,
+) -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="gemini", claude_only=False,
+        verdict="needs-rework", findings=[{"i": 0}],
+        flags=_flags(codex_review_binding=True),
+        unattended_revert_policy=policy,
+    ))
+    assert out["action"] == action
+    assert out["action"] not in {
+        "dispatch_d5",
+        "dispatch_bounded_remediation",
+        "dispatch_narrow_remediation",
+    }
+    assert out["args"]["policy_kind"] == "binding_policy"
+    assert out["args"]["unattended_revert_policy"] == policy
+    assert "dispatch_context" not in out["args"]
+    if action == "pause_awaiting_user":
+        assert out["args"]["pause_payload"]["stage"] == "post_binding_block"
+    else:
+        assert out["args"]["authorization_source"] == authorization_source
 
 
 def test_gemini_reviewer_under_claude_only_is_unknown_state() -> None:

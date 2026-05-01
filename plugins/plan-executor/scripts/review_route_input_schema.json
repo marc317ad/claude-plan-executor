@@ -25,6 +25,12 @@
       "default": false,
       "description": "Runtime mode flag bound at Phase 0 preflight (`--claude-only OR codex_available=false`). When `true`, Codex/Gemini shell-out is forbidden, the D.5 / D.2a.5 / D.2a.6 ladder collapses, and a Claude-reviewer `needs-rework` on Claude work routes straight to D.4 (action `fail`). Optional during the compatibility window — see top-level description."
     },
+    "unattended_revert_policy": {
+      "type": "string",
+      "enum": ["pause", "fail-fast", "preserve-only"],
+      "default": "pause",
+      "description": "Policy decision bound from `$UNATTENDED_REVERT_POLICY`. In codex-review-binding mode, `pause` routes reviewer `needs-rework` to `pause_awaiting_user` with stage `post_binding_block`; `fail-fast` and `preserve-only` route to `fail` with machine-readable authorization metadata."
+    },
     "reviewer_envelope": {
       "type": "object",
       "description": "Parsed review envelope. `verdict` vocabulary depends on reviewer: Codex reviewer emits `clean|minor-findings|needs-rework`; Claude reviewer emits `ship|ship-with-fixes|needs-rework`.",

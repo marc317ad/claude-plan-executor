@@ -161,10 +161,16 @@ ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 #   - "unattended-fail-fast": cron/CI runs that opted into auto-fail-task
 #     via `--unattended-revert-policy fail-fast` (TASK-003) — covers both
 #     the Phase C non-empty-diff fail-fast branch AND the D.2a binding-mode
-#     fail-fast fall-through (TASK-007). When `--codex-review-binding` is
+#     fail-fast fall-through. When `--codex-review-binding` is
 #     active and the unattended-revert policy is `fail-fast`, the
 #     orchestrator skips the awaiting-user pause and authorizes the revert
 #     under this value.
+#   - "unattended-preserve-only": unattended binding-mode path where
+#     `--codex-review-binding` is active, the reviewer returned
+#     `needs-rework`, and the caller chose `--unattended-revert-policy
+#     preserve-only`. The route is terminal (`action: fail`) but distinct
+#     from fail-fast so the follow-on path can preserve implementation
+#     artifacts according to policy.
 #   - "reconcile-out-of-scope-user-instruction": authorized post-pause
 #     revert path for the G10 `reconcile_batch` out-of-scope pause
 #     (TASK-008). When the wrapper observes out-of-scope writes and the
@@ -175,16 +181,16 @@ ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 #     `fail-task` under this value.
 # Binding-mode pause note: `--codex-review-binding` (TASK-007) pauses by
 # default and does NOT call `fail-task`. If the user instructs a revert in
-# the next turn, that revert authorizes under `user-instruction` (NOT a
-# dedicated binding-mode value). The `unattended-fail-fast` value above
-# covers the cron/CI fail-fast fall-through; no separate binding-mode enum
-# value exists.
+# the next turn, that revert authorizes under `user-instruction`. The
+# unattended binding fall-throughs above are machine-readable policy
+# decisions emitted by `review-route`, not prose scraped from `fail_reason`.
 ALLOWED_FAIL_AUTHORIZATION_SOURCES = {
     "phase-c-empty-diff",
     "phase-d4-review-failure",
     "phase-d4-rescue-failed",
     "user-instruction",
     "unattended-fail-fast",
+    "unattended-preserve-only",
     "reconcile-out-of-scope-user-instruction",
 }
 ALLOWED_CODEX_REVIEW_VERDICTS = {"clean", "minor-findings", "needs-rework"}
@@ -12913,6 +12919,7 @@ _CLAUDE_VERDICTS = {"ship", "ship-with-fixes", "needs-rework"}
 _D5_VERDICTS = {"ship", "ship-with-fixes", "partial-agreement", "needs-rework"}
 # Reviewer identity vocabulary (TASK-001 PHASE_D_STATE_MACHINE_COMPLETION).
 _ALLOWED_REVIEWERS = {"codex", "gemini", "claude", "none"}
+_UNATTENDED_REVERT_POLICIES = {"pause", "fail-fast", "preserve-only"}
 
 
 def _validate_review_route_input(payload: object) -> list[dict]:
@@ -12946,6 +12953,8 @@ def _validate_review_route_input(payload: object) -> list[dict]:
         errors.append({"path": "$.reviewer", "message": "must be a string"})
     if "claude_only" in payload and not isinstance(payload["claude_only"], bool):
         errors.append({"path": "$.claude_only", "message": "must be a boolean"})
+    if "unattended_revert_policy" in payload and not isinstance(payload["unattended_revert_policy"], str):
+        errors.append({"path": "$.unattended_revert_policy", "message": "must be a string"})
 
     rev = payload.get("reviewer_envelope")
     if "reviewer_envelope" in payload:
@@ -13020,6 +13029,19 @@ def route(payload: dict) -> dict:
 
     flags = payload.get("flags") or {}
     codex_binding = bool(flags.get("codex_review_binding", False))
+    unattended_revert_policy = payload.get("unattended_revert_policy", "pause")
+    if not isinstance(unattended_revert_policy, str):
+        return _unknown(
+            "unattended_revert_policy must be a string; "
+            f"got {type(unattended_revert_policy).__name__}",
+            task_id=task_id,
+        )
+    if unattended_revert_policy not in _UNATTENDED_REVERT_POLICIES:
+        return _unknown(
+            f"unrecognized unattended_revert_policy {unattended_revert_policy!r}; "
+            f"expected one of {sorted(_UNATTENDED_REVERT_POLICIES)!r}",
+            task_id=task_id,
+        )
 
     # TASK-001 (PHASE_D_STATE_MACHINE_COMPLETION): reviewer identity + runtime
     # mode are first-class. Both are optional for backward-compat with payloads
@@ -13112,14 +13134,39 @@ def route(payload: dict) -> dict:
             # rev_verdict == "needs-rework"
             # Binding-mode short-circuit: skip D.2a entirely.
             if codex_binding:
+                if unattended_revert_policy == "pause":
+                    return {
+                        "action": "pause_awaiting_user",
+                        "args": {
+                            "task_id": task_id,
+                            "policy_kind": "binding_policy",
+                            "unattended_revert_policy": unattended_revert_policy,
+                            "pause_payload": {
+                                "stage": "post_binding_block",
+                                "policy_kind": "binding_policy",
+                                "reviewer": reviewer,
+                                "reviewer_verdict": rev_verdict,
+                                "codex_findings": list(rev_findings),
+                                "summary": rev_summary,
+                            },
+                        },
+                    }
+                authorization_source = (
+                    "unattended-fail-fast"
+                    if unattended_revert_policy == "fail-fast"
+                    else "unattended-preserve-only"
+                )
                 return {
                     "action": "fail",
                     "args": {
                         "task_id": task_id,
                         "fail_stage": "review",
+                        "policy_kind": "binding_policy",
+                        "unattended_revert_policy": unattended_revert_policy,
+                        "authorization_source": authorization_source,
                         "fail_reason": (
-                            "codex-review-binding: Codex needs-rework on Claude work; "
-                            "no D.5 / D.2a.5 / D.2a.6 escalation"
+                            f"codex-review-binding: {reviewer.title()} needs-rework "
+                            "on Claude work; no D.5 / D.2a.5 / D.2a.6 escalation"
                         ),
                     },
                 }
@@ -13270,6 +13317,8 @@ def route(payload: dict) -> dict:
                 "args": {
                     "task_id": task_id,
                     "fail_stage": "review",
+                    "policy_kind": "d4_review_failure",
+                    "authorization_source": "phase-d4-review-failure",
                     "fail_reason": (
                         "claude_only=true: Claude reviewer needs-rework on Claude "
                         "work; D.5/D.2a.5/D.2a.6 unreachable; D.4 rescue/pause"
@@ -13319,6 +13368,7 @@ def route(payload: dict) -> dict:
             "args": {
                 "task_id": task_id,
                 "fail_stage": "review",
+                "policy_kind": "role_swap_exhausted",
                 "fail_reason": (
                     "role-swap retry exhausted; Claude reviewer needs-rework on "
                     "Codex work after one role-swap attempt"

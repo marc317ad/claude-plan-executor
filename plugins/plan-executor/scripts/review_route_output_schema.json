@@ -47,6 +47,21 @@
         },
         "fail_stage": {"type": "string", "enum": ["implement", "review", "commit"]},
         "fail_reason": {"type": "string"},
+        "policy_kind": {
+          "type": "string",
+          "enum": ["binding_policy", "d4_review_failure", "role_swap_exhausted"],
+          "description": "Machine-readable fail/pause family. Lets the orchestrator distinguish binding-policy decisions from D.4 fail/rescue and D.2b role-swap terminal failures without inspecting prose."
+        },
+        "unattended_revert_policy": {
+          "type": "string",
+          "enum": ["pause", "fail-fast", "preserve-only"],
+          "description": "The unattended revert policy that selected the binding branch behavior."
+        },
+        "authorization_source": {
+          "type": "string",
+          "enum": ["phase-d4-review-failure", "unattended-fail-fast", "unattended-preserve-only"],
+          "description": "Machine-readable authorization for follow-on fail-task paths when the route emits `fail`."
+        },
         "pause_payload": {
           "type": "object",
           "description": "Payload for the `awaiting_user` log event. `stage` enumerates the canonical pause points.",
@@ -58,6 +73,7 @@
                 "post_remediation_implement",
                 "post_narrow_remediation_review",
                 "post_narrow_remediation_implement",
+                "post_binding_block",
                 "unknown_state"
               ]
             }

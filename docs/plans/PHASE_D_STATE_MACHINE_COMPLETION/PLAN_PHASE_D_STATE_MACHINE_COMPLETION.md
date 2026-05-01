@@ -97,7 +97,7 @@ Five tasks, five batches:
 
 ### TASK-002: Encode binding and unattended-policy decisions in `review-route`
 
-- **Status:** Pending
+- **Status:** done
 - **Implementer:** codex
 - **Priority:** high
 - **Files:**
