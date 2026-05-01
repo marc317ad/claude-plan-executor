@@ -1,7 +1,7 @@
 # Plan: `plan_ops.py` MCP Tool-Server Migration
 
 **Created:** 2026-04-28
-**Status:** Pending
+**Status:** in-progress
 **Base branch:** main
 **Related:**
 - `plugins/plan-executor/scripts/plan_ops.py` (~13.3K lines, 36 subcommands)
@@ -698,3 +698,11 @@ Starting SHA: `48332425156525bc62e9240a54284398ec75aa97`  → Ending SHA: `48332
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 016 | codex | - | paused (scope_violation) | - | Awaiting-user pause (post_reconcile_out_of_scope): codex wrote outside scope (PHASE_1_5_STATE_MACHINE plan + 4 untracked semantic_invalid fixtures). Diff preserved in working tree. |
+
+## Execution log — 20260501T021748 (success)
+
+Starting SHA: `aaf4a5004c829eadb70a1afc3c31fe4a844f936a`  → Ending SHA: `891351714e458393470a3a585c4cdad266cec1bc`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 017 | codex | claude | ship | 891351714e45 | 4-assertion drift guard; 1 minor finding recorded |
