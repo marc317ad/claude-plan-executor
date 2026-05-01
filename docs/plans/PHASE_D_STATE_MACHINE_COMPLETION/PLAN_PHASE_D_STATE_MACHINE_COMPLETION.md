@@ -158,6 +158,7 @@ Five tasks, five batches:
   - `tests/scripts/test_plan_ops_mcp_conformance.py`
   - `tests/scripts/test_plan_ops_mcp_registrations.py`
   - `tests/scripts/test_plan_ops_mcp_schemas.py`
+- **Out of scope:** Do not edit `plugins/plan-executor/scripts/plan_codex_dispatch.py`; it is not part of the MCP review-route contract for this task.
 - **Dependencies:** TASK-001, TASK-002, TASK-003
 - **Test command:** `venv/bin/python -m pytest tests/scripts/test_plan_ops_mcp_conformance.py tests/scripts/test_plan_ops_mcp_registrations.py tests/scripts/test_plan_ops_mcp_schemas.py`
 - **Acceptance criteria:**
