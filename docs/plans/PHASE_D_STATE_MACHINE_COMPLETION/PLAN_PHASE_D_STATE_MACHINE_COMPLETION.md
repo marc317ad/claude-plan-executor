@@ -54,6 +54,8 @@ This plan does not re-open the completed Phase D work. It adds the missing compl
 
 ## Execution
 
+Codex is the required implementer for every task in this plan.
+
 Five tasks, five batches:
 
 - **Batch 1:** TASK-001.

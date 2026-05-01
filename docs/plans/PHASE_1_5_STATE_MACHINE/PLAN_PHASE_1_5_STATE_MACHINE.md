@@ -219,6 +219,8 @@ Counter-examples (orchestrator MUST NOT): track `auto_revise_round_completed` ac
 
 ## 6. Execution — parallel batches
 
+Codex is the required implementer for every task in this plan.
+
 Seven tasks, four batches. TASK-001 and TASK-002 both edit `plan_ops.py` so they cannot batch together; TASK-003 edits `_codex_envelope_sanitizer.py` and is independent of the rest. Batching obeys the no-shared-file-lock rule and is validated by `plan_ops.py parse-schedule`.
 
 - **Batch 1 (parallel):** TASK-001, TASK-003 — independent; different files.
