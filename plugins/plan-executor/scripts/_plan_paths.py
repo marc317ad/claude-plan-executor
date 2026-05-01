@@ -161,6 +161,11 @@ def normalize_files_entry(raw: str) -> str:
         cleaned = m_backtick.group(1).strip()
     else:
         cleaned = re.split(r"\s+[-–—]\s+", cleaned, maxsplit=1)[0].strip()
+    # A common task Files: form is "path.py (create) — rationale".
+    # The first parenthetical strip intentionally runs before dash-split
+    # to preserve parentheticals that contain dashes; after splitting a
+    # prose tail, strip a now-trailing create/modify/delete annotation too.
+    cleaned = re.sub(r"\s*\([^)]*(?:\([^)]*\)[^)]*)*\)\s*$", "", cleaned).strip()
     cleaned = cleaned.strip()
     # Strip wrapping backticks; `git show --name-only` never emits them.
     if cleaned.startswith("`") and cleaned.endswith("`") and len(cleaned) >= 2:

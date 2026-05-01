@@ -222,6 +222,11 @@ class TestWrapperNormalizeFilePath:
             ),
             # Annotation in trailing parens (single token).
             ("`scripts/foo.py` (modify)", "scripts/foo.py"),
+            # Annotation plus prose continuation after an em dash.
+            (
+                "plugins/foo.py (create) — generated helper",
+                "plugins/foo.py",
+            ),
             # Annotation in trailing parens with embedded em-dash inside.
             (
                 "tests/fixtures/decomposer_inputs/ "

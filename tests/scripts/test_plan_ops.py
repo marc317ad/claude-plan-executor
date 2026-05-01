@@ -15233,6 +15233,12 @@ class TestPlanPathsNormalizeFilesEntry:
             ("plugins/foo.py (signature() change + bar)", "plugins/foo.py"),
             # Plain rationale parenthetical — backward-compat sanity check.
             ("plugins/foo.py (rationale)", "plugins/foo.py"),
+            # Annotation followed by prose. Scope checks must still
+            # reduce this to the declared path.
+            (
+                "plugins/foo.py (create) — generated helper",
+                "plugins/foo.py",
+            ),
         ],
     )
     def test_normalize_files_entry_canonical(
