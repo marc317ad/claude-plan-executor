@@ -10,9 +10,26 @@ user_invocable: true
 
 ## Transport split
 
-**Orchestrator path: MCP tools.** All plan operations are reachable as MCP tools `plan_ops__<subcommand-with-underscores>`. Tool input/output schemas are the source of truth; consult `tools/list` after a context compaction.
+**Orchestrator path: active plan-ops transport.** Plan operations run through the active plan-ops transport selected by the bootstrap below. MCP tools `plan_ops__<subcommand-with-underscores>` are preferred and are the schema source of truth; the canonical `plan_ops.py` CLI is a narrow fallback only when Claude Code reports the plugin MCP server connected but does not expose those tools to the current model session.
 
 **Wrapper-internal path: Bash.** `plan_codex_dispatch.py`, `plan_claude_dispatch.py`, `plan_gemini_dispatch.py`, and dispatch-template subprocess walkthroughs remain Bash because they execute inside wrapper subprocesses that the orchestrator never observes mid-stream. Ordinary shell probes (`git diff`, `git log`, `date`) also remain Bash.
+
+## Plan-ops transport bootstrap
+
+Run this bootstrap before the readiness check, Phase 0 preflight, or any other plan operation:
+
+1. Use ToolSearch for `plan_ops__preflight` and `plan_ops__gates`.
+2. If both tools are visible, set `PLAN_OPS_TRANSPORT=mcp` and invoke plan operations as `Tool: plan_ops__*` for the rest of the run.
+3. If either tool is not visible, run `Bash: claude mcp list`.
+4. If `plugin:plan-executor:plan-ops` is listed as connected, set `PLAN_OPS_TRANSPORT=cli-fallback` and invoke the equivalent canonical CLI for plan operations:
+
+   ```bash
+   $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" <subcommand> ... --json
+   ```
+
+5. If `plugin:plan-executor:plan-ops` is missing or not connected, halt with `mcp_unavailable` and tell the operator to run `/reload-plugins` or restart Claude Code before rerunning.
+
+The CLI fallback is allowed only for `plan_ops.py` subcommands and only after the bootstrap confirms the MCP server is connected but the session tool list hides `plan_ops__*`. It is not permission to write inline Python, parse plan data ad hoc, bypass schemas, or shell around plan operations. Once selected, keep the same `PLAN_OPS_TRANSPORT` for the run unless the selected transport itself fails.
 
 ## Dispatch rules (read before any subagent call)
 
@@ -57,11 +74,11 @@ The always-ignore set is the shared `COMMIT_ALWAYS_IGNORE` constant in `_plan_pa
 
 Standard commands used by this skill:
 
-- `Tool: plan_ops__<subcommand> with input {...}` — all plan parsing, schedule evaluation, batch selection, narrow commit, failure handling, status transitions, and run-log append verification.
+- Active plan-ops transport — all plan parsing, schedule evaluation, batch selection, narrow commit, failure handling, status transitions, and run-log append verification. With `PLAN_OPS_TRANSPORT=mcp`, invoke `Tool: plan_ops__<subcommand> with input {...}`. With `PLAN_OPS_TRANSPORT=cli-fallback`, invoke `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" <subcommand> ... --json` with the same validated inputs expressed as CLI flags / stdin exactly as the subcommand documents.
 - `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement|review ...` — Codex-tier implementer and reviewer. Emits a single JSON envelope on stdout.
 - `date -u +%Y%m%dT%H%M%S` — run_id fallback (preflight emits one authoritatively).
 
-Never write inline Python for plan operations. Never `git stash` inside this skill — the wrapper restores Codex-side independently; the orchestrator restores Claude-side via `plan_ops__fail_task` (which uses `git restore`).
+Never write inline Python for plan operations. Use the active plan-ops transport selected by the bootstrap. Never `git stash` inside this skill — the wrapper restores Codex-side independently; the orchestrator restores Claude-side via `plan_ops__fail_task` / `plan_ops.py fail-task` (which uses `git restore`).
 
 ## Dispatch error handling (Claude wrapper)
 
@@ -69,7 +86,7 @@ Every Claude-wrapper dispatch (`plan_claude_dispatch.py run` for `plan-analyst` 
 
 ## plan_ops MCP reference
 
-All plan operations are reachable as MCP tools `plan_ops__<subcommand-with-underscores>`. Tool input/output schemas are the source of truth; consult `tools/list` after a context compaction.
+All plan operations are reachable as MCP tools `plan_ops__<subcommand-with-underscores>` when `PLAN_OPS_TRANSPORT=mcp`. Tool input/output schemas are the source of truth; consult ToolSearch / `tools/list` after a context compaction. When `PLAN_OPS_TRANSPORT=cli-fallback`, use the matching `plan_ops.py` subcommand without changing the state-machine semantics.
 
 ## Per-task `<plan-file>` resolution (TASK-004 write sites)
 
@@ -535,7 +552,7 @@ Do NOT auto-push. Do NOT auto-PR.
 
 ### Orchestrator LLM responsibilities
 
-The orchestrator's job after Phase B/D mechanical work is THREE narrative duties — everything else is delegated to `plan_ops__*` tools and the wrapper.
+The orchestrator's job after Phase B/D mechanical work is THREE narrative duties — everything else is delegated to the active plan-ops transport and the wrapper.
 
 **Preserved duties (the orchestrator MUST do these):**
 
@@ -564,13 +581,13 @@ The orchestrator's job after Phase B/D mechanical work is THREE narrative duties
 - **One commit per task** plus at most one `chore:` housekeeping commit per run. Narrow `git commit --only` in Phase D.3 is mandatory.
 - **Never auto-push, never auto-PR.**
 - **`$PYTHON`** for wrapper-internal Python Bash dispatches.
-- **Every run-log append is verified** via `plan_ops__log_event`'s tail re-verify (or via `commit-task` / `fail-task` which fsync + re-read internally).
-- **Never write inline Python for plan ops.** Use MCP `plan_ops__*` tools. Inline `python3 -c` scripts are a protocol violation.
+- **Every run-log append is verified** via `plan_ops__log_event` / `plan_ops.py log-event` tail re-verify (or via `commit-task` / `fail-task` which fsync + re-read internally).
+- **Never write inline Python for plan ops.** Use the active plan-ops transport: MCP `plan_ops__*` when visible; otherwise the canonical `plan_ops.py` CLI fallback after the transport bootstrap confirms the MCP server is connected. Inline `python3 -c` scripts are a protocol violation.
 - **Dispatch prompts must be self-contained.** Subagents do not see this conversation. Embed the full task block verbatim.
 
 ### Pre-invocation checklist
 
-Three process rules that would have prevented every doc-fixable error in run `20260417T214309`. Run these before invoking `plan_ops__*` tools or dispatching a subagent — especially after a context compaction.
+Three process rules that would have prevented every doc-fixable error in run `20260417T214309`. Run these before invoking the active plan-ops transport or dispatching a subagent — especially after a context compaction.
 
 1. **Grep `ALLOWED_*` constants in `plan_ops.py` before any `log-event` or `commit-task` call that uses enum-valued inputs** (event names, reviewer verdicts, severity values, outcome values). **Why:** prevents error 2 (invented `log-event type=d5_review_done` outside `ALLOWED_LOG_EVENTS`).
 2. **Read the relevant `_validate_*` function in `plan_ops.py` before handing untrusted payloads to a `plan_ops__parse_*` tool.** The validator checks the envelope shape, not what downstream code consumes. **Why:** prevents error 1 (fed bare `parsed` object to `parse-plan-review-report` instead of the full `{subcommand,outcome,parsed}` envelope).
@@ -578,7 +595,7 @@ Three process rules that would have prevented every doc-fixable error in run `20
 
 ## Command reference
 
-For plan operation names and schemas, consult the MCP tool list. Tool schemas are the source of truth for input names, enum values, and JSON envelope shapes.
+For plan operation names and schemas, consult the MCP tool list when available. Tool schemas are the source of truth for input names, enum values, and JSON envelope shapes; the CLI fallback must preserve those same shapes through documented `plan_ops.py` flags and stdin.
 
 ### `ALLOWED_LOG_EVENTS` (post-compaction reference)
 
