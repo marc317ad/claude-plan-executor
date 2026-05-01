@@ -412,6 +412,43 @@ class TestMutateTaskStatus:
 
 
 class TestLogEvent:
+    def test_core_accepts_mcp_native_fields_dict(self, isolated_plan: Path) -> None:
+        res = plan_ops._run_log_event({
+            "event": "run_start",
+            "fields_json": {"run_id": "R1", "plan_file": "sample.md"},
+            "findings_json": None,
+        })
+        assert res["__plan_ops_exit_code__"] == 0, res
+        rec = json.loads(res["written_line"])
+        assert rec["event"] == "run_start"
+        assert rec["run_id"] == "R1"
+
+    def test_core_accepts_mcp_native_findings_list(
+        self, isolated_plan: Path
+    ) -> None:
+        finding = {
+            "severity": "minor",
+            "confidence": "medium",
+            "file": "a.py",
+            "line": 1,
+            "issue": "x",
+            "suggested_fix": "y",
+        }
+        res = plan_ops._run_log_event({
+            "event": "review_done",
+            "fields_json": {
+                "run_id": "R1",
+                "task_id": "001",
+                "reviewer": "codex",
+                "verdict": "minor-findings",
+                "findings_count": 1,
+            },
+            "findings_json": [finding],
+        })
+        assert res["__plan_ops_exit_code__"] == 0, res
+        rec = json.loads(res["written_line"])
+        assert rec["findings"] == [finding]
+
     def test_appends_one_line(self, isolated_plan: Path) -> None:
         cp = _run(
             "log-event",
@@ -454,6 +491,29 @@ class TestLogEvent:
             "--json",
         )
         assert cp.returncode != 0
+
+
+class TestFinalizeExecutionLogMcpPayloads:
+    def test_core_accepts_mcp_native_rows_list(self, isolated_plan: Path) -> None:
+        res = plan_ops._run_finalize_execution_log({
+            "plan_file": isolated_plan,
+            "run_id": "R1",
+            "starting_sha": "aaa",
+            "ending_sha": "bbb",
+            "rows_json": [{
+                "task": "001",
+                "agent": "codex",
+                "reviewer": "claude",
+                "verdict": "ship",
+                "commit": "abc1234",
+                "notes": "ok",
+            }],
+            "outcome": "success",
+        })
+        assert res["__plan_ops_exit_code__"] == 0, res
+        text = isolated_plan.read_text(encoding="utf-8")
+        assert "## Execution log — R1 (success)" in text
+        assert "| 001 | codex | claude | ship | abc1234 | ok |" in text
 
 
 # ---------------------------------------------------------------------------

@@ -7438,10 +7438,14 @@ def _run_finalize_execution_log(payload: dict) -> dict:
     plan = Path(payload['plan_file'])
     if not plan.is_file():
         return _result({'error': f'plan file not found: {plan}'}, exit_code=1)
-    try:
-        rows = json.loads(payload['rows_json'])
-    except json.JSONDecodeError as e:
-        return _result({'error': f'invalid --rows-json: {e}'}, exit_code=1)
+    rows_payload = payload['rows_json']
+    if isinstance(rows_payload, str):
+        try:
+            rows = json.loads(rows_payload)
+        except json.JSONDecodeError as e:
+            return _result({'error': f'invalid --rows-json: {e}'}, exit_code=1)
+    else:
+        rows = rows_payload
     row_errors = _validate_execution_log_rows(rows)
     if row_errors:
         return _result({'errors': row_errors}, exit_code=1)
@@ -7474,10 +7478,14 @@ def _args_to_payload_log_event(args: argparse.Namespace) -> dict:
     return payload
 
 def _run_log_event(payload: dict) -> dict:
-    try:
-        fields = json.loads(payload['fields_json'])
-    except json.JSONDecodeError as e:
-        return _result({'error': f'invalid --fields-json: {e}'}, exit_code=1)
+    fields_payload = payload['fields_json']
+    if isinstance(fields_payload, str):
+        try:
+            fields = json.loads(fields_payload)
+        except json.JSONDecodeError as e:
+            return _result({'error': f'invalid --fields-json: {e}'}, exit_code=1)
+    else:
+        fields = fields_payload
     if not isinstance(fields, dict):
         return _result({'error': '--fields-json must be a JSON object'}, exit_code=1)
     if payload['event'] not in ALLOWED_LOG_EVENTS:
@@ -7500,10 +7508,14 @@ def _run_log_event(payload: dict) -> dict:
             return _result({'errors': [{'path': '$', 'code': 'handfix-not-paused', 'message': f"event {payload['event']!r} with hand-fix intent rejected: run_id={run_id!r} task_id={task_id!r} has no active awaiting_user pause in the run log. Hand-fix is authorized only after a run has paused on this task; outside that envelope, dispatch a subagent. See feedback_handfix_default.md and docs/analysis/orchestrator_dispatch_drift_20260429.md."}]}, exit_code=1)
     findings: list | None = None
     if payload.get('findings_json') is not None:
-        try:
-            parsed = json.loads(payload['findings_json'])
-        except json.JSONDecodeError as e:
-            return _result({'errors': [{'path': '$.findings_json', 'code': 'invalid-json', 'message': f'invalid --findings-json: {e}'}]}, exit_code=1)
+        findings_payload = payload['findings_json']
+        if isinstance(findings_payload, str):
+            try:
+                parsed = json.loads(findings_payload)
+            except json.JSONDecodeError as e:
+                return _result({'errors': [{'path': '$.findings_json', 'code': 'invalid-json', 'message': f'invalid --findings-json: {e}'}]}, exit_code=1)
+        else:
+            parsed = findings_payload
         errs = _validate_minor_findings_payload(parsed, path='$.findings_json')
         if errs:
             return _result({'errors': errs}, exit_code=1)
