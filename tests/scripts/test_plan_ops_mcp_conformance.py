@@ -252,6 +252,18 @@ def _run_cli(
 
 
 def _mcp_arguments(subcommand: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if subcommand == "review-route":
+        if "stdin_text" in payload:
+            text = payload.get("stdin_text", "") or ""
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"payload": text}
+        return {
+            key: value
+            for key, value in payload.items()
+            if key not in {"stdin", "json"}
+        }
     args = {
         key: value
         for key, value in payload.items()
@@ -518,6 +530,168 @@ def test_mcp_protocol_error_on_unexpected_server_exception(tmp_path: Path) -> No
             _run_mcp("normalize-task-id", {"id": "1"}, cwd=SCRIPTS_DIR)
     finally:
         server.plan_ops._run_normalize_task_id = original
+
+
+@requires_mcp
+@pytest.mark.parametrize(
+    ("case_name", "arguments", "expected_action", "expected_args"),
+    [
+        (
+            "codex_clean",
+            {
+                "task_id": "001",
+                "implementer": "claude",
+                "reviewer": "codex",
+                "claude_only": False,
+                "reviewer_envelope": {"verdict": "clean", "findings": [], "summary": ""},
+                "d5_envelope": None,
+                "retries_used": {},
+                "flags": {},
+            },
+            "commit",
+            {},
+        ),
+        (
+            "gemini_clean",
+            {
+                "task_id": "001",
+                "implementer": "claude",
+                "reviewer": "gemini",
+                "claude_only": False,
+                "reviewer_envelope": {"verdict": "clean", "findings": [], "summary": ""},
+                "d5_envelope": None,
+                "retries_used": {},
+                "flags": {},
+            },
+            "commit",
+            {},
+        ),
+        (
+            "claude_only_ship",
+            {
+                "task_id": "001",
+                "implementer": "claude",
+                "reviewer": "claude",
+                "claude_only": True,
+                "reviewer_envelope": {"verdict": "ship", "findings": [], "summary": ""},
+                "d5_envelope": None,
+                "retries_used": {},
+                "flags": {},
+            },
+            "commit",
+            {},
+        ),
+        (
+            "binding_pause",
+            {
+                "task_id": "001",
+                "implementer": "claude",
+                "reviewer": "codex",
+                "claude_only": False,
+                "unattended_revert_policy": "pause",
+                "reviewer_envelope": {
+                    "verdict": "needs-rework",
+                    "findings": ["fix me"],
+                    "summary": "blocked",
+                },
+                "d5_envelope": None,
+                "retries_used": {},
+                "flags": {"codex_review_binding": True},
+            },
+            "pause_awaiting_user",
+            {"policy_kind": "binding_policy", "unattended_revert_policy": "pause"},
+        ),
+        (
+            "binding_fail_fast",
+            {
+                "task_id": "001",
+                "implementer": "claude",
+                "reviewer": "codex",
+                "claude_only": False,
+                "unattended_revert_policy": "fail-fast",
+                "reviewer_envelope": {
+                    "verdict": "needs-rework",
+                    "findings": ["fix me"],
+                    "summary": "blocked",
+                },
+                "d5_envelope": None,
+                "retries_used": {},
+                "flags": {"codex_review_binding": True},
+            },
+            "fail",
+            {
+                "policy_kind": "binding_policy",
+                "unattended_revert_policy": "fail-fast",
+                "authorization_source": "unattended-fail-fast",
+            },
+        ),
+        (
+            "skip_review",
+            {
+                "task_id": "001",
+                "implementer": "claude",
+                "reviewer": "none",
+                "claude_only": False,
+                "reviewer_envelope": {"verdict": "clean", "findings": [], "summary": ""},
+                "d5_envelope": None,
+                "retries_used": {},
+                "flags": {},
+            },
+            "commit",
+            {"reviewer": "none"},
+        ),
+        (
+            "unknown_verdict",
+            {
+                "task_id": "001",
+                "implementer": "claude",
+                "reviewer": "codex",
+                "claude_only": False,
+                "reviewer_envelope": {"verdict": "surprising", "findings": [], "summary": ""},
+                "d5_envelope": None,
+                "retries_used": {},
+                "flags": {},
+            },
+            "unknown_state",
+            {},
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_review_route_mcp_contract_cases(
+    case_name: str,
+    arguments: dict[str, Any],
+    expected_action: str,
+    expected_args: dict[str, Any],
+) -> None:
+    result = _run_mcp("review-route", arguments, cwd=SCRIPTS_DIR)
+    assert not getattr(result, "isError", False), case_name
+    envelope = _structured_from_call_result(result)
+    assert envelope["action"] == expected_action
+    for key, value in expected_args.items():
+        assert envelope["args"][key] == value
+
+
+@requires_mcp
+def test_review_route_schema_invalid_mcp_payload_returns_tool_error() -> None:
+    result = _run_mcp(
+        "review-route",
+        {
+            "task_id": "001",
+            "implementer": "claude",
+            "reviewer": "codex",
+            "claude_only": "false",
+            "reviewer_envelope": {"verdict": "clean"},
+            "retries_used": {},
+            "flags": {},
+        },
+        cwd=SCRIPTS_DIR,
+    )
+
+    assert getattr(result, "isError", False) is True
+    envelope = _structured_from_call_result(result)
+    assert envelope["error"] == "review-route input schema violation"
+    assert any(error["path"] == "$.claude_only" for error in envelope["errors"])
 
 
 def test_semantic_invalid_fixture_audit_is_complete() -> None:

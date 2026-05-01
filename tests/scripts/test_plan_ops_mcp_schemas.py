@@ -301,6 +301,59 @@ def test_review_route_reuses_existing_sidecar(index: dict) -> None:
     assert isinstance(referenced_out, dict)
 
 
+def test_review_route_mcp_input_contract_matches_cli_router(index: dict) -> None:
+    entry = index["tools"]["plan_ops__review_route"]
+    inp = _load(MCP_DIR / entry["input_schema"])
+    referenced_in = _resolve_ref(MCP_DIR / entry["input_schema"], inp)
+    properties = referenced_in["properties"]
+
+    assert properties["reviewer"]["enum"] == ["codex", "gemini", "claude", "none"]
+    assert set(properties["reviewer"]["enum"]) == plan_ops._ALLOWED_REVIEWERS
+    assert properties["claude_only"]["default"] is False
+    assert properties["unattended_revert_policy"]["enum"] == [
+        "pause",
+        "fail-fast",
+        "preserve-only",
+    ]
+    assert (
+        set(properties["unattended_revert_policy"]["enum"])
+        == plan_ops._UNATTENDED_REVERT_POLICIES
+    )
+    assert properties["unattended_revert_policy"]["default"] == "pause"
+    assert properties["flags"]["properties"]["codex_review_binding"]["default"] is False
+
+
+def test_review_route_mcp_output_contract_matches_cli_router(index: dict) -> None:
+    entry = index["tools"]["plan_ops__review_route"]
+    out = _load(MCP_DIR / entry["output_schema"])
+    referenced_out = _resolve_ref(MCP_DIR / entry["output_schema"], out)
+    args = referenced_out["properties"]["args"]["properties"]
+
+    assert set(referenced_out["properties"]["action"]["enum"]) == plan_ops._REVIEW_ROUTE_ACTIONS
+    assert args["reviewer"]["enum"] == ["codex", "gemini", "claude", "none"]
+    assert set(args["reviewer"]["enum"]) == plan_ops._ALLOWED_REVIEWERS
+    assert args["policy_kind"]["enum"] == [
+        "binding_policy",
+        "d4_review_failure",
+        "role_swap_exhausted",
+    ]
+    assert args["unattended_revert_policy"]["enum"] == [
+        "pause",
+        "fail-fast",
+        "preserve-only",
+    ]
+    assert (
+        set(args["unattended_revert_policy"]["enum"])
+        == plan_ops._UNATTENDED_REVERT_POLICIES
+    )
+    assert set(args["authorization_source"]["enum"]) == {
+        "phase-d4-review-failure",
+        "phase-d2b-role-swap-exhausted",
+        "unattended-fail-fast",
+        "unattended-preserve-only",
+    }
+
+
 def test_review_route_output_schema_matches_plan_ops_envelope(index: dict) -> None:
     pytest.importorskip("jsonschema")
     from jsonschema import Draft7Validator

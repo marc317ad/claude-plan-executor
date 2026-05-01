@@ -147,7 +147,7 @@ Five tasks, five batches:
 
 ### TASK-004: Bring MCP conformance up to the completed route contract
 
-- **Status:** Pending
+- **Status:** done
 - **Implementer:** codex
 - **Priority:** medium
 - **Files:**

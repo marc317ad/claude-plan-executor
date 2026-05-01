@@ -73,6 +73,18 @@ def test_every_registration_dispatches_to_real_plan_ops_callables(server_mod) ->
         assert callable(getattr(plan_ops, entry["args_to_payload_callable_name"], None)), entry
 
 
+def test_review_route_registration_is_orchestrator_contract(server_mod, index: dict) -> None:
+    entry = index["tools"]["plan_ops__review_route"]
+    assert entry["subcommand"] == "review-route"
+
+    registered = server_mod._tool_registry_by_name()["plan_ops__review_route"]
+    assert registered["subcommand"] == "review-route"
+    assert registered["run_callable_name"] == "_run_review_route"
+    assert registered["args_to_payload_callable_name"] == "_args_to_payload_review_route"
+    assert registered["input_schema"]["$ref"].endswith("review_route_input_schema.json")
+    assert registered["output_schema"]["$ref"].endswith("review_route_output_schema.json")
+
+
 def test_codegen_block_is_byte_stable(server_mod) -> None:
     codegen = _import_module(CODEGEN_PATH, "mcp_tool_registrations_task014")
     text = SERVER_PATH.read_text(encoding="utf-8")
