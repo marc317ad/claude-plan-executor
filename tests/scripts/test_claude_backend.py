@@ -1007,6 +1007,10 @@ def test_resolve_prompt_renders_phase_a_single_for_plan_analyst() -> None:
     assert "/abs/repo" in rendered
     # Must contain the canonical output schema for the classifier reply.
     assert '"agent": "claude" | "codex"' in rendered
+    # Explicit task metadata is binding; classifier heuristics are a fallback.
+    assert "Status, Implementer, Priority" in rendered
+    assert "declares `Implementer: claude` or `Implementer: codex`" in rendered
+    assert "do not reclassify it" in rendered
     # Must not be a raw JSON dump of the payload (the bug signature).
     assert '"plan_path"' not in rendered
 
