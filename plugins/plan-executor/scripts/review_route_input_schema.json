@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "review-route input",
-  "description": "Input envelope consumed by `plan_ops.py review-route`. Encodes the parsed Phase D review state for one task: who implemented, the reviewer envelope, the optional D.5 third-opinion envelope, retry budget consumed so far on this task, and routing flags. The subcommand maps this to one routing directive — see review_route_output_schema.json.",
+  "description": "Input envelope consumed by `plan_ops.py review-route`. Encodes the parsed Phase D review state for one task: who implemented, who reviewed, the runtime mode, the reviewer envelope, the optional D.5 third-opinion envelope, retry budget consumed so far on this task, and routing flags. The subcommand maps this to one routing directive — see review_route_output_schema.json.\n\nCompatibility window (TASK-001 PHASE_D_STATE_MACHINE_COMPLETION): the canonical fields are `task_id`, `implementer`, `reviewer`, `claude_only`, `reviewer_envelope`, `d5_envelope`, `retries_used`, and `flags`. For one release window, payloads that omit the new `reviewer` and `claude_only` fields remain accepted; the router infers `reviewer` from `implementer` (claude→codex, codex→claude) and defaults `claude_only=false`. After the compatibility window, callers SHOULD always send the canonical fields explicitly.",
   "type": "object",
   "required": ["task_id", "implementer", "reviewer_envelope", "retries_used", "flags"],
   "additionalProperties": false,
@@ -13,7 +13,17 @@
     "implementer": {
       "type": "string",
       "enum": ["claude", "codex"],
-      "description": "Which implementer produced the work under review. Drives D.2 / D.2a vs D.2b dispatch (Claude-impl → Codex-review escalates via D.5; Codex-impl → Claude-review escalates via role-swap)."
+      "description": "Which implementer produced the work under review. Drives D.2 / D.2a vs D.2b dispatch (Claude-impl → Codex/Gemini-review escalates via D.5 unless `claude_only=true`; Codex-impl → Claude-review escalates via role-swap)."
+    },
+    "reviewer": {
+      "type": "string",
+      "enum": ["codex", "gemini", "claude", "none"],
+      "description": "Reviewer identity. Canonical TASK-001 field — first-class so the router does not have to infer reviewer semantics from the implementer alone. `codex` and `gemini` share the Codex verdict vocabulary on Claude work and route identically (Gemini fallback piggybacks on the Codex ladder). `claude` paired with Claude implementer requires `claude_only=true`. `none` is the explicit skip-review path: the router emits `commit` with reviewer metadata suitable for `commit-task reviewer=none`. Optional during the compatibility window — see top-level description."
+    },
+    "claude_only": {
+      "type": "boolean",
+      "default": false,
+      "description": "Runtime mode flag bound at Phase 0 preflight (`--claude-only OR codex_available=false`). When `true`, Codex/Gemini shell-out is forbidden, the D.5 / D.2a.5 / D.2a.6 ladder collapses, and a Claude-reviewer `needs-rework` on Claude work routes straight to D.4 (action `fail`). Optional during the compatibility window — see top-level description."
     },
     "reviewer_envelope": {
       "type": "object",

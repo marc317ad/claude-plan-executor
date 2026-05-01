@@ -355,3 +355,204 @@ def test_cli_unknown_state_exits_zero_with_action() -> None:
     out = json.loads(cp.stdout)
     assert out["action"] == "unknown_state"
     assert "bogus" in out["reason"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-001 PHASE_D_STATE_MACHINE_COMPLETION — first-class reviewer identity
+# and runtime mode (`reviewer`, `claude_only`).
+# ---------------------------------------------------------------------------
+
+
+def _payload_v2(*, implementer: str, reviewer: str | None, verdict: str,
+                claude_only: bool | None = None,
+                findings: list | None = None,
+                d5: dict | None = None,
+                retries: dict | None = None,
+                flags: dict | None = None,
+                task_id: str = "001") -> dict:
+    payload = _payload(
+        implementer=implementer, verdict=verdict, findings=findings,
+        d5=d5, retries=retries, flags=flags, task_id=task_id,
+    )
+    if reviewer is not None:
+        payload["reviewer"] = reviewer
+    if claude_only is not None:
+        payload["claude_only"] = claude_only
+    return payload
+
+
+# --- Backward compatibility (AC line 1) ----------------------------------
+
+
+def test_legacy_payload_without_reviewer_field_still_routes() -> None:
+    """AC line 1: payloads omitting the new `reviewer`/`claude_only` fields
+    remain backward-compatible for one release window."""
+    out = plan_ops.route(_payload(implementer="claude", verdict="clean"))
+    assert out["action"] == "commit"
+    out = plan_ops.route(_payload(implementer="codex", verdict="ship"))
+    assert out["action"] == "commit"
+
+
+# --- Claude-only Claude reviewer (AC line 2) ------------------------------
+
+
+@pytest.mark.parametrize("verdict", ["ship", "ship-with-fixes"])
+def test_claude_only_claude_reviewer_ship_commits(verdict: str) -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="claude", claude_only=True,
+        verdict=verdict,
+    ))
+    assert out["action"] == "commit"
+    assert out["args"]["commit_flags"]["disagreement_tag"] is False
+
+
+def test_claude_only_claude_reviewer_needs_rework_routes_to_d4_fail() -> None:
+    """AC line 2: `needs-rework` under claude_only=true routes to D.4 path
+    without D.5/D.2a.5/D.2a.6 escalation."""
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="claude", claude_only=True,
+        verdict="needs-rework", findings=[{"i": 0}],
+    ))
+    assert out["action"] == "fail"
+    assert out["args"]["fail_stage"] == "review"
+    assert "claude_only" in out["args"]["fail_reason"]
+    # D.5/D.2a.5/D.2a.6 are unreachable — directive carries no dispatch_context.
+    assert "dispatch_context" not in out["args"]
+
+
+def test_claude_reviewer_on_claude_work_without_claude_only_is_unknown() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="claude", claude_only=False,
+        verdict="ship",
+    ))
+    assert out["action"] == "unknown_state"
+    assert "claude_only" in out["reason"]
+
+
+# --- Gemini reviewer on Claude work (AC line 3) ---------------------------
+
+
+@pytest.mark.parametrize("verdict", ["clean", "minor-findings"])
+def test_gemini_reviewer_clean_or_minor_findings_commits(verdict: str) -> None:
+    """AC line 3: Gemini review of Claude work uses Codex verdict vocabulary
+    and Codex-equivalent routing under claude_only=false."""
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="gemini", claude_only=False,
+        verdict=verdict,
+    ))
+    assert out["action"] == "commit"
+    assert out["args"]["commit_flags"] == {
+        "disagreement_tag": False,
+        "remediation_tag": False,
+        "narrow_remediation_tag": False,
+        "dismissed_finding_ids": [],
+    }
+
+
+def test_gemini_reviewer_needs_rework_dispatches_d5_like_codex() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="gemini", claude_only=False,
+        verdict="needs-rework", findings=[{"i": 0}],
+    ))
+    assert out["action"] == "dispatch_d5"
+    assert out["args"]["dispatch_context"]["template"] == "PhaseD5"
+
+
+def test_gemini_reviewer_under_claude_only_is_unknown_state() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="gemini", claude_only=True,
+        verdict="clean",
+    ))
+    assert out["action"] == "unknown_state"
+    assert "claude_only" in out["reason"]
+
+
+# --- D.2b unchanged (AC line 4) -------------------------------------------
+
+
+def test_codex_impl_claude_reviewer_role_swap_unchanged() -> None:
+    """AC line 4: Codex-implemented work reviewed by Claude keeps existing
+    D.2b role-swap behavior."""
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="claude", claude_only=False,
+        verdict="needs-rework", findings=[{"i": 0}],
+    ))
+    assert out["action"] == "dispatch_role_swap"
+
+
+# --- Skip-review path (AC line 5) -----------------------------------------
+
+
+def test_reviewer_none_routes_to_commit_with_reviewer_metadata() -> None:
+    """AC line 5: `reviewer:"none"` is the explicit skip-review path; the
+    directive carries reviewer metadata for `commit-task --reviewer none`."""
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="none", verdict="clean",
+    ))
+    assert out["action"] == "commit"
+    assert out["args"]["reviewer"] == "none"
+    cf = out["args"]["commit_flags"]
+    assert cf["disagreement_tag"] is False
+    assert cf["remediation_tag"] is False
+    assert cf["narrow_remediation_tag"] is False
+
+
+def test_reviewer_none_with_codex_implementer_also_commits() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="none", verdict="ship",
+    ))
+    assert out["action"] == "commit"
+    assert out["args"]["reviewer"] == "none"
+
+
+# --- Unknown reviewer / unknown combo (AC line 6) -------------------------
+
+
+def test_unknown_reviewer_routes_to_unknown_state() -> None:
+    """AC line 6: unknown reviewer/runtime combos return `unknown_state`,
+    not a Python exception."""
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="bogus-reviewer", verdict="clean",
+    ))
+    assert out["action"] == "unknown_state"
+    assert "bogus-reviewer" in out["reason"]
+
+
+def test_codex_impl_with_codex_reviewer_routes_to_unknown_state() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="codex", verdict="clean",
+    ))
+    assert out["action"] == "unknown_state"
+
+
+def test_claude_only_non_bool_routes_to_unknown_state() -> None:
+    payload = _payload(implementer="claude", verdict="clean")
+    payload["claude_only"] = "yes"  # wrong type
+    out = plan_ops.route(payload)
+    assert out["action"] == "unknown_state"
+    assert "claude_only" in out["reason"]
+
+
+# --- CLI shim accepts the new fields --------------------------------------
+
+
+def test_cli_accepts_new_reviewer_and_claude_only_fields() -> None:
+    payload = _payload_v2(
+        implementer="claude", reviewer="claude", claude_only=True,
+        verdict="ship",
+    )
+    cp = _run_cli(json.dumps(payload))
+    assert cp.returncode == 0, cp.stderr
+    out = json.loads(cp.stdout)
+    assert out["action"] == "commit"
+
+
+def test_cli_reviewer_none_skip_review_path() -> None:
+    payload = _payload_v2(
+        implementer="claude", reviewer="none", verdict="clean",
+    )
+    cp = _run_cli(json.dumps(payload))
+    assert cp.returncode == 0, cp.stderr
+    out = json.loads(cp.stdout)
+    assert out["action"] == "commit"
+    assert out["args"]["reviewer"] == "none"

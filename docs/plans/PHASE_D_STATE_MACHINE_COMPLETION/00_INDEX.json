@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "Phase D State Machine Completion",
+  "created": "2026-04-30",
+  "base_branch": "main",
+  "depends_on_plans": [
+    "docs/plans/archive/PHASE_D_STATE_MACHINE/PLAN_PHASE_D_STATE_MACHINE.md",
+    "docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md"
+  ],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md",
+      "priority": "medium",
+      "implementer": "codex",
+      "depends_on": [
+        "001",
+        "002",
+        "003"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md",
+      "priority": "medium",
+      "implementer": "codex",
+      "depends_on": [
+        "002",
+        "003",
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

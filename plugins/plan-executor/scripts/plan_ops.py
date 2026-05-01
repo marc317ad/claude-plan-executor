@@ -12904,12 +12904,15 @@ _REVIEW_ROUTE_ACTIONS = {
     "unknown_state",
 }
 
-# Codex reviewer verdict vocabulary (review of Claude work).
+# Codex reviewer verdict vocabulary (review of Claude work). Gemini-as-reviewer
+# emits the same vocabulary on Claude work and routes identically.
 _CODEX_VERDICTS = {"clean", "minor-findings", "needs-rework"}
 # Claude reviewer verdict vocabulary (review of Codex work, or claude_only).
 _CLAUDE_VERDICTS = {"ship", "ship-with-fixes", "needs-rework"}
 # D.5 third-opinion verdict vocabulary.
 _D5_VERDICTS = {"ship", "ship-with-fixes", "partial-agreement", "needs-rework"}
+# Reviewer identity vocabulary (TASK-001 PHASE_D_STATE_MACHINE_COMPLETION).
+_ALLOWED_REVIEWERS = {"codex", "gemini", "claude", "none"}
 
 
 def _validate_review_route_input(payload: object) -> list[dict]:
@@ -12935,6 +12938,14 @@ def _validate_review_route_input(payload: object) -> list[dict]:
         errors.append({"path": "$.task_id", "message": "must be a string"})
     if "implementer" in payload and not isinstance(payload["implementer"], str):
         errors.append({"path": "$.implementer", "message": "must be a string"})
+    # TASK-001 (PHASE_D_STATE_MACHINE_COMPLETION): optional reviewer / claude_only.
+    # Both are optional for backward compatibility with envelopes that predate
+    # the completion plan; presence is type-checked but unknown enum values
+    # are routed to `unknown_state` by `route()` rather than rejected here.
+    if "reviewer" in payload and not isinstance(payload["reviewer"], str):
+        errors.append({"path": "$.reviewer", "message": "must be a string"})
+    if "claude_only" in payload and not isinstance(payload["claude_only"], bool):
+        errors.append({"path": "$.claude_only", "message": "must be a boolean"})
 
     rev = payload.get("reviewer_envelope")
     if "reviewer_envelope" in payload:
@@ -13010,167 +13021,275 @@ def route(payload: dict) -> dict:
     flags = payload.get("flags") or {}
     codex_binding = bool(flags.get("codex_review_binding", False))
 
+    # TASK-001 (PHASE_D_STATE_MACHINE_COMPLETION): reviewer identity + runtime
+    # mode are first-class. Both are optional for backward-compat with payloads
+    # that only carried `implementer`; missing values are inferred from the
+    # implementer the same way the legacy router did implicitly.
+    reviewer_raw = payload.get("reviewer")
+    if reviewer_raw is not None and not isinstance(reviewer_raw, str):
+        return _unknown(
+            f"reviewer must be a string; got {type(reviewer_raw).__name__}",
+            task_id=task_id,
+        )
+    claude_only_raw = payload.get("claude_only", False)
+    if not isinstance(claude_only_raw, bool):
+        return _unknown(
+            f"claude_only must be a boolean; got {type(claude_only_raw).__name__}",
+            task_id=task_id,
+        )
+    claude_only = bool(claude_only_raw)
+
     if implementer not in ("claude", "codex"):
         return _unknown(
             f"unrecognized implementer {implementer!r}; expected 'claude' or 'codex'",
             task_id=task_id,
         )
 
-    # ---- Branch 1: Claude implementer, Codex reviewer (D.2 + D.2a ladder) ----
+    # Backward-compat reviewer inference: legacy payloads omit `reviewer` and
+    # rely on the implementer→reviewer mapping the original router assumed.
+    if reviewer_raw is None:
+        reviewer = "codex" if implementer == "claude" else "claude"
+    else:
+        reviewer = reviewer_raw
+
+    if reviewer not in _ALLOWED_REVIEWERS:
+        return _unknown(
+            f"unrecognized reviewer {reviewer!r}; "
+            f"expected one of {sorted(_ALLOWED_REVIEWERS)!r}",
+            task_id=task_id,
+        )
+
+    # ---- Skip-review: reviewer="none" routes straight to commit. ----
+    # Used for the explicit skip-review path; carries reviewer metadata so the
+    # follow-on `commit-task` invocation can pass `reviewer=none`.
+    if reviewer == "none":
+        return {
+            "action": "commit",
+            "args": {
+                "task_id": task_id,
+                "reviewer": "none",
+                "commit_flags": {
+                    "disagreement_tag": False,
+                    "remediation_tag": False,
+                    "narrow_remediation_tag": False,
+                    "dismissed_finding_ids": [],
+                },
+            },
+        }
+
+    # ---- Branch 1: Claude implementer (D.2 + D.2a ladder, plus claude_only). ----
     if implementer == "claude":
-        if rev_verdict not in _CODEX_VERDICTS:
+        # Codex or Gemini reviewer on Claude work: identical Codex-vocabulary
+        # routing. Gemini fallback piggybacks on the Codex ladder.
+        if reviewer in ("codex", "gemini"):
+            if claude_only:
+                return _unknown(
+                    f"reviewer={reviewer!r} on Claude work is incompatible with "
+                    f"claude_only=true (no Codex/Gemini shell-out under claude_only)",
+                    task_id=task_id,
+                )
+            if rev_verdict not in _CODEX_VERDICTS:
+                return _unknown(
+                    f"unrecognized {reviewer.title()} reviewer verdict {rev_verdict!r}; "
+                    f"expected one of {sorted(_CODEX_VERDICTS)!r}",
+                    task_id=task_id,
+                )
+            if rev_verdict in ("clean", "minor-findings"):
+                # D.2 happy path → D.3 commit, no tags.
+                return {
+                    "action": "commit",
+                    "args": {
+                        "task_id": task_id,
+                        "commit_flags": {
+                            "disagreement_tag": False,
+                            "remediation_tag": False,
+                            "narrow_remediation_tag": False,
+                            "dismissed_finding_ids": [],
+                        },
+                    },
+                }
+
+            # rev_verdict == "needs-rework"
+            # Binding-mode short-circuit: skip D.2a entirely.
+            if codex_binding:
+                return {
+                    "action": "fail",
+                    "args": {
+                        "task_id": task_id,
+                        "fail_stage": "review",
+                        "fail_reason": (
+                            "codex-review-binding: Codex needs-rework on Claude work; "
+                            "no D.5 / D.2a.5 / D.2a.6 escalation"
+                        ),
+                    },
+                }
+
+            # No D.5 yet → escalate to D.5 third-opinion.
+            if d5 is None:
+                return {
+                    "action": "dispatch_d5",
+                    "args": {
+                        "task_id": task_id,
+                        "dispatch_context": {
+                            "template": "PhaseD5",
+                            "findings_for_retry": list(rev_findings),
+                            "wrapper_checks": rev.get("wrapper_checks", {"symbol_warnings": []})
+                            if isinstance(rev, dict) else {"symbol_warnings": []},
+                        },
+                    },
+                }
+
+            # D.5 envelope present → consult §D.2a verdict cross-table.
+            if d5_verdict not in _D5_VERDICTS:
+                return _unknown(
+                    f"unrecognized D.5 verdict {d5_verdict!r}; "
+                    f"expected one of {sorted(_D5_VERDICTS)!r}",
+                    task_id=task_id,
+                )
+
+            if d5_verdict in ("ship", "ship-with-fixes"):
+                # D.5 disagreed with Codex → commit with --disagreement-tag.
+                return {
+                    "action": "commit",
+                    "args": {
+                        "task_id": task_id,
+                        "commit_flags": {
+                            "disagreement_tag": True,
+                            "remediation_tag": False,
+                            "narrow_remediation_tag": False,
+                            "dismissed_finding_ids": [],
+                        },
+                    },
+                }
+
+            if d5_verdict == "partial-agreement":
+                # D.2a.6 narrow-remediation path.
+                if narrow_used:
+                    # Second-review failure on narrow path → pause.
+                    return {
+                        "action": "pause_awaiting_user",
+                        "args": {
+                            "task_id": task_id,
+                            "pause_payload": {
+                                "stage": "post_narrow_remediation_review",
+                                "codex_findings": list(rev_findings),
+                                "d5_summary": d5_summary,
+                                "dismissed_finding_indices": list(d5_dismissed),
+                            },
+                        },
+                    }
+                # First narrow attempt → dispatch.
+                load_bearing_findings = [
+                    rev_findings[i] for i in d5_load_bearing
+                    if isinstance(i, int) and 0 <= i < len(rev_findings)
+                ]
+                dismissed_findings = [
+                    rev_findings[i] for i in d5_dismissed
+                    if isinstance(i, int) and 0 <= i < len(rev_findings)
+                ]
+                return {
+                    "action": "dispatch_narrow_remediation",
+                    "args": {
+                        "task_id": task_id,
+                        "dispatch_context": {
+                            "template": "PhaseB-narrow-remediation",
+                            "findings_for_retry": load_bearing_findings,
+                            "dismissed_for_context": dismissed_findings,
+                            "d5_summary": d5_summary,
+                        },
+                    },
+                }
+
+            if d5_verdict == "needs-rework":
+                # D.2a.5 bounded-remediation path.
+                if bounded_used:
+                    # Second-review failure on bounded path → pause.
+                    return {
+                        "action": "pause_awaiting_user",
+                        "args": {
+                            "task_id": task_id,
+                            "pause_payload": {
+                                "stage": "post_remediation_review",
+                                "codex_findings": list(rev_findings),
+                                "d5_summary": d5_summary,
+                            },
+                        },
+                    }
+                # First bounded attempt → dispatch.
+                return {
+                    "action": "dispatch_bounded_remediation",
+                    "args": {
+                        "task_id": task_id,
+                        "dispatch_context": {
+                            "template": "PhaseB-rework",
+                            "findings_for_retry": list(rev_findings),
+                            "d5_summary": d5_summary,
+                        },
+                    },
+                }
+
+            # Defensive: unreachable given enum guard above.
             return _unknown(
-                f"unrecognized Codex reviewer verdict {rev_verdict!r}; "
-                f"expected one of {sorted(_CODEX_VERDICTS)!r}",
+                f"unhandled Claude→{reviewer.title()} routing cell "
+                f"(reviewer={rev_verdict!r}, d5={d5_verdict!r})",
                 task_id=task_id,
             )
-        if rev_verdict in ("clean", "minor-findings"):
-            # D.2 happy path → D.3 commit, no tags.
-            return {
-                "action": "commit",
-                "args": {
-                    "task_id": task_id,
-                    "commit_flags": {
-                        "disagreement_tag": False,
-                        "remediation_tag": False,
-                        "narrow_remediation_tag": False,
-                        "dismissed_finding_ids": [],
+        if reviewer == "claude":
+            # claude_only=true collapses the D.2a ladder. claude_only=false
+            # with a Claude reviewer on Claude work is incoherent under the
+            # current SKILL contract.
+            if not claude_only:
+                return _unknown(
+                    "reviewer='claude' on Claude work requires claude_only=true; "
+                    "non-claude_only Claude work uses Codex (or Gemini fallback) review",
+                    task_id=task_id,
+                )
+            if rev_verdict not in _CLAUDE_VERDICTS:
+                return _unknown(
+                    f"unrecognized Claude reviewer verdict {rev_verdict!r}; "
+                    f"expected one of {sorted(_CLAUDE_VERDICTS)!r}",
+                    task_id=task_id,
+                )
+            if rev_verdict in ("ship", "ship-with-fixes"):
+                return {
+                    "action": "commit",
+                    "args": {
+                        "task_id": task_id,
+                        "commit_flags": {
+                            "disagreement_tag": False,
+                            "remediation_tag": False,
+                            "narrow_remediation_tag": False,
+                            "dismissed_finding_ids": [],
+                        },
                     },
-                },
-            }
-
-        # rev_verdict == "needs-rework"
-        # Binding-mode short-circuit: skip D.2a entirely.
-        if codex_binding:
+                }
+            # needs-rework: route to D.4 fail/rescue/pause; D.5 / D.2a.5 /
+            # D.2a.6 are unreachable under claude_only=true.
             return {
                 "action": "fail",
                 "args": {
                     "task_id": task_id,
                     "fail_stage": "review",
                     "fail_reason": (
-                        "codex-review-binding: Codex needs-rework on Claude work; "
-                        "no D.5 / D.2a.5 / D.2a.6 escalation"
+                        "claude_only=true: Claude reviewer needs-rework on Claude "
+                        "work; D.5/D.2a.5/D.2a.6 unreachable; D.4 rescue/pause"
                     ),
                 },
             }
-
-        # No D.5 yet → escalate to D.5 third-opinion.
-        if d5 is None:
-            return {
-                "action": "dispatch_d5",
-                "args": {
-                    "task_id": task_id,
-                    "dispatch_context": {
-                        "template": "PhaseD5",
-                        "findings_for_retry": list(rev_findings),
-                        "wrapper_checks": rev.get("wrapper_checks", {"symbol_warnings": []})
-                        if isinstance(rev, dict) else {"symbol_warnings": []},
-                    },
-                },
-            }
-
-        # D.5 envelope present → consult §D.2a verdict cross-table.
-        if d5_verdict not in _D5_VERDICTS:
-            return _unknown(
-                f"unrecognized D.5 verdict {d5_verdict!r}; "
-                f"expected one of {sorted(_D5_VERDICTS)!r}",
-                task_id=task_id,
-            )
-
-        if d5_verdict in ("ship", "ship-with-fixes"):
-            # D.5 disagreed with Codex → commit with --disagreement-tag.
-            return {
-                "action": "commit",
-                "args": {
-                    "task_id": task_id,
-                    "commit_flags": {
-                        "disagreement_tag": True,
-                        "remediation_tag": False,
-                        "narrow_remediation_tag": False,
-                        "dismissed_finding_ids": [],
-                    },
-                },
-            }
-
-        if d5_verdict == "partial-agreement":
-            # D.2a.6 narrow-remediation path.
-            if narrow_used:
-                # Second-review failure on narrow path → pause.
-                return {
-                    "action": "pause_awaiting_user",
-                    "args": {
-                        "task_id": task_id,
-                        "pause_payload": {
-                            "stage": "post_narrow_remediation_review",
-                            "codex_findings": list(rev_findings),
-                            "d5_summary": d5_summary,
-                            "dismissed_finding_indices": list(d5_dismissed),
-                        },
-                    },
-                }
-            # First narrow attempt → dispatch.
-            load_bearing_findings = [
-                rev_findings[i] for i in d5_load_bearing
-                if isinstance(i, int) and 0 <= i < len(rev_findings)
-            ]
-            dismissed_findings = [
-                rev_findings[i] for i in d5_dismissed
-                if isinstance(i, int) and 0 <= i < len(rev_findings)
-            ]
-            return {
-                "action": "dispatch_narrow_remediation",
-                "args": {
-                    "task_id": task_id,
-                    "dispatch_context": {
-                        "template": "PhaseB-narrow-remediation",
-                        "findings_for_retry": load_bearing_findings,
-                        "dismissed_for_context": dismissed_findings,
-                        "d5_summary": d5_summary,
-                    },
-                },
-            }
-
-        if d5_verdict == "needs-rework":
-            # D.2a.5 bounded-remediation path.
-            if bounded_used:
-                # Second-review failure on bounded path → pause.
-                return {
-                    "action": "pause_awaiting_user",
-                    "args": {
-                        "task_id": task_id,
-                        "pause_payload": {
-                            "stage": "post_remediation_review",
-                            "codex_findings": list(rev_findings),
-                            "d5_summary": d5_summary,
-                        },
-                    },
-                }
-            # First bounded attempt → dispatch.
-            return {
-                "action": "dispatch_bounded_remediation",
-                "args": {
-                    "task_id": task_id,
-                    "dispatch_context": {
-                        "template": "PhaseB-rework",
-                        "findings_for_retry": list(rev_findings),
-                        "d5_summary": d5_summary,
-                    },
-                },
-            }
-
-        # Defensive: unreachable given enum guard above.
+        # Branch 1 fallthrough — caught by allowlist check above; defensive.
         return _unknown(
-            f"unhandled Claude→Codex routing cell "
-            f"(reviewer={rev_verdict!r}, d5={d5_verdict!r})",
+            f"unsupported reviewer {reviewer!r} for Claude implementer",
             task_id=task_id,
         )
 
-    # ---- Branch 2: Codex implementer, Claude reviewer (D.2 + D.2b) ----
-    # (also covers the claude_only=true Claude-impl→Claude-review collapse if
-    # the orchestrator labels the implementer as claude with Claude verdicts;
-    # but the current SKILL contract is that Claude reviewers always use the
-    # ship/ship-with-fixes vocabulary, so we route on verdict shape.)
+    # ---- Branch 2: Codex implementer, Claude reviewer (D.2 + D.2b). ----
     assert implementer == "codex"
+    if reviewer != "claude":
+        return _unknown(
+            f"unsupported reviewer {reviewer!r} for Codex implementer; "
+            "Codex-implemented work is reviewed by Claude in the current SKILL contract",
+            task_id=task_id,
+        )
     if rev_verdict not in _CLAUDE_VERDICTS:
         return _unknown(
             f"unrecognized Claude reviewer verdict {rev_verdict!r}; "
