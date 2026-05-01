@@ -43,12 +43,16 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = REPO_ROOT / "plugins" / "plan-executor" / "scripts"
 WRAPPER_PATH = (
-    REPO_ROOT / "plugins" / "plan-executor" / "scripts" / "plan_gemini_dispatch.py"
+    SCRIPTS_DIR / "plan_gemini_dispatch.py"
 )
 SCHEMA_PATH = (
-    REPO_ROOT / "plugins" / "plan-executor" / "scripts" / "gemini_review_schema.json"
+    SCRIPTS_DIR / "gemini_review_schema.json"
 )
+
+sys.path.insert(0, str(SCRIPTS_DIR))
+import plan_ops  # noqa: E402
 
 
 def _load_wrapper():
@@ -133,6 +137,42 @@ def _write_plan(repo: Path, task_id: str, files: list[str]) -> Path:
     plan_path = plan_dir / "fixture_plan.md"
     plan_path.write_text(_plan_text(task_id, files), encoding="utf-8")
     return plan_path
+
+
+def _route_payload(*, reviewer: str, verdict: str) -> dict:
+    return {
+        "task_id": "001",
+        "implementer": "claude",
+        "reviewer": reviewer,
+        "claude_only": False,
+        "unattended_revert_policy": "pause",
+        "reviewer_envelope": {
+            "verdict": verdict,
+            "findings": [{"i": 0}] if verdict == "needs-rework" else [],
+            "summary": "",
+        },
+        "d5_envelope": None,
+        "retries_used": {
+            "bounded_remediation": False,
+            "narrow_remediation": False,
+            "role_swap": False,
+            "codex_fallback": False,
+        },
+        "flags": {"codex_review_binding": False, "skip_cross_review": False},
+    }
+
+
+@pytest.mark.parametrize("verdict", ["clean", "minor-findings", "needs-rework"])
+def test_gemini_review_route_matches_codex_for_claude_work(verdict: str) -> None:
+    """Gemini fallback review uses the Codex verdict vocabulary and must route
+    identically on Claude-implemented work."""
+    gemini = plan_ops.route(_route_payload(reviewer="gemini", verdict=verdict))
+    codex = plan_ops.route(_route_payload(reviewer="codex", verdict=verdict))
+    assert gemini["action"] == codex["action"]
+    if verdict in {"clean", "minor-findings"}:
+        assert gemini["args"]["commit_flags"] == codex["args"]["commit_flags"]
+    else:
+        assert gemini["args"]["dispatch_context"] == codex["args"]["dispatch_context"]
 
 
 # Fake shim source. Pure stdlib. The shim emits the FULL Gemini ``-o json``

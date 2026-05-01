@@ -176,7 +176,7 @@ Five tasks, five batches:
 
 ### TASK-005: Update SKILL and e2e smoke to use the completed MCP route contract
 
-- **Status:** Pending
+- **Status:** done
 - **Implementer:** codex
 - **Priority:** medium
 - **Files:**

@@ -12,10 +12,10 @@ outputs injected via stub -- no real Codex or Claude spawn. Exercises:
 
 The matrix below covers nine routing cells (clean, minor-findings, D.5
 ship, D.5 partial-agreement → narrow remediation success/fail, D.2a.5
-bounded-remediation success/fail, sanitizer-flag pass-through). Each
-scenario invokes ``plan_ops.route()`` directly (the CLI shim is covered
-by ``test_plan_ops_review_route.py``) and then exercises the
-``commit-task`` / ``fail-task`` subprocess seams against a real tmp git
+bounded-remediation success/fail, sanitizer-flag pass-through). The
+matrix routes through ``plan_ops.route()``, with one smoke cell using the
+local MCP dispatch harness for ``plan_ops__review_route``, then exercises
+the ``commit-task`` / ``fail-task`` subprocess seams against a real tmp git
 repo, with run-log events emitted via ``log-event`` / ``_append_run_log``.
 
 The test owns the run-log path via monkeypatch (`plan_ops.RUN_LOG_PATH`),
@@ -27,25 +27,32 @@ top of each scenario; review-route + commit-task/fail-task per cell.
 
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "plugins" / "plan-executor" / "scripts"
 SCRIPT = SCRIPTS_DIR / "plan_ops.py"
+SERVER_PATH = SCRIPTS_DIR / "plan_ops_mcp_server.py"
 FIXTURE_PLAN_MD = Path(__file__).parent / "fixtures" / "phase_d_plan.md"
 PY = REPO_ROOT / "venv" / "bin" / "python"
 if not PY.exists():
     PY = Path(sys.executable)
+_mcp_available = importlib.util.find_spec("mcp") is not None
 
 sys.path.insert(0, str(SCRIPTS_DIR))
 import plan_ops  # noqa: E402
+
+_SERVER_MODULE: Any | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +78,45 @@ def _parse_json(cp: subprocess.CompletedProcess) -> dict:
             f"stdout is not JSON:\nstdout={cp.stdout!r}\n"
             f"stderr={cp.stderr!r}\nerr={e}"
         )
+
+
+def _load_mcp_server_module() -> Any:
+    global _SERVER_MODULE
+    if _SERVER_MODULE is not None:
+        return _SERVER_MODULE
+    spec = importlib.util.spec_from_file_location(
+        "plan_ops_mcp_server_phase_d_e2e", SERVER_PATH,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _SERVER_MODULE = module
+    return module
+
+
+def _public_mcp_result(result: Any) -> dict:
+    if hasattr(result, "structuredContent") and result.structuredContent is not None:
+        return dict(result.structuredContent)
+    if isinstance(result, dict):
+        return dict(result)
+    content = getattr(result, "content", None) or []
+    if content and hasattr(content[0], "text"):
+        return json.loads(content[0].text)
+    raise AssertionError(f"cannot extract MCP result from {result!r}")
+
+
+def _review_route_via_mcp(payload: dict) -> dict:
+    if not _mcp_available:
+        pytest.skip("mcp SDK not installed")
+    server = _load_mcp_server_module()
+    result = asyncio.run(
+        server._dispatch_registered_tool(
+            "plan_ops__review_route",
+            {"payload": payload},
+        )
+    )
+    return _public_mcp_result(result)
 
 
 def _index_roster() -> str:
@@ -137,14 +183,20 @@ def _flags(**overrides: bool) -> dict:
 def _route_input(
     *,
     verdict: str,
+    reviewer: str = "codex",
+    claude_only: bool = False,
     findings: list | None = None,
     d5: dict | None = None,
     retries: dict | None = None,
     flags: dict | None = None,
+    unattended_revert_policy: str = "pause",
 ) -> dict:
     return {
         "task_id": "001",
         "implementer": "claude",
+        "reviewer": reviewer,
+        "claude_only": claude_only,
+        "unattended_revert_policy": unattended_revert_policy,
         "reviewer_envelope": {
             "verdict": verdict,
             "findings": findings if findings is not None else [],
@@ -318,15 +370,15 @@ def test_chain_preflight_parse_write_batch_next(smoke_repo: dict) -> None:
 #
 # Each scenario:
 #   1. Stages + commit-prep src/foo.py (per-scenario different bytes).
-#   2. Calls plan_ops.route(payload) with a stubbed reviewer envelope.
+#   2. Calls the route contract with a stubbed reviewer envelope.
 #   3. Asserts the routed action matches expectations.
 #   4. Drives the routed terminal — commit-task (via subprocess) or
 #      fail-task / awaiting-user log-event — and asserts the run log.
 #
 # The harness uses subprocess for commit-task / fail-task so the real git
 # seams (status flip, atomic 00_INDEX.json roster write, run-log append)
-# are exercised end-to-end. ``plan_ops.route`` is invoked directly because
-# the CLI shim is already pinned by ``test_plan_ops_review_route.py``.
+# are exercised end-to-end. One cell routes through the local MCP server
+# dispatcher so the orchestrator-facing tool contract is covered here too.
 # ---------------------------------------------------------------------------
 
 
@@ -436,7 +488,7 @@ def test_scenario_clean_verdict_commits(smoke_repo: dict) -> None:
     _emit_basic_events(run_log, run_id="R1")
 
     payload = _route_input(verdict="clean")
-    out = plan_ops.route(payload)
+    out = _review_route_via_mcp(payload)
     assert out["action"] == "commit"
     assert out["args"]["commit_flags"]["disagreement_tag"] is False
     _emit_review_route_called(repo, run_id="R1", payload=payload, directive=out)

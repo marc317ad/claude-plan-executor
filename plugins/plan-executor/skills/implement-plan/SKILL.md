@@ -472,11 +472,17 @@ If `--skip-cross-review`, log `review_skipped`, skip to D.3, and show the mandat
 | Claude implemented, `claude_only=false` | `Bash: $PYTHON plan_codex_dispatch.py review --plan-file <abs> --task-id NNN --repo-root <abs> --files <files_changed> --review-focus bugs` | `clean | minor-findings | needs-rework` |
 | Codex implemented, `claude_only=false` | `code-reviewer` Agent (`model:"sonnet"`) | `ship | ship-with-fixes | needs-rework` |
 
-Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}`. When findings are non-empty, include the full findings payload. Codex wrapper `{timeout, parse_error, failure}` logs `review_skipped` and may commit with `reviewer:none`; Agent failures follow the D.5 / remediation ladder. Gemini fallback is opt-in via `--allow-gemini-fallback`, only for transient Codex review failures of Claude-implemented work, never for `scope_violation` or binding `needs-rework` verdicts.
+Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}`. When findings are non-empty, include the full findings payload. Codex wrapper `{timeout, parse_error, failure}` logs `review_skipped` only when no fallback reviewer is selected; an explicit skip-review path uses `reviewer:"none"`. Gemini fallback is opt-in via `--allow-gemini-fallback`, only for transient Codex review failures of Claude-implemented work; when Gemini produces the fallback review, pass `reviewer:"gemini"` and its parsed envelope to `plan_ops__review_route`.
 
 #### D.2 — Route by verdict
 
-Routing is owned by `plan_ops__review_route`. Build the route payload from implementer side, reviewer side, reviewer verdict, optional D.5 verdict, `claude_only`, binding flags, retry counters, and `$UNATTENDED_REVERT_POLICY`; call `Tool: plan_ops__review_route with input <route_payload>`; comply with the returned action.
+Routing is owned by `plan_ops__review_route`; do not re-implement the state machine in prose. Build this canonical route payload and call `Tool: plan_ops__review_route with input {"payload": <route_payload>}`:
+
+`{task_id, implementer, reviewer, claude_only, unattended_revert_policy, flags, retries_used, reviewer_envelope, d5_envelope?}`
+
+`implementer` is `claude|codex`. `reviewer` is `claude|codex|gemini|none`; `none` is the skip-review route. `claude_only` is the Phase 0 pinned boolean. `unattended_revert_policy` is the Phase 0 pinned `pause|fail-fast|preserve-only` value. `flags` carries route booleans such as `codex_review_binding` and `skip_cross_review`. `retries_used` carries `bounded_remediation`, `narrow_remediation`, `role_swap`, and `codex_fallback`. `reviewer_envelope` is the parsed active reviewer result (`verdict`, `findings[]`, `summary`, and wrapper metadata if present). `d5_envelope` is included only after Phase D.5 returns.
+
+The payload, not SKILL-side special casing, expresses Claude-only routing (`reviewer:"claude", claude_only:true`), Gemini fallback (`reviewer:"gemini"`), binding mode (`flags.codex_review_binding` plus `unattended_revert_policy`), and skip-review (`reviewer:"none"`). Comply with the returned action and args verbatim.
 
 | Action | Orchestrator response |
 |---|---|
@@ -488,7 +494,7 @@ Routing is owned by `plan_ops__review_route`. Build the route payload from imple
 | `dispatch_role_swap` | Follow D.2b. |
 | `pause_awaiting_user` or `unknown_state` | Invoke Awaiting-user pause with the route payload's `stage`; do not invent a fallback branch. |
 
-Minor findings always persist into the run summary and commit body. Under `claude_only=true`, a Claude-reviewer `needs-rework` goes to D.4 rescue/pause; D.5 and remediation ladders are unreachable. `--codex-review-binding` makes Codex `needs-rework` binding for commit by routing to pause or unattended fail-fast.
+Minor findings always persist into the run summary and commit body. If the route returns `fail`, inspect `args.policy_kind`, `args.unattended_revert_policy`, `args.authorization_source`, and `args.fail_stage` before choosing D.4 rescue/pause versus an operator-pinned unattended failure path. If the route returns `unknown_state`, pause immediately with the returned `pause_payload`.
 
 #### D.2a.6 — Narrow-remediation retry
 
