@@ -1,0 +1,11 @@
+{
+  "payload": {
+    "plan_file": "docs/plans/sample.md",
+    "run_id": "NO-LOCK-RUN",
+    "_seed_plans_dir": true,
+    "_files": {
+      "docs/plans/sample.md": "# Plan\n"
+    }
+  },
+  "subcommand": "release-lock"
+}

@@ -1,0 +1,10 @@
+{
+  "payload": {
+    "plan_file": "docs/plans/not-a-directory.md",
+    "unattended_revert_policy": "pause",
+    "_files": {
+      "docs/plans/not-a-directory.md": "# Single-file plan\n"
+    }
+  },
+  "subcommand": "preflight"
+}

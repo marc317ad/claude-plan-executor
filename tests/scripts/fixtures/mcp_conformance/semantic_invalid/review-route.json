@@ -1,0 +1,7 @@
+{
+  "payload": {
+    "stdin": true,
+    "stdin_text": "{\"task_id\": \"001\"}"
+  },
+  "subcommand": "review-route"
+}

@@ -1,0 +1,6 @@
+{
+  "payload": {
+    "id": "not-a-task-id"
+  },
+  "subcommand": "normalize-task-id"
+}
