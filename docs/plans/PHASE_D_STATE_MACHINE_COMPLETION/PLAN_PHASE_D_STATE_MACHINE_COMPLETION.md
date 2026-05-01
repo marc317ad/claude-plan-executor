@@ -211,3 +211,11 @@ Starting SHA: `86b123f482fce325628f70bf776e8f4858f12401`  → Ending SHA: `44009
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 002 | codex | claude | ship-with-fixes | 4400948cff64 | 3 minor findings (1 minor, 2 nits) on pre-existing issues; commit proceeded |
+
+## Execution log — 20260501T163817 (success)
+
+Starting SHA: `d5a603866c72ab89fa44e91695dd4963271b91bf`  → Ending SHA: `8a4dcbf9393cda932cbb98c3d390b56eeaddae43`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-003 | codex | claude | ship | 8a4dcbf | review_route_called now in ALLOWED_LOG_EVENTS with structured payload validation; e2e emits via public log-event. |
