@@ -357,8 +357,9 @@ def _resolve_prompt(
         shape);
       * ``payload["instructions"]`` — fall-back wording used by the
         plan-executor's existing fixtures;
-      * ``agent == "plan-analyst"`` with a ``plan_path``/``repo_root``
-        payload — render the Phase A-single classifier body verbatim
+      * ``agent == "plan-analyst"`` with a ``plan_path`` payload — render
+        the Phase A-single classifier body verbatim; if ``repo_root`` is
+        missing, use the current working directory as a defensive fallback
         from ``dispatch-templates.md`` (BUG-144). Without this frame
         the nested plan-analyst latches onto the documented legacy
         whole-plan contract or implements the task outright;
@@ -376,9 +377,7 @@ def _resolve_prompt(
         The dispatch envelope's inner payload.
     agent
         The dispatch envelope's top-level ``agent`` field. Threaded so
-        the analyst-body branch can fire even when the payload itself
-        carries no agent-discriminator (the analyst payload is
-        deliberately minimal — just ``plan_path`` + ``repo_root``).
+        the analyst-body branch can fire before the implementer fallback.
     """
     if not isinstance(payload, Mapping):
         return json.dumps(payload, default=str)
@@ -388,24 +387,27 @@ def _resolve_prompt(
             return v
     plan_path = payload.get("plan_path")
     repo_root = payload.get("repo_root")
-    # BUG-144: Phase A-single plan-analyst classifier body. Fires when
+    # BUG-144 / BUG-147: Phase A-single plan-analyst classifier body. Fires when
     # the dispatch envelope's top-level ``agent`` is ``plan-analyst``
-    # and the payload carries the canonical analyst minimal shape
-    # (plan_path + repo_root, no task_id). Without this frame the
+    # and the payload carries a plan_path. Without this frame the
     # nested plan-analyst received a raw JSON dump of the payload,
     # latched onto the legacy whole-plan contract documented in its
     # own agent spec, and either timed out at 300s or implemented the
     # task outright (TASK-006 of the 20260426 dry-run wrote 13 files
-    # before the wrapper's delta-bounded cleanup caught it).
+    # before the wrapper's delta-bounded cleanup caught it). The analyst
+    # branch must also win when task_id is present but repo_root is missing;
+    # otherwise malformed hand-built classifier payloads fall through to the
+    # implementer prompt below.
     if (
         agent == "plan-analyst"
         and isinstance(plan_path, str)
         and plan_path
-        and isinstance(repo_root, str)
-        and repo_root
     ):
+        repo_root_for_prompt = (
+            repo_root if isinstance(repo_root, str) and repo_root else os.getcwd()
+        )
         return _render_phase_a_single_classifier_body(
-            plan_path, repo_root, payload
+            plan_path, repo_root_for_prompt, payload
         )
     # Structured-payload fallback for plan-implementer dispatches.
     task_id = payload.get("task_id")

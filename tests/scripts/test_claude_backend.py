@@ -1027,6 +1027,21 @@ def test_resolve_prompt_phase_a_single_target_task_id_injection() -> None:
     assert "Classify exactly one task" in rendered
 
 
+def test_resolve_prompt_plan_analyst_without_repo_root_still_classifies() -> None:
+    """Malformed hand-built analyst payloads must not fall through to the
+    implementer prompt just because they include task_id and omit repo_root."""
+    payload = {
+        "plan_path": "/abs/p.md",
+        "task_id": "004",
+        "target_task_id": "004",
+    }
+    rendered = backend._resolve_prompt(payload, agent="plan-analyst")
+    assert "Classify specifically `### TASK-004:`" in rendered
+    assert "Classify exactly one task" in rendered
+    assert "Implement TASK-004" not in rendered
+    assert "plan-implementer" not in rendered
+
+
 def test_resolve_prompt_explicit_prompt_wins_over_analyst_branch() -> None:
     """An explicit ``payload['prompt']`` short-circuits even when
     ``agent='plan-analyst'`` is supplied — direct CLI callers stay in

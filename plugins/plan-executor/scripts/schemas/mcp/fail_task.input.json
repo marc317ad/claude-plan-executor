@@ -44,10 +44,12 @@
       "type": "string",
       "enum": [
         "phase-c-empty-diff",
+        "phase-d2b-role-swap-exhausted",
         "phase-d4-rescue-failed",
         "phase-d4-review-failure",
         "reconcile-out-of-scope-user-instruction",
         "unattended-fail-fast",
+        "unattended-preserve-only",
         "user-instruction"
       ]
     },
