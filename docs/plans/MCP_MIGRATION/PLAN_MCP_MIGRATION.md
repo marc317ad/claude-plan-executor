@@ -508,7 +508,7 @@ The original task bodies for TASK-004 through TASK-013 are retained below for au
 
 ### TASK-014: MCP tool registration via `_index.json`-driven codegen
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - plugins/plan-executor/scripts/_codegen/mcp_tool_registrations.py (create) — the generator
@@ -662,3 +662,19 @@ Starting SHA: `fc9d80b246124fbd91719a36c11dfd6739e15eea`  → Ending SHA: `fc9d8
 | 008 | claude | none | n/a | n/a | Not started; depends on TASK-006. |
 | 009 | claude | none | n/a | n/a | Not started; depends on TASK-006+TASK-007. |
 | 010 | claude | none | n/a | n/a | Not started; depends on TASK-007+TASK-008. |
+
+## Execution log — 20260501T005802 (paused)
+
+Starting SHA: `c8b276e9f77d81ef9d174bcbe4d6fe28c7122839`  → Ending SHA: `c8b276e9f77d81ef9d174bcbe4d6fe28c7122839`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 014 | codex | none |  |  | paused: wrapper crashed during timeout-cleanup (plan_codex_dispatch.py:1135 TypeError missing authorization_source). Preservable in-scope diff in working tree. |
+
+## Execution log — 20260501T010959 (paused)
+
+Starting SHA: `468347e4f1a10b38345753cc05ab1094633998c0`  → Ending SHA: `468347e4f1a10b38345753cc05ab1094633998c0`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 014 | codex | none | paused | - | scope_violation_paused (wrapper false-positive on declared Files: with " — description" suffix); 3 declared files written; awaiting user disposition (widen-plan|in-place-fix|keep-and-commit|revert) |

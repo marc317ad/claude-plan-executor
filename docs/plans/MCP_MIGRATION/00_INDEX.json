@@ -32,15 +32,20 @@
       "task_id": "014",
       "file": "PLAN_MCP_MIGRATION.md",
       "priority": "high",
-      "depends_on": ["001", "003"],
-      "status": "Pending",
+      "depends_on": [
+        "001",
+        "003"
+      ],
+      "status": "Done",
       "superseded_by": []
     },
     {
       "task_id": "015",
       "file": "PLAN_MCP_MIGRATION.md",
       "priority": "high",
-      "depends_on": ["014"],
+      "depends_on": [
+        "014"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -48,7 +53,9 @@
       "task_id": "016",
       "file": "PLAN_MCP_MIGRATION.md",
       "priority": "high",
-      "depends_on": ["014"],
+      "depends_on": [
+        "014"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -56,7 +63,10 @@
       "task_id": "017",
       "file": "PLAN_MCP_MIGRATION.md",
       "priority": "medium",
-      "depends_on": ["014", "015"],
+      "depends_on": [
+        "014",
+        "015"
+      ],
       "status": "Pending",
       "superseded_by": []
     },
@@ -64,7 +74,10 @@
       "task_id": "018",
       "file": "PLAN_MCP_MIGRATION.md",
       "priority": "high",
-      "depends_on": ["015", "016"],
+      "depends_on": [
+        "015",
+        "016"
+      ],
       "status": "Pending",
       "superseded_by": []
     }
