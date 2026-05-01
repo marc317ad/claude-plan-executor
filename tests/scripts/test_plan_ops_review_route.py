@@ -273,6 +273,8 @@ def test_codex_claude_needs_rework_role_swap_used_fails() -> None:
     ))
     assert out["action"] == "fail"
     assert out["args"]["fail_stage"] == "review"
+    assert out["args"]["policy_kind"] == "role_swap_exhausted"
+    assert out["args"]["authorization_source"] == "phase-d2b-role-swap-exhausted"
     assert "role-swap" in out["args"]["fail_reason"]
 
 

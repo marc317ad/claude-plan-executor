@@ -158,6 +158,9 @@ ALLOWED_FAIL_STAGES = {"implement", "review", "commit"}
 #   - "user-instruction": the user's next conversation turn after a paused
 #     run explicitly instructed the orchestrator to revert (the only
 #     sanctioned post-pause revert path).
+#   - "phase-d2b-role-swap-exhausted": Phase D.2b terminal failure after the
+#     single role-swap retry has already been used and Claude review still
+#     returns needs-rework on Codex-implemented work.
 #   - "unattended-fail-fast": cron/CI runs that opted into auto-fail-task
 #     via `--unattended-revert-policy fail-fast` (TASK-003) — covers both
 #     the Phase C non-empty-diff fail-fast branch AND the D.2a binding-mode
@@ -188,6 +191,7 @@ ALLOWED_FAIL_AUTHORIZATION_SOURCES = {
     "phase-c-empty-diff",
     "phase-d4-review-failure",
     "phase-d4-rescue-failed",
+    "phase-d2b-role-swap-exhausted",
     "user-instruction",
     "unattended-fail-fast",
     "unattended-preserve-only",
@@ -13369,6 +13373,7 @@ def route(payload: dict) -> dict:
                 "task_id": task_id,
                 "fail_stage": "review",
                 "policy_kind": "role_swap_exhausted",
+                "authorization_source": "phase-d2b-role-swap-exhausted",
                 "fail_reason": (
                     "role-swap retry exhausted; Claude reviewer needs-rework on "
                     "Codex work after one role-swap attempt"
@@ -13401,11 +13406,9 @@ def _run_review_route(payload: dict) -> dict:
         payload = json.loads(raw) if raw.strip() else None
     except json.JSONDecodeError as exc:
         return _result({'error': 'invalid JSON on stdin', 'errors': [{'path': '$', 'message': str(exc)}]}, exit_code=1)
-        return
     errors = _validate_review_route_input(payload)
     if errors:
         return _result({'error': 'review-route input schema violation', 'errors': errors}, exit_code=1)
-        return
     directive = route(payload)
     return _result(directive, exit_code=0)
 
