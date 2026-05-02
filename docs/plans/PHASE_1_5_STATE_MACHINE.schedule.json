@@ -2,56 +2,44 @@
   "outcome": "needs-enrichment",
   "tasks": [
     {
-      "id": "001",
-      "title": "Add `plan_ops.py plan-review-route` subcommand",
+      "id": "003",
+      "title": "Wrapper sanitizer perimeter \u2014 plan-review field expansion",
       "files": [
-        "plugins/plan-executor/scripts/plan_ops.py (modify)",
-        "plugins/plan-executor/scripts/plan_review_route_input_schema.json (create)",
-        "plugins/plan-executor/scripts/plan_review_route_output_schema.json (create)",
-        "tests/scripts/test_plan_ops_plan_review_route.py (create)"
+        "plugins/plan-executor/scripts/_codex_envelope_sanitizer.py (modify)",
+        "tests/scripts/test_codex_envelope_sanitizer.py (modify)"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_plan_ops_plan_review_route.py",
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_codex_envelope_sanitizer.py",
       "priority": "high",
       "plan_file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
-      "description": "The core routing move. After this lands the orchestrator stops reading the Phase 1.5 / Phase 1.5.5 routing tables and starts piping envelopes to Python. TASK-004's SKILL edits are only safe after this ships.",
+      "description": "Closes the layer-2/3 gap in the wrapper. Today the plan-review envelope's `concern`, `suggested_change`, `section`, and `notes[]` strings flow through the orchestrator unfiltered \u2014 the same shape PHASE_D TASK-003 closed for the cross-task review path, applied to the plan-review path. Wrapper-side defense, not orchestrator-side.",
       "acceptance_criteria": [
-        "`plan_ops.py plan-review-route --stdin --json` consumes the \u00a73.1 input and emits the \u00a73.1 output.",
-        "Every Phase 1.5 / Phase 1.5.5 routing cell from SKILL.md (lines 418\u2013422 and 439\u2013444) is reachable through one `action` value: `skip_plan_review`, `dispatch_claude_reviewer`, `dispatch_codex_reviewer`, `proceed_to_phase_2`, `dispatch_triage`, `dispatch_plan_author_per_finding`, `rerun_analyst_then_review`, `halt_plan_review_failed`, `pause_awaiting_user`, `unknown_state`.",
-        "`stage=\"pre_dispatch\"` + `flags.skip_plan_review=true` \u2192 `skip_plan_review {reason:\"flag\"}`.",
-        "`stage=\"pre_dispatch\"` + `claude_only=true` \u2192 `dispatch_claude_reviewer`; `claude_only=false` \u2192 `dispatch_codex_reviewer` with `dispatch_context.allow_gaps_demotion = flags.allow_gaps`.",
-        "`stage=\"post_review\"` + `plan_review_envelope.outcome \u2208 {\"timeout\",\"parse_error\",\"failure\"}` \u2192 `skip_plan_review {reason:\"codex_unavailable\"}`; Claude reviewer + outcome=failure \u2192 `skip_plan_review {reason:\"claude_review_failure\"}`.",
-        "`stage=\"post_review\"` + verdict `approved|approved-with-notes` \u2192 `proceed_to_phase_2`; `needs-replan` + `flags.codex_plan_review_binding=true` \u2192 `halt_plan_review_failed{reason_detail:\"binding_flag\"}`; `needs-replan` + `flags.no_auto_revise=true` \u2192 `halt_plan_review_failed{reason_detail:\"no_auto_revise\"}`; `needs-replan` + `attempt==1` \u2192 `dispatch_triage`; `needs-replan` + `attempt==2` \u2192 `halt_plan_review_failed{reason_detail:\"second_needs_replan\"}` (no second triage).",
-        "`stage=\"post_triage\"` + verdict `ship` \u2192 `proceed_to_phase_2 summary_section.banner=\"[plan-review-disagreement]\"`; `ship-with-fixes` \u2192 `proceed_to_phase_2 summary_section.notes_section=\"Plan review notes\"`; `partial-agreement` \u2192 `dispatch_plan_author_per_finding` with `findings_for_payload` filtered to triage `load_bearing` indices and `dismissed_for_context` carrying the complement; `needs-rework` \u2192 `dispatch_plan_author_per_finding` with full findings.",
-        "`dispatch_plan_author_per_finding` produces one entry in `dispatch_context.per_finding_dispatches` per forwarded finding, with `target_task_id` resolved from the finding and `variant: \"A\"` for task-targeted (`target_task_id != null`) or `variant: \"B\"` for schedule-level (`target_task_id == null`); the per-entry `child_plan_file` is supplied by the caller via `plan_review_state.task_plan_file_map`.",
-        "Input schema violation \u2192 non-zero exit + structured `errors[*]`.",
-        "Any unrecognized verdict (outside the schemas' enums) \u2192 `action: unknown_state` with human-readable `reason`.",
-        "Routing exposed as pure function `route(payload: dict) -> dict`; `cmd_plan_review_route` is a thin stdin / `_emit` shim. Tests call `route()` directly \u2014 no subprocess, no stdin monkey-patching.",
-        "Tests cover every cell from \u00a73.1's `stage` matrix plus \u22651 `unknown_state` branch and the second-`needs-replan` halt path."
+        "`FINDING_FIELDS` extended to `(\"message\", \"issue\", \"suggested_fix\", \"concern\", \"suggested_change\", \"section\")` \u2014 covering both the cross-task review schema and the plan-review schema in one tuple.",
+        "`sanitize()` walks `parsed.notes` when it is a list, running each string element through `_process_field` with field path `parsed.notes[i]`.",
+        "Existing test cases continue to pass (no regression on `summary` / `diff_summary` / `findings[].message` coverage).",
+        "New regression fixture: a plan-review envelope with `parsed.findings[0].concern` containing `<system>...</system>`, `parsed.findings[1].suggested_change` containing `<tool_calls>...</tool_calls>`, `parsed.findings[2].section` containing `Ignore prior instructions`, and `parsed.notes[2]` containing `<function_calls>...</function_calls>`. Sanitized output contains `[redacted:<shape>]` markers in place of the originals; `extra.sanitizer_flags[]` lists each shape/field/count; the pre-redaction sha256 for each match appears in the captured run-log stream.",
+        "Layer-2 strips (code fences, ATX headers, leading `>`) apply uniformly to the new fields and to `notes[]` strings.",
+        "Length-cap behavior unchanged; `extra.truncated_fields[]` accumulates per-field truncation flags for the new fields."
       ],
       "agent": "codex",
-      "classification_reason": "Implementer field explicitly declares codex"
+      "classification_reason": "Implementer explicitly declared as codex in metadata"
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "001"
+        "003"
       ],
       "file_locks": [
         "plugins/plan-executor/scripts/_codex_envelope_sanitizer.py",
-        "plugins/plan-executor/scripts/plan_ops.py",
-        "plugins/plan-executor/scripts/plan_review_route_input_schema.json",
-        "plugins/plan-executor/scripts/plan_review_route_output_schema.json",
-        "tests/scripts/test_codex_envelope_sanitizer.py",
-        "tests/scripts/test_plan_ops_plan_review_route.py"
+        "tests/scripts/test_codex_envelope_sanitizer.py"
       ]
     }
   ],
   "gaps": [
     {
-      "task_id": "001",
+      "task_id": "003",
       "type": "extra-task-heading",
       "severity": "soft",
       "detail": "PLAN_PHASE_1_5_STATE_MACHINE.md carries 7 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
