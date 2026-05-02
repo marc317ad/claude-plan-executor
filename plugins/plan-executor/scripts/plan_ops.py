@@ -629,7 +629,10 @@ ALIAS_WINDOWS: dict[str, list[str]] = {
 }
 
 CANONICAL_ID_RE = re.compile(r"^\d{3}[A-Z]?$")
-ALLOWED_SCHEDULE_TOP_LEVEL = {"outcome", "tasks", "batches", "gaps", "risks", "state"}
+ALLOWED_SCHEDULE_TOP_LEVEL = {
+    "outcome", "tasks", "batches", "gaps", "risks",
+    "state", "plan_review_state",
+}
 # TASK-002 (PHASE_D_STATE_MACHINE): persistent orchestrator-state schema
 # (§3.2). All keys optional on input; helpers default-populate missing
 # subfields. Validation is intentionally loose: a freshly-authored schedule
@@ -638,6 +641,21 @@ ALLOWED_SCHEDULE_TOP_LEVEL = {"outcome", "tasks", "batches", "gaps", "risks", "s
 ALLOWED_SCHEDULE_STATE_FIELDS = {
     "done", "failed", "blocked", "committed",
     "locked_files", "review_notes", "retries_used",
+}
+ALLOWED_PLAN_REVIEW_STATE_FIELDS = {
+    "attempt",
+    "first_verdict",
+    "first_findings_count",
+    "second_verdict",
+    "second_findings_count",
+    "triage_dispatched",
+    "triage_verdict",
+    "load_bearing_indices",
+    "dismissed_indices",
+    "author_dispatches_completed",
+    "auto_revise_round_completed",
+    "skipped_reason",
+    "task_plan_file_map",
 }
 # TASK-008: directory-mode canonical contract. The legacy `task_id` /
 # `batch_index` field aliases are NO longer accepted — schedules carrying
@@ -1382,6 +1400,68 @@ def _validate_schedule(data: dict, *, strict_nested: bool = False) -> tuple[list
                         "code": "invalid-type",
                         "message": f"state.{dict_key} must be an object",
                     })
+
+    if "plan_review_state" in data:
+        plan_review_state = data.get("plan_review_state")
+        if not isinstance(plan_review_state, dict):
+            errors.append({
+                "path": "$.plan_review_state",
+                "code": "invalid-type",
+                "message": "plan_review_state must be an object",
+            })
+        else:
+            for key in plan_review_state.keys():
+                if key not in ALLOWED_PLAN_REVIEW_STATE_FIELDS:
+                    msg = f"plan_review_state unknown field {key!r}"
+                    if strict_nested:
+                        errors.append({
+                            "path": f"$.plan_review_state.{key}",
+                            "code": "unknown-nested-field",
+                            "message": msg,
+                        })
+                    else:
+                        warnings.append(msg)
+            if "attempt" in plan_review_state and (
+                not isinstance(plan_review_state["attempt"], int)
+                or isinstance(plan_review_state["attempt"], bool)
+            ):
+                errors.append({
+                    "path": "$.plan_review_state.attempt",
+                    "code": "invalid-type",
+                    "message": "plan_review_state.attempt must be an integer",
+                })
+            for bool_key in ("triage_dispatched", "auto_revise_round_completed"):
+                if (
+                    bool_key in plan_review_state
+                    and not isinstance(plan_review_state[bool_key], bool)
+                ):
+                    errors.append({
+                        "path": f"$.plan_review_state.{bool_key}",
+                        "code": "invalid-type",
+                        "message": f"plan_review_state.{bool_key} must be a boolean",
+                    })
+            for list_key in (
+                "load_bearing_indices",
+                "dismissed_indices",
+                "author_dispatches_completed",
+            ):
+                if list_key in plan_review_state and not isinstance(
+                    plan_review_state[list_key], list
+                ):
+                    errors.append({
+                        "path": f"$.plan_review_state.{list_key}",
+                        "code": "invalid-type",
+                        "message": f"plan_review_state.{list_key} must be an array",
+                    })
+            if (
+                "task_plan_file_map" in plan_review_state
+                and not isinstance(plan_review_state["task_plan_file_map"], dict)
+            ):
+                errors.append({
+                    "path": "$.plan_review_state.task_plan_file_map",
+                    "code": "invalid-type",
+                    "message": "plan_review_state.task_plan_file_map must be an object",
+                })
 
     if not errors:
         errors.extend(_validate_schedule_refs(tasks, batches))
@@ -2266,6 +2346,169 @@ def read_schedule_state(path) -> dict:
     if not isinstance(data, dict):
         return _empty_schedule_state()
     return _normalize_state(data.get("state"))
+
+
+def _empty_plan_review_state() -> dict:
+    return {
+        "attempt": 1,
+        "first_verdict": None,
+        "first_findings_count": 0,
+        "second_verdict": None,
+        "second_findings_count": 0,
+        "triage_dispatched": False,
+        "triage_verdict": None,
+        "load_bearing_indices": [],
+        "dismissed_indices": [],
+        "author_dispatches_completed": [],
+        "auto_revise_round_completed": False,
+        "skipped_reason": None,
+        "task_plan_file_map": {},
+    }
+
+
+def _normalize_plan_review_state(state: object) -> dict:
+    base = _empty_plan_review_state()
+    if isinstance(state, dict):
+        for k, v in state.items():
+            base[k] = copy.deepcopy(v)
+    return base
+
+
+def read_plan_review_state(path) -> dict:
+    """Read and normalize `plan_review_state` from a schedule JSON file."""
+    p = Path(path)
+    if not p.is_file():
+        return _empty_plan_review_state()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _empty_plan_review_state()
+    if not isinstance(data, dict):
+        return _empty_plan_review_state()
+    return _normalize_plan_review_state(data.get("plan_review_state"))
+
+
+def _coerce_index_list(values: object) -> list[int]:
+    if not isinstance(values, list):
+        return []
+    return [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
+
+
+def record_plan_review_verdict(
+    state: dict, attempt: int, verdict: str, findings_count: int,
+) -> dict:
+    out = _normalize_plan_review_state(state)
+    out["attempt"] = attempt
+    if attempt == 1:
+        out["first_verdict"] = verdict
+        out["first_findings_count"] = findings_count
+    elif attempt == 2:
+        out["second_verdict"] = verdict
+        out["second_findings_count"] = findings_count
+        out["auto_revise_round_completed"] = True
+    return out
+
+
+def record_triage_outcome(
+    state: dict, verdict: str, load_bearing: list[int], dismissed: list[int],
+) -> dict:
+    out = _normalize_plan_review_state(state)
+    out["triage_dispatched"] = True
+    out["triage_verdict"] = verdict
+    out["load_bearing_indices"] = _coerce_index_list(load_bearing)
+    out["dismissed_indices"] = _coerce_index_list(dismissed)
+    return out
+
+
+def record_author_dispatch(
+    state: dict, finding_index: int, target_task_id: str | None,
+    files_edited: list[str],
+) -> dict:
+    out = _normalize_plan_review_state(state)
+    dispatches = list(out.get("author_dispatches_completed") or [])
+    dispatches.append({
+        "finding_index": finding_index,
+        "target_task_id": target_task_id,
+        "files_edited": list(files_edited or []),
+    })
+    out["author_dispatches_completed"] = dispatches
+    out["auto_revise_round_completed"] = True
+    return out
+
+
+def apply_plan_review_state_transition(
+    state: dict, transitions: dict | None,
+) -> dict:
+    """Apply route-produced plan-review state transitions to a new dict."""
+    out = _normalize_plan_review_state(state)
+    if not isinstance(transitions, dict):
+        return out
+
+    verdict_transition = transitions.get("record_plan_review_verdict")
+    if isinstance(verdict_transition, dict):
+        out = record_plan_review_verdict(
+            out,
+            verdict_transition.get("attempt", out["attempt"]),
+            verdict_transition.get("verdict"),
+            verdict_transition.get("findings_count", 0),
+        )
+
+    triage_transition = transitions.get("record_triage_outcome")
+    if isinstance(triage_transition, dict):
+        out = record_triage_outcome(
+            out,
+            triage_transition.get("verdict"),
+            triage_transition.get("load_bearing", []),
+            triage_transition.get("dismissed", []),
+        )
+
+    author_transition = transitions.get("record_author_dispatch")
+    if isinstance(author_transition, dict):
+        out = record_author_dispatch(
+            out,
+            author_transition.get("finding_index"),
+            author_transition.get("target_task_id"),
+            author_transition.get("files_edited", []),
+        )
+    elif isinstance(author_transition, list):
+        for item in author_transition:
+            if isinstance(item, dict):
+                out = record_author_dispatch(
+                    out,
+                    item.get("finding_index"),
+                    item.get("target_task_id"),
+                    item.get("files_edited", []),
+                )
+
+    direct = transitions.get("set")
+    if isinstance(direct, dict):
+        for key, value in direct.items():
+            out[key] = copy.deepcopy(value)
+
+    for key in ALLOWED_PLAN_REVIEW_STATE_FIELDS:
+        if key in transitions:
+            out[key] = copy.deepcopy(transitions[key])
+    return out
+
+
+def _write_plan_review_state_transition(
+    path, transitions: dict | None,
+) -> tuple[bool, str | None]:
+    p = Path(path)
+    if not p.is_file():
+        return False, f"schedule file not found: {p} (plan-review-state write no-op)"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return False, f"schedule file unreadable: {e} (plan-review-state write no-op)"
+    if not isinstance(data, dict):
+        return False, "schedule top-level is not an object (plan-review-state write no-op)"
+    current = _normalize_plan_review_state(data.get("plan_review_state"))
+    data["plan_review_state"] = apply_plan_review_state_transition(
+        current, transitions,
+    )
+    _atomic_write_json(p, data)
+    return True, None
 
 
 def apply_commit_state_transition(
@@ -5327,6 +5570,10 @@ def _run_parse_schedule(payload: dict) -> dict:
         else:
             tagged_tasks.append(t)
     result = {'outcome': data.get('outcome'), 'tasks': tagged_tasks, 'batches': data.get('batches') if isinstance(data.get('batches'), list) else [], 'gaps': backfilled_gaps, 'risks': data.get('risks', []), 'warnings': warnings, 'errors': errors}
+    if "state" in data:
+        result["state"] = copy.deepcopy(data["state"])
+    if "plan_review_state" in data:
+        result["plan_review_state"] = copy.deepcopy(data["plan_review_state"])
     if errors:
         return _result(result, exit_code=1)
     return _result(result, exit_code=0)
@@ -11986,6 +12233,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pr_route.add_argument("--stdin", action="store_true", required=True,
                             help="Read plan-review-route input JSON from stdin")
+    p_pr_route.add_argument(
+        "--update-schedule-state",
+        default=None,
+        help=(
+            "Atomically apply the emitted state_transitions block to this "
+            "schedule's plan_review_state"
+        ),
+    )
     _add_json(p_pr_route)
 
     p_sched = sub.add_parser("parse-schedule", help="Validate analyst JSON shape")
@@ -13277,6 +13532,15 @@ def _plan_review_route_dispatches(payload: dict, findings: list) -> list[dict]:
     return dispatches
 
 
+def _with_plan_review_state_transitions(directive: dict, transitions: dict) -> dict:
+    out = copy.deepcopy(directive)
+    out["state_transitions"] = copy.deepcopy(transitions)
+    args = out.setdefault("args", {})
+    if isinstance(args, dict):
+        args["state_transitions"] = copy.deepcopy(transitions)
+    return out
+
+
 def _plan_review_route(payload: dict) -> dict:
     """Pure deterministic router for Phase 1.5 / 1.5.5 plan review."""
     if not isinstance(payload, dict):
@@ -13295,11 +13559,11 @@ def _plan_review_route(payload: dict) -> dict:
 
     if stage == "pre_dispatch":
         if flags.get("skip_plan_review") is True:
-            return {
+            return _with_plan_review_state_transitions({
                 "action": "skip_plan_review",
                 "reason": "flag",
                 "args": {"reason": "flag"},
-            }
+            }, {"skipped_reason": "flag"})
         if payload.get("claude_only") is True:
             return {"action": "dispatch_claude_reviewer", "args": {}}
         if payload.get("claude_only") is False:
@@ -13328,11 +13592,11 @@ def _plan_review_route(payload: dict) -> dict:
                 if outcome == "failure" and reviewer == "claude"
                 else "codex_unavailable"
             )
-            return {
+            return _with_plan_review_state_transitions({
                 "action": "skip_plan_review",
                 "reason": reason,
                 "args": {"reason": reason, "outcome": outcome},
-            }
+            }, {"skipped_reason": reason})
         verdict = env.get("verdict")
         if outcome not in (None, "success"):
             return _plan_review_unknown(
@@ -13344,7 +13608,7 @@ def _plan_review_route(payload: dict) -> dict:
                 f"expected one of {sorted(ALLOWED_PLAN_REVIEW_VERDICTS)!r}"
             )
         if verdict in {"approved", "approved-with-notes"}:
-            return {
+            return _with_plan_review_state_transitions({
                 "action": "proceed_to_phase_2",
                 "args": {
                     "summary_section": {
@@ -13360,24 +13624,42 @@ def _plan_review_route(payload: dict) -> dict:
                     if isinstance(env.get("notes"), list)
                     else 0,
                 },
-            }
+            }, {
+                "record_plan_review_verdict": {
+                    "attempt": _plan_review_route_attempt(payload),
+                    "verdict": verdict,
+                    "findings_count": len(_plan_review_route_findings(payload)),
+                },
+            })
 
         # verdict == needs-replan
         if flags.get("codex_plan_review_binding") is True:
-            return {
+            return _with_plan_review_state_transitions({
                 "action": "halt_plan_review_failed",
                 "reason": "needs-replan with binding plan review",
                 "args": {"reason_detail": "binding_flag"},
-            }
+            }, {
+                "record_plan_review_verdict": {
+                    "attempt": _plan_review_route_attempt(payload),
+                    "verdict": verdict,
+                    "findings_count": len(_plan_review_route_findings(payload)),
+                },
+            })
         if flags.get("no_auto_revise") is True:
-            return {
+            return _with_plan_review_state_transitions({
                 "action": "halt_plan_review_failed",
                 "reason": "needs-replan with auto-revise disabled",
                 "args": {"reason_detail": "no_auto_revise"},
-            }
+            }, {
+                "record_plan_review_verdict": {
+                    "attempt": _plan_review_route_attempt(payload),
+                    "verdict": verdict,
+                    "findings_count": len(_plan_review_route_findings(payload)),
+                },
+            })
         attempt = _plan_review_route_attempt(payload)
         if attempt == 1:
-            return {
+            return _with_plan_review_state_transitions({
                 "action": "dispatch_triage",
                 "args": {
                     "dispatch_context": {
@@ -13387,25 +13669,41 @@ def _plan_review_route(payload: dict) -> dict:
                 "dispatch_context": {
                     "findings_for_payload": _plan_review_route_findings(payload),
                 },
-            }
+            }, {
+                "record_plan_review_verdict": {
+                    "attempt": attempt,
+                    "verdict": verdict,
+                    "findings_count": len(_plan_review_route_findings(payload)),
+                },
+                "triage_dispatched": True,
+            })
         if attempt == 2:
-            return {
+            return _with_plan_review_state_transitions({
                 "action": "halt_plan_review_failed",
                 "reason": "second plan-review pass still needs replan",
                 "args": {"reason_detail": "second_needs_replan"},
-            }
+            }, {
+                "record_plan_review_verdict": {
+                    "attempt": attempt,
+                    "verdict": verdict,
+                    "findings_count": len(_plan_review_route_findings(payload)),
+                },
+            })
         return _plan_review_unknown(
             f"unsupported plan-review attempt {attempt!r}; expected 1 or 2"
         )
 
     if stage == "post_plan_author":
-        return {
+        return _with_plan_review_state_transitions({
             "action": "rerun_analyst_then_review",
             "args": {
                 "next_attempt": 2,
                 "binding_second_pass": True,
             },
-        }
+        }, {
+            "attempt": 2,
+            "auto_revise_round_completed": True,
+        })
 
     if stage == "manual_pause":
         reason = payload.get("reason")
@@ -13428,7 +13726,7 @@ def _plan_review_route(payload: dict) -> dict:
             f"expected one of {sorted(_PLAN_REVIEW_TRIAGE_VERDICTS)!r}"
         )
     if verdict == "ship":
-        return {
+        return _with_plan_review_state_transitions({
             "action": "proceed_to_phase_2",
             "args": {
                 "summary_section": {
@@ -13440,9 +13738,15 @@ def _plan_review_route(payload: dict) -> dict:
                 "banner": "[plan-review-disagreement]",
                 "triage_summary": triage.get("summary", ""),
             },
-        }
+        }, {
+            "record_triage_outcome": {
+                "verdict": verdict,
+                "load_bearing": [],
+                "dismissed": list(range(len(_plan_review_route_findings(payload)))),
+            },
+        })
     if verdict == "ship-with-fixes":
-        return {
+        return _with_plan_review_state_transitions({
             "action": "proceed_to_phase_2",
             "args": {
                 "summary_section": {
@@ -13454,7 +13758,13 @@ def _plan_review_route(payload: dict) -> dict:
                 "notes_section": "Plan review notes",
                 "triage_summary": triage.get("summary", ""),
             },
-        }
+        }, {
+            "record_triage_outcome": {
+                "verdict": verdict,
+                "load_bearing": list(range(len(_plan_review_route_findings(payload)))),
+                "dismissed": [],
+            },
+        })
 
     findings = _plan_review_route_findings(payload)
     if verdict == "partial-agreement":
@@ -13471,7 +13781,22 @@ def _plan_review_route(payload: dict) -> dict:
         findings_for_payload = list(findings)
         dismissed_for_context = []
 
-    return {
+    triage_transitions = {
+        "record_triage_outcome": {
+            "verdict": verdict,
+            "load_bearing": (
+                load_bearing
+                if verdict == "partial-agreement"
+                else list(range(len(findings)))
+            ),
+            "dismissed": (
+                [i for i in range(len(findings)) if i not in set(load_bearing)]
+                if verdict == "partial-agreement"
+                else []
+            ),
+        },
+    }
+    return _with_plan_review_state_transitions({
         "action": "dispatch_plan_author_per_finding",
         "args": {
             "dispatch_context": {
@@ -13491,7 +13816,7 @@ def _plan_review_route(payload: dict) -> dict:
             ),
             "triage_summary": triage.get("summary", ""),
         },
-    }
+    }, triage_transitions)
 
 
 def _route_review_route(payload: dict) -> dict:
@@ -14024,6 +14349,11 @@ def _validate_plan_review_route_input(payload: object) -> list[dict]:
 def _args_to_payload_plan_review_route(args: argparse.Namespace) -> dict:
     payload = {
         "stdin": args.stdin,
+        "update_schedule_state": (
+            pathlib.Path(args.update_schedule_state)
+            if getattr(args, "update_schedule_state", None)
+            else None
+        ),
     }
     payload["stdin_text"] = _read_stdin_text()
     return payload
@@ -14049,6 +14379,16 @@ def _run_plan_review_route(payload: dict) -> dict:
         }, exit_code=1)
     assert isinstance(route_payload, dict)
     directive = route(route_payload)
+    sched_for_state = payload.get("update_schedule_state")
+    if sched_for_state is not None:
+        written, warning = _write_plan_review_state_transition(
+            sched_for_state,
+            directive.get("state_transitions") if isinstance(directive, dict) else None,
+        )
+        if isinstance(directive, dict):
+            directive["schedule_state_updated"] = written
+            if warning:
+                directive.setdefault("warnings", []).append(warning)
     return _result(directive, exit_code=0)
 
 
