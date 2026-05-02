@@ -250,6 +250,7 @@ ALLOWED_LOG_EVENTS = {
     "review_start",
     "review_done",
     "review_route_called",
+    "test_deferred",
     "commit_done",
     "failed",
     "disagreement",
@@ -4240,6 +4241,43 @@ def _append_run_log(event: str, fields: dict) -> str:
     return line
 
 
+_DEFERRED_TEST_RE = re.compile(
+    r"^deferred\s*\(\s*TASK-(?P<task_id>\d{3}[A-Z]?)\s*\)\s*(?P<note>.*)$",
+    re.IGNORECASE,
+)
+
+
+def _parse_deferred_test_command(test_cmd: str) -> dict:
+    """Classify the Phase 1.5 deferred-test marker.
+
+    Accepted form is ``deferred (TASK-NNN[A-Z]?)`` with optional trailing
+    note. Bare/malformed ``deferred`` must fail closed so wrappers never
+    silently skip a real test command because of a typo.
+    """
+    cmd = (test_cmd or "").strip()
+    if len(cmd) >= 2 and cmd.startswith("`") and cmd.endswith("`"):
+        cmd = cmd[1:-1].strip()
+    if not cmd.lower().startswith("deferred"):
+        return {"kind": "not_deferred", "command": cmd}
+    m = _DEFERRED_TEST_RE.match(cmd)
+    if not m:
+        return {
+            "kind": "malformed",
+            "command": cmd,
+            "error": (
+                "malformed deferred test marker; expected "
+                "`deferred (TASK-NNN)` with a task reference"
+            ),
+        }
+    note = (m.group("note") or "").strip()
+    return {
+        "kind": "deferred",
+        "command": cmd,
+        "deferred_to": m.group("task_id").upper(),
+        "note": note,
+    }
+
+
 def _git(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args],
@@ -4409,6 +4447,51 @@ OUT_OF_SCOPE_PAUSE_OPTIONS = (
 ALLOWED_OUT_OF_SCOPE_POLICIES = ("pause", "reconcile-and-revert")
 
 
+_RECONCILE_SCOPE_ANNOTATION_RE = re.compile(
+    r"\s*\(\s*(?:create|modify|delete|edit)\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_reconcile_scope_entry(raw: str) -> str:
+    """Normalize a schedule ``files[]`` entry for reconcile-batch scope.
+
+    This strips only recognized scope annotations. Unknown parentheticals are
+    left attached so they cannot silently widen a task's allowed scope.
+    """
+    cleaned = raw.strip()
+    if cleaned.startswith("`"):
+        m_backtick = re.match(r"`([^`]+)`(?P<tail>.*)$", cleaned)
+        if m_backtick:
+            path = m_backtick.group(1).strip()
+            tail = _RECONCILE_SCOPE_ANNOTATION_RE.sub(
+                "", m_backtick.group("tail").strip(),
+            ).strip()
+            cleaned = path if not tail else f"{path} {tail}"
+        else:
+            cleaned = cleaned.strip("`")
+    else:
+        cleaned = _RECONCILE_SCOPE_ANNOTATION_RE.sub("", cleaned).strip()
+        cleaned = re.split(r"\s+[-–—]\s+", cleaned, maxsplit=1)[0].strip()
+        if cleaned.startswith("`") and cleaned.endswith("`") and len(cleaned) >= 2:
+            cleaned = cleaned[1:-1].strip()
+    cleaned = re.sub(r":\d+[-–]\d+$", "", cleaned)
+    cleaned = re.sub(r":\d+$", "", cleaned)
+    return cleaned.strip()
+
+
+def _path_in_reconcile_scope(path: str, allowed: set[str]) -> bool:
+    """Return true when ``path`` is exactly declared or below a declared dir."""
+    rel = path.strip().strip("/")
+    if rel in allowed:
+        return True
+    for entry in allowed:
+        base = entry.strip().rstrip("/")
+        if base and rel.startswith(f"{base}/"):
+            return True
+    return False
+
+
 def reconcile_batch(
     batch_envelopes: list[dict],
     repo_root: str,
@@ -4474,7 +4557,7 @@ def reconcile_batch(
                     continue
                 raw_files = task.get("files", []) or []
                 schedule_files_by_task[tid] = {
-                    normalize_files_entry(str(entry))
+                    _normalize_reconcile_scope_entry(str(entry))
                     for entry in raw_files
                     if isinstance(entry, str)
                 }
@@ -4542,12 +4625,12 @@ def reconcile_batch(
         actionable_untracked: list[str] = []
         if allowed is not None:
             for p in protected_filtered_tracked:
-                if p in allowed:
+                if _path_in_reconcile_scope(p, allowed):
                     kept_tracked.append(p)
                 else:
                     actionable_tracked.append(p)
             for p in protected_filtered_untracked:
-                if p in allowed:
+                if _path_in_reconcile_scope(p, allowed):
                     kept_untracked.append(p)
                 else:
                     actionable_untracked.append(p)
@@ -13234,6 +13317,38 @@ def _run_auto_validate_divergence(payload: dict) -> dict:
     test_cmd = (payload['test_command'] or '').strip()
     if not test_cmd or test_cmd.lower() == 'none':
         return _result({'error': 'auto-validate-divergence requires a non-empty --test-command; the failure cause matched but no target-env command is available to re-run'}, exit_code=1)
+    deferred = _parse_deferred_test_command(test_cmd)
+    if deferred["kind"] == "malformed":
+        return _result({'error': deferred["error"], 'task_id': task_id}, exit_code=1)
+    if deferred["kind"] == "deferred":
+        event_fields = {
+            "task_id": task_id,
+            "deferred_to": deferred["deferred_to"],
+        }
+        if payload['run_id']:
+            event_fields["run_id"] = payload['run_id']
+        if deferred["note"]:
+            event_fields["note"] = deferred["note"]
+        _append_run_log("test_deferred", event_fields)
+        target_test = {
+            "result": "deferred",
+            "exit_code": None,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "command": deferred["command"],
+            "deferred_to": deferred["deferred_to"],
+        }
+        if deferred["note"]:
+            target_test["note"] = deferred["note"]
+        return _result({
+            'divergence': False,
+            'applicable': True,
+            'task_id': task_id,
+            'target_test': target_test,
+            'sandbox_divergence': None,
+            'test_deferred': event_fields,
+            'errors': [],
+        }, exit_code=0)
     repo_root = payload['repo_root'] or os.getcwd()
     timeout_sec = int(payload['timeout'])
     try:

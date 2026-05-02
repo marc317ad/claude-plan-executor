@@ -151,6 +151,14 @@ def _load_plan_config() -> dict:
 _PLAN_CFG = _load_plan_config()
 PLAN_DIR = Path(_PLAN_CFG.get("plan_dir", "docs/plans"))
 _PLAN_DIR_POSIX = PLAN_DIR.as_posix()
+RUN_LOG_PATH = PLAN_DIR / "_run_log.jsonl"
+
+
+def _append_run_log(event: str, fields: dict) -> None:
+    rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event, **fields}
+    RUN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with RUN_LOG_PATH.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, sort_keys=False) + "\n")
 
 # Executor-infrastructure protection set (``PROTECTED_EXACT_PATHS`` /
 # ``PROTECTED_PATH_PREFIXES`` / ``PROTECTED_PATH_SUFFIXES`` /
@@ -1162,6 +1170,10 @@ def _handle_timeout_cleanup(
 # outputs are truncated keeping the trailing window (most relevant to a
 # test failure) and a `truncated_to` byte marker is recorded alongside.
 SANDBOX_TEST_CAPTURE_CAP = 32 * 1024
+_DEFERRED_TEST_RE = re.compile(
+    r"^deferred\s*\(\s*TASK-(?P<task_id>\d{3}[A-Z]?)\s*\)\s*(?P<note>.*)$",
+    re.IGNORECASE,
+)
 
 
 def _truncate_stream(text: str, cap: int = SANDBOX_TEST_CAPTURE_CAP) -> tuple[str, int | None]:
@@ -1191,7 +1203,7 @@ def run_test_command(
 ) -> dict:
     """Run a test command with flaky-detection retry.
 
-    Returns a dict with ``result`` ∈ {passed, failed, not_run},
+    Returns a dict with ``result`` ∈ {passed, failed, not_run, deferred},
     ``attempts``, ``flaky``, ``command``, ``output_tail`` (combined
     stdout+stderr last 2KB — preserved for back-compat) plus
     ``stdout`` / ``stderr`` / ``exit_code`` capturing the LAST attempt's
@@ -1215,6 +1227,40 @@ def run_test_command(
             "stderr": "",
             "exit_code": None,
         }
+    if cmd.lower().startswith("deferred"):
+        m = _DEFERRED_TEST_RE.match(cmd)
+        if not m:
+            return {
+                "result": "failed",
+                "attempts": 0,
+                "output_tail": (
+                    "malformed deferred test marker; expected "
+                    "`deferred (TASK-NNN)` with a task reference"
+                ),
+                "flaky": False,
+                "command": cmd,
+                "stdout": "",
+                "stderr": (
+                    "malformed deferred test marker; expected "
+                    "`deferred (TASK-NNN)` with a task reference"
+                ),
+                "exit_code": None,
+            }
+        note = (m.group("note") or "").strip()
+        result = {
+            "result": "deferred",
+            "attempts": 0,
+            "output_tail": "",
+            "flaky": False,
+            "command": cmd,
+            "stdout": "",
+            "stderr": "",
+            "exit_code": None,
+            "deferred_to": m.group("task_id").upper(),
+        }
+        if note:
+            result["note"] = note
+        return result
 
     last_tail = ""
     last_stdout = ""
@@ -1759,6 +1805,14 @@ def cmd_implement(args) -> int:
             repo_root,
             timeout_sec=TEST_TIMEOUT,
         )
+        if test_result["result"] == "deferred":
+            event_fields = {
+                "task_id": task["task_id"],
+                "deferred_to": test_result["deferred_to"],
+            }
+            if test_result.get("note"):
+                event_fields["note"] = test_result["note"]
+            _append_run_log("test_deferred", event_fields)
         if test_result["result"] == "failed":
             # TASK-008 (POSTMORTEM_FIXES): surface sandbox stdout/stderr
             # so the orchestrator's auto-validate branch can distinguish

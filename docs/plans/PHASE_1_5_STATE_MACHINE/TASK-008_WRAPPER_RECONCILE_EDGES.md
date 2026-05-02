@@ -26,8 +26,9 @@ These are heuristic-code responsibilities, not LLM judgment calls.
 
 ### TASK-008: Wrapper/reconcile edge hardening
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
+- **Agent:** codex
 - **Files:**
   - plugins/plan-executor/scripts/plan_ops.py (edit)
   - plugins/plan-executor/scripts/plan_codex_dispatch.py (edit, if the independent test runner path lives there)
