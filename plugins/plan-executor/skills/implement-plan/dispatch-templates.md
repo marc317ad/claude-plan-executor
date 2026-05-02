@@ -110,21 +110,21 @@ The agent-behavior body below is byte-identical to the pre-migration wording —
 
 ## Phase 1.5 — Codex plan review (pre-dispatch gate)
 
-Dispatched after schedule persist, before any batch runs. Codex is the reviewer because the plan was authored by Claude/Opus (analyst); this is the independent pre-exec check. Skipped entirely if `--skip-plan-review` is set OR `codex_available=false` from preflight.
+Dispatched after schedule persist, before any batch runs. Codex is the reviewer because the plan was authored by Claude/Opus (analyst); this is the independent pre-exec check. The command is rendered when `plan-review-route` returns `action == "dispatch_codex_reviewer"`. Skips and fallback/degrade reasons are decided by `plan-review-route`, not by this template.
+
+Router output today: `{"action": "dispatch_codex_reviewer", "args": {"dispatch_context": {"allow_gaps_demotion": <bool>}}}`. The orchestrator supplies `schedule_path`, `repo_root`, and `timeout` from its own Phase 0 / Phase 1 state — they are NOT carried in the router envelope.
 
 Bash command template:
 
 ```
 {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
-  --plan-file <absolute plan path> \
-  --schedule-file <absolute schedule path> \
-  --plans-dir <plan_dir> \
-  --repo-root <absolute repo root> \
-  --timeout 180 \
-  [--allow-gaps]
+  --schedule-file <orchestrator-supplied absolute schedule path> \
+  --repo-root <orchestrator-supplied absolute repo root> \
+  --timeout <orchestrator-supplied seconds, default 180> \
+  [--allow-gaps when dispatch_context.allow_gaps_demotion is true]
 ```
 
-Timeout **180s**. Wrapper captures a pre-dispatch baseline and performs delta-bounded cleanup; the plan-review path runs Codex under `-s read-only` sandbox (advisory) because Codex has no legitimate reason to write during a plan-level review. Any sandbox escape surfaces in `extra.sandbox_escape_detected` without changing the outcome — this matches the `review` subcommand's observe-only semantics.
+Timeout normally **180s**. Wrapper captures a pre-dispatch baseline and performs delta-bounded cleanup; the plan-review path runs Codex under `-s read-only` sandbox (advisory) because Codex has no legitimate reason to write during a plan-level review. Any sandbox escape surfaces in `extra.sandbox_escape_detected` without changing the outcome — this matches the `review` subcommand's observe-only semantics.
 
 **`--allow-gaps` (TASK-003).** Pass-through of the orchestrator's `--allow-gaps` opt-in. When supplied AND the persisted schedule's `gaps[]` is non-empty with every entry's `severity == "soft"` AND the schedule has no structural violations (`outcome == "needs-enrichment"` — `"valid"` by contract requires empty `gaps[]`, and missing/unknown outcomes suppress the demotion), the wrapper appends this literal demotion clause to the rendered Codex prompt (just before the "Verdict vocabulary" block):
 
@@ -153,23 +153,22 @@ Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, t
 }
 ```
 
-Orchestrator routes by verdict (see SKILL.md §Phase 1.5). On `needs-replan` (when auto-revise is on — default), dispatch `plan-author` to apply findings to the plan file in place, then re-run Phase 1 end-to-end (`build-tasks` → classifier fan-out → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan, then re-run plan-review. A second `needs-replan` halts with `run_end reason=plan_review_failed`; no batches execute. If `--no-auto-revise` is set, the `needs-replan` route halts immediately with `run_end reason=plan_review_failed` instead of dispatching the author. (The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore — TASK-005 replaced it with the full Phase 1 re-run.)
+Orchestrator routing consumes the parsed verdict through `plan-review-route` (see SKILL.md §Phase 1.5). The router owns `--skip-plan-review`, reviewer availability/fallback, `--codex-plan-review-binding`, `--no-auto-revise`, second-pass binding, dismissed-index tracking, and the selected findings payload for any author fan-out. This template only describes the dispatch payload and wrapper contract.
 
 ## Phase 1.5-Claude — plan-reviewer dispatch (claude_only path)
 
-Dispatched in place of the Codex wrapper above whenever `claude_only=true` (bound at Phase 0 preflight from `--claude-only OR (codex_available == false)` per SKILL.md §Pre-flight). The verdict-routing ladder, `--codex-plan-review-binding` mutex, the auto-revise `plan-author` path, and the `--allow-gaps` demotion all consume the parsed verdict — they are agnostic to the dispatch mechanism. The only behavioral differences vs the Codex wrapper path are (a) the dispatch is an Agent invocation rather than a `plan_codex_dispatch.py` shell-out, and (b) the run-log events carry `reviewer:"claude"` instead of `reviewer:"codex"`.
+Dispatched in place of the Codex wrapper above when `plan-review-route` returns `action == "dispatch_claude_reviewer"` (the router emits this when `claude_only=true` is bound at Phase 0 preflight from `--claude-only OR (codex_available == false)`). The verdict-routing ladder, `--codex-plan-review-binding` mutex, the auto-revise `plan-author` path, and the `--allow-gaps` demotion all consume the parsed verdict — they are agnostic to the dispatch mechanism.
+
+Router output today: `{"action": "dispatch_claude_reviewer", "args": {}}` — the router does NOT carry a `dispatch_context` for this action. The orchestrator supplies `schedule_path`, `plan_basename`, and `allow_gaps_demotion` from its own Phase 0 / Phase 1 state (the latter from the orchestrator's `--allow-gaps` flag). The only behavioral differences vs the Codex wrapper path are (a) the dispatch is an Agent invocation rather than a `plan_codex_dispatch.py` shell-out, and (b) the run-log events carry `reviewer:"claude"` instead of `reviewer:"codex"`.
 
 Agent dispatch, `subagent_type: "plan-reviewer"`, `model: "sonnet"`. The agent produces one markdown report whose body concludes with a single fenced ```json block conforming to `scripts/codex_plan_review_schema.json` (the same schema the Codex wrapper validates against). The orchestrator pipes the full report through `parse-plan-review-report --stdin --from-claude --json` to extract the verdict; the `--from-claude` flag tells the parser to treat stdin as the bare `parsed` payload (no wrapper envelope).
 
 > Review the persisted schedule for this plan. The plan was authored by a peer analyst and decomposed into a fat manifest by `plan_ops.py build-tasks`; you are an independent pre-dispatch reviewer working from the schedule JSON alone.
 >
-> Dispatch inputs:
+> Dispatch inputs (orchestrator-supplied; the `dispatch_claude_reviewer` action does not carry a `dispatch_context`):
 >
-> - `plan_path`: `<absolute plan path>` (the directory containing `00_INDEX.json` and the per-task child files — read for context only, never edit)
 > - `schedule_path`: `<absolute schedule path>` (your primary input — read this for the unified fat `tasks[]` array; never edit)
-> - `repo_root`: `<absolute repo root>`
-> - `plan_basename`: `<plan_basename>` (the directory basename; emit this verbatim in your output `plan_file` field)
-> - `findings_count`: `<N>` (length of the prior pass's `findings[]` if this is a re-dispatch — `0` on the first pass; advisory only, your output `findings[]` is not bounded by it)
+> - `plan_basename`: `<plan directory basename>` (emit this verbatim in your output `plan_file` field)
 > - `allow_gaps_demotion`: `<true|false>` (when `true`, apply the demotion clause from your agent spec)
 >
 > Cross-plan dependency resolution has already been verified by the orchestrator in Phase 0 preflight. Do not check or report on cross-plan dependencies. Focus only on schedule structure, task intent, and coordination risk expressed within the supplied schedule.
@@ -193,7 +192,7 @@ printf '%s' "<agent_output_extracted_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scr
   parse-plan-review-report --stdin --from-claude --json
 ```
 
-`parse-plan-review-report --from-claude` validates the bare `parsed` payload against `codex_plan_review_schema.json` and emits the same `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}` result the Codex path emits, so the Phase 1.5 verdict-routing table and the Phase 1.5.5 triage entry continue to consume the same parser output regardless of which reviewer mechanism produced it. Outcome on this path is always `success` — Agent-side errors bubble up as Agent dispatch failures, not envelope-level outcomes; treat such failures the same way the Codex path treats `outcome ∈ {timeout, parse_error, failure}` (degrade to `plan_review_skipped {reason:"claude_review_failure"}` for routing rather than blocking execution).
+`parse-plan-review-report --from-claude` validates the bare `parsed` payload against `codex_plan_review_schema.json` and emits the same `{plan_file, verdict, findings_count, findings, notes, schedule_ok, summary}` result the Codex path emits, so `plan-review-route` and the Phase 1.5.5 triage entry consume the same parser output regardless of which reviewer mechanism produced it. Outcome on this path is always `success` — Agent-side errors bubble up as Agent dispatch failures, not envelope-level outcomes; pass those failures back through `plan-review-route` so the router selects the degraded skipped reason.
 
 ## Phase 1.5-Gemini — Gemini-CLI plan review (fallback path)
 
@@ -219,12 +218,14 @@ The `--allow-gaps` pass-through is identical to the Codex path: the wrapper cons
 
 ## Phase 1.5a — plan-author dispatch (needs-replan auto-revise)
 
-Dispatched only when the first Phase 1.5 Codex `plan-review` returns `needs-replan` AND auto-revise is on (default; disabled by `--no-auto-revise`). The author revises the plan text in place so a second review can proceed. Agent dispatch, `subagent_type: "plan-author"`, `model: "opus"`.
+Dispatched only when `plan-review-route` returns `action == "dispatch_plan_author_per_finding"` after a first-pass plan review needs revision and auto-revise remains enabled. The author revises the targeted plan text in place so a second review can proceed. Agent dispatch, `subagent_type: "plan-author"`, `model: "opus"`.
 
-**Per-finding fan-out (TASK-007).** Phase 1.5a is no longer a single author dispatch over the whole plan. For each finding in the payload (filtered on `partial-agreement` to `load_bearing` indices, full on `needs-rework`), the orchestrator dispatches a separate `plan-author` agent. Each dispatch carries exactly ONE finding plus the inputs needed to locate its edit target; the author's write scope is locked to that single target. **The one-dispatch-per-finding rule applies uniformly to BOTH task-targeted AND schedule-level findings — schedule-level findings are NOT batched into a single dispatch.** Resolution per finding depends on `target_task_id`:
+Router output today: `{"action": "dispatch_plan_author_per_finding", "args": {"dispatch_context": {"findings_for_payload": [...], "dismissed_for_context": [...], "per_finding_dispatches": [{"source_index", "finding", "target_task_id", "variant", "child_plan_file"}, ...], "triage_summary": "..."}}}`. Each `per_finding_dispatches[i]` entry has `variant ∈ {"A", "B"}`; `child_plan_file` is non-null for variant `A` and `null` for variant `B`. The router does NOT emit a `roster_file` field — the orchestrator resolves the roster path itself as `<plans_dir>/00_INDEX.json` and renders it inline for variant `B`.
 
-- **Task-targeted (`target_task_id="NNN"`)** — triple is `{finding, target_task_id, child_plan_file}`. The orchestrator resolves `finding.target_task_id → child_plan_file` via the schedule's `tasks[].plan_file`; the author edits that one child file in place. `roster_file` is absent from this dispatch.
-- **Schedule-level (`target_task_id=null`)** — triple is `{finding, target_task_id=null, roster_file}`, with `child_plan_file` absent or explicitly `null`. The orchestrator passes `roster_file=<plan_dir>/00_INDEX.json` (absolute path to the schedule roster) so the author has a concrete file target. Each schedule-level finding still gets its own dispatch. The author's write scope is `roster_file` (roster edit) OR empty (emit `files_edited: []` with a justification note). If multiple schedule-level findings target the roster, each still dispatches separately; the author may touch `roster_file` idempotently across those dispatches.
+**Per-finding fan-out.** Phase 1.5a is not a single author dispatch over the whole plan. For each entry in `dispatch_context.per_finding_dispatches[]`, the orchestrator dispatches a separate `plan-author` agent. Each dispatch carries exactly ONE finding plus the inputs needed to locate its edit target; the author's write scope is locked to that single target. **The one-dispatch-per-finding rule applies uniformly to BOTH task-targeted AND schedule-level findings — schedule-level findings are NOT batched into a single dispatch.** Resolution per finding follows `variant`:
+
+- **Variant A — task-targeted (`variant == "A"`, `target_task_id != null`, `child_plan_file != null`)** — the author edits that one child file in place.
+- **Variant B — schedule-level (`variant == "B"`, `target_task_id == null`, `child_plan_file == null`)** — the orchestrator renders the roster path it resolved (`<plans_dir>/00_INDEX.json`) inline as the only allowed write target. Each schedule-level finding still gets its own dispatch; the author's write scope is the roster file OR empty (emit `files_edited: []` with a justification note).
 
 Orchestrator-side log emission wraps each per-child dispatch:
 
@@ -244,33 +245,21 @@ Two visually distinct prompt variants render based on `target_task_id`. The orch
 
 ---
 
-### Variant A — Task-targeted dispatch (`target_task_id != null`)
+### Variant A — Task-targeted dispatch (`variant == "A"`)
 
-Renders when the finding carries a non-null `target_task_id`. Inputs: `child_plan_file` (required), `target_task_id` (required). `roster_file` is NOT rendered on this path.
+Renders when the per-finding entry has `variant == "A"` (equivalently `target_task_id != null` and `child_plan_file != null`). Inputs come from that single router entry: `finding`, `target_task_id`, `child_plan_file`. No roster path is rendered on this path.
 
-> Apply a Codex plan-review finding to the child plan at `<absolute child_plan_file path>`. The first plan-review pass returned `needs-replan`; your job is to revise THIS child plan file so a second review can proceed. Your edit target is exactly one `### TASK-NNN:` sub-heading block in this file.
+> Apply a plan-review finding to the child plan at `<per_finding_dispatches[i].child_plan_file>`. The first plan-review pass returned `needs-replan`; your job is to revise THIS child plan file so a second review can proceed. Your edit target is exactly one `### TASK-NNN:` sub-heading block in this file.
 >
-> Dispatch inputs:
+> Dispatch inputs from `dispatch_context.per_finding_dispatches[i]`:
 >
-> - `child_plan_file`: `<absolute child_plan_file path>` (edit this file in place)
-> - `target_task_id`: `<target_task_id>` (e.g., `"002"`)
+> - `child_plan_file`: `<per_finding_dispatches[i].child_plan_file>` (edit this file in place)
+> - `target_task_id`: `<per_finding_dispatches[i].target_task_id>`
 >
-> Codex finding (single entry from `parsed.findings[]` of the wrapper envelope):
+> Plan-review finding (single router-provided entry):
 >
 > ```json
-> <codex_finding_json>
-> ```
->
-> Codex summary (verbatim from `parsed.summary`):
->
-> ```
-> <codex_summary>
-> ```
->
-> Analyst annotations (verbatim, may be empty):
->
-> ```json
-> <analyst_annotations_json>
+> <per_finding_dispatches[i].finding>
 > ```
 >
 > Apply a minimum-change edit to resolve the finding. Preserve untouched sections verbatim — do not re-flow or re-format text the finding does not reference. If the finding is vague, contradictory, or contradicts the child's existing acceptance criteria, skip it with a written rationale in your report rather than invent intent. Your write scope is **exactly the child plan path above** — do NOT edit any other file, including other child plans under the same directory, the schedule roster at `00_INDEX.json`, source code, tests, or configuration.
@@ -283,34 +272,22 @@ Renders when the finding carries a non-null `target_task_id`. Inputs: `child_pla
 
 ---
 
-### Variant B — Schedule-level dispatch (`target_task_id == null`)
+### Variant B — Schedule-level dispatch (`variant == "B"`)
 
-Renders when the finding carries `target_task_id=null`. Inputs: `roster_file` (required — absolute path to the schedule's `00_INDEX.json`), `target_task_id=null`. `child_plan_file` is NOT rendered on this path (there is no individual child file target for schedule-level concerns).
+Renders when the per-finding entry has `variant == "B"` (equivalently `target_task_id == null` and `child_plan_file == null`). Router-supplied inputs from that entry are `finding` and `target_task_id: null`; the router does NOT emit a `roster_file` field, so the orchestrator resolves the roster path as `<plans_dir>/00_INDEX.json` and renders it inline below.
 
-> Apply a Codex plan-review **schedule-level** finding. The first plan-review pass returned `needs-replan` with a concern that targets the schedule as a whole (batch ordering, roster composition, cross-cutting structural issue) rather than a single `### TASK-NNN:` child block. This is a schedule-level finding — there is no individual child file target. Your allowed edit surface is the schedule roster file OR empty (no file edit).
+> Apply a plan-review **schedule-level** finding. The first plan-review pass returned `needs-replan` with a concern that targets the schedule as a whole (batch ordering, roster composition, cross-cutting structural issue) rather than a single `### TASK-NNN:` child block. This is a schedule-level finding — there is no individual child file target. Your allowed edit surface is the schedule roster file OR empty (no file edit).
 >
 > Dispatch inputs:
 >
-> - `roster_file`: `<absolute path to 00_INDEX.json>` (the schedule roster — edit this file in place only if a roster change resolves the finding)
-> - `target_task_id`: `null` (schedule-level — no individual child file target)
-> - `child_plan_file`: (absent on this path — do NOT edit any `### TASK-NNN:` child file)
+> - `roster_file`: `<orchestrator-resolved absolute path to 00_INDEX.json>` (the schedule roster — edit this file in place only if a roster change resolves the finding)
+> - `target_task_id`: `null` (router-emitted — schedule-level, no individual child file target)
+> - `child_plan_file`: `null` (router-emitted — do NOT edit any `### TASK-NNN:` child file)
 >
-> Codex finding (single entry from `parsed.findings[]` of the wrapper envelope):
->
-> ```json
-> <codex_finding_json>
-> ```
->
-> Codex summary (verbatim from `parsed.summary`):
->
-> ```
-> <codex_summary>
-> ```
->
-> Analyst annotations (verbatim, may be empty):
+> Plan-review finding (single router-provided entry from `dispatch_context.per_finding_dispatches[i]`):
 >
 > ```json
-> <analyst_annotations_json>
+> <per_finding_dispatches[i].finding>
 > ```
 >
 > This is a schedule-level finding — no individual child file targets. You may edit `roster_file` (the absolute path named above) OR emit `files_edited: []` with a justification note if no roster change is warranted for this finding. Do NOT edit any `### TASK-NNN:` child file, source code, tests, or configuration on this path.
@@ -323,69 +300,47 @@ Renders when the finding carries `target_task_id=null`. Inputs: `roster_file` (r
 >
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
 
-After all per-child authors return, the orchestrator re-runs Phase 1 end-to-end (`build-tasks` → classifier fan-out → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan. If the second-pass `build-tasks` surfaces fatal `errors[]` the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (clean tasks, or tasks with warnings — same allow-gaps / binding / analyst-triage routing as the first pass) Codex `plan-review` runs once more; that second verdict is binding. The legacy whole-plan `plan-analyst` re-dispatch is retained for back-compat but is NOT the post-author re-validation path anymore.
+After all per-finding authors return, the orchestrator re-runs Phase 1 end-to-end (`build-tasks` → classifier fan-out → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan. If the second-pass `build-tasks` surfaces fatal `errors[]`, the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (clean tasks, or tasks with warnings), plan review runs once more; that second verdict is binding and no second triage is dispatched.
 
 ## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)
 
-Dispatched at TWO orchestrator seams sharing one template, one agent, one parser, one schema:
+Dispatched at TWO orchestrator seams sharing one template, one agent, one parser, one schema. The Phase 1.5.5 seam is rendered when `plan-review-route` returns `action == "dispatch_triage"`; the Phase 1-triage (analyst) seam is dispatched directly by the orchestrator without a router round-trip (the analyst path predates `plan-review-route`):
 
 - **Phase 1-triage (analyst-source).** After Phase A (plan-analyst) returns `outcome=needs-enrichment`, before any halt or `--allow-gaps` demotion path. Skipped when `--analyst-binding` is set (halt with `run_end reason=plan_analyst_failed`) or `--allow-gaps` is set (today's pre-triage short-circuit preserved).
 - **Phase 1.5.5 (Codex-plan-review-source).** After Phase 1.5 (Codex plan-review) returns `verdict=needs-replan`, before the Phase 1.5a `plan-author` auto-revise dispatch. Skipped when `--codex-plan-review-binding` is set (halt with `run_end reason=plan_review_failed`) or `--no-auto-revise` is set (today's halt behavior preserved).
 
-One template, one `render(templates.PlanTriage, source=<src>, ...)` call from the orchestrator; the `{source}` placeholder discriminates the embedded evidence block, the verification-move examples, and the analyst-only same-family caveat. Agent dispatch, `subagent_type: "plan-review-triage"`, `model: "sonnet"` (parity with Phase D.5 — NOT opus).
+Router output for the Phase 1.5.5 seam: `{"action": "dispatch_triage", "args": {"dispatch_context": {"findings_for_payload": [...]}}}`. Only `findings_for_payload` is router-emitted; `source`, `findings_count`, and the optional `schedule_path` are orchestrator-supplied (the orchestrator labels `source ∈ {plan-analyst, codex-plan-review}` based on the seam, sets `findings_count` from the source array length, and supplies `schedule_path` from its own Phase 0 / Phase 1 state when relevant).
 
-**Reviewer-agnostic findings placeholder (TASK-006).** On the `source=codex-plan-review` seam the embedded `<codex_findings_json>` placeholder receives the active reviewer's findings regardless of family — when the Phase 1.5-Gemini fallback path produced the verdict, the same placeholder carries Gemini's `parsed.findings[]` (the schemas are structural mirrors, so the per-finding shape is identical). The placeholder name is preserved verbatim — it is a name, not a contract — and the triage agent need not discriminate by reviewer family. Same applies to `<codex_summary>` (the active reviewer's `parsed.summary`).
+One template, one render call from the orchestrator; `source` discriminates the embedded evidence label, the verification-move examples, and the analyst-only same-family caveat. Agent dispatch, `subagent_type: "plan-review-triage"`, `model: "sonnet"` (parity with Phase D.5 — NOT opus).
 
-Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` lines 218-280): the verdict rubric, the dismissal-evidence gate, and the output shape port across verbatim, re-scoped from "diff + task block" to "plan + schedule + source-specific evidence".
+**Findings payload.** On the Phase 1.5.5 seam, `findings_for_payload` is router-emitted from `dispatch_context.findings_for_payload` and carries the active reviewer's findings regardless of family — Codex and Gemini schemas are structural mirrors, so the per-finding shape is identical. On the Phase 1-triage (analyst) seam, the orchestrator supplies the analyst `gaps[]` directly. `findings_count` is the parser bound for index validation; `schedule_path` is optional and rendered only when present.
 
-> Scope: `plan_path=<absolute plan path>`, `schedule_path=<absolute schedule path>`, `source={source}`, `findings_count=<N>`.
+Structurally this is a plan-level clone of Phase D.5: the verdict rubric, the dismissal-evidence gate, and the output shape port across, re-scoped from "diff + task block" to the router-supplied plan-stage evidence plus optional schedule context.
+
+> Scope: `source=<source>`, `findings_count=<N>`; include `schedule_path=<absolute schedule path>` only when supplied.
 >
-> {source} (a plan-stage reviewer) flagged the plan and you are the third-opinion adjudicator. Independently review the plan against the reviewer's evidence array and decide whether each item is load-bearing (a ship-blocker) or can be safely dismissed. You are read-only on both the plan and the schedule — do NOT edit either file.
->
-> Plan (verbatim):
->
-> ```markdown
-> <full plan text>
-> ```
+> `<source>` (a plan-stage reviewer) flagged the plan and you are the third-opinion adjudicator. Independently review the plan against the supplied evidence array and decide whether each item is load-bearing (a ship-blocker) or can be safely dismissed. You are read-only on any supplied plan or schedule material — do NOT edit files.
 >
 > **Reviewer evidence (source-discriminated):**
 >
 > *If `source == codex-plan-review`:*
 >
-> > Codex findings (derived from `parsed.findings` of the Phase 1.5 envelope). Each finding carries `{severity, blocking, section, concern, suggested_change, target_task_id, source_index}` — `source_index` is the finding's 0-based position in the ORIGINAL Codex `parsed.findings[]` array (pre-sort), and the remaining fields are the TASK-007 per-child targeting shape: `target_task_id` names the child file the downstream `plan-author` will edit (or `null` for a schedule-level finding that targets `00_INDEX.json` or no file at all):
+> > Plan-review findings from `findings_for_payload`. Each finding carries `{severity, blocking, section, concern, suggested_change, target_task_id, source_index}` — `source_index` is the finding's 0-based position in the ORIGINAL reviewer `parsed.findings[]` array, and `target_task_id` names the child file the downstream `plan-author` will edit (or `null` for a schedule-level finding that targets `00_INDEX.json` or no file at all):
 > >
 > > ```json
-> > <codex_findings_json>
+> > <findings_for_payload>
 > > ```
 > >
-> > **Findings are already presorted (TASK-007).** The orchestrator pre-sorts this array by (a) `blocking=true` first, (b) then `severity=critical`, (c) then `severity=important`, (d) then `severity=minor`, with stable source-order tie-breaking. The ordering is produced by `plan_ops.py order-triage-findings` before this template is rendered; you do NOT need to re-sort. Items with `target_task_id=null` are schedule-level concerns — evaluate them against the schedule JSON + roster rather than a single task block.
+> > **Findings are already presorted by the router.** Do NOT re-sort. Items with `target_task_id=null` are schedule-level concerns — evaluate them against the supplied schedule context when `schedule_path` is present.
 > >
-> > **Index contract — use `source_index`, NOT array positions.** Your output indices (`load_bearing` / `dismissed`) MUST reference the `source_index` values carried on each finding above, NOT positions in this presorted array. `source_index` corresponds to the original Codex `parsed.findings[]` order (the downstream parser `parse-plan-review-triage-report --findings-count <N>` validates indices against that original array). Example: if the presorted array begins with a finding whose `source_index` is `2`, emitting `load_bearing: [0]` is WRONG — emit `load_bearing: [2]` to refer to that finding.
-> >
-> > Codex summary (verbatim from `parsed.summary`):
-> >
-> > ```
-> > <codex_summary>
-> > ```
+> > **Index contract — use `source_index`, NOT array positions.** Your output indices (`load_bearing` / `dismissed`) MUST reference the `source_index` values carried on each finding above, NOT positions in this presorted array. `source_index` corresponds to the original reviewer `parsed.findings[]` order (the downstream parser validates indices against `findings_count`).
 >
 > *If `source == plan-analyst`:*
 >
-> > Analyst gaps (verbatim from the analyst's outcome payload `gaps[]`; each entry carries at minimum `location`, `severity`, `missing_field` or `detail`):
+> > Analyst gaps from `findings_for_payload`; each entry carries at minimum `location`, `severity`, `missing_field` or `detail`:
 > >
 > > ```json
-> > <analyst_gaps_json>
-> > ```
-> >
-> > Analyst outcome narrative (verbatim — `outcome`, `summary`, and any other non-array fields the analyst emitted):
-> >
-> > ```json
-> > <analyst_outcome_json>
-> > ```
-> >
-> > Analyst summary (verbatim from the analyst outcome `summary` field):
-> >
-> > ```
-> > <analyst_summary>
+> > <findings_for_payload>
 > > ```
 >
 > Return your verdict (`ship | ship-with-fixes | partial-agreement | needs-rework`) and a brief justification.
@@ -406,14 +361,14 @@ Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` li
 >
 > *Source-specific verification moves — if `source == codex-plan-review`:*
 >
-> - Re-read the cited plan section and confirm Codex's finding misreads it.
+> - Compare the cited finding text against the supplied schedule context and confirm the reviewer misread it.
 > - Check the schedule's `tasks[]` for the claimed missing entry.
-> - Verify the Acceptance criteria bullet Codex says is absent is actually present.
+> - Verify the cited task or schedule element already satisfies the reviewer concern.
 >
 > *Source-specific verification moves — if `source == plan-analyst`:*
 >
-> - Re-read the task block cited by `gaps[i].location` and confirm the `missing_field` is in fact present.
-> - Check the plan's narrative Dependencies prose for an implicit reference the analyst missed.
+> - Compare the gap entry against the supplied schedule context and confirm the `missing_field` is in fact present.
+> - Check the schedule dependencies for an explicit or implicit reference the analyst missed.
 > - Verify the `severity:'hard'` classification against what the orchestrator would actually halt on — soft gaps with `severity:'hard'` mis-tagging are dismissible.
 >
 > *Same-family caveat (included ONLY when `source == plan-analyst`; omitted for `source == codex-plan-review`):*
@@ -423,7 +378,7 @@ Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` li
 > **Hard rules for `partial-agreement`:**
 >
 > - Emit this verdict only when BOTH `load_bearing` and `dismissed` are non-empty. If every item is load-bearing → use `needs-rework`. If no item is → use `ship-with-fixes`. A unanimous split (empty bucket on either side) is a contract violation — the parser rejects it with `partial-agreement-invalid-split`.
-> - Indices in `load_bearing` and `dismissed` MUST be 0-based and in range `[0, findings_count)`, and the two buckets MUST be disjoint. **When `source == codex-plan-review`, use the `source_index` value carried on each presorted finding** (the original Codex `parsed.findings[]` position). When `source == plan-analyst`, use positions into the `analyst_gaps_json` array above (analyst gaps are not presorted and carry no `source_index`). There is no `id` field on items; `source_index` (Codex path) or array position (analyst path) is the reference.
+> - Indices in `load_bearing` and `dismissed` MUST be 0-based and in range `[0, findings_count)`, and the two buckets MUST be disjoint. **When `source == codex-plan-review`, use the `source_index` value carried on each presorted finding** (the original active-reviewer `parsed.findings[]` position). When `source == plan-analyst`, use positions into `findings_for_payload` (analyst gaps are not presorted and carry no `source_index`). There is no `id` field on items; `source_index` (plan-review path) or array position (analyst path) is the reference.
 >
 > **Output shape (shared across sources — the source discriminator lives in the dispatch input and the orchestrator's run-log event, NOT in your output):**
 >
@@ -433,13 +388,13 @@ Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` li
 >   {"verdict": "ship", "summary": "<one-line justification>"}
 >   ```
 >
-> - For `partial-agreement` (evidence array of length 4, indices 0..3):
+> - For `partial-agreement`:
 >
 >   ```json
 >   {
 >     "verdict": "partial-agreement",
->     "load_bearing": [0, 2],
->     "dismissed": [1, 3],
+>     "load_bearing": [0],
+>     "dismissed": [1],
 >     "summary": "<one-line justification naming which items fall in which bucket>"
 >   }
 >   ```
@@ -449,11 +404,11 @@ Structurally this is a plan-level clone of Phase D.5 (`dispatch-templates.md` li
 > - No source-code reading. The triage adjudicates against the plan prose + schedule only.
 > - No Edit / Write / Agent tools. You are read-only on the plan and the schedule.
 > - No plan-file mutation. No schedule-file mutation.
-> - `load_bearing` / `dismissed` indices MUST be into the reviewer evidence array you were given — on the `codex-plan-review` source, use the per-finding `source_index` value; on the `plan-analyst` source, use the 0-based position in `analyst_gaps_json`. Do NOT fabricate indices or reference items not in that array.
+> - `load_bearing` / `dismissed` indices MUST be into the reviewer evidence array you were given — on the `codex-plan-review` source, use the per-finding `source_index` value; on the `plan-analyst` source, use the 0-based position in `findings_for_payload`. Do NOT fabricate indices or reference items not in that array.
 >
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash.
 
-The orchestrator pipes the triage subagent's markdown report through `parse-plan-review-triage-report --stdin --source <src> --findings-count <N> --json` to extract the verdict and index buckets; routing is by the parser's output `{verdict, load_bearing, dismissed, summary, source, findings_count}`. See SKILL.md §Phase 1-triage and §Phase 1.5.5 for the two insertion-point wirings.
+The orchestrator pipes the triage subagent's markdown report through `parse-plan-review-triage-report --stdin --source <source> --findings-count <N> --json` to extract the verdict and index buckets; routing is by the parser's output `{verdict, load_bearing, dismissed, summary, source, findings_count}`. See SKILL.md §Phase 1-triage and §Phase 1.5.5 for the two insertion-point wirings.
 
 ## Phase B — plan-implementer dispatch (Claude tier)
 
