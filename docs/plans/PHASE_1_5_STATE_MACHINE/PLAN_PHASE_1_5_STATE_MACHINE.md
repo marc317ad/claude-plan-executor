@@ -480,3 +480,11 @@ Starting SHA: `f8d6640fc3921002cb10201746811bae64cf64c4`  → Ending SHA: `f8d66
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 006 | codex | n/a | n/a (paused pre-review) | n/a (paused) | Implementer reported completed; wrapper independent_test_run failed because Test command `deferred (TASK-007)` is a deferral marker, not a shell command. Edit preserved in working tree per pause policy. Plan-review triage dismissed Codex needs-replan finding (deferred-test target) as documented convention; banner [plan-review-disagreement]. |
+
+## Execution log — 20260502T174740 (success)
+
+Starting SHA: `f8d6640fc3921002cb10201746811bae64cf64c4`  → Ending SHA: `f45abda7d15dde8ce2679f68fad86891653c1061`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 006 | codex+claude (fix-templates-then-commit) | claude | ship-with-fixes | f45abda | Templates rewritten to consume real plan-review-route emit (action discriminator, findings_for_payload, child_plan_file/variant); roster path orchestrator-supplied for variant B. |

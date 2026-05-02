@@ -1,0 +1,47 @@
+{
+  "outcome": "needs-enrichment",
+  "tasks": [
+    {
+      "id": "006",
+      "title": "Dispatch-templates alignment for Phase 1.5 / Phase 1.5.5",
+      "files": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md (modify)"
+      ],
+      "dependencies": [],
+      "test_command": "deferred (TASK-007)",
+      "priority": "medium",
+      "agent": "codex",
+      "plan_file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "description": "Mechanical alignment. Templates stay in the SKILL prompt library; only the expected variable names change to match the new route output shape.",
+      "acceptance_criteria": [
+        "Phase 1.5-Claude template accepts the `dispatch_context.template = \"PhaseB-1.5-claude\"` shape `plan-review-route` emits (`schedule_path`, `plan_basename`, `allow_gaps_demotion`).",
+        "Phase 1.5-Codex template accepts the `dispatch_context.template = \"PhaseB-1.5-codex\"` shape (`schedule_path`, `repo_root`, `timeout`, `allow_gaps`).",
+        "Phase 1-triage / Phase 1.5.5 template accepts the `dispatch_context.template = \"Phase1-triage\"` shape (`source`, `findings_for_payload`, `findings_count`, optional `schedule_path`).",
+        "Phase 1.5a author templates (Variant A task-targeted, Variant B schedule-level) accept the `per_finding_dispatches[i]` entry shape (`finding`, `target_task_id`, `child_plan_file` for A; `finding`, `target_task_id: null`, `roster_file` for B) \u2014 one dispatch per finding, not one whole-plan dispatch.",
+        "Template text references data received from `plan-review-route`, not inline orchestrator composition; no hand-curated examples reintroduce orchestrator-side state.",
+        "Phase B default template (Phase D code review) is unchanged.",
+        "Phase A analyst template is unchanged."
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "006"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md"
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "task_id": "006",
+      "type": "extra-task-heading",
+      "severity": "soft",
+      "detail": "PLAN_PHASE_1_5_STATE_MACHINE.md carries 7 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
+    }
+  ],
+  "risks": []
+}
