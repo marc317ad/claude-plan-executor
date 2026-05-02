@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_smoke.md",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
