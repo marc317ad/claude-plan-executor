@@ -2,25 +2,25 @@
   "outcome": "needs-enrichment",
   "tasks": [
     {
-      "id": "006",
-      "title": "Dispatch-templates alignment for Phase 1.5 / Phase 1.5.5",
+      "id": "007",
+      "title": "End-to-end smoke \u2014 full Phase 1.5 \u2192 Phase 1.5.5 \u2192 Phase 2 loop with stubs",
       "files": [
-        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md (modify)"
+        "tests/scripts/test_phase_1_5_e2e.py (create)",
+        "tests/scripts/fixtures/phase_1_5_plan/ (create) \u2014 minimal plan dir + `00_INDEX.json` + one child task"
       ],
       "dependencies": [],
-      "test_command": "deferred (TASK-007)",
-      "priority": "medium",
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_phase_1_5_e2e.py",
+      "priority": "high",
       "agent": "codex",
       "plan_file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
-      "description": "Mechanical alignment. Templates stay in the SKILL prompt library; only the expected variable names change to match the new route output shape.",
+      "description": "The safety net. Locks in the orchestrator \u2194 `plan-review-route` contract so future SKILL edits cannot silently regress Phase 1.5 / Phase 1.5.5 routing.",
       "acceptance_criteria": [
-        "Phase 1.5-Claude template accepts the `dispatch_context.template = \"PhaseB-1.5-claude\"` shape `plan-review-route` emits (`schedule_path`, `plan_basename`, `allow_gaps_demotion`).",
-        "Phase 1.5-Codex template accepts the `dispatch_context.template = \"PhaseB-1.5-codex\"` shape (`schedule_path`, `repo_root`, `timeout`, `allow_gaps`).",
-        "Phase 1-triage / Phase 1.5.5 template accepts the `dispatch_context.template = \"Phase1-triage\"` shape (`source`, `findings_for_payload`, `findings_count`, optional `schedule_path`).",
-        "Phase 1.5a author templates (Variant A task-targeted, Variant B schedule-level) accept the `per_finding_dispatches[i]` entry shape (`finding`, `target_task_id`, `child_plan_file` for A; `finding`, `target_task_id: null`, `roster_file` for B) \u2014 one dispatch per finding, not one whole-plan dispatch.",
-        "Template text references data received from `plan-review-route`, not inline orchestrator composition; no hand-curated examples reintroduce orchestrator-side state.",
-        "Phase B default template (Phase D code review) is unchanged.",
-        "Phase A analyst template is unchanged."
+        "Drives `plan_ops.py preflight \u2192 parse-schedule \u2192 write-schedule \u2192 plan-review-route stage=pre_dispatch \u2192 ... \u2192 batch-next` against the fixture plan directory.",
+        "Reviewer + triage + plan-author Agent outputs injected via stub \u2014 no real Codex or Claude Agent spawn.",
+        "Matrix covers every entry in \u00a7Verification: skip-flag, wrapper degradation (timeout / parse_error / failure), Claude reviewer dispatch failure, `approved` happy path, `approved-with-notes`, `--allow-gaps` demotion \u2192 `approved-with-notes`, `--codex-plan-review-binding` halt, `--no-auto-revise` halt, triage `ship` / `ship-with-fixes` / `partial-agreement` (with author + re-analyst + re-review \u2192 second `approved`) / `needs-rework` (with second `needs-replan` halt), unknown-verdict \u2192 `unknown_state`, sanitizer-flag surfacing on a plan-review envelope with injected `<tool_calls>` inside `findings[].suggested_change`.",
+        "Run-log event order verified: `run_start`, `schedule_written`, `analyst_done`, `plan_review_start`, `plan_review_done`, `plan_review_route_called {stage, action}`, optional `plan_review_triage_{start,done}`, optional `plan_author_{start,done}`, `batch_start` or `run_end reason=plan_review_failed`.",
+        "Test runs in under 30s (no real subprocess spawn beyond `plan_ops.py` CLI calls).",
+        "`plan_review_state` in the schedule round-trips correctly across multi-turn cases \u2014 second-pass tests assert `attempt=2` is observed by `route()` from the persisted state, not from in-memory carry."
       ]
     }
   ],
@@ -28,16 +28,17 @@
     {
       "index": 1,
       "task_ids": [
-        "006"
+        "007"
       ],
       "file_locks": [
-        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md"
+        "tests/scripts/fixtures/phase_1_5_plan/",
+        "tests/scripts/test_phase_1_5_e2e.py"
       ]
     }
   ],
   "gaps": [
     {
-      "task_id": "006",
+      "task_id": "007",
       "type": "extra-task-heading",
       "severity": "soft",
       "detail": "PLAN_PHASE_1_5_STATE_MACHINE.md carries 7 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."

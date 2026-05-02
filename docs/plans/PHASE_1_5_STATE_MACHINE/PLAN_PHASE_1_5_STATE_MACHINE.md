@@ -496,3 +496,11 @@ Starting SHA: `cea0cdd7fbe74bc06dcb2e7613fcf881afd1da24`  → Ending SHA: `cea0c
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 007 | codex | — | paused (post_reconcile_out_of_scope) | — | Codex implemented + sandbox pytest 17/17 in 27.5s. Wrapper flagged scope_violation: written files tests/scripts/fixtures/phase_1_5_plan/00_INDEX.json + TASK-001_smoke.md are nested under the declared Files: dir tests/scripts/fixtures/phase_1_5_plan/ (declared with `(create)` suffix), but reconcile-batch's path normalization did not credit them as in-scope. Working tree preserved (3 files: e2e test + 2 fixtures). Awaiting-user pause options: widen-plan / in-place-fix / keep-and-commit / revert. Recommended: keep-and-commit — work is exactly what plan declared and tests pass. Analyst-triage notes: extra-task-heading warning dismissed (TASK-007 dispatched with target_task_id=007). |
+
+## Execution log — 20260502T181616 (success)
+
+Starting SHA: `cea0cdd7fbe74bc06dcb2e7613fcf881afd1da24`  → Ending SHA: `9a048f9e01b1c60178116f85b8ef1e3b1619744d`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 007 | codex | claude | ship-with-fixes | 9a048f9 | E2E smoke test (797 LOC) + minimal fixture plan dir; 17/17 pytest pass in 26.7s. Resumed paused run 20260502T181616 with user-authorized keep-and-commit (wrapper scope_violation false-positive: untracked fixture files were nested under declared Files: dir tests/scripts/fixtures/phase_1_5_plan/ with `(create)` suffix). 5 major reviewer findings (non-blocking): MAJ-1/MAJ-2 unknown_verdict scenario lacks event-order audit + run_end emission; MAJ-3 plan_review_state round-trip weakly asserted (payload supplies state explicitly); MAJ-4 claude_only failure path bypasses parse-plan-review-report; MAJ-5 triage ship/ship-with-fixes branches assert action only. 7 minor findings (nits + brittleness). |
