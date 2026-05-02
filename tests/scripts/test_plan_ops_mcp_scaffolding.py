@@ -231,7 +231,7 @@ def test_server_exits_zero_on_stdin_eof():
 @requires_mcp
 def test_uncaught_crash_emits_json_error_frame_and_exits_nonzero(tmp_path):
     """Force an uncaught exception inside ``main()`` → JSON error frame on stdout."""
-    # Wrap the real server module and force its ``_serve`` coroutine to
+    # Wrap the real server module and force its top-level stdio serve function to
     # raise; verify the top-level crash handler emits a JSON-RPC error
     # frame on stdout and exits non-zero.
     runner = tmp_path / "crash_runner.py"
@@ -247,10 +247,10 @@ def test_uncaught_crash_emits_json_error_frame_and_exits_nonzero(tmp_path):
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
-            async def _boom():
+            def _boom():
                 raise RuntimeError("synthetic crash for TASK-001 test")
 
-            mod._serve = _boom
+            mod._serve_stdio_jsonrpc = _boom
             sys.exit(mod.main([]))
             """
         ),

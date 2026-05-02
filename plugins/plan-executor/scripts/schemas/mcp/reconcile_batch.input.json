@@ -23,10 +23,19 @@
     "plans_dir": {
       "description": "Directory containing the per-task plan markdown files. Used by --out-of-scope-policy=pause to resolve each task's plan_file (from the schedule) and mutate its status to `paused`. Without it, the pause path returns the four options but leaves plan-status mutation to the caller.",
       "type": "string"
+    },
+    "payload": {
+      "type": "array",
+      "description": "Payload formerly delivered via stdin; carries the completed batch envelope array.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
     }
   },
   "additionalProperties": false,
   "required": [
+    "payload",
     "repo_root"
   ],
   "x-cli-emits-json": true

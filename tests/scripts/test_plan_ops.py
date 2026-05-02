@@ -2934,15 +2934,21 @@ def _run_batch_next(
     done: str = "",
     failed: str = "",
     parallel: int = 2,
+    from_schedule_state: bool = False,
 ) -> subprocess.CompletedProcess:
-    return _run(
+    args = [
         "batch-next",
         "--schedule-file", str(sched),
         "--locked-files", locked,
         "--done", done,
         "--failed", failed,
         "--parallel", str(parallel),
-        "--json",
+    ]
+    if from_schedule_state:
+        args.append("--from-schedule-state")
+    args.append("--json")
+    return _run(
+        *args,
     )
 
 
@@ -3007,6 +3013,37 @@ class TestBatchNextBatchFidelity:
         assert body["task_ids"] == ["002"]
         assert body["batch_index"] == 2
         assert body["scheduler_stuck"] is False
+
+    def test_batch_next_from_schedule_state_cli_flag_is_boolean(
+        self, tmp_path: Path,
+    ) -> None:
+        sched = _write_schedule(tmp_path, {
+            "outcome": "valid",
+            "state": {
+                "done": ["001"],
+                "failed": [],
+                "blocked": [],
+                "locked_files": [],
+                "committed": [],
+                "retries_used": {},
+                "review_retry_counts": {},
+            },
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"], "plan_file": "sample.md"},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        })
+
+        cp = _run_batch_next(sched, from_schedule_state=True)
+
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        assert body["task_ids"] == ["002"]
+        assert body["batch_index"] == 2
 
     def test_batch_next_scheduler_stuck_on_cross_batch_deadlock(
         self, tmp_path: Path
@@ -7218,6 +7255,33 @@ class TestReconcileBatch:
         assert result["outcome"] == "scope_violation_paused"
         assert stray.exists()
         assert result["awaiting_user_options"][0] == "widen-plan"
+
+    def test_reconcile_batch_reads_nested_scope_fields(
+        self, tmp_path: Path,
+    ) -> None:
+        repo = _reconcile_git_repo(tmp_path)
+        stray = repo / "stray.txt"
+        stray.write_text("hands off\n")
+        envelope = {
+            "task_id": "002",
+            "subcommand": "implement",
+            "outcome": "scope_violation",
+            "scope": {
+                "out_of_scope_observed": True,
+                "out_of_scope_tracked": [],
+                "out_of_scope_untracked": ["stray.txt"],
+            },
+        }
+
+        cp = _run_reconcile(repo, [envelope], out_of_scope_policy="pause")
+
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        assert body["paused"] is True
+        result = body["results"][0]
+        assert result["outcome"] == "scope_violation_paused"
+        assert result["out_of_scope_untracked"] == ["stray.txt"]
+        assert stray.exists()
 
     def test_reconcile_and_revert_preserves_legacy_behaviour(
         self, tmp_path: Path,

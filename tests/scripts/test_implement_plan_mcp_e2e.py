@@ -226,10 +226,6 @@ class _McpOps:
 
     def call(self, tool: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         arguments = dict(arguments or {})
-        if tool == "log_event":
-            for key in ("fields_json", "findings_json"):
-                if isinstance(arguments.get(key), (dict, list)):
-                    arguments[key] = json.dumps(arguments[key])
         if tool == "commit_task" and isinstance(arguments.get("reviewer_minor_findings"), list):
             arguments["reviewer_minor_findings"] = json.dumps(arguments["reviewer_minor_findings"])
         if self.crash_after is not None and len(self.calls) >= self.crash_after:
@@ -407,6 +403,206 @@ def test_phase_0_to_e_mcp_matches_cli_run_log_without_plan_ops_bash(tmp_path: Pa
     mcp_names = [event["event"] for event in _events(mcp_paths["run_log"])]
     assert "mcp_server_start" in mcp_names
     assert mcp_names.count("mcp_tool_called") >= 12
+
+
+@requires_mcp
+def test_transport_smoke_uses_mcp_payload_shapes_without_cli_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _seed_repo(tmp_path)
+    subprocess_run = subprocess.run
+
+    def guarded_run(cmd: Any, *args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+        parts = [str(part) for part in cmd] if isinstance(cmd, (list, tuple)) else [str(cmd)]
+        assert not any(part.endswith("plan_ops.py") for part in parts), parts
+        assert "-c" not in parts, parts
+        return subprocess_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", guarded_run)
+    schedule_doc = {
+        "outcome": "valid",
+        "tasks": [
+            {
+                "id": "001",
+                "agent": "codex",
+                "files": ["src/foo.py"],
+                "dependencies": [],
+                "plan_file": paths["plan_child"].name,
+            },
+            {
+                "id": "002",
+                "agent": "claude",
+                "files": ["src/bar.py"],
+                "dependencies": ["001"],
+                "plan_file": paths["plan_child"].name,
+            },
+        ],
+        "batches": [
+            {"index": 1, "task_ids": ["001"], "file_locks": ["src/foo.py"]},
+            {"index": 2, "task_ids": ["002"], "file_locks": ["src/bar.py"]},
+        ],
+        "gaps": [],
+        "risks": [],
+        "state": {
+            "done": ["001"],
+            "failed": [],
+            "blocked": [],
+            "locked_files": [],
+            "committed": [],
+            "retries_used": {},
+        },
+    }
+
+    with _McpOps(paths) as ops:
+        logged = ops.call(
+            "log_event",
+            {
+                "event": "review_done",
+                "fields_json": {
+                    "run_id": "PAYLOAD-SMOKE",
+                    "task_id": "001",
+                    "verdict": "needs-rework",
+                },
+                "findings_json": [
+                    {
+                        "severity": "minor",
+                        "confidence": "high",
+                        "file": "src/foo.py",
+                        "line": 1,
+                        "issue": "native list payload",
+                        "suggested_fix": "keep MCP structured",
+                    }
+                ],
+            },
+        )
+        assert logged["ok"] is True
+
+        written = ops.call(
+            "write_schedule",
+            {"schedule_file": str(paths["schedule"]), "payload": schedule_doc},
+        )
+        assert written["written"] == str(paths["schedule"])
+
+        batch = ops.call(
+            "batch_next",
+            {
+                "schedule_file": str(paths["schedule"]),
+                "done": [],
+                "failed": [],
+                "locked_files": [],
+                "paused": [],
+                "from_schedule_state": True,
+            },
+        )
+        assert batch["task_ids"] == ["002"]
+        assert batch["batch_index"] == 2
+
+        wrapper = {
+            "status": "ok",
+            "result": {"outcome": "success", "report": _stub_implementer_report()},
+            "scope": {
+                "scope_violation_detected": True,
+                "scope_misreport_detected": False,
+                "out_of_scope_observed": True,
+                "out_of_scope_tracked": [],
+                "out_of_scope_untracked": ["leak.txt"],
+            },
+        }
+        extracted = ops.call(
+            "claude_envelope_extract",
+            {"agent": "plan-implementer", "payload": wrapper},
+        )
+        assert extracted["status"] == "ok"
+        assert extracted["scope_violation"] is True
+
+        reconciled = ops.call(
+            "reconcile_batch",
+            {
+                "repo_root": str(paths["repo"]),
+                "schedule_file": str(paths["schedule"]),
+                "plans_dir": str(paths["plan_dir"]),
+                "out_of_scope_policy": "pause",
+                "payload": [
+                    {
+                        "task_id": "001",
+                        "scope": {
+                            "out_of_scope_observed": True,
+                            "out_of_scope_tracked": ["src/foo.py"],
+                            "out_of_scope_untracked": ["leak.txt"],
+                        },
+                    }
+                ],
+            },
+        )
+        assert reconciled["paused"] is True
+        assert reconciled["results"][0]["outcome"] == "scope_violation_paused"
+        assert reconciled["results"][0]["reconcile_kept_tracked"] == ["src/foo.py"]
+
+        finalized = ops.call(
+            "finalize_execution_log",
+            {
+                "plan_file": str(paths["plan_child"]),
+                "run_id": "PAYLOAD-SMOKE",
+                "starting_sha": "abc123",
+                "ending_sha": "def456",
+                "rows_json": [
+                    {
+                        "task": "001",
+                        "agent": "codex",
+                        "reviewer": "claude",
+                        "verdict": "clean",
+                        "commit": "def456",
+                        "notes": "native rows list",
+                    }
+                ],
+                "outcome": "success",
+            },
+        )
+        assert finalized["ok"] is True
+
+    assert {
+        "log_event",
+        "write_schedule",
+        "batch_next",
+        "claude_envelope_extract",
+        "reconcile_batch",
+        "finalize_execution_log",
+    } <= set(ops.calls)
+    assert all("plan_ops.py" not in call for call in ops.calls)
+    assert all("python" not in call.lower() for call in ops.calls)
+    events = _events(paths["run_log"])
+    review_done = [event for event in events if event["event"] == "review_done"][-1]
+    assert review_done["findings"] == [
+        {
+            "severity": "minor",
+            "confidence": "high",
+            "file": "src/foo.py",
+            "line": 1,
+            "issue": "native list payload",
+            "suggested_fix": "keep MCP structured",
+        }
+    ]
+    assert "## Execution log" in paths["plan_child"].read_text(encoding="utf-8")
+
+
+def test_mcp_e2e_skill_contract_rejects_inline_python_envelope_parsing() -> None:
+    skill_text = (REPO_ROOT / "plugins" / "plan-executor" / "skills" / "implement-plan" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Never write inline Python for envelope parsing." in skill_text
+    assert "plan_ops__claude_envelope_extract" in skill_text
+    assert "plan_ops.py claude-envelope-extract" in skill_text
+    forbidden_fragments = [
+        "python <<",
+        "python3 <<",
+        '"stdin": <envelope>',
+        '"stdin": <report>',
+        '"stdin": <schedule_json>',
+        '"stdin": <envelopes_json>',
+    ]
+    for fragment in forbidden_fragments:
+        assert fragment not in skill_text
 
 
 @requires_mcp

@@ -192,6 +192,23 @@ def test_input_schemas_carry_payload_for_stdin_subcommands(
         )
 
 
+def test_reconcile_batch_schema_carries_payload(index: dict) -> None:
+    """reconcile-batch consumes envelope JSON through stdin_text internally.
+
+    The CLI path gets that from process stdin; the MCP path must expose the
+    shared top-level `payload` property so the dispatcher can populate it.
+    """
+    entry = index["tools"]["plan_ops__reconcile_batch"]
+    path = MCP_DIR / entry["input_schema"]
+    doc = _load(path)
+    resolved = _resolve_ref(path, doc)
+
+    properties = resolved.get("properties", {})
+    assert "stdin" not in properties
+    assert "payload" in properties
+    assert "payload" in resolved.get("required", [])
+
+
 def test_required_flags_are_required_properties(
     index: dict, argparse_subcommands: dict
 ) -> None:

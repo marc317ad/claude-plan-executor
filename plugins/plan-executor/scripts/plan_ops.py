@@ -4107,8 +4107,42 @@ def _envelope_field(env: dict, key: str, default=None):
     """Fetch a field from a dispatch envelope.
 
     The wrapper spreads `extra` onto the envelope root, so the same key may
-    appear at either level. Top-level wins if both are present.
+    appear at either level. Top-level wins if both are present, except for the
+    out-of-scope reconciliation fields where legacy root/extra values are
+    combined with nested `scope` values.
     """
+    if key == "out_of_scope_observed":
+        values = []
+        for container in (
+            env,
+            env.get("extra") if isinstance(env.get("extra"), dict) else None,
+            env.get("scope") if isinstance(env.get("scope"), dict) else None,
+        ):
+            if isinstance(container, dict) and key in container:
+                values.append(container[key])
+        if values:
+            return any(bool(value) for value in values)
+        return default
+    if key in {"out_of_scope_tracked", "out_of_scope_untracked"}:
+        merged: list = []
+        seen: set[str] = set()
+        for container in (
+            env,
+            env.get("extra") if isinstance(env.get("extra"), dict) else None,
+            env.get("scope") if isinstance(env.get("scope"), dict) else None,
+        ):
+            if not isinstance(container, dict):
+                continue
+            value = container.get(key)
+            if not isinstance(value, list):
+                continue
+            for item in value:
+                if isinstance(item, str) and item not in seen:
+                    merged.append(item)
+                    seen.add(item)
+        if merged:
+            return merged
+        return default
     if key in env:
         return env[key]
     extra = env.get("extra") or {}
@@ -5398,7 +5432,7 @@ def _args_to_payload_batch_next(args: argparse.Namespace) -> dict:
         "failed": args.failed,
         "paused": args.paused,
         "parallel": args.parallel,
-        "from_schedule_state": pathlib.Path(args.from_schedule_state) if args.from_schedule_state else None,
+        "from_schedule_state": bool(getattr(args, "from_schedule_state", False)),
     }
     return payload
 
@@ -5416,7 +5450,9 @@ def _run_batch_next(payload: dict) -> dict:
     if errors:
         return _result({'errors': errors, 'warnings': warnings}, exit_code=1)
 
-    def _split_csv(raw: str) -> list[str]:
+    def _split_csv(raw: object) -> list[str]:
+        if isinstance(raw, list):
+            return [s.strip() for s in raw if isinstance(s, str) and s.strip()]
         return [s for s in (raw or '').split(',') if s]
     locked = set(_split_csv(payload['locked_files']))
     done = set(_split_csv(payload['done']))
@@ -7246,7 +7282,11 @@ def _run_fail_task(payload: dict) -> dict:
     else:
         repo_root = Path.cwd().resolve()
 
-    raw_files = [f.strip() for f in (payload.get("files") or "").split(",") if f.strip()]
+    files_payload = payload.get("files") or ""
+    if isinstance(files_payload, list):
+        raw_files = [f.strip() for f in files_payload if isinstance(f, str) and f.strip()]
+    else:
+        raw_files = [f.strip() for f in files_payload.split(",") if f.strip()]
 
     tracked: list[str] = []
     untracked: list[str] = []

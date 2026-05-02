@@ -1,13 +1,39 @@
 # PLAN — MCP Manifest Bootstrap-Interpreter Fix
 
-**Status:** Pending
+**Status:** Done — TASK-004 completed and focused manifest/scaffolding verification passed
 **Created:** 2026-05-01
 **Base branch:** main
-**Depends on plans:** MCP_MIGRATION (complete; this plan corrects a manifest defect that shipped at TASK-001 and was never exercised by the e2e test added at TASK-018)
+**Depends on plans:** MCP_MIGRATION (complete and now archived at `docs/plans/archive/MCP_MIGRATION/`; this plan corrects a manifest defect that shipped at TASK-001 and was never exercised by the e2e test added at TASK-018)
+
+## Current-state audit (2026-05-02)
+
+This plan has already been mostly implemented in the working tree, but the plan metadata still said `Pending`. The remaining work is not to rebuild the manifest launcher; it is to finish verification and update the plan to match the current repo.
+
+### Already present
+
+- `plugins/plan-executor/.mcp.json` already points at `${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh` with `plan_ops_mcp_server.py` in `args`.
+- `plugins/plan-executor/scripts/run_mcp_server.sh` already exists, is executable, uses `set -eu`, resolves project root from `BASH_SOURCE[0]`, and tries `IMPLEMENT_PLAN_PYTHON` then `venv/bin/python` then `.venv/bin/python` then `python3`.
+- `tests/scripts/test_plan_ops_mcp_manifest_spawn.py` already exists and passes all four spawn-level tests, including manifest command resolution, initialize response, project-venv interpreter selection, and the old undefined-variable negative control.
+- `tests/scripts/test_plan_ops_mcp_scaffolding.py` already has the corrected manifest assertion for `run_mcp_server.sh`.
+- The MCP migration plan has moved to `docs/plans/archive/MCP_MIGRATION/PLAN_MCP_MIGRATION.md`; that archived copy already contains the post-completion correction note and no longer references `${CLAUDE_PLUGIN_PYTHON}`.
+
+### Completion
+
+- `tests/scripts/test_plan_ops_mcp_scaffolding.py::test_uncaught_crash_emits_json_error_frame_and_exits_nonzero` now monkeypatches `mod._serve_stdio_jsonrpc` with a synchronous throwing function. This preserves the original crash-handler acceptance criterion without changing production code.
+- `venv/bin/pytest -q tests/scripts/test_plan_ops_mcp_scaffolding.py tests/scripts/test_plan_ops_mcp_manifest_spawn.py` passed on 2026-05-02 (`13 passed`).
+- The plan is complete in place. It was not renamed to `_done.md`; the functional completion marker is this status update plus green acceptance tests.
+
+### Cross-plan compatibility
+
+- **MCP TOOL PAYLOAD FIX:** no conflict. That plan changed `plan_ops.py`, MCP schemas, generated MCP registry code, and SKILL payload examples. This manifest plan only controls how Claude Code starts the already-registered MCP server.
+- **Phase D:** no conflict. Phase D moved deterministic review routing into `plan_ops.py`; this launcher makes MCP startup reliable and does not alter Phase D state-machine logic.
+- **Phase 1.5 state machine:** no conflict. Phase 1.5 is still in progress and its schedule currently lacks a `state` block until its TASK-002 lands. Finishing this manifest fix first is preferable because Phase 1.5 work depends on stable MCP availability during subsequent manual execution.
+- **Archived MCP migration:** compatible. The original active path `docs/plans/MCP_MIGRATION/...` is now deleted/moved; all remaining references in this plan must target `docs/plans/archive/MCP_MIGRATION/...`.
+- **Dirty work preservation:** do not revert the existing deleted `docs/plans/MCP_MIGRATION/...` entries or unrelated dirty files. Treat the archive move and prior MCP payload edits as existing user/worktree state.
 
 ## Problem
 
-`plugins/plan-executor/.mcp.json` declares the MCP server's bootstrap interpreter via a Claude Code variable that does not exist:
+Historical defect: `plugins/plan-executor/.mcp.json` declared the MCP server's bootstrap interpreter via a Claude Code variable that does not exist:
 
 ```json
 {
@@ -20,13 +46,13 @@
 }
 ```
 
-Claude Code's plugin reference (`code.claude.com/docs/en/plugins-reference.md`, "Environment variables" and "MCP servers" sections) documents only `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` as injected plugin variables. `${CLAUDE_PLUGIN_PYTHON}` was invented by the migration plan-author; see `docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md:31, 168` for the spec lines that froze the wrong variable name. Claude Code substitutes the undefined variable to empty string and tries to spawn `""` — which fails with "MCP server failing to connect."
+Claude Code's plugin reference (`code.claude.com/docs/en/plugins-reference.md`, "Environment variables" and "MCP servers" sections) documents only `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` as injected plugin variables. `${CLAUDE_PLUGIN_PYTHON}` was invented by the migration plan-author; see `docs/plans/archive/MCP_MIGRATION/PLAN_MCP_MIGRATION.md:31, 170` for the spec lines that formerly froze the wrong variable name before the archived correction. Claude Code substitutes the undefined variable to empty string and tries to spawn `""` — which fails with "MCP server failing to connect."
 
 ### Evidence chain
 
-1. `plugins/plan-executor/.mcp.json:4` references `${CLAUDE_PLUGIN_PYTHON}`. The variable is unset in the Claude Code parent environment (verified: `printenv CLAUDE_PLUGIN_PYTHON` returns empty).
+1. Before this plan's implementation, `plugins/plan-executor/.mcp.json:4` referenced `${CLAUDE_PLUGIN_PYTHON}`. The variable is unset in the Claude Code parent environment (verified: `printenv CLAUDE_PLUGIN_PYTHON` returns empty).
 2. The MCP server itself works when launched with an explicit interpreter. Direct test: feeding `{"jsonrpc":"2.0","id":1,"method":"initialize",...}` over stdin to `venv/bin/python plugins/plan-executor/scripts/plan_ops_mcp_server.py` returns a valid `serverInfo` frame. The bug is in the launch contract, not the server.
-3. The scaffolding test at `tests/scripts/test_plan_ops_mcp_scaffolding.py:78` froze the literal string `${CLAUDE_PLUGIN_PYTHON}` as a manifest invariant — but the assertion verifies the JSON content, not the spawn. The end-to-end test at `tests/scripts/test_implement_plan_mcp_e2e.py:256-258` bypasses the manifest entirely (`server._dispatch_registered_tool` is invoked in-process via Python imports). Together, both gaps explain how the defect shipped through TASK-001 → TASK-018.
+3. The scaffolding test at `tests/scripts/test_plan_ops_mcp_scaffolding.py:78` formerly froze the literal string `${CLAUDE_PLUGIN_PYTHON}` as a manifest invariant — but the assertion verified the JSON content, not the spawn. The end-to-end test at `tests/scripts/test_implement_plan_mcp_e2e.py:256-258` bypassed the manifest entirely (`server._dispatch_registered_tool` was invoked in-process via Python imports). Together, both gaps explain how the defect shipped through TASK-001 → TASK-018.
 
 ### Why bare `"command": "python3"` is a workaround, not a fix
 
@@ -53,24 +79,25 @@ The plugin's effective in-process dependency set at server runtime is `mcp` + `y
 
 ## Scope boundary
 
-**In scope (5 files):**
+**In scope (current state):**
 
-- `plugins/plan-executor/scripts/run_mcp_server.sh` — new file, executable launcher.
-- `plugins/plan-executor/.mcp.json` — replace `command` and `args`; no `"cwd"` field.
-- `tests/scripts/test_plan_ops_mcp_scaffolding.py` — update line 78–81 manifest assertion.
-- `tests/scripts/test_plan_ops_mcp_manifest_spawn.py` — new file, real-spawn integration test.
-- `docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` — correct lines 31 and 168.
+- `plugins/plan-executor/scripts/run_mcp_server.sh` — already present executable launcher; verify only unless a test proves a behavioral gap.
+- `plugins/plan-executor/.mcp.json` — already updated to the launcher command; verify only.
+- `tests/scripts/test_plan_ops_mcp_scaffolding.py` — finish the stale crash-path monkeypatch and keep the corrected manifest assertion.
+- `tests/scripts/test_plan_ops_mcp_manifest_spawn.py` — already present spawn integration test; verify only.
+- `docs/plans/archive/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` — archived migration plan already corrected; verify only.
+- `docs/plans/PLAN_MCP_MANIFEST_FIX_2026-05-01.md` — update plan status and current-state notes.
 
 **Out of scope:**
 
 - Plugin-data venv bootstrap (`${CLAUDE_PLUGIN_DATA}/venv` install hook). Tracked as a follow-up only if the project-venv-coupling becomes a portability blocker.
 - Native-Windows launcher (`.cmd` / PowerShell). Plugin is POSIX-only by current contract.
-- Any change to `plan_ops_mcp_server.py`, `plan_ops.py`, `_plan_paths.py`, `_resolve_python()`, the `python_path` server capability, the `_dispatch_registered_tool` path, or any of the 30+ MCP tools registered via `_index.json`. The server itself is correct; only the launch contract changes.
+- Any production change to `plan_ops_mcp_server.py`, `plan_ops.py`, `_plan_paths.py`, `_resolve_python()`, the `python_path` server capability, the `_dispatch_registered_tool` path, or any of the 30+ MCP tools registered via `_index.json`. The server behavior is already correct for this plan; the remaining code change is test-only.
 - Any reopen of MCP_MIGRATION TASK-NNN entries. The plan stays Done; only the spec lines that documented the wrong shape are corrected in place.
 
 ## Verification
 
-After all three tasks land:
+After the remaining task lands and already-present work is verified:
 
 1. **Manual smoke** — restart Claude Code (or `/reload-plugins`), then invoke any `plan_ops__*` MCP tool from a session. The previous "failing to connect" error is gone, and the tool returns a valid response.
 2. **Existing scaffolding test passes** with the updated assertion: `venv/bin/pytest -q tests/scripts/test_plan_ops_mcp_scaffolding.py` exits 0.
@@ -82,7 +109,7 @@ After all three tasks land:
 
 ## TASK-001: Add launcher script + update manifest + update scaffolding test
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** codex
 - **Files:**
@@ -125,7 +152,7 @@ After all three tasks land:
 
 ## TASK-002: Add spawn-level integration test
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** codex
 - **Files:**
@@ -144,23 +171,40 @@ After all three tasks land:
 
 ## TASK-003: Correct PLAN_MCP_MIGRATION.md manifest spec lines
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** codex
 - **Files:**
-  - `docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` (lines 31 and 168 — locate the two sentences that document the manifest command shape)
+  - `docs/plans/archive/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` (lines 31 and 170 — locate the two sentences that document the manifest command shape)
 - **Dependencies:** []
-- **Test command:** `grep -n 'CLAUDE_PLUGIN_PYTHON' docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` (must return zero lines)
+- **Test command:** `! grep -n 'CLAUDE_PLUGIN_PYTHON' docs/plans/archive/MCP_MIGRATION/PLAN_MCP_MIGRATION.md`
 - **Acceptance criteria:**
   - Both occurrences of `${CLAUDE_PLUGIN_PYTHON}` in `PLAN_MCP_MIGRATION.md` are replaced with the corrected manifest shape: `"${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh"` for the `command`, with the launcher's role explained in one sentence.
   - A short post-completion note is added near the corrected lines, in the form: `> Note (2026-05-01, post-completion): the original spec referenced \`${CLAUDE_PLUGIN_PYTHON}\` as a Claude Code-injected variable, but Claude Code does not inject that variable. Corrected by PLAN_MCP_MANIFEST_FIX_2026-05-01.md; manifest now points at \`run_mcp_server.sh\` which mirrors \`_resolve_python()\` precedence at bootstrap.`
   - The note acknowledges POSIX-only assumption per **Decisions #4**.
-  - `grep -n 'CLAUDE_PLUGIN_PYTHON' docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` returns zero lines (the test command above).
-  - No other content in `PLAN_MCP_MIGRATION.md` is changed. Tasks remain Done; this is a documentation correction only.
+  - `grep -n 'CLAUDE_PLUGIN_PYTHON' docs/plans/archive/MCP_MIGRATION/PLAN_MCP_MIGRATION.md` returns zero lines (the test command above).
+  - No other content in the archived `PLAN_MCP_MIGRATION.md` is changed unless required by the archive path correction. Tasks remain Done; this is a documentation correction only.
+
+## TASK-004: Refresh stale crash-handler scaffolding test
+
+- **Status:** done
+- **Priority:** critical
+- **Agent:** codex
+- **Files:**
+  - `tests/scripts/test_plan_ops_mcp_scaffolding.py`
+- **Dependencies:** [TASK-001, TASK-002]
+- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops_mcp_scaffolding.py tests/scripts/test_plan_ops_mcp_manifest_spawn.py`
+- **Acceptance criteria:**
+  - `test_uncaught_crash_emits_json_error_frame_and_exits_nonzero` still forces an exception inside `plan_ops_mcp_server.main()`.
+  - The generated `crash_runner.py` monkeypatches `mod._serve_stdio_jsonrpc`, not `mod._serve`.
+  - The injected `_boom` function is synchronous (`def _boom(): ...`), matching `_serve_stdio_jsonrpc()`.
+  - The test continues to assert a non-zero return code and a single JSON-RPC error frame containing `synthetic crash`.
+  - No production code is changed for this task.
+  - `venv/bin/pytest -q tests/scripts/test_plan_ops_mcp_scaffolding.py tests/scripts/test_plan_ops_mcp_manifest_spawn.py` exits 0.
 
 ## Notes for the implementer
 
 - **Codex review of this plan (2026-05-01):** the plan's direction was endorsed as SHIP-WITH-MODIFICATIONS in a pre-implementation second-opinion pass. The modifications Codex requested (script-relative path resolution, explicit stderr error on no-Python-found, `set -eu` instead of bare `set -e`, mandatory spawn-level test) are folded into the acceptance criteria above.
-- **Order:** TASK-001 must be implemented before TASK-002 can pass. TASK-003 is independent and can land anytime. Suggest commit order: TASK-001 → TASK-002 → TASK-003. Three small commits, each with its test command green.
-- **Do not change `plan_ops_mcp_server.py`, `plan_ops.py`, or any tool registration code.** The server is correct as it stands; only the launch contract is wrong.
+- **Completion note:** TASK-001, TASK-002, TASK-003, and TASK-004 are complete. The combined manifest/scaffolding tests passed on 2026-05-02.
+- **Do not change production `plan_ops_mcp_server.py`, `plan_ops.py`, or any tool registration code for TASK-004.** The server is correct as it stands; the remaining defect is a stale test hook.
 - **If `python_path` is not surfaced in the `initialize` response capabilities** (the migration plan promised it would be at `plan_ops_mcp_server.py:60`, but verify), the third test in TASK-002 may need to call `tools/list` and pick a tool that exposes interpreter info, or be split into a `preflight`-tool-call test. Adapt as needed — the underlying assertion is "the launcher resolved the project venv, not some other Python."

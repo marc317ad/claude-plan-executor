@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -125,6 +126,253 @@ def test_dispatch_uses_args_builder_and_run_callable(server_mod, monkeypatch) ->
     assert result == {"errors": [], "warnings": [], "ok": True}
     assert captured["payload"]["plan_file"] == Path("/tmp/example-plan")
     assert captured["payload"]["strict_branch"] is True
+
+
+@requires_mcp
+def test_batch_next_mcp_dispatch_preserves_from_schedule_state_boolean(
+    server_mod, tmp_path: Path,
+) -> None:
+    schedule = tmp_path / "schedule.json"
+    schedule.write_text(
+        json.dumps({
+            "outcome": "valid",
+            "state": {
+                "done": ["001"],
+                "failed": [],
+                "blocked": [],
+                "locked_files": [],
+                "committed": [],
+                "retries_used": {},
+                "review_retry_counts": {},
+            },
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"], "plan_file": "sample.md"},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        server_mod._dispatch_registered_tool(
+            "plan_ops__batch_next",
+            {
+                "schedule_file": str(schedule),
+                "from_schedule_state": True,
+            },
+        )
+    )
+
+    assert result["task_ids"] == ["002"]
+    assert result["batch_index"] == 2
+
+
+@requires_mcp
+def test_batch_next_mcp_dispatch_accepts_native_state_lists(
+    server_mod, tmp_path: Path,
+) -> None:
+    schedule = tmp_path / "schedule.json"
+    schedule.write_text(
+        json.dumps({
+            "outcome": "valid",
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"], "plan_file": "sample.md"},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        server_mod._dispatch_registered_tool(
+            "plan_ops__batch_next",
+            {
+                "schedule_file": str(schedule),
+                "done": ["001"],
+                "failed": [],
+                "locked_files": [],
+                "paused": [],
+            },
+        )
+    )
+
+    assert result["task_ids"] == ["002"]
+    assert result["batch_index"] == 2
+
+
+@requires_mcp
+def test_batch_next_mcp_dispatch_false_from_schedule_state_does_not_read_state(
+    server_mod, tmp_path: Path,
+) -> None:
+    schedule = tmp_path / "schedule.json"
+    schedule.write_text(
+        json.dumps({
+            "outcome": "valid",
+            "state": {
+                "done": ["001"],
+                "failed": [],
+                "blocked": [],
+                "locked_files": [],
+                "committed": [],
+                "retries_used": {},
+            },
+            "tasks": [
+                {"id": "001", "agent": "codex", "files": ["a"], "dependencies": [], "plan_file": "sample.md"},
+                {"id": "002", "agent": "claude", "files": ["b"], "dependencies": ["001"], "plan_file": "sample.md"},
+            ],
+            "batches": [
+                {"index": 1, "task_ids": ["001"], "file_locks": ["a"]},
+                {"index": 2, "task_ids": ["002"], "file_locks": ["b"]},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        server_mod._dispatch_registered_tool(
+            "plan_ops__batch_next",
+            {
+                "schedule_file": str(schedule),
+                "from_schedule_state": False,
+            },
+        )
+    )
+
+    assert result["task_ids"] == ["001"]
+    assert result["batch_index"] == 1
+
+
+@requires_mcp
+def test_log_event_mcp_dispatch_passes_native_json_payloads(
+    server_mod, monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_append(event: str, fields: dict) -> str:
+        captured["event"] = event
+        captured["fields"] = fields
+        return json.dumps({"event": event, **fields})
+
+    findings = [{
+        "severity": "minor",
+        "confidence": "medium",
+        "file": "a.py",
+        "line": 1,
+        "issue": "x",
+        "suggested_fix": "y",
+    }]
+    monkeypatch.setattr(plan_ops, "_append_run_log", fake_append)
+
+    result = asyncio.run(
+        server_mod._dispatch_registered_tool(
+            "plan_ops__log_event",
+            {
+                "event": "review_done",
+                "fields_json": {
+                    "run_id": "R1",
+                    "task_id": "001",
+                    "reviewer": "codex",
+                    "verdict": "minor-findings",
+                    "findings_count": 1,
+                },
+                "findings_json": findings,
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["event"] == "review_done"
+    assert captured["fields"]["run_id"] == "R1"
+    assert captured["fields"]["findings"] == findings
+
+
+@requires_mcp
+def test_finalize_execution_log_mcp_dispatch_passes_native_rows(
+    server_mod, tmp_path: Path,
+) -> None:
+    plan = tmp_path / "plan.md"
+    plan.write_text("# Plan\n", encoding="utf-8")
+    rows = [{
+        "task": "001",
+        "agent": "codex",
+        "reviewer": "gemini",
+        "verdict": "clean",
+        "commit": "abc123",
+        "notes": "",
+    }]
+
+    result = asyncio.run(
+        server_mod._dispatch_registered_tool(
+            "plan_ops__finalize_execution_log",
+            {
+                "plan_file": str(plan),
+                "run_id": "R1",
+                "starting_sha": "abc",
+                "ending_sha": "def",
+                "rows_json": rows,
+            },
+        )
+    )
+
+    assert plan_ops._public_result(result) == {"ok": True}
+    text = plan.read_text(encoding="utf-8")
+    assert "## Execution log" in text
+    assert "| 001 | codex | gemini | clean | abc123 |  |" in text
+
+
+@requires_mcp
+def test_fail_task_mcp_dispatch_accepts_native_files_list(
+    server_mod, tmp_path: Path, monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    plans = repo / "docs" / "plans"
+    plans.mkdir(parents=True)
+    plan = plans / "sample.md"
+    plan.write_text(
+        "# Plan\n\n## Tasks\n\n### TASK-001: Smoke\n\n- **Status:** open\n",
+        encoding="utf-8",
+    )
+    src = repo / "src"
+    src.mkdir()
+    (src / "foo.py").write_text("x = 1\n", encoding="utf-8")
+    (plans / "_run_log.jsonl").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    (src / "foo.py").write_text("x = 2\n", encoding="utf-8")
+    monkeypatch.setattr(plan_ops, "RUN_LOG_PATH", plans / "_run_log.jsonl")
+
+    result = asyncio.run(
+        server_mod._dispatch_registered_tool(
+            "plan_ops__fail_task",
+            {
+                "plan_file": str(plan),
+                "task_id": "001",
+                "run_id": "R1",
+                "files": ["src/foo.py"],
+                "stage": "implement",
+                "reason": "native files list",
+                "authorization_source": "user-instruction",
+                "reversion_guidance": "restore src/foo.py",
+                "repo_root": str(repo),
+            },
+        )
+    )
+
+    assert result["status_updated"] is True
+    assert result["restore_ok"] is True
+    assert (src / "foo.py").read_text(encoding="utf-8") == "x = 1\n"
 
 
 @requires_mcp

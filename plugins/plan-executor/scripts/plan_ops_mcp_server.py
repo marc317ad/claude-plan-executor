@@ -1728,9 +1728,15 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                                'the pause path returns the four '
                                                                'options but leaves plan-status '
                                                                'mutation to the caller.',
-                                                'type': 'string'}},
+                                                'type': 'string'},
+                                  'payload': {'type': 'array',
+                                              'description': 'Payload formerly delivered via '
+                                                             'stdin; carries the completed batch '
+                                                             'envelope array.',
+                                              'items': {'type': 'object',
+                                                        'additionalProperties': True}}},
                    'additionalProperties': False,
-                   'required': ['repo_root'],
+                   'required': ['payload', 'repo_root'],
                    'x-cli-emits-json': True},
   'output_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                     'title': 'plan_ops__reconcile_batch output',
