@@ -52,3 +52,11 @@ These are heuristic-code responsibilities, not LLM judgment calls.
 
 **Description:**
 Teach the wrapper and reconcile logic to handle the conventions that Phase 1.5 already uses in task documents: deferred test ownership and declared directory scopes with annotations. This task should reduce operator prompts caused by false positives without weakening the existing fail-closed behavior for malformed markers, real out-of-scope edits, or real test failures.
+
+## Execution log — 20260502T210128 (success)
+
+Starting SHA: `a3b2dea897d760cc10ca693cb537f090e4b3581b`  → Ending SHA: `c443e6b9235294964773c1ed48787f0c9e3d533c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 008 | codex | claude | ship-with-fixes | c443e6b | 6 minor findings recorded; one important (M1) — _append_run_log in plan_codex_dispatch bypasses tail-verify + ALLOWED_LOG_EVENTS allowlist. Suggested follow-up. |
