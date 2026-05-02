@@ -448,3 +448,11 @@ Starting SHA: `aa5bd91551acfc7c579234fb67dfd2693a9a5f83`  → Ending SHA: `aa5bd
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | TASK-004 | codex | claude | needs-rework [plan-review-disagreement] | — | Resume keep-and-commit: review-route directive=dispatch_role_swap; preservation directive blocks D.2b. C1 critical: `plan_review_route_called` referenced in SKILL.md but missing from plan_ops.py:ALLOWED_LOG_EVENTS. M1 important: net char reduction failed against real baseline aa5bd91 (4163->4457, +7%). Plan-review disagreement: codex needs-replan dismissed by triage (load_bearing=0). Awaiting-user pause stage=post_review_route_preservation_conflict. |
+
+## Execution log — 20260502T164656 (success)
+
+Starting SHA: `aa5bd91551acfc7c579234fb67dfd2693a9a5f83`  → Ending SHA: `2094bf129f8219a4e41c43ae4a1e220c5d6396e3`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | codex | claude | clean | 2094bf1 | Resumed paused run via Option A in-place-fix-skill; first re-review surfaced C2/C3/M3 (post_second_review unknown stage; proceed vs proceed_to_phase_2; halt mechanics unspecified); SKILL.md amended + plan acceptance criterion line 333 corrected; third review verdict=clean. Upstream plan_ops.py allowlist add for plan_review_route_called landed in same commit (resolves prior C1). |

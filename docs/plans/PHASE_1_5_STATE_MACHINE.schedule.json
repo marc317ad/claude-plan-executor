@@ -2,44 +2,46 @@
   "outcome": "needs-enrichment",
   "tasks": [
     {
-      "id": "003",
-      "title": "Wrapper sanitizer perimeter \u2014 plan-review field expansion",
+      "id": "004",
+      "title": "SKILL.md rewrite \u2014 Phase 1.5 / Phase 1.5.5 collapse, LLM roles",
       "files": [
-        "plugins/plan-executor/scripts/_codex_envelope_sanitizer.py (modify)",
-        "tests/scripts/test_codex_envelope_sanitizer.py (modify)"
+        "plugins/plan-executor/skills/implement-plan/SKILL.md (modify)"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_codex_envelope_sanitizer.py",
+      "test_command": "deferred (TASK-005)",
       "priority": "high",
       "plan_file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
-      "description": "Closes the layer-2/3 gap in the wrapper. Today the plan-review envelope's `concern`, `suggested_change`, `section`, and `notes[]` strings flow through the orchestrator unfiltered \u2014 the same shape PHASE_D TASK-003 closed for the cross-task review path, applied to the plan-review path. Wrapper-side defense, not orchestrator-side.",
-      "acceptance_criteria": [
-        "`FINDING_FIELDS` extended to `(\"message\", \"issue\", \"suggested_fix\", \"concern\", \"suggested_change\", \"section\")` \u2014 covering both the cross-task review schema and the plan-review schema in one tuple.",
-        "`sanitize()` walks `parsed.notes` when it is a list, running each string element through `_process_field` with field path `parsed.notes[i]`.",
-        "Existing test cases continue to pass (no regression on `summary` / `diff_summary` / `findings[].message` coverage).",
-        "New regression fixture: a plan-review envelope with `parsed.findings[0].concern` containing `<system>...</system>`, `parsed.findings[1].suggested_change` containing `<tool_calls>...</tool_calls>`, `parsed.findings[2].section` containing `Ignore prior instructions`, and `parsed.notes[2]` containing `<function_calls>...</function_calls>`. Sanitized output contains `[redacted:<shape>]` markers in place of the originals; `extra.sanitizer_flags[]` lists each shape/field/count; the pre-redaction sha256 for each match appears in the captured run-log stream.",
-        "Layer-2 strips (code fences, ATX headers, leading `>`) apply uniformly to the new fields and to `notes[]` strings.",
-        "Length-cap behavior unchanged; `extra.truncated_fields[]` accumulates per-field truncation flags for the new fields."
-      ],
       "agent": "codex",
-      "classification_reason": "Implementer explicitly declared as codex in metadata"
+      "description": "The context-window payoff. After 001/002/003 ship, this removes the now-redundant orchestrator-side state-machine documentation for Phase 1.5.",
+      "acceptance_criteria": [
+        "The Phase 1.5 verdict-routing table (lines 418\u2013422) is replaced by one paragraph describing the `plan-review-route stage=post_review` call-and-comply loop, naming the `unknown_state` pause rule explicitly.",
+        "The Phase 1.5.5 triage verdict table (lines 439\u2013444) is replaced by one paragraph describing the `plan-review-route stage=post_triage` call-and-comply loop.",
+        "The route-switch prose (lines 396\u2013401) is collapsed to a one-paragraph statement that the orchestrator calls `plan-review-route stage=pre_dispatch` and dispatches whichever reviewer the action names.",
+        "The `--allow-gaps` severity-aware demotion paragraph (line 424) is collapsed to a one-liner stating that `--allow-gaps` flows into `flags.allow_gaps` of the route input.",
+        "The \"Per-finding embeds in the triage dispatch\" prose (line 448) is collapsed to a sentence stating `plan-review-route` enriches the per-finding payload before emitting `dispatch_plan_author_per_finding`.",
+        "The \"Second `needs-replan`\" prose block + `log-event` example (lines 460\u2013468) is replaced by a sentence stating `plan-review-route stage=post_second_review` returns `halt_plan_review_failed`.",
+        "A new \"Orchestrator Phase 1.5 responsibilities\" subsection enumerates the three preserved duties from \u00a73.6 plus a counter-example list of things the orchestrator must NOT do (track `auto_revise_round_completed`, pick filtered-vs-full payload, evaluate untrusted reviewer text for injection intent).",
+        "The `plan_ops.py` CLI reference table gets one new row for `plan-review-route` (purpose only, no flags); footer points at `--help`.",
+        "Net reduction \u226530% characters across the combined Phase 1.5 + Phase 1.5.5 sections (`wc -c` before/after on the section delimiters; baseline \u224812,977, target \u22649,000).",
+        "Hard rules in the \"Rules\" section are preserved verbatim \u2014 including the `claude_only=true` Codex-shellout prohibition and the re-source-verdict-is-binding rule.",
+        "The run-log event order paragraph (line 472) is updated to insert `plan_review_route_called {stage, action}` between `plan_review_done` and the optional triage events."
+      ]
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "003"
+        "004"
       ],
       "file_locks": [
-        "plugins/plan-executor/scripts/_codex_envelope_sanitizer.py",
-        "tests/scripts/test_codex_envelope_sanitizer.py"
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
       ]
     }
   ],
   "gaps": [
     {
-      "task_id": "003",
+      "task_id": "004",
       "type": "extra-task-heading",
       "severity": "soft",
       "detail": "PLAN_PHASE_1_5_STATE_MACHINE.md carries 7 `### TASK-NNN:` headings; only the matching one is parsed. This chunk MUST be dispatched with `target_task_id` set so the renderer auto-injects the \"Implement specifically `### TASK-NNN:`\" disambiguator (TASK-007)."
