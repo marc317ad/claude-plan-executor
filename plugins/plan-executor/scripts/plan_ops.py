@@ -274,6 +274,12 @@ ALLOWED_LOG_EVENTS = {
     "plan_review_start",
     "plan_review_done",
     "plan_review_skipped",
+    # Phase 1.5 plan-review-route call audit. Emitted by the orchestrator at
+    # each `plan-review-route` stage (`pre_dispatch`, `post_review`,
+    # `post_triage`, `post_second_review`) with `{stage, action}` so the run
+    # log records which deterministic action the router selected. Distinct
+    # from `review_route_called` (Phase D task-level review-route).
+    "plan_review_route_called",
     # Phase 1-triage / Phase 1.5.5 plan-review triage events. Dual-sourced on
     # `source ∈ {plan-analyst, codex-plan-review}` per the SKILL.md routing;
     # `analyst_triage_skipped` records the pre-triage short-circuits

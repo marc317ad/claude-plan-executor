@@ -330,7 +330,7 @@ Single-session parallel execution within each batch is the target.
   - The route-switch prose (lines 396–401) is collapsed to a one-paragraph statement that the orchestrator calls `plan-review-route stage=pre_dispatch` and dispatches whichever reviewer the action names.
   - The `--allow-gaps` severity-aware demotion paragraph (line 424) is collapsed to a one-liner stating that `--allow-gaps` flows into `flags.allow_gaps` of the route input.
   - The "Per-finding embeds in the triage dispatch" prose (line 448) is collapsed to a sentence stating `plan-review-route` enriches the per-finding payload before emitting `dispatch_plan_author_per_finding`.
-  - The "Second `needs-replan`" prose block + `log-event` example (lines 460–468) is replaced by a sentence stating `plan-review-route stage=post_second_review` returns `halt_plan_review_failed`.
+  - The "Second `needs-replan`" prose block + `log-event` example (lines 460–468) is replaced by a sentence stating that the re-review re-calls `plan-review-route stage=post_review attempt=2`, which returns `halt_plan_review_failed{reason_detail:"second_needs_replan"}` on `needs-replan`; local error paths (author failure, malformed report, out-of-scope write, analyst invalid) emit `run_end reason=plan_review_failed` directly without a second route call.
   - A new "Orchestrator Phase 1.5 responsibilities" subsection enumerates the three preserved duties from §3.6 plus a counter-example list of things the orchestrator must NOT do (track `auto_revise_round_completed`, pick filtered-vs-full payload, evaluate untrusted reviewer text for injection intent).
   - The `plan_ops.py` CLI reference table gets one new row for `plan-review-route` (purpose only, no flags); footer points at `--help`.
   - Net reduction ≥30% characters across the combined Phase 1.5 + Phase 1.5.5 sections (`wc -c` before/after on the section delimiters; baseline ≈12,977, target ≤9,000).
@@ -432,3 +432,19 @@ Starting SHA: `a30fd1560f28e01b409ebb902f75194fb48c357b`  → Ending SHA: `e2b03
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 003 | codex | claude | ship | e2b03c2 | 22 tests pass; 3 minor/nit findings on docstring + dead-code guard |
+
+## Execution log — 20260502T164656 (paused)
+
+Starting SHA: `aa5bd91551acfc7c579234fb67dfd2693a9a5f83`  → Ending SHA: `aa5bd91551acfc7c579234fb67dfd2693a9a5f83`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-004 | codex | — | paused (test command is placeholder) | — | Implementer report status=completed; SKILL.md diff preserved in worktree (53-line change); independent_test_run failed sandbox+target because Test command field is 'deferred (TASK-005)' placeholder per plan convention. |
+
+## Execution log — 20260502T164656 (paused)
+
+Starting SHA: `aa5bd91551acfc7c579234fb67dfd2693a9a5f83`  → Ending SHA: `aa5bd91551acfc7c579234fb67dfd2693a9a5f83`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-004 | codex | claude | needs-rework [plan-review-disagreement] | — | Resume keep-and-commit: review-route directive=dispatch_role_swap; preservation directive blocks D.2b. C1 critical: `plan_review_route_called` referenced in SKILL.md but missing from plan_ops.py:ALLOWED_LOG_EVENTS. M1 important: net char reduction failed against real baseline aa5bd91 (4163->4457, +7%). Plan-review disagreement: codex needs-replan dismissed by triage (load_bearing=0). Awaiting-user pause stage=post_review_route_preservation_conflict. |
