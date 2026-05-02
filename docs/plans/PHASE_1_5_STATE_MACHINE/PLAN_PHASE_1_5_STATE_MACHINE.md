@@ -464,3 +464,11 @@ Starting SHA: `12ff422b49b2e67c7827244e97060589989db57f`  → Ending SHA: `12ff4
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 005 | codex | — | paused (post_implement_failure) | — | Drift-guard implementation complete (138-line test). Independent run surfaced real upstream gaps: plan-review-route absent from MCP TOOL_REGISTRY; SKILL CLI table missing --json/--stdin/--update-schedule-state. Awaiting user decision A/B/C/D. |
+
+## Execution log — 20260502T172757 (success)
+
+Starting SHA: `12ff422`  → Ending SHA: `6c9b6b6`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-005 | codex | claude | ship-with-fixes | 6c9b6b6 | Drift guard implemented + upstream fixes per user-authorized Option A in-place-fix-mcp+skill (registered plan_ops__plan_review_route in MCP TOOL_REGISTRY; extended SKILL CLI table to 3-col with --stdin/--update-schedule-state/--json). Two minor reviewer findings: (1) cosmetic _index.json tools-map ordering (fixed pre-commit); (2) latent AST scope-blindness in _argparse_subcommand_flags (no action). commit-safe gate fail expected: 5 of 6 files outside TASK-005 declared Files: list; user-authorized scope expansion. |
