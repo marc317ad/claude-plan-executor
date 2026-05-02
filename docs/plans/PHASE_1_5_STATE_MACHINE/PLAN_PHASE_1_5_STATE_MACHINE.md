@@ -293,7 +293,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-003: Wrapper sanitizer perimeter — plan-review field expansion
 
-- **Status:** Pending
+- **Status:** done
 - **Implementer:** codex
 - **Priority:** high
 - **Files:**

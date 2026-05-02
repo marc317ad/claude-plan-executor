@@ -53,11 +53,22 @@ TRUNCATION_MARKER = " …[truncated]"  # " …[truncated]"
 # We sanitize:
 #   parsed.summary
 #   parsed.diff_summary
-#   parsed.findings[].message  (plan canonical)
-#   parsed.findings[].issue           (codex_review_schema actual field)
-#   parsed.findings[].suggested_fix   (codex_review_schema actual field)
+#   parsed.findings[].message          (cross-task review schema)
+#   parsed.findings[].issue            (cross-task review schema)
+#   parsed.findings[].suggested_fix    (cross-task review schema)
+#   parsed.findings[].concern          (plan-review schema)
+#   parsed.findings[].suggested_change (plan-review schema)
+#   parsed.findings[].section          (plan-review schema)
+#   parsed.notes[]                     (plan-review schema)
 SCALAR_FIELDS = ("summary", "diff_summary")
-FINDING_FIELDS = ("message", "issue", "suggested_fix")
+FINDING_FIELDS = (
+    "message",
+    "issue",
+    "suggested_fix",
+    "concern",
+    "suggested_change",
+    "section",
+)
 
 # ---------------------------------------------------------------------------
 # Layer 2: content sanitization regexes
@@ -301,7 +312,7 @@ def sanitize(
                     truncated_fields,
                     run_log_events,
                 )
-        # Findings array: each item may have message / issue / suggested_fix.
+        # Findings array: sanitize known free-text fields from review schemas.
         findings = parsed.get("findings")
         if isinstance(findings, list):
             for idx, item in enumerate(findings):
@@ -317,6 +328,20 @@ def sanitize(
                             truncated_fields,
                             run_log_events,
                         )
+        # Plan-review notes array: sanitize string items in place, leave
+        # non-string values untouched for schema compatibility.
+        notes = parsed.get("notes")
+        if isinstance(notes, list):
+            for idx, item in enumerate(notes):
+                if isinstance(item, str):
+                    notes[idx] = _process_field(
+                        item,
+                        f"parsed.notes[{idx}]",
+                        length_cap,
+                        flags,
+                        truncated_fields,
+                        run_log_events,
+                    )
 
     # Stamp results into envelope.extra. ``extra`` is the wrapper's
     # convention for non-schema metadata (see make_envelope's ``extra``
