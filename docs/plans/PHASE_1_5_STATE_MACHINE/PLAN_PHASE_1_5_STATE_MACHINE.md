@@ -317,7 +317,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-004: SKILL.md rewrite — Phase 1.5 / Phase 1.5.5 collapse, LLM roles
 
-- **Status:** Pending
+- **Status:** done
 - **Implementer:** codex
 - **Priority:** high
 - **Files:**
@@ -345,7 +345,7 @@ Single-session parallel execution within each batch is the target.
 
 ### TASK-005: Drift guard — extend SKILL ↔ argparse parity test for `plan-review-route`
 
-- **Status:** Pending
+- **Status:** done
 - **Implementer:** codex
 - **Priority:** medium
 - **Files:**
@@ -456,3 +456,11 @@ Starting SHA: `aa5bd91551acfc7c579234fb67dfd2693a9a5f83`  → Ending SHA: `2094b
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 004 | codex | claude | clean | 2094bf1 | Resumed paused run via Option A in-place-fix-skill; first re-review surfaced C2/C3/M3 (post_second_review unknown stage; proceed vs proceed_to_phase_2; halt mechanics unspecified); SKILL.md amended + plan acceptance criterion line 333 corrected; third review verdict=clean. Upstream plan_ops.py allowlist add for plan_review_route_called landed in same commit (resolves prior C1). |
+
+## Execution log — 20260502T172757 (paused)
+
+Starting SHA: `12ff422b49b2e67c7827244e97060589989db57f`  → Ending SHA: `12ff422b49b2e67c7827244e97060589989db57f`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | codex | — | paused (post_implement_failure) | — | Drift-guard implementation complete (138-line test). Independent run surfaced real upstream gaps: plan-review-route absent from MCP TOOL_REGISTRY; SKILL CLI table missing --json/--stdin/--update-schedule-state. Awaiting user decision A/B/C/D. |

@@ -1613,6 +1613,41 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
   'run_callable_name': '_run_path_info',
   'args_to_payload_callable_name': '_args_to_payload_path_info',
   'description_help': 'Emit configured plan_dir + derived run_log/run_lock/schedule_glob paths'},
+ {'tool_key': 'plan_ops__plan_review_route',
+  'input_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+                   'title': 'plan_ops__plan_review_route input',
+                   'description': 'Route Phase 1.5 / 1.5.5 plan-review state to one orchestrator '
+                                  'directive. The CLI reads plan_review_route_input_schema.json '
+                                  'from stdin; the MCP surface accepts that envelope under '
+                                  '`payload` and exposes the optional `--update-schedule-state` '
+                                  'argument as a top-level field.',
+                   'type': 'object',
+                   'properties': {'payload': {'type': 'object',
+                                              'description': 'plan-review-route input envelope; '
+                                                             'conforms to '
+                                                             'plan_review_route_input_schema.json.',
+                                              'additionalProperties': True},
+                                  'update_schedule_state': {'type': 'string',
+                                                            'description': 'Atomically apply the '
+                                                                           'emitted '
+                                                                           'state_transitions '
+                                                                           'block to this '
+                                                                           "schedule's "
+                                                                           'plan_review_state.'}},
+                   'additionalProperties': False,
+                   'required': ['payload'],
+                   'x-cli-emits-json': True},
+  'output_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+                    'title': 'plan_ops__plan_review_route output',
+                    'description': 'Output envelope for plan_ops `plan-review-route` subcommand',
+                    'type': 'object',
+                    '$ref': '../../plan_review_route_output_schema.json'},
+  'subcommand': 'plan-review-route',
+  'run_callable_name': '_run_plan_review_route',
+  'args_to_payload_callable_name': '_args_to_payload_plan_review_route',
+  'description_help': 'Route Phase 1.5 / 1.5.5 plan-review state to one orchestrator directive. '
+                      'Reads plan_review_route_input_schema.json from stdin and emits '
+                      'plan_review_route_output_schema.json.'},
  {'tool_key': 'plan_ops__preflight',
   'input_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                    'title': 'plan_ops__preflight input',

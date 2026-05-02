@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__plan_review_route input",
+  "description": "Route Phase 1.5 / 1.5.5 plan-review state to one orchestrator directive. The CLI reads plan_review_route_input_schema.json from stdin; the MCP surface accepts that envelope under `payload` and exposes the optional `--update-schedule-state` argument as a top-level field.",
+  "type": "object",
+  "properties": {
+    "payload": {
+      "type": "object",
+      "description": "plan-review-route input envelope; conforms to plan_review_route_input_schema.json.",
+      "additionalProperties": true
+    },
+    "update_schedule_state": {
+      "type": "string",
+      "description": "Atomically apply the emitted state_transitions block to this schedule's plan_review_state."
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "payload"
+  ],
+  "x-cli-emits-json": true
+}

@@ -613,9 +613,9 @@ For plan operation names and schemas, consult the MCP tool list when available. 
 
 ### `plan_ops.py` CLI reference
 
-| Subcommand | Purpose |
-|---|---|
-| `plan-review-route` | Deterministically routes Phase 1.5 pre-dispatch, post-review, post-triage, and post-second-review decisions from parsed envelopes and flags. |
+| Subcommand | Flags | Purpose |
+|---|---|---|
+| `plan-review-route` | `--stdin` `--update-schedule-state` `--json` | Deterministically routes Phase 1.5 pre-dispatch, post-review, post-triage, and post-second-review decisions from parsed envelopes and flags. |
 
 Use `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" <subcommand> --help` for flags and payload shapes.
 

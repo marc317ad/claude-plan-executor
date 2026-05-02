@@ -30,6 +30,7 @@
     "parse_plan_review_triage_report",
     "parse_schedule",
     "path_info",
+    "plan_review_route",
     "preflight",
     "reconcile_batch",
     "release_lock",
@@ -189,6 +190,11 @@
       "input_schema": "path_info.input.json",
       "output_schema": "path_info.output.json",
       "subcommand": "path-info"
+    },
+    "plan_ops__plan_review_route": {
+      "input_schema": "plan_review_route.input.json",
+      "output_schema": "plan_review_route.output.json",
+      "subcommand": "plan-review-route"
     },
     "plan_ops__preflight": {
       "input_schema": "preflight.input.json",
