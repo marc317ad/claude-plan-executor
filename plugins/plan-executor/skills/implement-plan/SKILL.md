@@ -426,6 +426,8 @@ At the batch join barrier, reconcile observed out-of-scope writes via `Tool: pla
 
 ### Phase C — Handle Phase B failures
 
+Phase C is governed by the **Completed-Work Preservation Principle**: when failed implementation leaves a non-empty diff, preserve the work and route to awaiting-user pause rather than reverting.
+
 #### Sandbox divergence escape hatch (TASK-008)
 
 Before classifying a Codex `implement` failure with `cause: independent_test_run_failed`, run `Tool: plan_ops__auto_validate_divergence with input {"envelope_file": "<wrapper-envelope.json>", "test_command": "<task Test command:>", "repo_root": "<repo>", "run_id": "<id>", "task_id": "NNN"}` (re-executes the task's declared `Test command:` in the target env; the wrapper's recorded `sandbox_test_command` is NOT used).
