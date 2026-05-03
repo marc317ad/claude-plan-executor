@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "implement-plan runner state",
+  "description": "Serializable checkpoint state for the future /implement-plan runner.",
+  "type": "object",
+  "required": ["run_id", "plan", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "plan": {"type": "string", "minLength": 1},
+    "status": {
+      "type": "string",
+      "enum": ["pending", "running", "paused", "complete", "partial", "failed"]
+    },
+    "active": {"type": "array", "items": {"type": "string"}},
+    "done": {"type": "array", "items": {"type": "string"}},
+    "failed": {"type": "array", "items": {"type": "string"}},
+    "blocked": {"type": "array", "items": {"type": "string"}},
+    "paused": {"type": "array", "items": {"type": "string"}},
+    "committed": {"type": "array", "items": {"type": "string"}},
+    "retries_used": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "bounded_remediation": {"type": "boolean"},
+          "narrow_remediation": {"type": "boolean"},
+          "role_swap": {"type": "boolean"},
+          "codex_fallback": {"type": "boolean"}
+        }
+      },
+      "default": {}
+    }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "implement-plan runner config",
+  "description": "Runner-facing configuration contract for /implement-plan before orchestration starts.",
+  "type": "object",
+  "required": ["plan"],
+  "additionalProperties": false,
+  "properties": {
+    "plan": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parallel": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1
+    },
+    "provider_preference": {
+      "type": "array",
+      "items": {"type": "string", "enum": ["claude", "codex", "gemini"]},
+      "uniqueItems": true,
+      "default": ["claude", "codex", "gemini"]
+    },
+    "assignments": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(?:TASK-)?[0-9]{1,3}[A-Z]?=(?:claude|codex|gemini)$"
+      },
+      "default": []
+    },
+    "reviewers": {
+      "type": "array",
+      "items": {"type": "string", "enum": ["codex", "gemini", "claude"]},
+      "uniqueItems": true,
+      "default": ["codex", "gemini", "claude"]
+    },
+    "plan_reviewer": {
+      "type": ["string", "null"],
+      "enum": ["codex", "gemini", "claude", null],
+      "default": "codex"
+    },
+    "allow_provider_fallback": {
+      "type": "boolean",
+      "default": true
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": false
+    },
+    "skip_cross_review": {
+      "type": "boolean",
+      "default": false
+    },
+    "skip_plan_review": {
+      "type": "boolean",
+      "default": false
+    },
+    "unattended_revert_policy": {
+      "type": "string",
+      "enum": ["pause", "fail-fast", "preserve-only"],
+      "default": "pause"
+    },
+    "agent_args": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claude": {"type": "array", "items": {"type": "string"}},
+        "codex": {"type": "array", "items": {"type": "string"}},
+        "gemini": {"type": "array", "items": {"type": "string"}}
+      },
+      "default": {}
+    }
+  }
+}

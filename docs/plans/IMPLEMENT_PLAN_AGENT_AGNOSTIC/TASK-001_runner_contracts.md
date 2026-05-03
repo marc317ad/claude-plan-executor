@@ -14,7 +14,7 @@ Touch only contract/schema modules and tests. Do not add live dispatch or phase 
 
 ### TASK-001: Runner Contracts And Schemas
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** codex
 - **Files:**
