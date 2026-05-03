@@ -55,3 +55,11 @@ Starting SHA: `26c66a1dbbd067bac0793672e45ac7b691fc57c6`  → Ending SHA: `26c66
 | Task | Agent | Reviewer | Verdict | Commit | Notes |
 |---|---|---|---|---|---|
 | 009 | codex |  | blocked |  | Implementation produced in-scope test diff but failed because new assertions expose plan_ops.py router gaps outside declared task files. |
+
+## Execution log — 20260503T155827 (success)
+
+Starting SHA: `26c66a1dbbd067bac0793672e45ac7b691fc57c6`  → Ending SHA: `c5d8b582765ab60c0584d601b3bc156eeda1b428`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 009 | codex | gemini | clean | c5d8b58 | Codex implementation plus manual scoped remediation after Gemini needs-rework; Gemini re-review clean. Tests passed: 58 phase/state/route tests and 97 parser-focused tests. |
