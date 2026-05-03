@@ -14,7 +14,7 @@ This task ends before implementation batches. It may dispatch plan-review provid
 
 ### TASK-005: Phase 0 Through Phase 1.5 Runner
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** codex
 - **Files:**
@@ -51,3 +51,11 @@ Run the task test command.
 - Phase B implementation.
 - Phase D task review routing.
 - Real provider calls in tests.
+
+## Execution log — 20260503T185236 (paused)
+
+Starting SHA: `81b260c4016ae4bca044d726a5f25b4dc457f85d`  → Ending SHA: `81b260c4016ae4bca044d726a5f25b4dc457f85d`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | codex | gemini | needs-rework | - | Paused at post_gemini_review after Gemini found 5 findings (critical plan_review_route call, lock cleanup, stop_after, post_plan_author routing, triage source). |
