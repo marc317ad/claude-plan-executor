@@ -82,34 +82,81 @@ import plan_ops  # noqa: E402
 _is_protected = is_protected_path
 
 RAW_TRUNCATE_CHARS = 2000
-# TASK-004: file-count-aware timeout floors. The named constants are kept
-# as the operator-readable floor so the per-file scaling formulas in
-# ``compute_implement_timeout`` / ``compute_review_timeout`` carry no magic
-# numbers. The plan-review default stays a flat ceiling — the schedule is
-# bounded so per-task scaling does not apply.
-DEFAULT_TIMEOUT_IMPLEMENT = 300
+# TASK-004 introduced file-count-aware timeout floors. TASK-009 makes the
+# implement-side default task-shape-aware: file count alone was too blunt for
+# test-hardening / router / parser work where the reading and verification
+# cost dominates the number of declared file entries.
+DEFAULT_TIMEOUT_IMPLEMENT = 600
 DEFAULT_TIMEOUT_REVIEW = 180
 DEFAULT_TIMEOUT_PLAN_REVIEW = 180
-# Per-file growth in seconds (added to the floor when len(files) is large
-# enough to push past it).
-IMPLEMENT_TIMEOUT_PER_FILE = 60
+MAX_TIMEOUT_IMPLEMENT = 1800
+# Weighted growth in seconds for the implement default. Explicit --timeout
+# still bypasses every derived value.
+IMPLEMENT_TIMEOUT_PER_FILE = 90
+IMPLEMENT_TIMEOUT_PER_ACCEPTANCE = 45
+IMPLEMENT_TIMEOUT_TEST_COMMAND_BONUS = 180
+IMPLEMENT_TIMEOUT_DIRECTORY_BONUS = 180
+IMPLEMENT_TIMEOUT_COMPLEXITY_BONUS = 300
 REVIEW_TIMEOUT_PER_FILE = 30
 GIT_TIMEOUT = 30
 TEST_TIMEOUT = 300
 
 
-def compute_implement_timeout(num_files: int) -> int:
-    """File-count-aware default for the ``implement`` subcommand timeout.
+def _contains_complexity_marker(text: str) -> bool:
+    markers = (
+        "e2e",
+        "end-to-end",
+        "fixture",
+        "parser",
+        "route",
+        "router",
+        "state",
+        "round-trip",
+        "test-hardening",
+        "assertion",
+        "behavioral",
+    )
+    haystack = text.lower()
+    return any(marker in haystack for marker in markers)
 
-    ``max(DEFAULT_TIMEOUT_IMPLEMENT, IMPLEMENT_TIMEOUT_PER_FILE * num_files)``
-    — a 1- to 5-file task gets the 300 s floor; a 6-file task gets 360 s,
-    a 10-file task 600 s. Matches the empirical observation that Codex's
-    planning loop scales roughly linearly with the number of declared
-    files. Operators override via the wrapper's ``--timeout N`` flag.
+
+def compute_implement_timeout(
+    num_files: int,
+    *,
+    acceptance_criteria_count: int = 0,
+    test_command: str = "",
+    files: list[str] | None = None,
+    description: str = "",
+) -> int:
+    """Task-shape-aware default for the ``implement`` timeout.
+
+    The old ``max(300, 60 * len(files))`` rule under-budgeted tasks whose
+    complexity lives in E2E assertions, parser/router semantics, fixtures, or
+    verification. This weighted default keeps small mechanical edits bounded,
+    gives multi-surface test work enough time to finish, and caps at the
+    Claude wrapper's 1800 s default. Operators override via ``--timeout N``.
     """
     if num_files < 0:
         num_files = 0
-    return max(DEFAULT_TIMEOUT_IMPLEMENT, IMPLEMENT_TIMEOUT_PER_FILE * num_files)
+    if acceptance_criteria_count < 0:
+        acceptance_criteria_count = 0
+    files = files or []
+    directory_entries = sum(
+        1 for f in files
+        if f.rstrip().endswith("/") or "/ (" in f or "(create)" in f
+    )
+    score = (
+        DEFAULT_TIMEOUT_IMPLEMENT
+        + IMPLEMENT_TIMEOUT_PER_FILE * num_files
+        + IMPLEMENT_TIMEOUT_PER_ACCEPTANCE * acceptance_criteria_count
+        + IMPLEMENT_TIMEOUT_DIRECTORY_BONUS * directory_entries
+    )
+    if test_command and test_command.strip().lower() not in {"none", "n/a"}:
+        score += IMPLEMENT_TIMEOUT_TEST_COMMAND_BONUS
+    complexity_text = " ".join([description, test_command, " ".join(files)])
+    if _contains_complexity_marker(complexity_text):
+        score += IMPLEMENT_TIMEOUT_COMPLEXITY_BONUS
+    return min(MAX_TIMEOUT_IMPLEMENT, max(DEFAULT_TIMEOUT_IMPLEMENT, score))
 
 
 def compute_review_timeout(num_files: int) -> int:
@@ -1596,14 +1643,18 @@ def cmd_implement(args) -> int:
     tmp_out.close()
     output_path = tmp_out.name
 
-    # TASK-004: file-count-aware default. Operator override via --timeout
-    # short-circuits the scaling — None means "use the wrapper-derived
-    # default for len(allowed_files)". The resolved value flows into both
-    # the subprocess timeout and the envelope's ``effective_timeout``
-    # field (informational; orchestrator does NOT route on it in this
-    # task — TASK-006 wires the timeout-routing rule for review).
+    # TASK-009: task-shape-aware default. Operator override via --timeout
+    # short-circuits the derivation — None means "use the wrapper-derived
+    # default for this task's declared shape". The resolved value flows into
+    # both the subprocess timeout and the envelope's ``effective_timeout``.
     if args.timeout is None:
-        effective_timeout = compute_implement_timeout(len(task["files"]))
+        effective_timeout = compute_implement_timeout(
+            len(task["files"]),
+            acceptance_criteria_count=len(task.get("acceptance_criteria", [])),
+            test_command=task.get("test_command", ""),
+            files=task.get("files", []),
+            description=task.get("description", ""),
+        )
     else:
         effective_timeout = args.timeout
 
@@ -2369,13 +2420,12 @@ def _build_parser() -> argparse.ArgumentParser:
                              "no-op reserved for future-compat)"))
         p.add_argument("--dry-run", action="store_true",
                        help="Render prompt and metadata; do not invoke Codex")
-        # TASK-004: ``--timeout`` defaults to ``None`` so the cmd handler
-        # can derive a file-count-aware default from the task's declared
-        # files when the operator does not override.
+        # ``--timeout`` defaults to ``None`` so the cmd handler can derive
+        # a wrapper default from the parsed task/review shape when the
+        # operator does not override.
         p.add_argument("--timeout", type=int, default=None,
                        help=("Codex execution timeout in seconds "
-                             "(default: file-count-aware — "
-                             "max(300, 60 * len(files)) for implement, "
+                             "(default: task-shape-aware for implement; "
                              "max(180, 30 * len(files)) for review). "
                              "Pass an explicit value to override the "
                              "wrapper-derived default."))
