@@ -48,12 +48,21 @@ def _subparser_map() -> tuple[dict[str, argparse.ArgumentParser], dict[str, str]
 def build_registry() -> list[dict]:
     index = json.loads((SCHEMA_DIR / "_index.json").read_text(encoding="utf-8"))
     subparsers, help_by_subcommand = _subparser_map()
+    exceptions = plan_ops.PUBLIC_SUBCOMMAND_TRANSPORT_EXCEPTIONS
+    cli_only = set(exceptions.get("cli_only", set()))
+    mcp_only = set(exceptions.get("mcp_only", set()))
     registry: list[dict] = []
     for bare_name in index["tool_names_ordered"]:
         tool_key = f"plan_ops__{bare_name}"
         entry = index["tools"][tool_key]
         subcommand = entry["subcommand"]
-        subparser = subparsers[subcommand]
+        if subcommand in cli_only:
+            continue
+        if subcommand in mcp_only:
+            description_help = entry.get("description_help") or entry.get("description") or tool_key
+        else:
+            subparser = subparsers[subcommand]
+            description_help = help_by_subcommand[subcommand]
         registry.append(
             {
                 "tool_key": tool_key,
@@ -66,7 +75,7 @@ def build_registry() -> list[dict]:
                 "subcommand": subcommand,
                 "run_callable_name": f"_run_{bare_name}",
                 "args_to_payload_callable_name": f"_args_to_payload_{bare_name}",
-                "description_help": help_by_subcommand[subcommand],
+                "description_help": description_help,
             }
         )
     return registry

@@ -88,10 +88,14 @@ def test_review_route_registration_is_orchestrator_contract(server_mod, index: d
 
 def test_codegen_block_is_byte_stable(server_mod) -> None:
     codegen = _import_module(CODEGEN_PATH, "mcp_tool_registrations_task014")
-    text = SERVER_PATH.read_text(encoding="utf-8")
-    start = text.index(codegen.BEGIN)
-    end = text.index(codegen.END, start) + len(codegen.END) + 1
-    assert text[start:end] == codegen.render_block()
+    server_bytes = SERVER_PATH.read_bytes()
+    begin = codegen.BEGIN.encode("utf-8")
+    end_marker = codegen.END.encode("utf-8")
+    start = server_bytes.index(begin)
+    end = server_bytes.index(end_marker, start) + len(end_marker) + 1
+
+    rendered_bytes = codegen.render_block().encode("utf-8")
+    assert server_bytes[start:end] == rendered_bytes
 
 
 @requires_mcp

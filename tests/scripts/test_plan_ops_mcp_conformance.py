@@ -96,6 +96,13 @@ HARNESS_ONLY_KEYS = {
     "_git_initial_files",
 }
 
+FIXTURELESS_CONFORMANCE_SUBCOMMANDS = {
+    # Covered by test_plan_ops_mcp_registrations.py because this transport
+    # surface exposes a direct MCP envelope plus optional schedule-state
+    # mutation rather than the generic CLI stdin wrapper fixture path.
+    "plan-review-route",
+}
+
 
 def _load_index() -> dict[str, Any]:
     return json.loads(MCP_INDEX_PATH.read_text(encoding="utf-8"))
@@ -155,6 +162,8 @@ def _all_fixture_params() -> list[tuple[str, str, Path]]:
         subcommand = _tool_name_to_subcommand(tool_name)
         docs = _fixture_docs_for(subcommand)
         if not docs:
+            if subcommand in FIXTURELESS_CONFORMANCE_SUBCOMMANDS:
+                continue
             missing.append(subcommand)
             continue
         params.extend((subcommand, group, path) for group, path in docs)

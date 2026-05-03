@@ -534,6 +534,8 @@ After a paused run is resumed by user instruction, cascade `blocked` onto transi
 
 Shared subroutine for D.2a.5, D.2a.6, Phase C, D.4, D.2a binding mode, and `reconcile_batch`. It logs `awaiting_user`, finalizes execution log with `outcome:"paused"`, logs paused `run_end`, skips housekeeping, prints the handoff, and releases the run-lock. It NEVER calls `fail-task`, NEVER `git restore`s, and NEVER mutates plan status to `failed`.
 
+On a resumed paused run, the previous paused `run_end` remains in the run log as history, but it is superseded by the resumed close. A resumed run MUST close with a later terminal `run_end` whose `outcome` is `success` or `paused`; a prior paused `run_end` is not the final outcome once new task events are appended. If any task review occurred for a resumed task, `review_start` / `review_done` / `review_route_called` MUST precede that task's `commit_done`, and `commit_done.reviewer_verdict` MUST be populated from the active review route. Deferred-test bookkeeping (`test_deferred` from TASK-008) keeps its frozen shape `{event, run_id, task_id, deferred_to, note}` and does not satisfy or weaken the review-before-commit ordering rule.
+
 | Call site | `stage` value | Required payload fields (additional to `dirty_files`) |
 |---|---|---|
 | D.2a.5 second-review fail | `post_remediation_review` | `codex_findings[]`, `d5_summary` |
@@ -617,7 +619,45 @@ For plan operation names and schemas, consult the MCP tool list when available. 
 
 | Subcommand | Flags | Purpose |
 |---|---|---|
+| `acquire-lock` | `--force` `--json` `--plan-file` `--run-id` | Acquire run-lock for this plan file |
+| `audit` | `--check` `--json` `--list` `--report-file` `--strict` | Self-audit the executor for protocol drift (status vocabulary, schedule wire format, implementer-report labels, execution-log columns, schemas, portable tier, wrapper isolation, design-doc orphans). |
+| `auto-validate-divergence` | `--envelope-file` `--json` `--repo-root` `--run-id` `--task-id` `--test-command` `--timeout` | Orchestrator auto-validate branch for the TASK-008 sandbox-divergence escape hatch. Reads a Codex implement envelope and re-runs the task's Test command in the target env on `cause: independent_test_run_failed`. |
+| `batch-next` | `--done` `--failed` `--from-schedule-state` `--json` `--locked-files` `--parallel` `--paused` `--schedule-file` | Select next batch respecting file locks |
+| `block-dependents` | `--failed` `--json` `--plan-file` `--run-id` `--schedule-file` `--update-schedule-state` | Cascade `blocked` status onto dependents of a failed task. Mutates the plan markdown (single read, single write) and appends `blocked` run-log events. |
+| `build-claude-dispatch-input` | `--analyst-annotations` `--dispatch-context` `--json` `--output` `--plan-file` `--repo-root` `--run-id` `--starting-sha` `--target-task-id` `--task-id` `--variant` | Emit the canonical claude_dispatch_input.json for one dispatch. Pipe stdout into `plan_claude_dispatch.py run --input -`. |
+| `build-codex-dispatch-input` | `--output` | Emit the codex_dispatch_input.json envelope for one dispatch. Currently only carries cross-wrapper unattended_revert_policy. |
+| `build-gemini-dispatch-input` | `--output` | Emit the gemini_dispatch_input.json envelope for one dispatch. Currently only carries cross-wrapper unattended_revert_policy. |
+| `build-tasks` | `--filter-ids` `--json` `--plans-dir` | Roster-driven fat `tasks[]` synthesis. Reads `00_INDEX.json` + each `chunks[].file` in the supplied decomposed-plan directory and emits a schedule-shaped JSON with per-task description + acceptance_criteria (H3 `### TASK-NNN:` child-plan grammar). |
+| `check-plan-deps` | `--json` `--plan-file` `--plans-dir` | Resolve cross-plan prerequisites via 00_INDEX.json |
+| `claude-envelope-extract` | `--agent` `--json` `--stdin` | TASK-006: extract a normalized routing payload from a v3 Claude wrapper envelope on stdin. Replaces the per-dispatch inline jq-style reads added in TASK-003/004/005. |
+| `commit-task` | `--d4-rescue-tag` `--diff-summary` `--disagreement-tag` `--dismissed-finding-ids` `--dry-run` `--files` `--json` `--narrow-remediation-tag` `--plan-file` `--remediation-tag` `--reviewer` `--reviewer-minor-findings` `--reviewer-verdict` `--run-id` `--sandbox-divergence-tag` `--task-id` `--title` `--update-schedule-state` `--v-check-timeout` | Narrow commit + status flip + run log append |
+| `compute-schedule` | `--json` `--stdin` `--strict` | Compute priority order + disjoint batches |
+| `decompose-plan` | `--force` `--json` `--out-dir` `--plan-file` | Heuristic whole-plan -> decomposed-directory split. Reads a `## TASK-NNN:` plan markdown file and writes a sibling directory with `00_INDEX.json` + one `TASK-NNN_<slug>.md` per task (H3 sub-heading grammar). |
+| `fail-task` | `--authorization-source` `--dry-run` `--files` `--json` `--plan-file` `--reason` `--repo-root` `--retries-used` `--reversion-guidance` `--reviewer-findings` `--run-id` `--stage` `--task-id` `--update-schedule-state` | Restore files + status flip + run log append |
+| `filter-schedule` | `--json` `--schedule-file` `--stdin` `--task-ids` | Filter schedule by --task-ids and emit canonical schedule on stdout |
+| `finalize-execution-log` | `--ending-sha` `--json` `--outcome` `--plan-file` `--rows-json` `--run-id` `--starting-sha` | Append §5 execution-log markdown table to plan file |
+| `gates` | `--certify` `--check` `--commit-sha` `--json` `--list` `--mode` `--plan-file` `--run-id` `--schedule-file` `--task-id` | Run the six canonical phase gates (schema-valid, schedule-valid, fixture-valid, execution-safe, review-safe, commit-safe) either individually (--check) or as a dry-run/execute certification bundle (--certify). |
+| `index-closure` | `--json` `--plans-dir` `--task-ids` | Compute the transitive-prereq closure of --task-ids via 00_INDEX.json's structured chunks[].depends_on (pure-roster; never reads any *.md child). |
+| `lint-plans` | `--git-dir` `--json` `--plans-dir` `--run-log` | Cross-reference **Status:** done/partial task markers against commit_done run-log events and feat(TASK-NNN) git commits. Read-only; exit 1 on any finding. |
+| `list-global-lock-paths` | `--json` | Emit the effective globally-locked path set (defaults + optional YAML override) |
+| `log-event` | `--event` `--fields-json` `--findings-json` `--json` | Append JSONL event with && tail -1 verification |
+| `normalize-task-id` | `--id` `--json` | Canonicalize task id to 3-digit form |
+| `order-triage-findings` | `--json` `--stdin` | Sort plan-review findings by (blocking, severity, source_index) and annotate each with `source_index`; the orchestrator calls this before rendering the Phase 1.5.5 triage dispatch template |
+| `parse-d5-adjudication` | `--codex-findings-count` `--json` `--stdin` | Validate a D.5 adjudication payload and surface the structured dispatch fields (verdict, summary, load_bearing, dismissed). Partial-agreement payloads are checked for disjoint, in-range index splits; malformed splits exit with partial-agreement-invalid-split / -unknown-index codes. |
+| `parse-implementer-report` | `--json` `--stdin` | Parse plan-implementer markdown report |
+| `parse-plan-review-report` | `--from-claude` `--json` `--stdin` | Validate a Phase 1.5 plan-review envelope against codex_plan_review_schema.json; surface verdict + findings. Default input is the Codex wrapper envelope; with --from-claude, stdin is the bare `parsed` payload emitted by the Phase 1.5-Claude `plan-reviewer` Agent. |
+| `parse-plan-review-triage-report` | `--findings-count` `--json` `--source` `--stdin` | Parse the plan-review triage markdown report, extract the last fenced JSON payload, and validate the shared verdict contract against the supplied source/count context |
+| `parse-schedule` | `--json` `--stdin` `--strict` | Validate analyst JSON shape |
+| `path-info` | `--json` | Emit configured plan_dir + derived run_log/run_lock/schedule_glob paths |
 | `plan-review-route` | `--stdin` `--update-schedule-state` `--json` | Deterministically routes Phase 1.5 pre-dispatch, post-review, post-triage, and post-second-review decisions from parsed envelopes and flags. |
+| `preflight` | `--json` `--plan-file` `--strict-branch` `--strict-scope` `--unattended-revert-policy` | Smart dirty-tree + codex + run-id |
+| `reconcile-batch` | `--json` `--out-of-scope-policy` `--plans-dir` `--repo-root` `--schedule-file` | Reconcile observed out-of-scope writes from a completed batch |
+| `release-lock` | `--json` `--plan-file` `--run-id` | Release run-lock for this plan file |
+| `resolve-read-targets` | `--json` `--stdin` `--task-file` | Resolve **Read targets:** / **Symbol targets:** from a task block (stdin or --task-file) into a structured JSON payload the dispatcher embeds under `## Pre-read excerpts`. |
+| `review-route` | `--json` `--stdin` | Route a parsed Phase D review envelope to one orchestrator directive (TASK-001 PHASE_D_STATE_MACHINE). Reads the input envelope from stdin per review_route_input_schema.json; emits one directive per review_route_output_schema.json. |
+| `run-summary` | `--json` `--run-id` `--section` | End-of-run report subsections. Emits the TASK-008 'Sandbox divergences' list when --section sandbox-divergences is selected. |
+| `update-plan-header` | `--json` `--plan-file` `--status` | Mutate **Status:** in plan header block |
+| `write-schedule` | `--json` `--schedule-file` `--stdin` `--strict` | Validate + atomically persist schedule JSON |
 
 Use `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" <subcommand> --help` for flags and payload shapes.
 

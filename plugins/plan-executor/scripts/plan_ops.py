@@ -236,6 +236,13 @@ ALLOWED_REVIEWER_FINDING_DISPOSITIONS = {
 }
 OPTIONAL_REVIEWER_FINDING_FIELDS = {"disposition", "disposition_reason"}
 ALLOWED_ROW_FIELDS = {"task", "agent", "reviewer", "verdict", "commit", "notes"}
+# Transport-surface exceptions for public plan_ops commands. Keep all
+# CLI-only / MCP-only deviations here so conformance tests and registry
+# generation consume the same allowlist instead of growing local skips.
+PUBLIC_SUBCOMMAND_TRANSPORT_EXCEPTIONS = {
+    "cli_only": set(),
+    "mcp_only": set(),
+}
 # Known run-log event types. The orchestrator owns the vocabulary; this set
 # acts as a tripwire so typo'd events surface immediately rather than drifting
 # silently into the log. `awaiting_user` is added per TASK-014A D.2a.5 to

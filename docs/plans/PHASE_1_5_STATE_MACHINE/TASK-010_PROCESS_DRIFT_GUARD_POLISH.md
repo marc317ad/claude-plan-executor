@@ -27,7 +27,7 @@ The intended outcome is one coherent polish pass, but the work should be reviewe
 
 ### TASK-010: Process drift-guard polish
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** codex
 - **Files:**
@@ -54,3 +54,19 @@ The intended outcome is one coherent polish pass, but the work should be reviewe
 
 **Description:**
 Polish the process-level drift guards around the Phase 1.5 state machine and transport surfaces. This task should make future prompt/code drift cheap to detect without adding new runtime routing behavior.
+
+## Execution log — 20260503T162018 (paused)
+
+Starting SHA: `c5d8b582765ab60c0584d601b3bc156eeda1b428`  → Ending SHA: `c5d8b582765ab60c0584d601b3bc156eeda1b428`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 010 | codex | gemini | needs-rework |  | Paused at post_gemini_review; Gemini reported 3 important findings and 1 minor finding. |
+
+## Execution log — 20260503T162018 (paused)
+
+Starting SHA: `c5d8b582765ab60c0584d601b3bc156eeda1b428`  → Ending SHA: `c5d8b582765ab60c0584d601b3bc156eeda1b428`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 010 | codex | gemini | needs-rework |  | Paused at post_gemini_review after scoped remediation and passing declared tests; Gemini returned 2 important and 2 minor findings. |
