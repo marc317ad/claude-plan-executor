@@ -216,6 +216,7 @@ class Scenario:
     reviewer: str = "codex"
     terminal_reason: str | None = None
     expect_batch: bool = False
+    unknown_stage: str | None = None
 
 
 SCENARIOS = [
@@ -318,6 +319,15 @@ SCENARIOS = [
         "surprising",
         "unknown_state",
         _flags(),
+        unknown_stage="post_review",
+    ),
+    Scenario(
+        "unknown_triage",
+        "needs-replan",
+        "unknown_state",
+        _flags(),
+        triage_verdict="surprising",
+        unknown_stage="post_triage",
     ),
 ]
 
@@ -398,11 +408,14 @@ def _route(
     *,
     run_id: str,
     attempts_seen: list[int],
+    inject_schedule_state: bool = True,
 ) -> dict:
     payload = dict(payload)
-    payload.setdefault("plan_review_state", _read_plan_review_state(schedule_file))
-    state = payload["plan_review_state"]
-    attempts_seen.append(state.get("attempt"))
+    if inject_schedule_state:
+        payload.setdefault("plan_review_state", _read_plan_review_state(schedule_file))
+    state = payload.get("plan_review_state")
+    if isinstance(state, dict):
+        attempts_seen.append(state.get("attempt"))
     cp = _run(
         "plan-review-route",
         "--stdin",
@@ -457,6 +470,22 @@ def _parse_triage(repo: Path, verdict: str, findings_count: int) -> dict:
     return _json(cp)
 
 
+def _parse_triage_report(repo: Path, report: str, findings_count: int) -> dict:
+    cp = _run(
+        "parse-plan-review-triage-report",
+        "--stdin",
+        "--source",
+        "codex-plan-review",
+        "--findings-count",
+        str(findings_count),
+        "--json",
+        cwd=repo,
+        input_text=report,
+    )
+    assert cp.returncode == 0, cp.stderr or cp.stdout
+    return _json(cp)
+
+
 def _batch_next(repo: Path, schedule_file: Path, *, run_id: str) -> dict:
     cp = _run(
         "batch-next",
@@ -492,6 +521,15 @@ def _assert_event_shape(events: list[dict], *, terminal: str) -> None:
         assert names.index("plan_author_start") < names.index("plan_author_done")
     if terminal == "batch":
         assert names[-1] == "batch_start"
+    elif terminal == "unknown":
+        assert names[-1] == "run_end"
+        assert events[-1]["reason"] == "plan_review_unknown_state"
+        last_route = max(
+            i for i, event in enumerate(events)
+            if event["event"] == "plan_review_route_called"
+        )
+        assert events[last_route]["action"] == "unknown_state"
+        assert "batch_start" not in names[last_route + 1:]
     else:
         assert names[-1] == "run_end"
         assert events[-1]["reason"] == "plan_review_failed"
@@ -645,6 +683,14 @@ def test_phase_1_5_routing_matrix(smoke_repo: dict, scenario: Scenario) -> None:
             _assert_event_shape(_events(smoke_repo["run_log"]), terminal="run_end")
         else:
             assert post_review["action"] == "unknown_state"
+            assert scenario.unknown_stage == "post_review"
+            _emit(
+                "run_end",
+                run_id=run_id,
+                outcome="paused",
+                reason="plan_review_unknown_state",
+            )
+            _assert_event_shape(_events(smoke_repo["run_log"]), terminal="unknown")
         return
 
     assert post_review["action"] == "dispatch_triage"
@@ -654,11 +700,19 @@ def test_phase_1_5_routing_matrix(smoke_repo: dict, scenario: Scenario) -> None:
         source="codex-plan-review",
         findings_count=parsed_review["findings_count"],
     )
-    parsed_triage = _parse_triage(
-        repo,
-        scenario.triage_verdict,
-        parsed_review["findings_count"],
-    )
+    if scenario.triage_verdict == "surprising":
+        parsed_triage = {
+            "verdict": "surprising",
+            "load_bearing": [],
+            "dismissed": [],
+            "summary": "unknown triage",
+        }
+    else:
+        parsed_triage = _parse_triage(
+            repo,
+            scenario.triage_verdict,
+            parsed_review["findings_count"],
+        )
     _emit(
         "plan_review_triage_done",
         run_id=run_id,
@@ -680,8 +734,18 @@ def test_phase_1_5_routing_matrix(smoke_repo: dict, scenario: Scenario) -> None:
 
     if scenario.second_verdict is None:
         assert post_triage["action"] == scenario.expected_action
-        _batch_next(repo, schedule_file, run_id=run_id)
-        _assert_event_shape(_events(smoke_repo["run_log"]), terminal="batch")
+        if scenario.expected_action == "unknown_state":
+            assert scenario.unknown_stage == "post_triage"
+            _emit(
+                "run_end",
+                run_id=run_id,
+                outcome="paused",
+                reason="plan_review_unknown_state",
+            )
+            _assert_event_shape(_events(smoke_repo["run_log"]), terminal="unknown")
+        else:
+            _batch_next(repo, schedule_file, run_id=run_id)
+            _assert_event_shape(_events(smoke_repo["run_log"]), terminal="batch")
         return
 
     assert post_triage["action"] == "dispatch_plan_author_per_finding"
@@ -795,3 +859,192 @@ def test_sanitizer_flags_surface_for_plan_review_suggested_change(smoke_repo: di
     review_done = [event for event in events if event["event"] == "plan_review_done"][-1]
     assert review_done["extra"]["sanitizer_flags"] == flags
     assert "<tool_calls>" not in json.dumps(events)
+
+
+def test_plan_review_route_reads_and_writes_schedule_state_between_calls(
+    smoke_repo: dict,
+) -> None:
+    repo = smoke_repo["repo"]
+    schedule_file = smoke_repo["schedule_file"]
+    _write_schedule_direct(schedule_file)
+
+    first = _route(
+        repo,
+        schedule_file,
+        {
+            "stage": "post_review",
+            "flags": _flags(),
+            "plan_review_envelope": _parse_review(
+                repo,
+                _review_envelope("needs-replan"),
+            ),
+        },
+        run_id="R-state-roundtrip",
+        attempts_seen=[],
+        inject_schedule_state=False,
+    )
+    assert first["action"] == "dispatch_triage"
+    state = _read_plan_review_state(schedule_file)
+    assert state["first_verdict"] == "needs-replan"
+    assert state["triage_dispatched"] is True
+
+    schedule = json.loads(schedule_file.read_text(encoding="utf-8"))
+    schedule["plan_review_state"]["attempt"] = 2
+    schedule["plan_review_state"]["auto_revise_round_completed"] = True
+    schedule_file.write_text(json.dumps(schedule), encoding="utf-8")
+
+    second = _route(
+        repo,
+        schedule_file,
+        {
+            "stage": "post_review",
+            "flags": _flags(),
+            "plan_review_envelope": _parse_review(
+                repo,
+                _review_envelope("needs-replan"),
+            ),
+        },
+        run_id="R-state-roundtrip",
+        attempts_seen=[],
+        inject_schedule_state=False,
+    )
+    assert second["action"] == "halt_plan_review_failed"
+    assert second["args"]["reason_detail"] == "second_needs_replan"
+    assert _read_plan_review_state(schedule_file)["second_verdict"] == "needs-replan"
+
+
+def test_claude_only_failure_uses_parser_terminal_shape(smoke_repo: dict) -> None:
+    repo = smoke_repo["repo"]
+    schedule_file = smoke_repo["schedule_file"]
+    _write_schedule_direct(schedule_file)
+    parsed = _parse_review(
+        repo,
+        _review_envelope(None, outcome="failure"),
+    )
+
+    out = _route(
+        repo,
+        schedule_file,
+        {
+            "stage": "post_review",
+            "claude_only": True,
+            "flags": _flags(),
+            "plan_review_envelope": parsed,
+        },
+        run_id="R-claude-failure",
+        attempts_seen=[],
+    )
+
+    assert parsed["outcome"] == "failure"
+    assert parsed["reviewer"] == "codex"
+    assert parsed["verdict"] is None
+    assert out["action"] == "skip_plan_review"
+    assert out["reason"] == "claude_review_failure"
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        (
+            "ship",
+            {
+                "action": "proceed_to_phase_2",
+                "banner": "[plan-review-disagreement]",
+                "triage_summary": "triage ship",
+            },
+        ),
+        (
+            "ship-with-fixes",
+            {
+                "action": "proceed_to_phase_2",
+                "notes_section": "Plan review notes",
+                "triage_summary": "triage ship-with-fixes",
+            },
+        ),
+        (
+            "partial-agreement",
+            {
+                "action": "dispatch_plan_author_per_finding",
+                "load_bearing": [0],
+                "dismissed": [1],
+            },
+        ),
+        (
+            "needs-rework",
+            {
+                "action": "dispatch_plan_author_per_finding",
+                "findings": FINDINGS,
+            },
+        ),
+    ],
+)
+def test_triage_verdict_semantics_from_parser_shape(
+    smoke_repo: dict,
+    verdict: str,
+    expected: dict,
+) -> None:
+    repo = smoke_repo["repo"]
+    schedule_file = smoke_repo["schedule_file"]
+    _write_schedule_direct(schedule_file)
+    parsed_review = _parse_review(repo, _review_envelope("needs-replan"))
+    parsed_triage = _parse_triage_report(
+        repo,
+        _triage_report(verdict, load_bearing=[0], dismissed=[1]),
+        parsed_review["findings_count"],
+    )
+
+    out = _route(
+        repo,
+        schedule_file,
+        {
+            "stage": "post_triage",
+            "flags": _flags(),
+            "plan_review_envelope": parsed_review,
+            "triage_envelope": parsed_triage,
+        },
+        run_id=f"R-triage-{verdict}",
+        attempts_seen=[],
+    )
+
+    assert out["action"] == expected["action"]
+    if verdict in {"ship", "ship-with-fixes"}:
+        assert out["summary_section"]["triage_summary"] == expected["triage_summary"]
+    if verdict == "ship":
+        assert out["summary_section"]["banner"] == expected["banner"]
+        assert "notes_section" not in out["summary_section"]
+    elif verdict == "ship-with-fixes":
+        assert out["summary_section"]["notes_section"] == expected["notes_section"]
+        assert "banner" not in out["summary_section"]
+    elif verdict == "partial-agreement":
+        ctx = out["dispatch_context"]
+        assert parsed_triage["load_bearing"] == expected["load_bearing"]
+        assert parsed_triage["dismissed"] == expected["dismissed"]
+        assert ctx["findings_for_payload"] == [FINDINGS[0]]
+        assert ctx["dismissed_for_context"] == [FINDINGS[1]]
+    else:
+        assert out["dispatch_context"]["findings_for_payload"] == expected["findings"]
+        assert out["dispatch_context"]["dismissed_for_context"] == []
+
+
+def test_unknown_triage_verdict_is_rejected_by_parser_shape(
+    smoke_repo: dict,
+) -> None:
+    repo = smoke_repo["repo"]
+    report = _triage_report("surprising")
+
+    cp = _run(
+        "parse-plan-review-triage-report",
+        "--stdin",
+        "--source",
+        "codex-plan-review",
+        "--findings-count",
+        str(len(FINDINGS)),
+        "--json",
+        cwd=repo,
+        input_text=report,
+    )
+
+    assert cp.returncode != 0
+    out = _json(cp)
+    assert out["errors"][0]["code"] == "invalid-reviewer-verdict"
+    assert "surprising" in out["errors"][0]["message"]

@@ -13610,11 +13610,11 @@ def _plan_review_route_reviewer(payload: dict) -> str | None:
     raw = payload.get("reviewer")
     if isinstance(raw, str):
         return raw
+    if payload.get("claude_only") is True:
+        return "claude"
     env = payload.get("plan_review_envelope")
     if isinstance(env, dict) and isinstance(env.get("reviewer"), str):
         return env["reviewer"]
-    if payload.get("claude_only") is True:
-        return "claude"
     return None
 
 
@@ -14553,8 +14553,14 @@ def _run_plan_review_route(payload: dict) -> dict:
             "errors": errors,
         }, exit_code=1)
     assert isinstance(route_payload, dict)
-    directive = route(route_payload)
     sched_for_state = payload.get("update_schedule_state")
+    if (
+        sched_for_state is not None
+        and not isinstance(route_payload.get("plan_review_state"), dict)
+    ):
+        route_payload = dict(route_payload)
+        route_payload["plan_review_state"] = read_plan_review_state(sched_for_state)
+    directive = route(route_payload)
     if sched_for_state is not None:
         written, warning = _write_plan_review_state_transition(
             sched_for_state,
