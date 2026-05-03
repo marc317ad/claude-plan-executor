@@ -657,7 +657,7 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                   'title': {'type': 'string'},
                                   'diff_summary': {'type': 'string'},
                                   'reviewer': {'type': 'string',
-                                               'enum': ['codex', 'claude', 'none']},
+                                               'enum': ['codex', 'gemini', 'claude', 'none']},
                                   'reviewer_verdict': {'type': 'string'},
                                   'reviewer_minor_findings': {'description': 'JSON array of minor '
                                                                              'findings',

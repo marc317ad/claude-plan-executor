@@ -74,6 +74,7 @@
                 "post_narrow_remediation_review",
                 "post_narrow_remediation_implement",
                 "post_binding_block",
+                "post_gemini_review",
                 "unknown_state"
               ]
             },

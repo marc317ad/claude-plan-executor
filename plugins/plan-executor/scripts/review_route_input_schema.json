@@ -18,7 +18,7 @@
     "reviewer": {
       "type": "string",
       "enum": ["codex", "gemini", "claude", "none"],
-      "description": "Reviewer identity. Canonical TASK-001 field — first-class so the router does not have to infer reviewer semantics from the implementer alone. `codex` and `gemini` share the Codex verdict vocabulary on Claude work and route identically (Gemini fallback piggybacks on the Codex ladder). `claude` paired with Claude implementer requires `claude_only=true`. `none` is the explicit skip-review path: the router emits `commit` with reviewer metadata suitable for `commit-task reviewer=none`. Optional during the compatibility window — see top-level description."
+      "description": "Reviewer identity. Canonical TASK-001 field — first-class so the router does not have to infer reviewer semantics from the implementer alone. `codex` and `gemini` share the Codex verdict vocabulary on Claude work; `gemini` can also review Codex work in the Codex+Gemini no-Claude path. `claude` paired with Claude implementer requires `claude_only=true`. `none` is the explicit skip-review path: the router emits `commit` with reviewer metadata suitable for `commit-task reviewer=none`. Optional during the compatibility window — see top-level description."
     },
     "claude_only": {
       "type": "boolean",

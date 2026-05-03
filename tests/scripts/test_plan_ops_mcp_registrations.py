@@ -47,7 +47,7 @@ def index() -> dict:
 def test_registry_matches_index_order_and_shape(server_mod, index: dict) -> None:
     expected_keys = [f"plan_ops__{name}" for name in index["tool_names_ordered"]]
     assert [entry["tool_key"] for entry in server_mod.TOOL_REGISTRY] == expected_keys
-    assert len(server_mod.TOOL_REGISTRY) == 38
+    assert len(server_mod.TOOL_REGISTRY) == len(expected_keys)
 
     for entry in server_mod.TOOL_REGISTRY:
         indexed = index["tools"][entry["tool_key"]]

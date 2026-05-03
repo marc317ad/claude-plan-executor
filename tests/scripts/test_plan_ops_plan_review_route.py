@@ -107,6 +107,17 @@ def test_pre_dispatch_selects_reviewer(claude_only: bool, action: str) -> None:
         assert out["dispatch_context"]["allow_gaps_demotion"] is True
 
 
+def test_pre_dispatch_can_select_gemini_reviewer_for_no_claude_path() -> None:
+    out = plan_ops.route(_payload(
+        "pre_dispatch",
+        claude_only=False,
+        reviewer="gemini",
+        flags=_flags(allow_gaps=True),
+    ))
+    assert out["action"] == "dispatch_gemini_reviewer"
+    assert out["dispatch_context"]["allow_gaps_demotion"] is True
+
+
 @pytest.mark.parametrize("outcome", ["timeout", "parse_error", "failure"])
 def test_post_review_codex_transient_outcomes_skip(outcome: str) -> None:
     out = plan_ops.route(_payload(

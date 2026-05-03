@@ -371,6 +371,14 @@ def test_review_route_mcp_output_contract_matches_cli_router(index: dict) -> Non
     }
 
 
+def test_commit_task_mcp_reviewer_enum_matches_router(index: dict) -> None:
+    entry = index["tools"]["plan_ops__commit_task"]
+    inp = _load(MCP_DIR / entry["input_schema"])
+    enum = inp["properties"]["reviewer"]["enum"]
+    assert enum == ["codex", "gemini", "claude", "none"]
+    assert set(enum) == plan_ops._ALLOWED_REVIEWERS
+
+
 def test_review_route_output_schema_matches_plan_ops_envelope(index: dict) -> None:
     pytest.importorskip("jsonschema")
     from jsonschema import Draft7Validator

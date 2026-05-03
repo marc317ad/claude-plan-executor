@@ -12,6 +12,7 @@
         "skip_plan_review",
         "dispatch_claude_reviewer",
         "dispatch_codex_reviewer",
+        "dispatch_gemini_reviewer",
         "proceed_to_phase_2",
         "dispatch_triage",
         "dispatch_plan_author_per_finding",

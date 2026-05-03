@@ -1599,6 +1599,9 @@ def _validate_review_success_payload(
     if reviewer == "codex":
         allowed_verdicts = ALLOWED_CODEX_REVIEW_VERDICTS
         commit_allowed = {"clean", "minor-findings"}
+    elif reviewer == "gemini":
+        allowed_verdicts = ALLOWED_CODEX_REVIEW_VERDICTS
+        commit_allowed = {"clean", "minor-findings"}
     elif reviewer == "claude":
         allowed_verdicts = ALLOWED_CLAUDE_REVIEW_VERDICTS
         commit_allowed = {"ship", "ship-with-fixes"}
@@ -1609,7 +1612,7 @@ def _validate_review_success_payload(
         return [{
             "path": "$.reviewer",
             "code": "invalid-reviewer",
-            "message": f"reviewer must be one of ['claude', 'codex', 'none'], got {reviewer!r}",
+            "message": f"reviewer must be one of ['claude', 'codex', 'gemini', 'none'], got {reviewer!r}",
         }]
 
     if reviewer_verdict not in allowed_verdicts:
@@ -12582,7 +12585,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_commit.add_argument("--files", required=True, help="Comma-separated files to commit")
     p_commit.add_argument("--title", required=True)
     p_commit.add_argument("--diff-summary", required=True)
-    p_commit.add_argument("--reviewer", choices=["codex", "claude", "none"], default="none")
+    p_commit.add_argument("--reviewer", choices=["codex", "gemini", "claude", "none"], default="none")
     p_commit.add_argument("--reviewer-verdict", default="")
     p_commit.add_argument("--reviewer-minor-findings", default="[]",
                           help="JSON array of minor findings")
@@ -13550,6 +13553,7 @@ _PLAN_REVIEW_ROUTE_ACTIONS = {
     "skip_plan_review",
     "dispatch_claude_reviewer",
     "dispatch_codex_reviewer",
+    "dispatch_gemini_reviewer",
     "proceed_to_phase_2",
     "dispatch_triage",
     "dispatch_plan_author_per_finding",
@@ -13688,6 +13692,19 @@ def _plan_review_route(payload: dict) -> dict:
         if payload.get("claude_only") is True:
             return {"action": "dispatch_claude_reviewer", "args": {}}
         if payload.get("claude_only") is False:
+            reviewer = _plan_review_route_reviewer(payload)
+            if reviewer == "gemini":
+                return {
+                    "action": "dispatch_gemini_reviewer",
+                    "args": {
+                        "dispatch_context": {
+                            "allow_gaps_demotion": bool(flags.get("allow_gaps", False)),
+                        },
+                    },
+                    "dispatch_context": {
+                        "allow_gaps_demotion": bool(flags.get("allow_gaps", False)),
+                    },
+                }
             return {
                 "action": "dispatch_codex_reviewer",
                 "args": {
@@ -14276,12 +14293,54 @@ def _route_review_route(payload: dict) -> dict:
             task_id=task_id,
         )
 
-    # ---- Branch 2: Codex implementer, Claude reviewer (D.2 + D.2b). ----
+    # ---- Branch 2a: Codex implementer, Gemini reviewer (no-Claude path). ----
     assert implementer == "codex"
+    if reviewer == "gemini":
+        if claude_only:
+            return _unknown(
+                "reviewer='gemini' on Codex work is incompatible with "
+                "claude_only=true",
+                task_id=task_id,
+            )
+        if rev_verdict not in _CODEX_VERDICTS:
+            return _unknown(
+                f"unrecognized Gemini reviewer verdict {rev_verdict!r}; "
+                f"expected one of {sorted(_CODEX_VERDICTS)!r}",
+                task_id=task_id,
+            )
+        if rev_verdict in ("clean", "minor-findings"):
+            return {
+                "action": "commit",
+                "args": {
+                    "task_id": task_id,
+                    "commit_flags": {
+                        "disagreement_tag": False,
+                        "remediation_tag": False,
+                        "narrow_remediation_tag": False,
+                        "dismissed_finding_ids": [],
+                    },
+                },
+            }
+        return {
+            "action": "pause_awaiting_user",
+            "args": {
+                "task_id": task_id,
+                "pause_payload": {
+                    "stage": "post_gemini_review",
+                    "reviewer": reviewer,
+                    "reviewer_verdict": rev_verdict,
+                    "codex_findings": list(rev_findings),
+                    "summary": rev_summary,
+                },
+            },
+        }
+
+    # ---- Branch 2b: Codex implementer, Claude reviewer (D.2 + D.2b). ----
     if reviewer != "claude":
         return _unknown(
             f"unsupported reviewer {reviewer!r} for Codex implementer; "
-            "Codex-implemented work is reviewed by Claude in the current SKILL contract",
+            "Codex-implemented work is reviewed by Claude in the Claude path "
+            "or Gemini in the Codex+Gemini no-Claude path",
             task_id=task_id,
         )
     if rev_verdict not in _CLAUDE_VERDICTS:

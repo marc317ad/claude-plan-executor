@@ -562,6 +562,33 @@ def test_codex_impl_claude_reviewer_role_swap_unchanged() -> None:
     assert out["action"] == "dispatch_role_swap"
 
 
+@pytest.mark.parametrize("verdict", ["clean", "minor-findings"])
+def test_codex_impl_gemini_reviewer_clean_or_minor_commits(verdict: str) -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="gemini", claude_only=False,
+        verdict=verdict,
+    ))
+    assert out["action"] == "commit"
+    assert out["args"]["commit_flags"] == {
+        "disagreement_tag": False,
+        "remediation_tag": False,
+        "narrow_remediation_tag": False,
+        "dismissed_finding_ids": [],
+    }
+
+
+def test_codex_impl_gemini_reviewer_needs_rework_pauses_without_claude() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="gemini", claude_only=False,
+        verdict="needs-rework", findings=[{"i": 0}],
+    ))
+    assert out["action"] == "pause_awaiting_user"
+    assert out["action"] != "dispatch_role_swap"
+    assert "dispatch_context" not in out["args"]
+    assert out["args"]["pause_payload"]["stage"] == "post_gemini_review"
+    assert out["args"]["pause_payload"]["codex_findings"] == [{"i": 0}]
+
+
 # --- Skip-review path (AC line 5) -----------------------------------------
 
 
