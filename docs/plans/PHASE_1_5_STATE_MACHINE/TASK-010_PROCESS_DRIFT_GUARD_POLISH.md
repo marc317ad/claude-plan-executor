@@ -29,6 +29,7 @@ The intended outcome is one coherent polish pass, but the work should be reviewe
 
 - **Status:** Pending
 - **Priority:** medium
+- **Agent:** codex
 - **Files:**
   - tests/scripts/test_skill_cli_reference_drift.py (edit)
   - tests/scripts/test_plan_ops_mcp_registrations.py (edit)

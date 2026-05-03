@@ -26,6 +26,7 @@ TASK-007 shipped with reviewer findings preserved for follow-up. The E2E smoke d
 
 - **Status:** Pending
 - **Priority:** high
+- **Agent:** codex
 - **Files:**
   - tests/scripts/test_phase_1_5_e2e.py (edit)
   - tests/scripts/fixtures/phase_1_5_plan/ (edit)

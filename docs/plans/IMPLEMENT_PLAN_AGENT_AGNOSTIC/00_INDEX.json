@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "Agent-Agnostic implement_plan.py Runner",
+  "created": "2026-05-02",
+  "base_branch": "main",
+  "depends_on_plans": [
+    "docs/plans/PHASE_D_STATE_MACHINE_COMPLETION/PLAN_PHASE_D_STATE_MACHINE_COMPLETION.md",
+    "docs/plans/PHASE_1_5_STATE_MACHINE/PLAN_PHASE_1_5_STATE_MACHINE.md",
+    "docs/plans/MCP_MIGRATION/PLAN_MCP_MIGRATION.md"
+  ],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_runner_contracts.md",
+      "priority": "critical",
+      "implementer": "codex",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_cli_and_plan_ops_facade.md",
+      "priority": "critical",
+      "implementer": "codex",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_provider_adapters.md",
+      "priority": "critical",
+      "implementer": "codex",
+      "depends_on": [
+        "001",
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_assignment_policy.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [
+        "001",
+        "003"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_phase0_to_phase15_runner.md",
+      "priority": "critical",
+      "implementer": "codex",
+      "depends_on": [
+        "002",
+        "003",
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "TASK-006_phase_b_d_execution_loop.md",
+      "priority": "critical",
+      "implementer": "codex",
+      "depends_on": [
+        "005"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "TASK-007_pause_resume.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [
+        "006"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "008",
+      "file": "TASK-008_e2e_docs_and_skill_bridge.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [
+        "006",
+        "007"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
