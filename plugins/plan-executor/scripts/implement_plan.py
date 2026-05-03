@@ -818,6 +818,9 @@ class PlanOpsFacade:
         return self._run_direct("block_dependents", payload)
 
     def reconcile_batch(self, **payload: Any) -> dict[str, Any]:
+        if "payload" in payload and "stdin_text" not in payload:
+            payload = dict(payload)
+            payload["stdin_text"] = json.dumps(payload.pop("payload"))
         return self._run_direct("reconcile_batch", payload)
 
     def update_plan_header(self, **payload: Any) -> dict[str, Any]:
@@ -1681,6 +1684,39 @@ def _provider_result_envelope(result: DispatchResult) -> dict[str, Any]:
     return envelope
 
 
+def _reconcile_envelope_entry(
+    *,
+    task_id: str,
+    result: DispatchResult,
+    envelope: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "provider": result.provider,
+        "role": result.role,
+        "envelope": result.raw_envelope or dict(envelope),
+    }
+
+
+def _replace_reconcile_envelope(
+    entries: list[dict[str, Any]],
+    *,
+    task_id: str,
+    result: DispatchResult,
+    envelope: Mapping[str, Any],
+) -> None:
+    replacement = _reconcile_envelope_entry(
+        task_id=task_id,
+        result=result,
+        envelope=envelope,
+    )
+    for index, entry in enumerate(entries):
+        if entry.get("task_id") == task_id:
+            entries[index] = replacement
+            return
+    entries.append(replacement)
+
+
 def _plan_review_provider(
     providers: Mapping[str, ProviderAdapter],
     assignment_plan: AssignmentPlan,
@@ -1712,10 +1748,688 @@ def _prepare_phase_2(
     _write_runner_state(schedule_file, phase="phase_2_ready")
     next_batch = facade.batch_next(
         schedule_file=schedule_file,
+        done="",
+        failed="",
+        locked_files="",
         parallel=parallel,
         from_schedule_state=True,
     )
     return _result_errors(next_batch) if _has_errors(next_batch) else []
+
+
+def _schedule_state_for_task(schedule_file: Path, task_id: str) -> dict[str, bool]:
+    try:
+        data = json.loads(schedule_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    state = data.get("state") if isinstance(data, dict) else None
+    retries = state.get("retries_used") if isinstance(state, dict) else None
+    task_retries = retries.get(task_id) if isinstance(retries, dict) else None
+    base = {
+        "bounded_remediation": False,
+        "narrow_remediation": False,
+        "role_swap": False,
+        "codex_fallback": False,
+    }
+    if isinstance(task_retries, Mapping):
+        base.update({key: bool(value) for key, value in task_retries.items()})
+    return base
+
+
+def _phase_d_flags(config: RunnerConfig) -> dict[str, bool]:
+    agent_args = config.agent_args if isinstance(config.agent_args, Mapping) else {}
+    return {
+        "codex_review_binding": bool(agent_args.get("codex_review_binding", False)),
+        "skip_cross_review": bool(config.skip_cross_review),
+    }
+
+
+def _task_plan_file(plans_dir: Path, task: Mapping[str, Any]) -> Path:
+    raw = task.get("plan_file")
+    if isinstance(raw, str) and raw.strip():
+        return (plans_dir / raw).resolve()
+    return plans_dir.resolve()
+
+
+def _dispatch_ok(result: DispatchResult) -> bool:
+    if result.status not in {"ok", "success", "completed"}:
+        return False
+    parsed_status = result.parsed.get("status") if isinstance(result.parsed, Mapping) else None
+    if parsed_status is None:
+        return True
+    return str(parsed_status) in {"ok", "success", "completed", "partial"}
+
+
+def _task_files(task: Mapping[str, Any], implement_envelope: Mapping[str, Any]) -> list[str]:
+    files = implement_envelope.get("files_changed")
+    if not isinstance(files, list):
+        files = implement_envelope.get("declared_files_changed")
+    if not isinstance(files, list):
+        files = task.get("files")
+    return [str(path) for path in (files or []) if str(path).strip()]
+
+
+def _route_reason(payload: Mapping[str, Any], directive: Mapping[str, Any]) -> str:
+    reviewer_envelope = payload.get("reviewer_envelope")
+    verdict = (
+        reviewer_envelope.get("verdict")
+        if isinstance(reviewer_envelope, Mapping)
+        else "unknown"
+    )
+    reason = (
+        f"{payload.get('implementer')}->{payload.get('reviewer')} "
+        f"{verdict} -> {directive.get('action')}"
+    )
+    return reason[:240]
+
+
+def _log_review_route_called(
+    facade: PlanOpsFacade,
+    *,
+    run_id: str,
+    route_payload: Mapping[str, Any],
+    directive: Mapping[str, Any],
+) -> None:
+    _log(
+        facade,
+        "review_route_called",
+        run_id=run_id,
+        task_id=str(route_payload.get("task_id") or ""),
+        implementer=str(route_payload.get("implementer") or ""),
+        reviewer=str(route_payload.get("reviewer") or ""),
+        action=str(directive.get("action") or ""),
+        route_reason=_route_reason(route_payload, directive),
+    )
+
+
+def _reviewer_for_task(config: RunnerConfig, assignment_plan: AssignmentPlan) -> tuple[str, str]:
+    if config.skip_cross_review:
+        return "none", "none"
+    route = assignment_plan.reviewer.route or assignment_plan.reviewer.provider
+    return route, assignment_plan.reviewer.provider
+
+
+def _phase_d_route_payload(
+    *,
+    task_id: str,
+    implementer: str,
+    reviewer: str,
+    config: RunnerConfig,
+    retries_used: Mapping[str, bool],
+    reviewer_envelope: Mapping[str, Any],
+    d5_envelope: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "implementer": implementer,
+        "reviewer": reviewer,
+        "claude_only": implementer == "claude" and reviewer == "claude",
+        "unattended_revert_policy": config.unattended_revert_policy,
+        "flags": _phase_d_flags(config),
+        "retries_used": dict(retries_used),
+        "reviewer_envelope": dict(reviewer_envelope),
+        "d5_envelope": dict(d5_envelope) if isinstance(d5_envelope, Mapping) else None,
+    }
+
+
+def _call_review_route(
+    facade: PlanOpsFacade,
+    *,
+    run_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    directive = facade.review_route(payload)
+    _log_review_route_called(
+        facade,
+        run_id=run_id,
+        route_payload=payload,
+        directive=directive,
+    )
+    return directive
+
+
+def _commit_from_route(
+    facade: PlanOpsFacade,
+    *,
+    run_id: str,
+    schedule_file: Path,
+    task: Mapping[str, Any],
+    plan_file: Path,
+    files: Sequence[str],
+    reviewer: str,
+    reviewer_envelope: Mapping[str, Any],
+    implement_envelope: Mapping[str, Any],
+    directive: Mapping[str, Any],
+    dry_run: bool,
+) -> dict[str, Any]:
+    args = directive.get("args") if isinstance(directive.get("args"), Mapping) else {}
+    commit_flags = args.get("commit_flags") if isinstance(args.get("commit_flags"), Mapping) else {}
+    reviewer_verdict = "" if reviewer == "none" else str(reviewer_envelope.get("verdict") or "")
+    minor_findings = reviewer_envelope.get("findings") or []
+    if not isinstance(minor_findings, list):
+        minor_findings = []
+    payload = {
+        "task_id": args.get("task_id") or task.get("id"),
+        "files": ",".join(files),
+        "plan_file": plan_file,
+        "reviewer": reviewer,
+        "reviewer_verdict": reviewer_verdict,
+        "reviewer_minor_findings": json.dumps(minor_findings),
+        "dry_run": dry_run,
+        "run_id": run_id,
+        "title": str(task.get("title") or f"TASK-{task.get('id')}"),
+        "diff_summary": str(
+            implement_envelope.get("diff_summary")
+            or implement_envelope.get("summary")
+            or "Implementation completed"
+        ),
+        "remediation_tag": bool(commit_flags.get("remediation_tag", False)),
+        "narrow_remediation_tag": bool(commit_flags.get("narrow_remediation_tag", False)),
+        "disagreement_tag": bool(commit_flags.get("disagreement_tag", False)),
+        "dismissed_finding_ids": list(commit_flags.get("dismissed_finding_ids") or []),
+        "update_schedule_state": str(schedule_file),
+    }
+    return facade.commit_task(**payload)
+
+
+def _fail_from_route(
+    facade: PlanOpsFacade,
+    *,
+    run_id: str,
+    schedule_file: Path,
+    task: Mapping[str, Any],
+    plan_file: Path,
+    files: Sequence[str],
+    reviewer_envelope: Mapping[str, Any],
+    directive: Mapping[str, Any],
+    retries_used: Mapping[str, bool],
+) -> dict[str, Any]:
+    args = directive.get("args") if isinstance(directive.get("args"), Mapping) else {}
+    authorization_source = args.get("authorization_source")
+    if not isinstance(authorization_source, str) or not authorization_source:
+        return {
+            "errors": [{
+                "code": "missing-fail-authorization-source",
+                "message": "review-route fail directive omitted authorization_source",
+            }],
+        }
+    payload = {
+        "authorization_source": authorization_source,
+        "task_id": args.get("task_id") or task.get("id"),
+        "plan_file": plan_file,
+        "repo_root": str(Path.cwd().resolve()),
+        "files": ",".join(files),
+        "run_id": run_id,
+        "stage": args.get("fail_stage") or "review",
+        "reason": args.get("fail_reason") or directive.get("reason") or "review-route fail",
+        "reviewer_findings": json.dumps({
+            "task_id": normalize_task_id(str(task.get("id"))),
+            "verdict": str(reviewer_envelope.get("verdict") or "needs-rework"),
+            "findings": reviewer_envelope.get("findings") or [],
+            "notes": [],
+            "scope_ok": False,
+            "acceptance_met": False,
+            "summary": reviewer_envelope.get("summary", ""),
+        }),
+        "update_schedule_state": str(schedule_file),
+        "retries_used": json.dumps(dict(retries_used)),
+    }
+    return facade.fail_task(**payload)
+
+
+def _run_phase_d_loop(
+    *,
+    facade: PlanOpsFacade,
+    registry: Mapping[str, ProviderAdapter],
+    config: RunnerConfig,
+    assignment_plan: AssignmentPlan,
+    schedule_file: Path,
+    plans_dir: Path,
+    tasks: Sequence[Mapping[str, Any]],
+    effective_plan_path: Path,
+    run_id: str,
+    parallel: int,
+    warnings: Sequence[str],
+) -> dict[str, Any]:
+    tasks_by_id = {normalize_task_id(str(task.get("id"))): task for task in tasks}
+    repo_root = Path.cwd().resolve()
+    batch_count = 0
+
+    while True:
+        next_batch = facade.batch_next(
+            schedule_file=schedule_file,
+            done="",
+            failed="",
+            locked_files="",
+            parallel=parallel,
+            from_schedule_state=True,
+        )
+        if _has_errors(next_batch):
+            _log(facade, "run_end", run_id=run_id, outcome="failed", reason="batch_next_failed")
+            return _summary(
+                status="failed",
+                run_id=run_id,
+                plan_path=effective_plan_path,
+                dry_run=config.dry_run,
+                completed_phase="batch_next",
+                warnings=warnings,
+                errors=_result_errors(next_batch),
+            )
+        task_ids = [normalize_task_id(str(tid)) for tid in next_batch.get("task_ids", [])]
+        task_ids = [tid for tid in task_ids if tid]
+        if not task_ids:
+            if next_batch.get("scheduler_stuck"):
+                _log(facade, "run_end", run_id=run_id, outcome="paused", reason="scheduler_stuck")
+                return _summary(
+                    status="paused",
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    dry_run=config.dry_run,
+                    completed_phase="phase_d",
+                    warnings=warnings,
+                    errors=[{"code": "scheduler-stuck", "batch": next_batch}],
+                )
+            _log(facade, "run_end", run_id=run_id, outcome="success")
+            return _summary(
+                status="completed",
+                run_id=run_id,
+                plan_path=effective_plan_path,
+                dry_run=config.dry_run,
+                completed_phase="phase_d",
+                warnings=warnings,
+            )
+
+        batch_count += 1
+        _log(
+            facade,
+            "batch_start",
+            run_id=run_id,
+            batch_index=next_batch.get("batch_index", batch_count),
+            task_ids=task_ids,
+            file_locks=list(next_batch.get("file_locks") or []),
+        )
+        reconcile_envelopes: list[dict[str, Any]] = []
+        for task_id in task_ids:
+            task = tasks_by_id[task_id]
+            plan_file = _task_plan_file(plans_dir, task)
+            implementer = assignment_plan.route_implementers.get(task_id)
+            if implementer is None:
+                return _summary(
+                    status="failed",
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    dry_run=config.dry_run,
+                    completed_phase="phase_d",
+                    warnings=warnings,
+                    errors=[{"code": "missing-implementer", "task_id": task_id}],
+                )
+            implement_provider = registry.get(assignment_plan.implementers[task_id].provider)
+            if implement_provider is None:
+                return _summary(
+                    status="failed",
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    dry_run=config.dry_run,
+                    completed_phase="phase_d",
+                    warnings=warnings,
+                    errors=[{"code": "provider-unavailable", "provider": implementer}],
+                )
+            if not callable(getattr(implement_provider, "implement", None)):
+                return _summary(
+                    status="partial",
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    dry_run=config.dry_run,
+                    completed_phase="phase_2_ready",
+                    warnings=warnings,
+                )
+
+            _log(facade, "implement_start", run_id=run_id, task_id=task_id, implementer=implementer)
+            implement_result = implement_provider.implement(
+                plan_file=plan_file,
+                task_id=task_id,
+                repo_root=repo_root,
+                dry_run=config.dry_run,
+                files=task.get("files") or [],
+                target_task_id=task_id,
+                run_id=run_id,
+                unattended_revert_policy=config.unattended_revert_policy,
+            )
+            implement_envelope = _provider_result_envelope(implement_result)
+            _log(
+                facade,
+                "implement_done",
+                run_id=run_id,
+                task_id=task_id,
+                implementer=implementer,
+                outcome=implement_envelope.get("outcome"),
+                status=implement_result.status,
+            )
+            reconcile_envelopes.append(_reconcile_envelope_entry(
+                task_id=task_id,
+                result=implement_result,
+                envelope=implement_envelope,
+            ))
+            if not _dispatch_ok(implement_result):
+                _log(facade, "run_end", run_id=run_id, outcome="failed", reason="implementation_failed")
+                return _summary(
+                    status="failed",
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    dry_run=config.dry_run,
+                    completed_phase="implement",
+                    warnings=warnings,
+                    errors=[implement_envelope],
+                )
+
+            files = _task_files(task, implement_envelope)
+            reviewer, reviewer_provider_name = _reviewer_for_task(config, assignment_plan)
+            if reviewer == "none":
+                reviewer_envelope: dict[str, Any] = {"verdict": "", "findings": [], "summary": ""}
+                _log(facade, "review_skipped", run_id=run_id, task_id=task_id, reason="reviewer_none")
+            else:
+                review_provider = registry.get(reviewer_provider_name)
+                if review_provider is None:
+                    return _summary(
+                        status="failed",
+                        run_id=run_id,
+                        plan_path=effective_plan_path,
+                        dry_run=config.dry_run,
+                        completed_phase="review",
+                        warnings=warnings,
+                        errors=[{"code": "reviewer-unavailable", "reviewer": reviewer_provider_name}],
+                    )
+                _log(facade, "review_start", run_id=run_id, task_id=task_id, reviewer=reviewer)
+                review_result = review_provider.review(
+                    plan_file=plan_file,
+                    task_id=task_id,
+                    repo_root=repo_root,
+                    dry_run=config.dry_run,
+                    files=files,
+                    target_task_id=task_id,
+                    run_id=run_id,
+                    unattended_revert_policy=config.unattended_revert_policy,
+                )
+                reviewer_envelope = _provider_result_envelope(review_result)
+                _log(
+                    facade,
+                    "review_done",
+                    run_id=run_id,
+                    task_id=task_id,
+                    reviewer=reviewer,
+                    verdict=reviewer_envelope.get("verdict"),
+                    outcome=reviewer_envelope.get("outcome"),
+                )
+
+            retries_used = _schedule_state_for_task(schedule_file, task_id)
+            d5_envelope: Mapping[str, Any] | None = None
+            while True:
+                route_payload = _phase_d_route_payload(
+                    task_id=task_id,
+                    implementer=implementer,
+                    reviewer=reviewer,
+                    config=config,
+                    retries_used=retries_used,
+                    reviewer_envelope=reviewer_envelope,
+                    d5_envelope=d5_envelope,
+                )
+                directive = _call_review_route(facade, run_id=run_id, payload=route_payload)
+                action = directive.get("action")
+                args = directive.get("args") if isinstance(directive.get("args"), Mapping) else {}
+                dispatch_context = (
+                    directive.get("dispatch_context")
+                    if isinstance(directive.get("dispatch_context"), Mapping)
+                    else args.get("dispatch_context")
+                )
+
+                if action == "commit":
+                    commit = _commit_from_route(
+                        facade,
+                        run_id=run_id,
+                        schedule_file=schedule_file,
+                        task=task,
+                        plan_file=plan_file,
+                        files=files,
+                        reviewer=reviewer,
+                        reviewer_envelope=reviewer_envelope,
+                        implement_envelope=implement_envelope,
+                        directive=directive,
+                        dry_run=config.dry_run,
+                    )
+                    if _has_errors(commit):
+                        _log(facade, "run_end", run_id=run_id, outcome="failed", reason="commit_failed")
+                        return _summary(
+                            status="failed",
+                            run_id=run_id,
+                            plan_path=effective_plan_path,
+                            dry_run=config.dry_run,
+                            completed_phase="commit",
+                            warnings=warnings,
+                            errors=_result_errors(commit),
+                        )
+                    break
+
+                if action == "fail":
+                    failed = _fail_from_route(
+                        facade,
+                        run_id=run_id,
+                        schedule_file=schedule_file,
+                        task=task,
+                        plan_file=plan_file,
+                        files=files,
+                        reviewer_envelope=reviewer_envelope,
+                        directive=directive,
+                        retries_used=retries_used,
+                    )
+                    if failed.get("error") or failed.get("errors") or failed.get("ok") is False:
+                        _log(facade, "run_end", run_id=run_id, outcome="failed", reason="fail_task_failed")
+                        return _summary(
+                            status="failed",
+                            run_id=run_id,
+                            plan_path=effective_plan_path,
+                            dry_run=config.dry_run,
+                            completed_phase="fail",
+                            warnings=warnings,
+                            errors=_result_errors(failed),
+                        )
+                    break
+
+                if action == "dispatch_d5":
+                    d5_provider = registry.get("claude") or registry.get(reviewer_provider_name)
+                    if d5_provider is None:
+                        return _summary(
+                            status="failed",
+                            run_id=run_id,
+                            plan_path=effective_plan_path,
+                            dry_run=config.dry_run,
+                            completed_phase="dispatch_d5",
+                            warnings=warnings,
+                            errors=[{"code": "d5-provider-unavailable"}],
+                        )
+                    d5_result = d5_provider.review(
+                        plan_file=plan_file,
+                        task_id=task_id,
+                        repo_root=repo_root,
+                        dry_run=config.dry_run,
+                        files=files,
+                        target_task_id=task_id,
+                        run_id=run_id,
+                        dispatch_context=dispatch_context,
+                        unattended_revert_policy=config.unattended_revert_policy,
+                    )
+                    d5_envelope = _provider_result_envelope(d5_result)
+                    continue
+
+                if action in {
+                    "dispatch_bounded_remediation",
+                    "dispatch_narrow_remediation",
+                    "dispatch_role_swap",
+                }:
+                    retry_provider = implement_provider
+                    if action == "dispatch_role_swap":
+                        retry_provider = registry.get("claude") or implement_provider
+                        retries_used["role_swap"] = True
+                    elif action == "dispatch_narrow_remediation":
+                        retries_used["narrow_remediation"] = True
+                    else:
+                        retries_used["bounded_remediation"] = True
+                    retry_result = retry_provider.implement(
+                        plan_file=plan_file,
+                        task_id=task_id,
+                        repo_root=repo_root,
+                        dry_run=config.dry_run,
+                        files=files,
+                        target_task_id=task_id,
+                        run_id=run_id,
+                        dispatch_context=dispatch_context,
+                        unattended_revert_policy=config.unattended_revert_policy,
+                    )
+                    implement_envelope = _provider_result_envelope(retry_result)
+                    _replace_reconcile_envelope(
+                        reconcile_envelopes,
+                        task_id=task_id,
+                        result=retry_result,
+                        envelope=implement_envelope,
+                    )
+                    if action == "dispatch_role_swap":
+                        retry_implementer = retry_provider.capability.route_implementer
+                        if retry_implementer is not None:
+                            implementer = retry_implementer
+                    d5_envelope = None
+                    if not _dispatch_ok(retry_result):
+                        _write_runner_state(
+                            schedule_file,
+                            phase="paused",
+                            pause={
+                                "stage": "phase_d",
+                                "task_id": task_id,
+                                "directive": directive,
+                                "retry_result": implement_envelope,
+                            },
+                        )
+                        _log(
+                            facade,
+                            "run_end",
+                            run_id=run_id,
+                            outcome="paused",
+                            reason="retry_implementation_failed",
+                        )
+                        return _summary(
+                            status="paused",
+                            run_id=run_id,
+                            plan_path=effective_plan_path,
+                            dry_run=config.dry_run,
+                            completed_phase="implement",
+                            warnings=warnings,
+                            errors=[implement_envelope],
+                        )
+                    files = _task_files(task, implement_envelope)
+                    if reviewer != "none":
+                        review_provider = registry.get(reviewer_provider_name)
+                        if review_provider is None:
+                            return _summary(
+                                status="failed",
+                                run_id=run_id,
+                                plan_path=effective_plan_path,
+                                dry_run=config.dry_run,
+                                completed_phase="review",
+                                warnings=warnings,
+                                errors=[{"code": "reviewer-unavailable", "reviewer": reviewer_provider_name}],
+                            )
+                        _log(facade, "review_start", run_id=run_id, task_id=task_id, reviewer=reviewer)
+                        review_result = review_provider.review(
+                            plan_file=plan_file,
+                            task_id=task_id,
+                            repo_root=repo_root,
+                            dry_run=config.dry_run,
+                            files=files,
+                            target_task_id=task_id,
+                            run_id=run_id,
+                            unattended_revert_policy=config.unattended_revert_policy,
+                        )
+                        reviewer_envelope = _provider_result_envelope(review_result)
+                        _log(
+                            facade,
+                            "review_done",
+                            run_id=run_id,
+                            task_id=task_id,
+                            reviewer=reviewer,
+                            verdict=reviewer_envelope.get("verdict"),
+                            outcome=reviewer_envelope.get("outcome"),
+                        )
+                    continue
+
+                if action in {"pause_awaiting_user", "unknown_state"}:
+                    _write_runner_state(
+                        schedule_file,
+                        phase="paused",
+                        pause={"stage": "phase_d", "directive": directive},
+                    )
+                    _log(facade, "run_end", run_id=run_id, outcome="paused", reason=action)
+                    return _summary(
+                        status="paused",
+                        run_id=run_id,
+                        plan_path=effective_plan_path,
+                        dry_run=config.dry_run,
+                        completed_phase="phase_d",
+                        warnings=warnings,
+                        errors=[directive],
+                    )
+
+                _write_runner_state(
+                    schedule_file,
+                    phase="paused",
+                    pause={"stage": "phase_d", "directive": directive},
+                )
+                _log(facade, "run_end", run_id=run_id, outcome="paused", reason="unsupported_review_route_action")
+                return _summary(
+                    status="paused",
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    dry_run=config.dry_run,
+                    completed_phase="phase_d",
+                    warnings=warnings,
+                    errors=[{"code": "unsupported-review-route-action", "directive": directive}],
+                )
+
+        reconciliation = facade.reconcile_batch(
+            repo_root=str(repo_root),
+            schedule_file=str(schedule_file),
+            plans_dir=str(plans_dir),
+            out_of_scope_policy=(
+                "pause"
+                if config.unattended_revert_policy == "pause"
+                else "reconcile-and-revert"
+            ),
+            payload=reconcile_envelopes,
+        )
+        if _has_errors(reconciliation) and not reconciliation.get("paused"):
+            _log(facade, "run_end", run_id=run_id, outcome="failed", reason="reconcile_failed")
+            return _summary(
+                status="failed",
+                run_id=run_id,
+                plan_path=effective_plan_path,
+                dry_run=config.dry_run,
+                completed_phase="reconcile_batch",
+                warnings=warnings,
+                errors=_result_errors(reconciliation),
+            )
+        if reconciliation.get("paused"):
+            _write_runner_state(
+                schedule_file,
+                phase="paused",
+                pause={"stage": "reconcile_batch", "result": reconciliation},
+            )
+            _log(facade, "run_end", run_id=run_id, outcome="paused", reason="out_of_scope_changes")
+            return _summary(
+                status="paused",
+                run_id=run_id,
+                plan_path=effective_plan_path,
+                dry_run=config.dry_run,
+                completed_phase="reconcile_batch",
+                warnings=warnings,
+                errors=[reconciliation],
+            )
 
 
 def run(
@@ -1959,12 +2673,17 @@ def run(
                     warnings=warnings,
                     errors=batch_errors,
                 )
-            return _summary(
-                status="partial",
+            return _run_phase_d_loop(
+                facade=facade,
+                registry=registry,
+                config=config,
+                assignment_plan=assignment_plan,
+                schedule_file=schedule_file,
+                plans_dir=plans_dir,
+                tasks=tasks,
+                effective_plan_path=effective_plan_path,
                 run_id=run_id,
-                plan_path=effective_plan_path,
-                dry_run=config.dry_run,
-                completed_phase="phase_2_ready",
+                parallel=parallel,
                 warnings=warnings,
             )
         if pre.get("action") == "unknown_state":
@@ -2000,12 +2719,17 @@ def run(
                     warnings=[*warnings, skipped["reason"]],
                     errors=batch_errors,
                 )
-            return _summary(
-                status="partial",
+            return _run_phase_d_loop(
+                facade=facade,
+                registry=registry,
+                config=config,
+                assignment_plan=assignment_plan,
+                schedule_file=schedule_file,
+                plans_dir=plans_dir,
+                tasks=tasks,
+                effective_plan_path=effective_plan_path,
                 run_id=run_id,
-                plan_path=effective_plan_path,
-                dry_run=config.dry_run,
-                completed_phase="phase_2_ready",
+                parallel=parallel,
                 warnings=[*warnings, skipped["reason"]],
             )
 
@@ -2062,12 +2786,17 @@ def run(
                         warnings=warnings,
                         errors=batch_errors,
                     )
-                return _summary(
-                    status="partial",
+                return _run_phase_d_loop(
+                    facade=facade,
+                    registry=registry,
+                    config=config,
+                    assignment_plan=assignment_plan,
+                    schedule_file=schedule_file,
+                    plans_dir=plans_dir,
+                    tasks=tasks,
+                    effective_plan_path=effective_plan_path,
                     run_id=run_id,
-                    plan_path=effective_plan_path,
-                    dry_run=config.dry_run,
-                    completed_phase="phase_2_ready",
+                    parallel=parallel,
                     warnings=warnings,
                 )
             if action == "halt_plan_review_failed":
@@ -2174,12 +2903,17 @@ def run(
                         warnings=warnings,
                         errors=batch_errors,
                     )
-                return _summary(
-                    status="partial",
+                return _run_phase_d_loop(
+                    facade=facade,
+                    registry=registry,
+                    config=config,
+                    assignment_plan=assignment_plan,
+                    schedule_file=schedule_file,
+                    plans_dir=plans_dir,
+                    tasks=tasks,
+                    effective_plan_path=effective_plan_path,
                     run_id=run_id,
-                    plan_path=effective_plan_path,
-                    dry_run=config.dry_run,
-                    completed_phase="phase_2_ready",
+                    parallel=parallel,
                     warnings=warnings,
                 )
             if triage_action == "unknown_state":
