@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "source": "runner-cli-fixture",
+  "chunks": [
+    {
+      "task_id": "001",
+      "v3_task": "TASK-001",
+      "file": "TASK-001_fixture.md",
+      "priority": "medium",
+      "issues_absorbed": [],
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}

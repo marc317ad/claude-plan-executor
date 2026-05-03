@@ -14,7 +14,7 @@ This task stops at deterministic preflight/dry-run plumbing. It must not dispatc
 
 ### TASK-002: CLI Skeleton And PlanOps Facade
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** codex
 - **Files:**
