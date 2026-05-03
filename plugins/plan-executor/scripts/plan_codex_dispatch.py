@@ -959,6 +959,21 @@ def invoke_codex(
 # ---------------------------------------------------------------------------
 
 
+def _path_in_allowed_scope(path: str, allowed_files: list[str]) -> bool:
+    """Return true when path is exactly allowed or below a declared dir."""
+    rel = path.strip().strip("/")
+    if not rel:
+        return False
+    allowed_set = set(allowed_files)
+    if rel in allowed_set:
+        return True
+    for entry in allowed_files:
+        base = entry.strip().strip("/")
+        if entry.endswith("/") and base and rel.startswith(f"{base}/"):
+            return True
+    return False
+
+
 def _restore_in_scope(
     tracked: list[str],
     untracked: list[str],
@@ -1020,7 +1035,6 @@ def validate_scope(
     `.codex/`, `*.schedule.json`, etc.) are classified under
     `protected_skipped_*` and treated as never-touched by design.
     """
-    allowed_set = set(allowed_files)
     post = git_changed_files(repo_root)
     post_tracked = set(post["tracked"])
     post_untracked = set(post["untracked"])
@@ -1034,7 +1048,8 @@ def validate_scope(
             "out_of_scope_untracked": [],
             "out_of_scope_observed": False,
             "changed_in_scope": sorted(
-                (post_tracked | post_untracked) & allowed_set,
+                p for p in (post_tracked | post_untracked)
+                if _path_in_allowed_scope(p, allowed_files)
             ),
             "changed_in_scope_new": [],
             "protected_skipped_tracked": [],
@@ -1049,8 +1064,14 @@ def validate_scope(
     new_tracked = post_tracked - baseline_tracked
     new_untracked = post_untracked - baseline_untracked
 
-    out_of_scope_tracked_raw = new_tracked - allowed_set
-    out_of_scope_untracked_raw = new_untracked - allowed_set
+    out_of_scope_tracked_raw = {
+        p for p in new_tracked
+        if not _path_in_allowed_scope(p, allowed_files)
+    }
+    out_of_scope_untracked_raw = {
+        p for p in new_untracked
+        if not _path_in_allowed_scope(p, allowed_files)
+    }
 
     protected_skipped_tracked = sorted(
         p for p in out_of_scope_tracked_raw if _is_protected(p)
@@ -1068,10 +1089,12 @@ def validate_scope(
     out_of_scope_observed = bool(out_of_scope_tracked or out_of_scope_untracked)
 
     changed_in_scope_new = sorted(
-        (new_tracked | new_untracked) & allowed_set,
+        p for p in (new_tracked | new_untracked)
+        if _path_in_allowed_scope(p, allowed_files)
     )
     changed_in_scope = sorted(
-        (post_tracked | post_untracked) & allowed_set,
+        p for p in (post_tracked | post_untracked)
+        if _path_in_allowed_scope(p, allowed_files)
     )
 
     return {
@@ -1134,7 +1157,6 @@ def _handle_timeout_cleanup(
             "protected_skipped_untracked": [],
         }
 
-    allowed_set = set(allowed_files)
     baseline_tracked = set(baseline["tracked"])
     baseline_untracked = set(baseline["untracked"])
     try:
@@ -1157,12 +1179,24 @@ def _handle_timeout_cleanup(
     new_untracked = post_untracked - baseline_untracked
 
     # In-scope: safe to restore/delete because they are the task's own files
-    tracked_candidates_raw = (post_tracked & allowed_set) - baseline_tracked
-    delete_candidates_raw = new_untracked & allowed_set
+    tracked_candidates_raw = {
+        p for p in (post_tracked - baseline_tracked)
+        if _path_in_allowed_scope(p, allowed_files)
+    }
+    delete_candidates_raw = {
+        p for p in new_untracked
+        if _path_in_allowed_scope(p, allowed_files)
+    }
 
     # Out-of-scope: observed only, never mutated
-    out_of_scope_tracked_raw = new_tracked - allowed_set
-    out_of_scope_untracked_raw = new_untracked - allowed_set
+    out_of_scope_tracked_raw = {
+        p for p in new_tracked
+        if not _path_in_allowed_scope(p, allowed_files)
+    }
+    out_of_scope_untracked_raw = {
+        p for p in new_untracked
+        if not _path_in_allowed_scope(p, allowed_files)
+    }
 
     protected_skipped_tracked = sorted(
         {p for p in tracked_candidates_raw if _is_protected(p)}
@@ -1769,8 +1803,10 @@ def cmd_implement(args) -> int:
         reported = {
             normalize_file_path(f) for f in parsed.get("files_changed", [])
         }
-        allowed_set = set(allowed_files)
-        reported_out_of_scope = sorted(reported - allowed_set)
+        reported_out_of_scope = sorted(
+            f for f in reported
+            if not _path_in_allowed_scope(f, allowed_files)
+        )
         if reported_out_of_scope:
             emit(make_envelope(
                 task["task_id"], "implement", "scope_violation",

@@ -417,6 +417,56 @@ def test_scope_check_rejects_unallowed_bare_path_under_backticked_declarations(
     assert scope["changed_in_scope_new"] == allowed_observed
 
 
+def test_scope_check_accepts_new_files_under_declared_directory(monkeypatch):
+    declared = [
+        "`tests/scripts/fixtures/implement_plan_runner/` "
+        "(new fixture directory as needed)",
+    ]
+    observed = [
+        "tests/scripts/fixtures/implement_plan_runner/00_INDEX.json",
+        "tests/scripts/fixtures/implement_plan_runner/TASK-001_fixture.md",
+    ]
+    outside = "tests/scripts/fixtures/other_runner/TASK-001_fixture.md"
+
+    monkeypatch.setattr(
+        wrapper,
+        "git_changed_files",
+        lambda repo_root: {
+            "tracked": [],
+            "untracked": observed + [outside],
+        },
+    )
+
+    scope = wrapper.validate_scope(
+        "/unused",
+        [wrapper.normalize_file_path(path) for path in declared],
+        {"captured": True, "tracked": [], "untracked": []},
+    )
+
+    assert scope["out_of_scope_observed"] is True
+    assert scope["out_of_scope_tracked"] == []
+    assert scope["out_of_scope_untracked"] == [outside]
+    assert scope["changed_in_scope_new"] == observed
+
+
+def test_reported_scope_accepts_files_under_declared_directory():
+    declared = [
+        wrapper.normalize_file_path(
+            "`tests/scripts/fixtures/implement_plan_runner/` "
+            "(new fixture directory as needed)",
+        ),
+    ]
+
+    assert wrapper._path_in_allowed_scope(
+        "tests/scripts/fixtures/implement_plan_runner/00_INDEX.json",
+        declared,
+    )
+    assert not wrapper._path_in_allowed_scope(
+        "tests/scripts/fixtures/implement_plan_runner_extra/00_INDEX.json",
+        declared,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. Fixture schedule → approved verdict, no critical findings.
 # ---------------------------------------------------------------------------
