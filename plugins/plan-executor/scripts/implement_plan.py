@@ -58,6 +58,96 @@ class ProviderCapability:
 
 
 @dataclass(frozen=True)
+class ProviderSelection:
+    """Resolved provider choice for a runner role."""
+
+    provider: str
+    route: str | None
+    source: str
+    fallback_from: str | None = None
+    fallback_to: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskAssignmentResolution:
+    """Resolved implementation provider choice for one task."""
+
+    task_id: str
+    implementer: ProviderSelection
+
+
+@dataclass(frozen=True)
+class AssignmentPlan:
+    """Complete provider routing plan computed before model dispatch."""
+
+    tasks: tuple[TaskAssignmentResolution, ...]
+    reviewer: ProviderSelection
+    plan_reviewer: ProviderSelection | None
+    classifier: ProviderSelection
+    author: ProviderSelection
+    triage: ProviderSelection
+
+    @property
+    def implementers(self) -> Mapping[str, ProviderSelection]:
+        return {task.task_id: task.implementer for task in self.tasks}
+
+    @property
+    def route_implementers(self) -> Mapping[str, str | None]:
+        return {
+            task.task_id: task.implementer.route
+            for task in self.tasks
+        }
+
+    @property
+    def route_reviewer(self) -> str | None:
+        return self.reviewer.route
+
+    @property
+    def route_plan_reviewer(self) -> str | None:
+        return self.plan_reviewer.route if self.plan_reviewer else None
+
+    def as_dict(self) -> dict[str, Any]:
+        def selection_payload(selection: ProviderSelection) -> dict[str, Any]:
+            return {
+                "provider": selection.provider,
+                "route": selection.route,
+                "source": selection.source,
+                "fallback_from": selection.fallback_from,
+                "fallback_to": selection.fallback_to,
+                "reason": selection.reason,
+            }
+
+        return {
+            "tasks": {
+                task.task_id: {
+                    "implementer": selection_payload(task.implementer),
+                    "route_implementer": task.implementer.route,
+                }
+                for task in self.tasks
+            },
+            "implementers": {
+                task.task_id: task.implementer.provider
+                for task in self.tasks
+            },
+            "reviewer": selection_payload(self.reviewer),
+            "plan_reviewer": (
+                selection_payload(self.plan_reviewer)
+                if self.plan_reviewer is not None
+                else None
+            ),
+            "classifier": selection_payload(self.classifier),
+            "author": selection_payload(self.author),
+            "triage": selection_payload(self.triage),
+            "route_identities": {
+                "implementers": dict(self.route_implementers),
+                "reviewer": self.route_reviewer,
+                "plan_reviewer": self.route_plan_reviewer,
+            },
+        }
+
+
+@dataclass(frozen=True)
 class RunnerConfig:
     """Normalized runner configuration before orchestration starts."""
 
@@ -224,6 +314,12 @@ def parse_task_assignment(value: str) -> TaskAssignment:
     )
 
 
+def _coerce_task_assignment(value: str | TaskAssignment) -> TaskAssignment:
+    if isinstance(value, TaskAssignment):
+        return value
+    return parse_task_assignment(value)
+
+
 def validate_provider_capability(capability: ProviderCapability) -> None:
     if capability.name not in SUPPORTED_PROVIDERS:
         raise RunnerContractError(f"unsupported provider: {capability.name!r}")
@@ -261,6 +357,270 @@ def validate_runner_config(config: RunnerConfig) -> None:
         raise RunnerContractError(
             f"unsupported unattended_revert_policy: {config.unattended_revert_policy!r}"
         )
+
+
+def _task_id_from_payload(task: Mapping[str, Any]) -> str:
+    raw_task_id = task.get("id", task.get("task_id"))
+    if raw_task_id is None:
+        raise RunnerContractError("task is missing id")
+    return normalize_task_id(str(raw_task_id))
+
+
+def _task_agent(task: Mapping[str, Any]) -> str | None:
+    agent = task.get("agent")
+    if agent is None:
+        return None
+    normalized = str(agent).strip().lower()
+    if not normalized:
+        return None
+    if normalized not in SUPPORTED_PROVIDERS:
+        raise RunnerContractError(f"unsupported task agent: {agent!r}")
+    return normalized
+
+
+def _validate_capability_map(
+    capabilities: Mapping[str, ProviderCapability],
+) -> dict[str, ProviderCapability]:
+    normalized: dict[str, ProviderCapability] = {}
+    for name, capability in capabilities.items():
+        validate_provider_capability(capability)
+        provider = str(name).strip().lower()
+        if provider != capability.name:
+            raise RunnerContractError(
+                f"capability key {name!r} does not match provider {capability.name!r}"
+            )
+        normalized[provider] = capability
+    return normalized
+
+
+def _role_route(capability: ProviderCapability, role: str) -> str | None:
+    if role == "implement":
+        return capability.route_implementer
+    if role in {"review", "plan_review"}:
+        return capability.route_reviewer
+    return capability.name
+
+
+def _provider_supports_role(capability: ProviderCapability, role: str) -> bool:
+    if not capability.roles.get(role, False):
+        return False
+    if role == "implement":
+        return capability.route_implementer in ROUTE_IMPLEMENTERS
+    if role in {"review", "plan_review"}:
+        return capability.route_reviewer in ROUTE_REVIEWERS
+    return True
+
+
+def _role_failure_reason(
+    provider: str,
+    role: str,
+    capabilities: Mapping[str, ProviderCapability],
+) -> str:
+    capability = capabilities.get(provider)
+    if capability is None:
+        return f"provider {provider!r} is unavailable"
+    if not capability.roles.get(role, False):
+        return f"provider {provider!r} does not support {role!r}"
+    if role == "implement" and capability.route_implementer not in ROUTE_IMPLEMENTERS:
+        return (
+            f"provider {provider!r} cannot implement because route_implementer "
+            "is missing or unsupported"
+        )
+    if role in {"review", "plan_review"} and capability.route_reviewer not in ROUTE_REVIEWERS:
+        return (
+            f"provider {provider!r} cannot route {role!r} because route_reviewer "
+            "is missing or unsupported"
+        )
+    return f"provider {provider!r} cannot satisfy role {role!r}"
+
+
+def _auto_candidates(
+    *,
+    role: str,
+    config: RunnerConfig,
+    explicit_candidates: Sequence[str] = (),
+) -> tuple[str, ...]:
+    if explicit_candidates:
+        return tuple(explicit_candidates)
+    if role == "review":
+        return config.reviewers
+    return config.provider_preference
+
+
+def _select_provider(
+    *,
+    role: str,
+    config: RunnerConfig,
+    capabilities: Mapping[str, ProviderCapability],
+    source: str,
+    explicit_provider: str | None = None,
+    candidates: Sequence[str] = (),
+) -> ProviderSelection:
+    """Resolve one role provider.
+
+    Precedence is explicit provider, then caller-supplied candidates, then the
+    role's configured auto-policy. Explicit providers are binding for role
+    support: an explicit Gemini implementation request fails instead of silently
+    becoming a different implementer. Provider fallback applies only when the
+    assigned provider is unavailable and ``allow_provider_fallback`` is true.
+    """
+
+    if explicit_provider is not None:
+        requested = explicit_provider
+        capability = capabilities.get(requested)
+        if capability is not None and _provider_supports_role(capability, role):
+            return ProviderSelection(
+                provider=requested,
+                route=_role_route(capability, role),
+                source=source,
+            )
+        reason = _role_failure_reason(requested, role, capabilities)
+        if capability is not None or not config.allow_provider_fallback:
+            raise RunnerContractError(reason)
+        for fallback in _auto_candidates(role=role, config=config, explicit_candidates=candidates):
+            fallback_capability = capabilities.get(fallback)
+            if fallback == requested or fallback_capability is None:
+                continue
+            if _provider_supports_role(fallback_capability, role):
+                return ProviderSelection(
+                    provider=fallback,
+                    route=_role_route(fallback_capability, role),
+                    source=source,
+                    fallback_from=requested,
+                    fallback_to=fallback,
+                    reason=reason,
+                )
+        raise RunnerContractError(
+            f"{reason}; no fallback provider supports {role!r}"
+        )
+
+    skipped: list[str] = []
+    for provider in _auto_candidates(role=role, config=config, explicit_candidates=candidates):
+        capability = capabilities.get(provider)
+        if capability is None:
+            skipped.append(_role_failure_reason(provider, role, capabilities))
+            continue
+        if _provider_supports_role(capability, role):
+            return ProviderSelection(
+                provider=provider,
+                route=_role_route(capability, role),
+                source=source,
+            )
+        skipped.append(_role_failure_reason(provider, role, capabilities))
+    detail = "; ".join(skipped) if skipped else "no providers configured"
+    raise RunnerContractError(
+        f"no provider supports {role!r} for {source}; {detail}"
+    )
+
+
+def resolve_assignments(
+    tasks: Sequence[Mapping[str, Any]],
+    config: RunnerConfig,
+    capabilities: Mapping[str, ProviderCapability],
+) -> AssignmentPlan:
+    """Resolve all provider routing before dispatch.
+
+    Implementation precedence is:
+    1. CLI/config ``assignments`` entries such as ``TASK-001=codex``.
+    2. Task metadata ``agent`` / ``**Agent:**``.
+    3. ``provider_preference`` auto-policy, skipping unavailable or
+       role-unsupported providers.
+    4. Fail with a message that names the missing capability.
+
+    ``--codex-only`` and ``--claude-only`` are normalized into config
+    preferences before this function runs, so they behave as assignment
+    constraints without a separate code path.
+    """
+
+    validate_runner_config(config)
+    available_capabilities = _validate_capability_map(capabilities)
+    tasks_by_id: dict[str, Mapping[str, Any]] = {}
+    ordered_task_ids: list[str] = []
+    for task in tasks:
+        task_id = _task_id_from_payload(task)
+        if task_id in tasks_by_id:
+            raise RunnerContractError(f"duplicate task id: {task_id}")
+        tasks_by_id[task_id] = task
+        ordered_task_ids.append(task_id)
+
+    explicit_assignments: dict[str, str] = {}
+    for assignment in config.assignments:
+        if assignment.task_id not in tasks_by_id:
+            raise RunnerContractError(
+                f"assignment references unknown task id: TASK-{assignment.task_id}"
+            )
+        if assignment.task_id in explicit_assignments:
+            raise RunnerContractError(
+                f"duplicate assignment for task id: TASK-{assignment.task_id}"
+            )
+        explicit_assignments[assignment.task_id] = assignment.provider
+
+    resolved_tasks: list[TaskAssignmentResolution] = []
+    for task_id in ordered_task_ids:
+        task = tasks_by_id[task_id]
+        explicit_provider = explicit_assignments.get(task_id)
+        if explicit_provider is not None:
+            source = "explicit"
+        else:
+            explicit_provider = _task_agent(task)
+            source = "task-agent" if explicit_provider is not None else "provider-preference"
+        resolved_tasks.append(
+            TaskAssignmentResolution(
+                task_id=task_id,
+                implementer=_select_provider(
+                    role="implement",
+                    config=config,
+                    capabilities=available_capabilities,
+                    source=source,
+                    explicit_provider=explicit_provider,
+                ),
+            )
+        )
+
+    reviewer = _select_provider(
+        role="review",
+        config=config,
+        capabilities=available_capabilities,
+        source="reviewers",
+        candidates=config.reviewers,
+    )
+    plan_reviewer = (
+        None
+        if config.plan_reviewer is None
+        else _select_provider(
+            role="plan_review",
+            config=config,
+            capabilities=available_capabilities,
+            source="plan_reviewer",
+            explicit_provider=config.plan_reviewer,
+        )
+    )
+    classifier = _select_provider(
+        role="classify",
+        config=config,
+        capabilities=available_capabilities,
+        source="provider-preference",
+    )
+    author = _select_provider(
+        role="author",
+        config=config,
+        capabilities=available_capabilities,
+        source="provider-preference",
+    )
+    triage = _select_provider(
+        role="triage",
+        config=config,
+        capabilities=available_capabilities,
+        source="provider-preference",
+    )
+    return AssignmentPlan(
+        tasks=tuple(resolved_tasks),
+        reviewer=reviewer,
+        plan_reviewer=plan_reviewer,
+        classifier=classifier,
+        author=author,
+        triage=triage,
+    )
 
 
 def provider_capability_payloads() -> list[dict[str, Any]]:
@@ -943,7 +1303,7 @@ def _read_config_file(path: str | None) -> dict[str, Any]:
 def _normalize_config_payload(raw: Mapping[str, Any]) -> RunnerConfig:
     payload = dict(raw)
     assignments = tuple(
-        parse_task_assignment(value)
+        _coerce_task_assignment(value)
         for value in payload.get("assignments", payload.get("assign", []))
     )
     provider_preference = tuple(
@@ -982,6 +1342,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", default=None)
     parser.add_argument("--parallel", type=int)
     parser.add_argument("--provider-preference")
+    parser.add_argument("--codex-only", action="store_true", default=False)
+    parser.add_argument("--claude-only", action="store_true", default=False)
     parser.add_argument("--assign", action="append")
     parser.add_argument("--reviewer")
     parser.add_argument("--plan-reviewer")
@@ -1033,8 +1395,21 @@ def _merge_cli_config(args: argparse.Namespace) -> tuple[RunnerConfig, tuple[str
         raw["parallel"] = args.parallel
     if args.provider_preference is not None:
         raw["provider_preference"] = list(_split_csv(args.provider_preference) or ())
+    codex_only = bool(getattr(args, "codex_only", False))
+    claude_only = bool(getattr(args, "claude_only", False))
+    if codex_only and claude_only:
+        raise RunnerContractError("--codex-only cannot be combined with --claude-only")
+    if codex_only:
+        raw["provider_preference"] = ["codex"]
+        raw["reviewers"] = ["codex"]
+        raw["plan_reviewer"] = "codex"
+    if claude_only:
+        raw["provider_preference"] = ["claude"]
+        raw["reviewers"] = ["claude"]
+        raw["plan_reviewer"] = None
+        raw["skip_plan_review"] = True
     if args.assign is not None:
-        raw["assignments"] = args.assign
+        raw["assignments"] = [parse_task_assignment(value) for value in args.assign]
     if args.reviewer is not None:
         raw["reviewers"] = list(_split_csv(args.reviewer) or ())
     if args.plan_reviewer is not None:

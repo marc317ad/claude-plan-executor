@@ -14,7 +14,7 @@ This task computes assignments only. It must not dispatch providers or mutate pl
 
 ### TASK-004: Provider Assignment Policy
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** codex
 - **Files:**
@@ -49,3 +49,11 @@ Run the task test command.
 - Provider probing implementation beyond consuming capability objects from TASK-003.
 - Dispatch.
 - Route decisions.
+
+## Execution log — 20260503T182851 (paused)
+
+Starting SHA: `91a2223220c23c101af981a073a90a4d54f08d8b`  → Ending SHA: `91a2223220c23c101af981a073a90a4d54f08d8b`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | codex | gemini | needs-rework |  | Paused at post_gemini_review. Blocking finding: --assign strings are passed into assignments without parsing before resolve_assignments. |
