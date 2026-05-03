@@ -27,6 +27,13 @@ RUNNER_ROLES = frozenset(
 ROUTE_IMPLEMENTERS = frozenset({"claude", "codex"})
 ROUTE_REVIEWERS = frozenset({"codex", "gemini", "claude", "none"})
 UNATTENDED_REVERT_POLICIES = frozenset({"pause", "fail-fast", "preserve-only"})
+RESUME_DECISIONS = frozenset(
+    {"retry", "fail-fast", "preserve-only", "revert", "keep-and-commit", "abort"}
+)
+RUNNER_STATE_SCHEMA_VERSION = 1
+TASK_STATE_SOURCE_KEYS = frozenset(
+    {"done", "failed", "blocked", "paused", "committed", "locked_files", "retries_used"}
+)
 
 TASK_ID_RE = re.compile(r"^(?:TASK-)?(?P<task_id>\d{1,3}[A-Z]?)$")
 ASSIGNMENT_RE = re.compile(
@@ -259,6 +266,9 @@ STUB_PROVIDER_CAPABILITY = ProviderCapability(
     route_implementer="claude",
     route_reviewer="none",
 )
+
+_RUNNER_STATE_CONTEXT: dict[str, Any] = {}
+_UNSET = object()
 
 
 class SubprocessRunner(Protocol):
@@ -1356,6 +1366,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("command_or_plan", nargs="?")
     parser.add_argument("legacy_plan", nargs="?")
     parser.add_argument("--plan")
+    parser.add_argument("--decision", choices=sorted(RESUME_DECISIONS))
+    parser.add_argument(
+        "--route-decision-payload",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--config")
     parser.add_argument("--dry-run", action="store_true", default=None)
     parser.add_argument("--parallel", type=int)
@@ -1503,7 +1518,70 @@ def _dependency_check_targets(plan_path: Path) -> tuple[Path, ...]:
 
 
 def _runner_state_path(schedule_file: Path) -> Path:
+    return Path(f"{schedule_file}.runner-state.json")
+
+
+def _legacy_runner_state_path(schedule_file: Path) -> Path:
     return schedule_file.with_suffix(f"{schedule_file.suffix}.runner_state.json")
+
+
+def _status_for_phase(phase: str) -> str:
+    if phase == "paused":
+        return "paused"
+    if phase in {"completed", "complete"}:
+        return "completed"
+    if phase in {"failed", "aborted"}:
+        return phase
+    return "running"
+
+
+def _resume_options_for_pause(pause: Mapping[str, Any] | None) -> list[str]:
+    if pause is None:
+        return []
+    decision_values = pause.get("resume_options")
+    if isinstance(decision_values, list):
+        return [
+            str(decision)
+            for decision in decision_values
+            if str(decision) in RESUME_DECISIONS
+        ]
+    stage = str(pause.get("stage") or "")
+    directive = pause.get("directive") if isinstance(pause.get("directive"), Mapping) else {}
+    action = str(directive.get("action") or pause.get("action") or "")
+    if stage == "reconcile_batch":
+        return ["fail-fast", "preserve-only", "revert", "keep-and-commit", "abort"]
+    if action == "unknown_state":
+        return ["retry", "abort"]
+    return ["retry", "fail-fast", "preserve-only", "abort"]
+
+
+def _pause_reason(pause: Mapping[str, Any] | None) -> str | None:
+    if pause is None:
+        return None
+    for key in ("reason", "stage"):
+        value = pause.get(key)
+        if isinstance(value, str) and value:
+            return value
+    directive = pause.get("directive")
+    if isinstance(directive, Mapping):
+        for key in ("reason", "action"):
+            value = directive.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return "paused"
+
+
+def _set_runner_state_context(**values: Any) -> None:
+    _RUNNER_STATE_CONTEXT.update({key: value for key, value in values.items() if value is not None})
+
+
+def _runner_assignments_payload(assignment_plan: AssignmentPlan | Mapping[str, Any] | None) -> dict[str, Any]:
+    if isinstance(assignment_plan, AssignmentPlan):
+        return assignment_plan.as_dict()
+    if isinstance(assignment_plan, Mapping):
+        return dict(assignment_plan)
+    existing = _RUNNER_STATE_CONTEXT.get("assignments")
+    return dict(existing) if isinstance(existing, Mapping) else {}
 
 
 def _write_runner_state(
@@ -1511,14 +1589,368 @@ def _write_runner_state(
     *,
     phase: str,
     pause: Mapping[str, Any] | None = None,
+    run_id: str | None = None,
+    plan_path: Path | str | None = None,
+    assignment_plan: AssignmentPlan | Mapping[str, Any] | None = None,
+    active_task_id: str | None | object = _UNSET,
+    active_batch: Mapping[str, Any] | None | object = _UNSET,
+    status: str | None = None,
 ) -> None:
-    payload: dict[str, Any] = {"current_phase": phase}
-    if pause is not None:
-        payload["pause"] = dict(pause)
+    if run_id is not None:
+        _set_runner_state_context(run_id=run_id)
+    if plan_path is not None:
+        _set_runner_state_context(plan_path=str(Path(plan_path).resolve()))
+    if assignment_plan is not None:
+        _set_runner_state_context(assignments=_runner_assignments_payload(assignment_plan))
+    if active_task_id is None:
+        _RUNNER_STATE_CONTEXT["active_task_id"] = None
+    elif active_task_id is not _UNSET:
+        _set_runner_state_context(active_task_id=active_task_id)
+    if active_batch is None:
+        _RUNNER_STATE_CONTEXT["active_batch"] = None
+    elif active_batch is not _UNSET:
+        _set_runner_state_context(active_batch=dict(active_batch))
+
+    payload: dict[str, Any] = {
+        "schema_version": RUNNER_STATE_SCHEMA_VERSION,
+        "run_id": str(_RUNNER_STATE_CONTEXT.get("run_id") or ""),
+        "plan_path": str(_RUNNER_STATE_CONTEXT.get("plan_path") or ""),
+        "schedule_file": str(schedule_file),
+        "phase": phase,
+        "status": status or _status_for_phase(phase),
+        "assignments": _runner_assignments_payload(assignment_plan),
+        "active_task_id": active_task_id
+        if active_task_id is not _UNSET
+        else _RUNNER_STATE_CONTEXT.get("active_task_id"),
+        "active_batch": (
+            dict(active_batch)
+            if isinstance(active_batch, Mapping)
+            else active_batch
+        )
+        if active_batch is not _UNSET
+        else _RUNNER_STATE_CONTEXT.get("active_batch"),
+        "pause_reason": _pause_reason(pause),
+        "pause_payload": dict(pause) if pause is not None else None,
+        "resume_options": _resume_options_for_pause(pause),
+    }
+    if not payload["run_id"]:
+        payload["run_id"] = "unknown"
+    if not payload["plan_path"]:
+        payload["plan_path"] = str(schedule_file)
+    validate_json_schema(payload, "implement_plan_runner_state.json")
     _runner_state_path(schedule_file).write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _runner_state_path_for_plan(plan_path: Path) -> Path:
+    schedule = _schedule_path_for_plan(plan_path)
+    primary = _runner_state_path(schedule)
+    if primary.exists():
+        return primary
+    legacy = _legacy_runner_state_path(schedule)
+    if legacy.exists():
+        return legacy
+    return primary
+
+
+def _migrate_legacy_runner_state(
+    loaded: Mapping[str, Any],
+    *,
+    state_path: Path,
+    plan_path: Path,
+) -> dict[str, Any]:
+    schedule_file = _schedule_path_for_plan(plan_path)
+    raw_active = loaded.get("active")
+    active = [str(item) for item in raw_active] if isinstance(raw_active, list) else []
+    raw_status = loaded.get("status")
+    status = str(raw_status) if isinstance(raw_status, str) and raw_status else "paused"
+    phase = str(loaded.get("phase") or status)
+    pause_payload = loaded.get("pause_payload")
+    if pause_payload is not None and not isinstance(pause_payload, Mapping):
+        pause_payload = None
+    if pause_payload is None and status == "paused":
+        pause_payload = {"stage": "legacy", "state_file": str(state_path)}
+    resume_options = loaded.get("resume_options")
+    if not isinstance(resume_options, list):
+        resume_options = _resume_options_for_pause(pause_payload)
+    return {
+        "schema_version": RUNNER_STATE_SCHEMA_VERSION,
+        "run_id": str(loaded.get("run_id") or "unknown"),
+        "plan_path": str(loaded.get("plan_path") or loaded.get("plan") or plan_path),
+        "schedule_file": str(loaded.get("schedule_file") or schedule_file),
+        "phase": phase,
+        "status": status,
+        "assignments": dict(loaded.get("assignments")) if isinstance(loaded.get("assignments"), Mapping) else {},
+        "active_task_id": active[0] if active else loaded.get("active_task_id"),
+        "active_batch": loaded.get("active_batch") if isinstance(loaded.get("active_batch"), Mapping) else None,
+        "pause_reason": loaded.get("pause_reason") if isinstance(loaded.get("pause_reason"), str) else _pause_reason(pause_payload),
+        "pause_payload": dict(pause_payload) if isinstance(pause_payload, Mapping) else None,
+        "resume_options": [
+            str(decision)
+            for decision in resume_options
+            if str(decision) in RESUME_DECISIONS
+        ],
+    }
+
+
+def _load_runner_state_for_plan(plan_path: Path) -> tuple[Path, dict[str, Any]]:
+    state_path = _runner_state_path_for_plan(plan_path)
+    try:
+        loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RunnerContractError(f"runner state not found: {state_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise RunnerContractError(f"runner state JSON is corrupted: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise RunnerContractError("runner state must contain a JSON object")
+    if "schema_version" not in loaded:
+        loaded = _migrate_legacy_runner_state(
+            loaded,
+            state_path=state_path,
+            plan_path=plan_path,
+        )
+    forbidden = sorted(TASK_STATE_SOURCE_KEYS & set(loaded))
+    if forbidden:
+        raise RunnerContractError(
+            "runner state duplicates schedule task state keys: " + ", ".join(forbidden)
+        )
+    validate_json_schema(loaded, "implement_plan_runner_state.json")
+    return state_path, loaded
+
+
+def status(plan: str) -> dict[str, Any]:
+    plan_path = Path(plan).expanduser().resolve()
+    state_path, state = _load_runner_state_for_plan(plan_path)
+    return {
+        "status": state["status"],
+        "run_id": state["run_id"],
+        "plan_path": state["plan_path"],
+        "schedule_file": state["schedule_file"],
+        "runner_state_file": str(state_path),
+        "phase": state["phase"],
+        "active_task_id": state["active_task_id"],
+        "active_batch": state["active_batch"],
+        "pause_reason": state["pause_reason"],
+        "resume_options": state["resume_options"],
+    }
+
+
+def _assignments_from_runner_state(state: Mapping[str, Any]) -> tuple[TaskAssignment, ...]:
+    assignments = state.get("assignments")
+    if not isinstance(assignments, Mapping):
+        return ()
+    tasks = assignments.get("tasks")
+    if not isinstance(tasks, Mapping):
+        return ()
+    out: list[TaskAssignment] = []
+    for raw_task_id, payload in tasks.items():
+        if not isinstance(payload, Mapping):
+            continue
+        implementer = payload.get("implementer")
+        provider = implementer.get("provider") if isinstance(implementer, Mapping) else None
+        if isinstance(provider, str) and provider in SUPPORTED_PROVIDERS:
+            out.append(TaskAssignment(task_id=normalize_task_id(str(raw_task_id)), provider=provider))
+    return tuple(out)
+
+
+def _reviewers_from_runner_state(state: Mapping[str, Any]) -> tuple[str, ...]:
+    assignments = state.get("assignments")
+    if not isinstance(assignments, Mapping):
+        return ("codex", "gemini", "claude")
+    reviewer = assignments.get("reviewer")
+    provider = reviewer.get("provider") if isinstance(reviewer, Mapping) else None
+    if isinstance(provider, str) and provider in SUPPORTED_PROVIDERS:
+        return (provider,)
+    return ("codex", "gemini", "claude")
+
+
+def _plan_reviewer_from_runner_state(state: Mapping[str, Any]) -> str | None:
+    assignments = state.get("assignments")
+    if not isinstance(assignments, Mapping):
+        return "codex"
+    plan_reviewer = assignments.get("plan_reviewer")
+    if plan_reviewer is None:
+        return None
+    provider = plan_reviewer.get("provider") if isinstance(plan_reviewer, Mapping) else None
+    return provider if isinstance(provider, str) and provider in SUPPORTED_PROVIDERS else "codex"
+
+
+def _resume_config_from_state(state: Mapping[str, Any], *, decision: str) -> RunnerConfig:
+    policy = "pause"
+    if decision in {"fail-fast", "preserve-only"}:
+        policy = decision
+    assignments = _assignments_from_runner_state(state)
+    provider_preference = tuple(dict.fromkeys([a.provider for a in assignments] + ["claude", "codex", "gemini"]))
+    return RunnerConfig(
+        plan=str(state["plan_path"]),
+        provider_preference=provider_preference,
+        assignments=assignments,
+        reviewers=_reviewers_from_runner_state(state),
+        plan_reviewer=_plan_reviewer_from_runner_state(state),
+        unattended_revert_policy=policy,
+    )
+
+
+def _acquire_resume_lock(
+    facade: PlanOpsFacade,
+    *,
+    plan_path: Path,
+    run_id: str,
+) -> dict[str, Any]:
+    lock = facade.acquire_lock(plan_file=plan_path, run_id=run_id, force=False)
+    if _has_errors(lock) or lock.get("acquired") is False:
+        raise RunnerContractError(f"resume lock acquisition failed: {lock}")
+    return lock
+
+
+def _mark_schedule_aborted(
+    schedule_file: Path,
+    *,
+    active_task_id: str | None,
+    active_batch: Mapping[str, Any] | None,
+) -> None:
+    try:
+        data = json.loads(schedule_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    state = data.get("state")
+    if not isinstance(state, dict):
+        state = {}
+        data["state"] = state
+    if active_task_id:
+        failed = state.get("failed")
+        if not isinstance(failed, list):
+            failed = []
+        if active_task_id not in failed:
+            failed.append(active_task_id)
+        state["failed"] = failed
+    locked_files = state.get("locked_files")
+    batch_locks = active_batch.get("file_locks") if isinstance(active_batch, Mapping) else None
+    if isinstance(locked_files, list) and isinstance(batch_locks, list):
+        locked = {str(path) for path in batch_locks}
+        state["locked_files"] = [
+            path for path in locked_files if str(path) not in locked
+        ]
+    schedule_file.write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def resume(
+    *,
+    plan: str,
+    decision: str,
+    route_decision_payload: Mapping[str, Any] | None = None,
+    facade: PlanOpsFacade | None = None,
+) -> dict[str, Any]:
+    if decision not in RESUME_DECISIONS:
+        raise RunnerContractError(f"unsupported resume decision: {decision!r}")
+    plan_path = Path(plan).expanduser().resolve()
+    state_path, state = _load_runner_state_for_plan(plan_path)
+    options = set(state.get("resume_options") or [])
+    if decision not in options:
+        raise RunnerContractError(
+            f"resume decision {decision!r} is not authorized by runner state"
+        )
+    if state.get("status") != "paused":
+        raise RunnerContractError("resume requires a paused runner state")
+    pause_payload = state.get("pause_payload")
+    directive = pause_payload.get("directive") if isinstance(pause_payload, Mapping) else None
+    route_decision_stage = (
+        str(pause_payload.get("stage"))
+        if isinstance(pause_payload, Mapping) and pause_payload.get("stage")
+        else None
+    )
+    if (
+        isinstance(directive, Mapping)
+        and directive.get("action") == "unknown_state"
+        and decision != "abort"
+        and route_decision_payload is None
+    ):
+        raise RunnerContractError(
+            "unknown_state resume requires an explicit route decision payload"
+        )
+
+    facade = facade or PlanOpsFacade()
+    persisted_plan = Path(str(state["plan_path"])).expanduser().resolve()
+    if decision == "abort":
+        active_task_id = state.get("active_task_id") if isinstance(state.get("active_task_id"), str) else None
+        active_batch = state.get("active_batch") if isinstance(state.get("active_batch"), Mapping) else None
+        schedule_file = Path(str(state["schedule_file"]))
+        _write_runner_state(
+            schedule_file,
+            phase="aborted",
+            run_id=str(state["run_id"]),
+            plan_path=persisted_plan,
+            assignment_plan=state.get("assignments") if isinstance(state.get("assignments"), Mapping) else {},
+            active_task_id=active_task_id,
+            active_batch=active_batch,
+            status="aborted",
+        )
+        _mark_schedule_aborted(
+            schedule_file,
+            active_task_id=active_task_id,
+            active_batch=active_batch,
+        )
+        _log(
+            facade,
+            "resume_abort",
+            run_id=str(state["run_id"]),
+            task_id=active_task_id or "",
+            plan_file=persisted_plan.name,
+            schedule_file=str(schedule_file),
+        )
+        _log(
+            facade,
+            "run_end",
+            run_id=str(state["run_id"]),
+            outcome="aborted",
+            reason="resume_abort",
+            task_id=active_task_id or "",
+            plan_file=persisted_plan.name,
+        )
+        return {
+            "status": "aborted",
+            "run_id": state["run_id"],
+            "plan_path": state["plan_path"],
+            "runner_state_file": str(state_path),
+            "decision": decision,
+        }
+
+    _acquire_resume_lock(facade, plan_path=persisted_plan, run_id=str(state["run_id"]))
+    try:
+        if decision in {"revert", "keep-and-commit"}:
+            return {
+                "status": "paused",
+                "run_id": state["run_id"],
+                "plan_path": state["plan_path"],
+                "runner_state_file": str(state_path),
+                "decision": decision,
+                "errors": [
+                    {
+                        "code": "manual-resume-decision-required",
+                        "message": "decision is authorized but requires the original pause payload to be handled by the caller",
+                    }
+                ],
+            }
+        config = _resume_config_from_state(state, decision=decision)
+        result = run(
+            config,
+            facade=facade,
+            resume_run_id=str(state["run_id"]),
+            lock_already_acquired=True,
+            route_decision_payload=route_decision_payload,
+            route_decision_stage=route_decision_stage,
+        )
+        result["resume_decision"] = decision
+        return result
+    finally:
+        _release_lock_quietly(facade, plan_file=persisted_plan, run_id=str(state["run_id"]))
 
 
 def _plan_review_state(tasks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1990,10 +2422,16 @@ def _run_phase_d_loop(
     run_id: str,
     parallel: int,
     warnings: Sequence[str],
+    route_decision_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     tasks_by_id = {normalize_task_id(str(task.get("id"))): task for task in tasks}
     repo_root = Path.cwd().resolve()
     batch_count = 0
+    pending_route_decision = (
+        dict(route_decision_payload)
+        if isinstance(route_decision_payload, Mapping)
+        else None
+    )
 
     while True:
         next_batch = facade.batch_next(
@@ -2017,8 +2455,26 @@ def _run_phase_d_loop(
             )
         task_ids = [normalize_task_id(str(tid)) for tid in next_batch.get("task_ids", [])]
         task_ids = [tid for tid in task_ids if tid]
+        _write_runner_state(
+            schedule_file,
+            phase="phase_d",
+            run_id=run_id,
+            plan_path=effective_plan_path,
+            assignment_plan=assignment_plan,
+            active_batch=next_batch,
+            active_task_id=task_ids[0] if task_ids else None,
+        )
         if not task_ids:
             if next_batch.get("scheduler_stuck"):
+                _write_runner_state(
+                    schedule_file,
+                    phase="paused",
+                    pause={"stage": "phase_d", "reason": "scheduler_stuck", "batch": next_batch},
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    assignment_plan=assignment_plan,
+                    active_batch=next_batch,
+                )
                 _log(facade, "run_end", run_id=run_id, outcome="paused", reason="scheduler_stuck")
                 return _summary(
                     status="paused",
@@ -2029,6 +2485,15 @@ def _run_phase_d_loop(
                     warnings=warnings,
                     errors=[{"code": "scheduler-stuck", "batch": next_batch}],
                 )
+            _write_runner_state(
+                schedule_file,
+                phase="completed",
+                run_id=run_id,
+                plan_path=effective_plan_path,
+                assignment_plan=assignment_plan,
+                active_batch=next_batch,
+                status="completed",
+            )
             _log(facade, "run_end", run_id=run_id, outcome="success")
             return _summary(
                 status="completed",
@@ -2050,6 +2515,15 @@ def _run_phase_d_loop(
         )
         reconcile_envelopes: list[dict[str, Any]] = []
         for task_id in task_ids:
+            _write_runner_state(
+                schedule_file,
+                phase="implement",
+                run_id=run_id,
+                plan_path=effective_plan_path,
+                assignment_plan=assignment_plan,
+                active_task_id=task_id,
+                active_batch=next_batch,
+            )
             task = tasks_by_id[task_id]
             plan_file = _task_plan_file(plans_dir, task)
             implementer = assignment_plan.route_implementers.get(task_id)
@@ -2173,7 +2647,17 @@ def _run_phase_d_loop(
                     reviewer_envelope=reviewer_envelope,
                     d5_envelope=d5_envelope,
                 )
-                directive = _call_review_route(facade, run_id=run_id, payload=route_payload)
+                if pending_route_decision is not None:
+                    directive = pending_route_decision
+                    pending_route_decision = None
+                    _log_review_route_called(
+                        facade,
+                        run_id=run_id,
+                        route_payload=route_payload,
+                        directive=directive,
+                    )
+                else:
+                    directive = _call_review_route(facade, run_id=run_id, payload=route_payload)
                 action = directive.get("action")
                 args = directive.get("args") if isinstance(directive.get("args"), Mapping) else {}
                 dispatch_context = (
@@ -2440,8 +2924,13 @@ def run(
     facade: PlanOpsFacade | None = None,
     providers: Mapping[str, ProviderAdapter] | None = None,
     capabilities: Mapping[str, ProviderCapability] | None = None,
+    resume_run_id: str | None = None,
+    lock_already_acquired: bool = False,
+    route_decision_payload: Mapping[str, Any] | None = None,
+    route_decision_stage: str | None = None,
 ) -> dict[str, Any]:
     facade = facade or PlanOpsFacade()
+    _RUNNER_STATE_CONTEXT.clear()
     stop_after = stop_after or config.stop_after
     parallel = getattr(config, "parallel", 1)
     plan_path = Path(config.plan).expanduser().resolve()
@@ -2455,7 +2944,7 @@ def run(
         unattended_revert_policy=config.unattended_revert_policy,
     )
     warnings.extend(preflight.get("scope_warnings", []))
-    run_id = preflight.get("run_id")
+    run_id = resume_run_id or preflight.get("run_id")
     if preflight.get("error"):
         return _summary(
             status="failed",
@@ -2581,19 +3070,52 @@ def run(
             errors=[{"code": "missing-run-id"}],
         )
 
-    lock = facade.acquire_lock(plan_file=effective_plan_path, run_id=run_id, force=False)
-    if _has_errors(lock) or lock.get("acquired") is False:
-        return _summary(
-            status="failed",
-            run_id=run_id,
-            plan_path=effective_plan_path,
-            dry_run=config.dry_run,
-            completed_phase="acquire_lock",
-            warnings=warnings,
-            errors=_result_errors(lock),
-        )
+    if not lock_already_acquired:
+        lock = facade.acquire_lock(plan_file=effective_plan_path, run_id=run_id, force=False)
+        if _has_errors(lock) or lock.get("acquired") is False:
+            return _summary(
+                status="failed",
+                run_id=run_id,
+                plan_path=effective_plan_path,
+                dry_run=config.dry_run,
+                completed_phase="acquire_lock",
+                warnings=warnings,
+                errors=_result_errors(lock),
+            )
 
     schedule_file = _schedule_path_for_plan(effective_plan_path)
+    pending_route_decision = (
+        dict(route_decision_payload)
+        if isinstance(route_decision_payload, Mapping)
+        else None
+    )
+
+    def route_decision_for_phase_d() -> Mapping[str, Any] | None:
+        return pending_route_decision if route_decision_stage in {None, "phase_d"} else None
+
+    def call_plan_review_route(payload: Mapping[str, Any]) -> dict[str, Any]:
+        nonlocal pending_route_decision
+        payload_stage = str(payload.get("stage") or "")
+        plan_review_stage = "plan_review" if payload_stage == "post_review" else ""
+        stage_matches = route_decision_stage in {None, payload_stage, plan_review_stage}
+        if pending_route_decision is not None and stage_matches:
+            directive = pending_route_decision
+            pending_route_decision = None
+            _log(
+                facade,
+                "plan_review_route_called",
+                run_id=run_id,
+                stage=payload.get("stage"),
+                action=directive.get("action"),
+            )
+            return directive
+        return _call_plan_review_route(
+            facade,
+            run_id=run_id,
+            schedule_file=schedule_file,
+            payload=payload,
+        )
+
     try:
         _log(facade, "run_start", run_id=run_id, plan_file=str(effective_plan_path))
         build = facade.build_tasks(
@@ -2632,7 +3154,13 @@ def run(
                 warnings=warnings,
                 errors=_result_errors(write),
             )
-        _write_runner_state(schedule_file, phase="schedule_written")
+        _write_runner_state(
+            schedule_file,
+            phase="schedule_written",
+            run_id=run_id,
+            plan_path=effective_plan_path,
+            assignment_plan=assignment_plan,
+        )
         _log(facade, "schedule_written", run_id=run_id, schedule_file=str(schedule_file))
         _log(facade, "analyst_done", run_id=run_id, outcome=schedule["outcome"], attempt=1)
 
@@ -2650,11 +3178,8 @@ def run(
 
         registry = providers or provider_registry(plan_ops=facade)
 
-        pre = _call_plan_review_route(
-            facade,
-            run_id=run_id,
-            schedule_file=schedule_file,
-            payload=_route_payload(
+        pre = call_plan_review_route(
+            _route_payload(
                 stage="pre_dispatch",
                 config=config,
                 assignment_plan=assignment_plan,
@@ -2685,6 +3210,7 @@ def run(
                 run_id=run_id,
                 parallel=parallel,
                 warnings=warnings,
+                route_decision_payload=route_decision_for_phase_d(),
             )
         if pre.get("action") == "unknown_state":
             pause = {"stage": "pre_dispatch", "directive": pre}
@@ -2731,6 +3257,7 @@ def run(
                 run_id=run_id,
                 parallel=parallel,
                 warnings=[*warnings, skipped["reason"]],
+                route_decision_payload=route_decision_for_phase_d(),
             )
 
         def dispatch_review(attempt: int) -> tuple[DispatchResult, dict[str, Any], dict[str, Any]]:
@@ -2752,11 +3279,8 @@ def run(
                 findings_count=len(envelope.get("findings") or []),
                 attempt=attempt,
             )
-            route = _call_plan_review_route(
-                facade,
-                run_id=run_id,
-                schedule_file=schedule_file,
-                payload=_route_payload(
+            route = call_plan_review_route(
+                _route_payload(
                     stage="post_review",
                     config=config,
                     assignment_plan=assignment_plan,
@@ -2798,6 +3322,7 @@ def run(
                     run_id=run_id,
                     parallel=parallel,
                     warnings=warnings,
+                    route_decision_payload=route_decision_for_phase_d(),
                 )
             if action == "halt_plan_review_failed":
                 _log(facade, "run_end", run_id=run_id, outcome="failed", reason="plan_review_failed")
@@ -2824,11 +3349,8 @@ def run(
                     errors=[post_review],
                 )
             if action != "dispatch_triage":
-                manual_pause = _call_plan_review_route(
-                    facade,
-                    run_id=run_id,
-                    schedule_file=schedule_file,
-                    payload=_route_payload(
+                manual_pause = call_plan_review_route(
+                    _route_payload(
                         stage="manual_pause",
                         config=config,
                         assignment_plan=assignment_plan,
@@ -2876,11 +3398,8 @@ def run(
                 source=triage_source,
                 verdict=triage_envelope.get("verdict"),
             )
-            post_triage = _call_plan_review_route(
-                facade,
-                run_id=run_id,
-                schedule_file=schedule_file,
-                payload=_route_payload(
+            post_triage = call_plan_review_route(
+                _route_payload(
                     stage="post_triage",
                     config=config,
                     assignment_plan=assignment_plan,
@@ -2915,6 +3434,7 @@ def run(
                     run_id=run_id,
                     parallel=parallel,
                     warnings=warnings,
+                    route_decision_payload=route_decision_for_phase_d(),
                 )
             if triage_action == "unknown_state":
                 pause = {"stage": "post_triage", "directive": post_triage}
@@ -2960,11 +3480,8 @@ def run(
                     run_id=run_id,
                     target_task_id=dispatch.get("target_task_id"),
                 )
-            post_author = _call_plan_review_route(
-                facade,
-                run_id=run_id,
-                schedule_file=schedule_file,
-                payload=_route_payload(
+            post_author = call_plan_review_route(
+                _route_payload(
                     stage="post_plan_author",
                     config=config,
                     assignment_plan=assignment_plan,
@@ -3037,13 +3554,48 @@ def run(
             _log(facade, "analyst_done", run_id=run_id, outcome=schedule["outcome"], attempt=2)
             _second_result, review_envelope, post_review = dispatch_review(2)
     finally:
-        _release_lock_quietly(facade, plan_file=effective_plan_path, run_id=run_id)
+        if not lock_already_acquired:
+            _release_lock_quietly(facade, plan_file=effective_plan_path, run_id=run_id)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command_or_plan == "status":
+            if args.legacy_plan:
+                raise RunnerContractError("status form requires --plan, not a positional plan")
+            if not args.plan:
+                raise RunnerContractError("status requires --plan")
+            result = status(args.plan)
+            print(json.dumps(result, sort_keys=True))
+            return
+        if args.command_or_plan == "resume":
+            if args.legacy_plan:
+                raise RunnerContractError("resume form requires --plan, not a positional plan")
+            if not args.plan:
+                raise RunnerContractError("resume requires --plan")
+            if not args.decision:
+                raise RunnerContractError("resume requires --decision")
+            route_payload = None
+            if args.route_decision_payload:
+                try:
+                    route_payload = json.loads(args.route_decision_payload)
+                except json.JSONDecodeError as exc:
+                    raise RunnerContractError(
+                        f"invalid --route-decision-payload JSON: {exc}"
+                    ) from exc
+                if not isinstance(route_payload, dict):
+                    raise RunnerContractError("--route-decision-payload must be a JSON object")
+            result = resume(
+                plan=args.plan,
+                decision=args.decision,
+                route_decision_payload=route_payload,
+            )
+            print(json.dumps(result, sort_keys=True))
+            if result.get("status") == "failed":
+                raise SystemExit(1)
+            return
         config, task_ids = _merge_cli_config(args)
         result = run(config, task_ids=task_ids)
     except RunnerContractError as exc:

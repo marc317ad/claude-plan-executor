@@ -387,13 +387,41 @@ def test_unknown_state_pauses_and_writes_runner_sidecar_only(tmp_path: Path) -> 
 
     assert result["status"] == "paused"
     schedule = tmp_path / "plan.schedule.json"
-    sidecar = tmp_path / "plan.schedule.json.runner_state.json"
+    sidecar = tmp_path / "plan.schedule.json.runner-state.json"
     assert sidecar.exists()
     sidecar_payload = json.loads(sidecar.read_text(encoding="utf-8"))
-    assert sidecar_payload["current_phase"] == "paused"
-    assert set(sidecar_payload) == {"current_phase", "pause"}
+    assert sidecar_payload["phase"] == "paused"
+    assert sidecar_payload["status"] == "paused"
+    assert sidecar_payload["pause_payload"]["directive"]["action"] == "unknown_state"
+    assert {"done", "failed", "blocked", "committed"}.isdisjoint(sidecar_payload)
     assert "plan_review_state" in json.loads(schedule.read_text(encoding="utf-8"))
     assert facade.release_count == 1
+
+
+def test_route_decision_payload_resumes_phase15_unknown_state(tmp_path: Path) -> None:
+    module = _MODULE
+    facade = FakeFacade(tmp_path)
+    providers = _providers(
+        module,
+        codex_reviews=[{"verdict": "surprising", "findings": [], "outcome": "success"}],
+    )
+
+    result = module.run(
+        module.RunnerConfig(plan=str(_plan(tmp_path))),
+        facade=facade,
+        providers=providers,
+        route_decision_payload={"action": "proceed_to_phase_2"},
+        route_decision_stage="plan_review",
+    )
+
+    assert result["completed_phase"] == "phase_2_ready"
+    assert [call["stage"] for call in facade.route_calls] == ["pre_dispatch"]
+    assert any(
+        event["event"] == "plan_review_route_called"
+        and event["stage"] == "post_review"
+        and event["action"] == "proceed_to_phase_2"
+        for event in facade.events
+    )
 
 
 def test_stop_after_preflight_returns_before_lock_for_cli_or_config(tmp_path: Path) -> None:

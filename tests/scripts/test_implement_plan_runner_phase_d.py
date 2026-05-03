@@ -231,11 +231,13 @@ def _run(
     facade: FakeFacade,
     providers: dict[str, FakeProvider],
     config: Any | None = None,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     return _MODULE.run(
         config or _MODULE.RunnerConfig(plan=str(_plan(tmp_path)), skip_plan_review=True, plan_reviewer=None),
         facade=facade,
         providers=providers,
+        **kwargs,
     )
 
 
@@ -461,6 +463,24 @@ def test_unknown_state_pauses(tmp_path: Path) -> None:
 
     assert result["status"] == "paused"
     assert result["errors"][0]["action"] == "unknown_state"
+
+
+def test_supplied_route_decision_is_consumed_instead_of_rerouting_unknown_state(tmp_path: Path) -> None:
+    facade = FakeFacade(tmp_path)
+    providers = _providers(codex_reviews=[{"verdict": "surprise", "findings": [], "summary": ""}])
+
+    result = _run(
+        tmp_path,
+        facade,
+        providers,
+        route_decision_payload={"action": "commit", "args": {}},
+        route_decision_stage="phase_d",
+    )
+
+    assert result["status"] == "completed"
+    assert facade.route_calls == []
+    assert facade.commit_calls
+    assert [event["action"] for event in facade.events if event["event"] == "review_route_called"] == ["commit"]
 
 
 def test_parallel_batch_does_not_dispatch_conflicting_file_locks(tmp_path: Path) -> None:
