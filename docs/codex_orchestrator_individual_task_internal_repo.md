@@ -1,4 +1,4 @@
-Initalize another session of codex to Use /mnt/d/claude-plan-executor/plugins/plan-executor/skills/implement-plan/CODEX_GEMINI_MCP.md as the process guide to run /implement-plan on <PLAN_PATH> --task-ids <TASK_IDS> in the current repo.
+Initalize another session of codex to Use /mnt/d/claude-plan-executor/plugins/plan-executor/skills/implement-plan/CODEX_GEMINI_MCP.md as the process guide to run /implement-plan on docs\plans\IMPLEMENT_PLAN_AGENT_AGNOSTIC --task-ids <2 through 8> in the current repo.
 
 You are the orchestrator, not the implementer. Monitor the progress of your agent, do not intervene unless absolutely necessary. Run the tasks one at a time in individual sessions sequentially. When they pass and commit, run the next one, and continue until the plan has been completed.
 
@@ -8,11 +8,11 @@ Before starting, verify:
   3. The working tree state is acceptable for the plan scope.
 
 Prompt your agent with necessary context from above and then to run:
-  docs\plans\20260503_research_strategy_codex --task-ids <TASK_IDS>
+  docs\plans\IMPLEMENT_PLAN_AGENT_AGNOSTIC --task-ids <TASK_IDS>
 
 Example:
 
-  Use /mnt/d/claude-plan-executor/plugins/plan-executor/skills/implement-plan/CODEX_GEMINI_MCP.md as the process guide to run /implement-plan on docs\plans\20260503_research_strategy_codex --task-ids 001 in the current repo.
+  Use /mnt/d/claude-plan-executor/plugins/plan-executor/skills/implement-plan/CODEX_GEMINI_MCP.md as the process guide to run /implement-plan on docs\plans\IMPLEMENT_PLAN_AGENT_AGNOSTIC --task-ids 002 in the current repo.
 
   Important:
   - Read the process guide from /mnt/d/claude-plan-executor/plugins/plan-executor/skills/implement-plan/CODEX_GEMINI_MCP.md.
