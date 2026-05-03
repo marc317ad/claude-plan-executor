@@ -1,0 +1,53 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Runner Contracts And Schemas",
+      "files": [
+        "`plugins/plan-executor/scripts/implement_plan.py` (new, contract definitions only)",
+        "`plugins/plan-executor/scripts/schemas/implement_plan_runner_config.json` (new)",
+        "`plugins/plan-executor/scripts/schemas/implement_plan_runner_state.json` (new)",
+        "`plugins/plan-executor/scripts/schemas/implement_plan_provider_capability.json` (new)",
+        "`tests/scripts/test_implement_plan_runner_contracts.py` (new)"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_implement_plan_runner_contracts.py",
+      "priority": "critical",
+      "plan_file": "TASK-001_runner_contracts.md",
+      "description": "Establish the runner's JSON and Python contracts before orchestration code\nexists, with import-safe schema validation and provider capability fixtures.\n\n## Verification\n\nRun the task test command and confirm importing `implement_plan.py` has no side effects.\n\n## Non-goals\n\n- Calling `plan_ops.py`.\n- Spawning Codex, Claude, or Gemini.\n- Adding CLI behavior beyond `--help` being import-safe if implemented.",
+      "acceptance_criteria": [
+        "`implement_plan.py` exists and is importable without importing live wrapper backends or launching subprocesses.",
+        "Contract dataclasses or typed dicts exist for `RunnerConfig`, `RunnerState`, `ProviderCapability`, `TaskAssignment`, and `DispatchResult`.",
+        "JSON schemas exist for runner config, runner state, and provider capabilities.",
+        "Runner config supports `plan`, `parallel`, `provider_preference`, `assignments`, `reviewers`, `plan_reviewer`, `allow_provider_fallback`, `dry_run`, `skip_cross_review`, `skip_plan_review`, `unattended_revert_policy`, and `agent_args`.",
+        "Provider capability schema represents roles: `classify`, `implement`, `review`, `plan_review`, `triage`, and `author`.",
+        "Provider capability schema includes route identity fields for the current route schemas: `route_implementer` is nullable or one of `claude|codex`, and `route_reviewer` is nullable or one of `codex|gemini|claude|none`.",
+        "Capability validation rejects providers that claim `implement` support without a supported `route_implementer`.",
+        "Gemini capability fixtures mark implementation unsupported, `route_implementer=null`, `route_reviewer=gemini`, and review/plan-review supported.",
+        "Claude capability fixtures mark implementation/classification/authoring supported through `plan_claude_dispatch.py`.",
+        "Codex capability fixtures mark implementation/review/plan-review supported through `plan_codex_dispatch.py`.",
+        "Tests validate happy and invalid config examples, including unsupported provider names and invalid task assignment syntax.",
+        "No phase execution code is added beyond validation helpers."
+      ],
+      "agent": "codex"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/implement_plan.py",
+        "plugins/plan-executor/scripts/schemas/implement_plan_provider_capability.json",
+        "plugins/plan-executor/scripts/schemas/implement_plan_runner_config.json",
+        "plugins/plan-executor/scripts/schemas/implement_plan_runner_state.json",
+        "tests/scripts/test_implement_plan_runner_contracts.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

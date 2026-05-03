@@ -2167,20 +2167,15 @@ GOOGLE_APP_CRED_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
 
 
 def _resolve_gemini_available() -> bool:
-    """Return True iff the `gemini` CLI is on `$PATH` AND at least one of
-    `GEMINI_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` is set to a
-    non-empty value (TASK-005).
+    """Return True iff the `gemini` CLI is on `$PATH`.
 
     Sole source of truth for the orchestrator preflight `gemini_available`
-    field and the wrapper's missing-API-key short-circuit. Returns False
-    whenever the binary is absent OR when both env vars are unset/empty,
-    matching the wrapper contract in `plan_gemini_dispatch._check_api_key_env`.
+    field. The Gemini CLI may authenticate through its local OAuth session
+    (for example ``~/.gemini``), ``GEMINI_API_KEY``, or
+    ``GOOGLE_APPLICATION_CREDENTIALS``; preflight should not mark Gemini
+    unavailable just because API-key/ADC environment variables are absent.
     """
-    if shutil.which("gemini") is None:
-        return False
-    api_key = os.environ.get(GEMINI_API_KEY_ENV, "").strip()
-    creds = os.environ.get(GOOGLE_APP_CRED_ENV, "").strip()
-    return bool(api_key or creds)
+    return shutil.which("gemini") is not None
 
 
 def _resolve_python() -> str:
@@ -10806,7 +10801,7 @@ def _check_gemini_available() -> dict:
     Reports the `_resolve_gemini_available()` truth-table view at audit
     time so executor self-checks see whether the orchestrator would
     advertise Gemini as available right now. Always passes (binary +
-    key state is operator-environment, not a contract drift); the
+    auth state is operator-environment, not a contract drift); the
     finding's `actual.value` carries the boolean and the structured
     breakdown (`binary_present`, `api_key_present`, `creds_present`).
     Tier=advisory: never flips default-tier verdicts.

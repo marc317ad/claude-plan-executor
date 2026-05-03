@@ -23906,9 +23906,8 @@ class Test_implementer_schema_smoke_end_to_end:
 
 class TestResolveGeminiAvailable:
     """The helper is the SOLE source of truth for the orchestrator's
-    `gemini_available` preflight field and the wrapper's missing-API-key
-    short-circuit. The four-row truth table:
-      (binary_present, key_present) → expected
+    `gemini_available` preflight field. Availability is CLI-based so
+    local Gemini OAuth auth works without API-key/ADC env vars.
     """
 
     def test_env_var_constants_exposed(self):
@@ -23933,7 +23932,7 @@ class TestResolveGeminiAvailable:
         monkeypatch.setattr(plan_ops.shutil, "which", lambda name: "/usr/bin/gemini" if name == "gemini" else None)
         monkeypatch.delenv(plan_ops.GEMINI_API_KEY_ENV, raising=False)
         monkeypatch.delenv(plan_ops.GOOGLE_APP_CRED_ENV, raising=False)
-        assert plan_ops._resolve_gemini_available() is False
+        assert plan_ops._resolve_gemini_available() is True
 
     def test_binary_absent_key_present(self, monkeypatch):
         monkeypatch.setattr(plan_ops.shutil, "which", lambda name: None)
@@ -23947,11 +23946,12 @@ class TestResolveGeminiAvailable:
         assert plan_ops._resolve_gemini_available() is False
 
     def test_empty_string_key_treated_as_absent(self, monkeypatch):
-        # Wrapper contract: whitespace/empty value is "not set".
+        # Empty env vars do not matter when the CLI binary is present;
+        # Gemini may use its local OAuth session.
         monkeypatch.setattr(plan_ops.shutil, "which", lambda name: "/usr/bin/gemini" if name == "gemini" else None)
         monkeypatch.setenv(plan_ops.GEMINI_API_KEY_ENV, "   ")
         monkeypatch.setenv(plan_ops.GOOGLE_APP_CRED_ENV, "")
-        assert plan_ops._resolve_gemini_available() is False
+        assert plan_ops._resolve_gemini_available() is True
 
 
 class TestGeminiAvailableAuditCheck:

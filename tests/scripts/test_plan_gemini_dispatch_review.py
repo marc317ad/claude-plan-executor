@@ -7,19 +7,18 @@ Seven test cases (acceptance criteria):
   3. Schema-retry exhaustion — all three responses fail; envelope is
      ``outcome=parse_error`` with attempts == 3 and a non-empty
      ``last_validation_error``.
-  4. Missing API key short-circuit — both ``GEMINI_API_KEY`` and
-     ``GOOGLE_APPLICATION_CREDENTIALS`` unset, envelope is
-     ``outcome=failure`` with the canonical error string, BEFORE the
-     shim runs (we assert the shim is never invoked).
+  4. CLI OAuth path — both ``GEMINI_API_KEY`` and
+     ``GOOGLE_APPLICATION_CREDENTIALS`` may be unset; the wrapper still
+     invokes the CLI so it can use the local Gemini OAuth session.
   5. ``implement`` subcommand rejection — exits nonzero with stderr
      containing the canonical "implement subcommand not supported"
      phrase.
   6. ``plan-review`` subcommand stub — exits nonzero with stderr
      containing the canonical "plan-review subcommand not yet
      implemented; see TASK-004" phrase.
-  7. ``GEMINI_CLI_HOME`` isolation — two concurrent invocations get
-     distinct homes, the policy file lands at the documented path,
-     and both are cleaned up after the wrapper returns.
+  7. CLI auth preservation — wrapper invocations do not override
+     ``GEMINI_CLI_HOME`` and invoke Gemini in headless ``-p ''`` mode
+     with the restrictive policy passed via ``--policy``.
 
 The fake ``gemini`` shim is a tiny Python script (≤80 lines) overlaid
 onto PATH via a tmp-dir prefix. It reads ``GEMINI_SHIM_MODE`` from the
@@ -316,8 +315,9 @@ def _run_review(
     # fake binary first.
     if shim_dir is not None:
         env["PATH"] = str(shim_dir) + os.pathsep + env.get("PATH", "")
-    # Default: provide an API key so the short-circuit doesn't fire.
-    env.setdefault("GEMINI_API_KEY", "test-key-not-real")
+    # Default: no API-key/ADC env is required; the real CLI can use its
+    # local OAuth session and the shim is hermetic.
+    env.pop("GEMINI_API_KEY", None)
     env.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
     if extra_env:
         for k, v in extra_env.items():
@@ -461,11 +461,11 @@ def test_review_valid_envelope_with_nonzero_exit_is_failure(tmp_path, shim_path)
 
 
 # ---------------------------------------------------------------------------
-# 4. Missing API key short-circuit
+# 4. CLI OAuth path does not require API-key env
 # ---------------------------------------------------------------------------
 
 
-def test_review_missing_api_key_short_circuits(tmp_path, shim_path):
+def test_review_without_api_key_invokes_cli_oauth_path(tmp_path, shim_path):
     repo = _make_repo(tmp_path)
     plan_path = _write_plan(repo, "001", ["docs/plans/fixture_plan.md"])
 
@@ -483,18 +483,16 @@ def test_review_missing_api_key_short_circuits(tmp_path, shim_path):
         },
     )
 
-    assert proc.returncode == 1, (proc.stdout, proc.stderr)
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
     envelope = json.loads(proc.stdout)
-    assert envelope["outcome"] == "failure", envelope
-    assert envelope["error"] == (
-        "missing GEMINI_API_KEY or GOOGLE_APPLICATION_CREDENTIALS"
-    ), envelope
-    # The shim must NEVER have been invoked — short-circuit fires
-    # BEFORE subprocess spawn.
-    assert not (log_dir / "calls.jsonl").exists(), (
-        "shim was invoked despite missing-API-key short-circuit; "
-        "this defeats the headless-OAuth contract"
-    )
+    assert envelope["outcome"] == "success", envelope
+    calls_file = log_dir / "calls.jsonl"
+    assert calls_file.exists(), "shim should be invoked so CLI OAuth can work"
+    call = json.loads(calls_file.read_text(encoding="utf-8").splitlines()[0])
+    assert call["gemini_cli_home"] == ""
+    assert "--policy" in call["argv"]
+    assert "--policy-file" not in call["argv"]
+    assert "-p" in call["argv"]
 
 
 # ---------------------------------------------------------------------------
@@ -561,14 +559,14 @@ def test_plan_review_requires_schedule_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 7. GEMINI_CLI_HOME isolation
+# 7. Gemini CLI auth preservation
 # ---------------------------------------------------------------------------
 
 
-def test_gemini_cli_home_isolation(tmp_path, shim_path):
-    """Two concurrent invocations get distinct GEMINI_CLI_HOME values,
-    each with the policy file under .gemini/policies/restrictive.toml,
-    and both are torn down after the wrapper returns."""
+def test_gemini_cli_home_is_not_overridden(tmp_path, shim_path):
+    """The wrapper must not mask the operator's authenticated Gemini CLI
+    home. Policy is supplied with --policy and the prompt is sent via
+    headless -p mode."""
     repo_a = _make_repo(tmp_path / "a")
     repo_b = _make_repo(tmp_path / "b")
     plan_a = _write_plan(repo_a, "001", ["docs/plans/fixture_plan.md"])
@@ -617,21 +615,12 @@ def test_gemini_cli_home_isolation(tmp_path, shim_path):
     home_a = calls_a[0]["gemini_cli_home"]
     home_b = calls_b[0]["gemini_cli_home"]
 
-    # Distinct homes per invocation.
-    assert home_a, calls_a
-    assert home_b, calls_b
-    assert home_a != home_b, (home_a, home_b)
-
-    # The shim recorded the GEMINI_CLI_HOME at run-time. After the
-    # wrapper returns, the directory MUST have been torn down (finally
-    # block); we check that here. (Recording the path-as-of-run is the
-    # only way to observe pre-cleanup state.)
-    assert not Path(home_a).exists(), (
-        f"GEMINI_CLI_HOME {home_a} still exists after wrapper teardown"
-    )
-    assert not Path(home_b).exists(), (
-        f"GEMINI_CLI_HOME {home_b} still exists after wrapper teardown"
-    )
+    assert home_a == "", calls_a
+    assert home_b == "", calls_b
+    for call in (calls_a[0], calls_b[0]):
+        assert "--policy" in call["argv"]
+        assert "--policy-file" not in call["argv"]
+        assert "-p" in call["argv"]
 
 
 # ---------------------------------------------------------------------------
