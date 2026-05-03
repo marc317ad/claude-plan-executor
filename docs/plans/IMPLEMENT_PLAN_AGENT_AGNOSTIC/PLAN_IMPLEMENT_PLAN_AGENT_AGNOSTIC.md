@@ -40,13 +40,15 @@ The system has already paid down the largest sources of Claude-specific orchestr
 - `plan_ops_mcp_server.py` exposes `plan_ops__*` tools over structured schemas, while `plan_ops.py` keeps pure `_run_*` entry points and CLI compatibility.
 - `plan_codex_dispatch.py`, `plan_claude_dispatch.py`, and `plan_gemini_dispatch.py` already normalize external model/agent execution into structured wrapper envelopes with timeout, schema, and cleanup behavior.
 
-The remaining Claude-specific piece is the outer orchestration loop in `SKILL.md`: parsing command flags, selecting agents, dispatching wrappers in batches, calling route tools, logging events, committing/failing/pausing, and summarizing. This plan moves that loop into `implement_plan.py` while preserving the SKILL as a thin bridge and operational reference.
+The remaining Claude-specific piece is the outer orchestration loop in `SKILL.md`: parsing command flags, selecting agents, dispatching wrappers in batches, calling route tools, logging events, committing/failing/pausing, and summarizing. This plan moves that loop into `implement_plan.py` for portable/scripted execution while preserving MCP as the preferred interactive transport for agents that have `plan_ops__*` tools installed, including Claude Code and Codex.
 
 ## Design
 
 ### Runner boundaries
 
 `implement_plan.py` owns orchestration only. It must not duplicate parser, scheduler, route, commit, fail, lock, or gate logic that already lives in `plan_ops.py`. It calls the existing pure cores or CLI/MCP-equivalent wrappers through a narrow `PlanOpsFacade`.
+
+The runner is an additional transport consumer, not a replacement for MCP. Interactive agent sessions with `plan_ops__*` tools available should continue to use MCP directly because it provides structured schemas, tool visibility, and lower-friction state-machine calls. The runner exists for contexts where MCP is unavailable, where a non-interactive command is needed, or where a calling agent/CI system should drive the workflow through one durable process.
 
 The runner dispatches implementation/review work through provider adapters. Provider adapters have a public provider id and, where needed, a route identity used by today's route schemas:
 
@@ -95,8 +97,9 @@ The runner persists state through existing schedule/run-log files wherever possi
 ## Non-goals
 
 - Rewriting `plan_ops.py` state machines.
-- Replacing MCP with a new transport.
+- Replacing MCP with a new transport, or demoting MCP from the preferred interactive transport when `plan_ops__*` tools are available.
 - Removing the SKILL or slash command.
+- Making `implement_plan.py` the default for Claude or Codex sessions that can already use `plan_ops__*` MCP tools directly.
 - Adding Gemini implementation support.
 - Adding arbitrary new implementation-provider route identities before Phase D schemas support them.
 - Changing wrapper output schemas or reviewer verdict vocabularies.

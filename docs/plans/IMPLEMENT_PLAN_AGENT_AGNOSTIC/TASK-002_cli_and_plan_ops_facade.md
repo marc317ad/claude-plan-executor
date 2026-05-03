@@ -6,7 +6,7 @@ Add the executable `implement_plan.py` CLI and a narrow `PlanOpsFacade` that cal
 
 ## Context
 
-The runner must be scriptable by any agent that can invoke shell commands. It should not require Claude Code MCP access, but it should preserve parity with the MCP contracts by using the same `plan_ops` entry points.
+The runner must be scriptable by any agent that can invoke shell commands. It should not require MCP access, but it must preserve parity with the MCP contracts by using the same `plan_ops` entry points. When an interactive Claude or Codex session has `plan_ops__*` tools available, MCP remains the preferred transport; this CLI runner is for portability, automation, and sessions where MCP is unavailable.
 
 ## Scoped Context
 
@@ -48,3 +48,4 @@ Run the task test command. Also run `venv/bin/python plugins/plan-executor/scrip
 - Provider capability probing.
 - Task assignment policy.
 - Batch execution.
+- Replacing MCP or changing the preferred transport for interactive agents that already have `plan_ops__*` tools installed.
