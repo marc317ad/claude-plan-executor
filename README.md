@@ -28,7 +28,7 @@ Restart Claude Code afterwards. `/implement-plan` should appear in the slash-com
 - **Slash command**: `/implement-plan <plan-path>` (dispatches the skill)
 - **Skill**: `skills/implement-plan/SKILL.md` (orchestrator protocol)
 - **Subagents**: `plan-analyst`, `plan-implementer`
-- **Scripts**: `plan_ops.py` (commit ceremony, run-log, reconcile), `plan_codex_dispatch.py` (Codex wrapper)
+- **Scripts**: `implement_plan.py` (portable runner), `plan_ops.py` (commit ceremony, run-log, reconcile), `plan_codex_dispatch.py` (Codex wrapper)
 - **JSON envelope schemas**: `codex_implement_schema.json`, `codex_review_schema.json`
 - **Reviewer template**: `templates/code-reviewer.md.template` (per-project starter)
 
@@ -59,6 +59,49 @@ Each project that uses `/implement-plan` must provide:
 
 Fields:
 - `plan_dir` (string, default `"docs/plans"`) — where plan files, `_run_log.jsonl`, `_run_lock.json`, and `*.schedule.json` sidecars live. All executor-infrastructure protected-path patterns are derived from this.
+
+### Script runner
+
+`implement_plan.py` is a scriptable entry point for agents or CI contexts that need one durable command instead of manually stepping through the SKILL:
+
+```bash
+venv/bin/python plugins/plan-executor/scripts/implement_plan.py docs/plans/example \
+  --parallel 2 \
+  --provider-preference codex,claude,gemini \
+  --assign TASK-001=claude \
+  --dry-run
+```
+
+Structured callers can use:
+
+```bash
+venv/bin/python plugins/plan-executor/scripts/implement_plan.py run \
+  --plan docs/plans/example \
+  --config docs/plans/example.runner.json
+```
+
+Runner config is JSON. It accepts the same core routing fields as the CLI:
+
+```json
+{
+  "plan": "docs/plans/example",
+  "parallel": 2,
+  "provider_preference": ["codex", "claude", "gemini"],
+  "assignments": ["TASK-001=claude"],
+  "reviewers": ["codex", "gemini", "claude"],
+  "plan_reviewer": "codex",
+  "dry_run": true,
+  "unattended_revert_policy": "pause"
+}
+```
+
+Provider selection is capability-based. Built-in providers advertise which roles they can satisfy:
+- `claude`: classify, implement, review, triage, author; routes as Claude for implementation/review.
+- `codex`: implement, review, plan review; routes as Codex.
+- `gemini`: review and plan review only; it is not an implementation provider.
+- `stub`: test-only provider for dry-run/e2e state-machine coverage without live model calls.
+
+Use MCP directly in interactive Claude/Codex sessions where `plan_ops__*` tools are available; those schemas remain the source of truth. Use the SKILL through `/implement-plan` for the established Claude Code workflow. Use `implement_plan.py` when MCP is unavailable, when another agent needs a script entry point, or when CI/non-interactive automation should own the whole run.
 
 **Behavior on bad config (F-4):**
 - Missing file → silent fallback to defaults.

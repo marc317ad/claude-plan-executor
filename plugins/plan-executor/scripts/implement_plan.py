@@ -20,7 +20,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 SCHEMA_DIR = SCRIPT_DIR / "schemas"
 PLAN_OPS_SCRIPT = SCRIPT_DIR / "plan_ops.py"
 
-SUPPORTED_PROVIDERS = frozenset({"claude", "codex", "gemini"})
+SUPPORTED_PROVIDERS = frozenset({"claude", "codex", "gemini", "stub"})
 RUNNER_ROLES = frozenset(
     {"classify", "implement", "review", "plan_review", "triage", "author"}
 )
@@ -37,7 +37,7 @@ TASK_STATE_SOURCE_KEYS = frozenset(
 
 TASK_ID_RE = re.compile(r"^(?:TASK-)?(?P<task_id>\d{1,3}[A-Z]?)$")
 ASSIGNMENT_RE = re.compile(
-    r"^(?:TASK-)?(?P<task_id>\d{1,3}[A-Z]?)=(?P<provider>claude|codex|gemini)$"
+    r"^(?:TASK-)?(?P<task_id>\d{1,3}[A-Z]?)=(?P<provider>claude|codex|gemini|stub)$"
 )
 
 
@@ -266,6 +266,11 @@ STUB_PROVIDER_CAPABILITY = ProviderCapability(
     route_implementer="claude",
     route_reviewer="none",
 )
+
+BUILTIN_PROVIDER_CAPABILITIES: Mapping[str, ProviderCapability] = {
+    **DEFAULT_PROVIDER_CAPABILITIES,
+    "stub": STUB_PROVIDER_CAPABILITY,
+}
 
 _RUNNER_STATE_CONTEXT: dict[str, Any] = {}
 _UNSET = object()
@@ -1410,7 +1415,8 @@ def _merge_cli_config(args: argparse.Namespace) -> tuple[RunnerConfig, tuple[str
         "unattended_revert_policy": "pause",
         "parallel": 1,
     }
-    raw.update(_read_config_file(args.config))
+    config_file_payload = _read_config_file(args.config)
+    raw.update(config_file_payload)
 
     plan = args.plan
     if args.command_or_plan == "run":
@@ -1429,6 +1435,11 @@ def _merge_cli_config(args: argparse.Namespace) -> tuple[RunnerConfig, tuple[str
         raw["parallel"] = args.parallel
     if args.provider_preference is not None:
         raw["provider_preference"] = list(_split_csv(args.provider_preference) or ())
+        if raw["provider_preference"][:1] == ["stub"]:
+            if args.reviewer is None and not ({"reviewers", "reviewer"} & set(config_file_payload)):
+                raw["reviewers"] = list(raw["provider_preference"])
+            if args.plan_reviewer is None and "plan_reviewer" not in config_file_payload:
+                raw["plan_reviewer"] = "stub"
     codex_only = bool(getattr(args, "codex_only", False))
     claude_only = bool(getattr(args, "claude_only", False))
     if codex_only and claude_only:
@@ -1515,6 +1526,10 @@ def _dependency_check_targets(plan_path: Path) -> tuple[Path, ...]:
         if isinstance(chunk, Mapping) and isinstance(chunk.get("file"), str):
             targets.append(plan_path / chunk["file"])
     return tuple(targets) or (plan_path,)
+
+
+def _schema_gate_plan_file(plan_path: Path) -> Path:
+    return _dependency_check_targets(plan_path)[0]
 
 
 def _runner_state_path(schedule_file: Path) -> Path:
@@ -1984,15 +1999,45 @@ def _read_schedule_state(schedule_file: Path) -> dict[str, Any] | None:
     return dict(state) if isinstance(state, dict) else None
 
 
+def _read_schedule_task_state(schedule_file: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(schedule_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    state = data.get("state") if isinstance(data, dict) else None
+    if not isinstance(state, Mapping):
+        return None
+    preserved: dict[str, Any] = {}
+    for key in TASK_STATE_SOURCE_KEYS | {"review_notes"}:
+        if key in state:
+            preserved[key] = state[key]
+    return preserved
+
+
 def _schedule_from_build(
     build_tasks: Mapping[str, Any],
     *,
     existing_plan_review_state: Mapping[str, Any] | None = None,
+    existing_task_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     warnings = [
         warning for warning in build_tasks.get("warnings", [])
         if isinstance(warning, Mapping)
     ]
+    task_state = {
+        "done": [],
+        "failed": [],
+        "blocked": [],
+        "locked_files": [],
+        "committed": [],
+        "review_notes": {},
+        "retries_used": {},
+    }
+    if existing_task_state is not None:
+        for key, value in existing_task_state.items():
+            if key in TASK_STATE_SOURCE_KEYS or key == "review_notes":
+                task_state[key] = value
+
     schedule = {
         "outcome": "valid" if not warnings else "needs-enrichment",
         "tasks": list(build_tasks.get("tasks", [])),
@@ -2007,15 +2052,7 @@ def _schedule_from_build(
             for warning in warnings
         ],
         "risks": [],
-        "state": {
-            "done": [],
-            "failed": [],
-            "blocked": [],
-            "locked_files": [],
-            "committed": [],
-            "review_notes": {},
-            "retries_used": {},
-        },
+        "state": task_state,
         "plan_review_state": (
             dict(existing_plan_review_state)
             if existing_plan_review_state is not None
@@ -2189,6 +2226,112 @@ def _prepare_phase_2(
     return _result_errors(next_batch) if _has_errors(next_batch) else []
 
 
+def _dry_run_phase_2_summary(
+    *,
+    run_id: str,
+    plan_path: Path,
+    warnings: Sequence[str],
+) -> dict[str, Any]:
+    return _summary(
+        status="completed",
+        run_id=run_id,
+        plan_path=plan_path,
+        dry_run=True,
+        completed_phase="phase_2_ready",
+        warnings=warnings,
+    )
+
+
+def _current_git_sha(fallback: str | None = None) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return fallback or "unknown"
+    value = completed.stdout.strip()
+    return value if completed.returncode == 0 and value else (fallback or "unknown")
+
+
+def _finalize_completed_run(
+    facade: PlanOpsFacade,
+    *,
+    schedule_file: Path,
+    plans_dir: Path,
+    effective_plan_path: Path,
+    tasks: Sequence[Mapping[str, Any]],
+    assignment_plan: AssignmentPlan,
+    run_id: str,
+    starting_sha: str | None,
+    dry_run: bool,
+) -> list[Any]:
+    """Best-effort end-of-run finalization through plan_ops when available."""
+
+    required = ("update_plan_header", "finalize_execution_log", "gates")
+    if any(not callable(getattr(facade, name, None)) for name in required):
+        return []
+    try:
+        schedule = json.loads(schedule_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [{"code": "schedule-read-failed", "message": str(exc)}]
+    state = schedule.get("state") if isinstance(schedule, Mapping) else {}
+    done = {normalize_task_id(str(task_id)) for task_id in state.get("done", [])} if isinstance(state, Mapping) else set()
+    failed = {normalize_task_id(str(task_id)) for task_id in state.get("failed", [])} if isinstance(state, Mapping) else set()
+    ending_sha = _current_git_sha(starting_sha)
+    errors: list[Any] = []
+    tasks_by_plan: dict[Path, list[Mapping[str, Any]]] = {}
+    for task in tasks:
+        tasks_by_plan.setdefault(_task_plan_file(plans_dir, task), []).append(task)
+
+    for plan_file, plan_tasks in tasks_by_plan.items():
+        plan_task_ids = {normalize_task_id(str(task.get("id"))) for task in plan_tasks}
+        status = "complete" if plan_task_ids and plan_task_ids <= done else "partial"
+        updated = facade.update_plan_header(plan_file=plan_file, status=status)
+        if _has_errors(updated):
+            errors.extend(_result_errors(updated))
+
+        rows = []
+        for task in plan_tasks:
+            task_id = normalize_task_id(str(task.get("id")))
+            implementer = assignment_plan.implementers.get(task_id)
+            rows.append(
+                {
+                    "task": f"TASK-{task_id}",
+                    "agent": implementer.provider if implementer else "",
+                    "reviewer": assignment_plan.reviewer.provider,
+                    "verdict": "failed" if task_id in failed else ("done" if task_id in done else "pending"),
+                    "commit": "dry-run" if dry_run and task_id in done else "",
+                    "notes": "",
+                }
+            )
+        finalized = facade.finalize_execution_log(
+            plan_file=plan_file,
+            run_id=run_id,
+            starting_sha=starting_sha or "unknown",
+            ending_sha=ending_sha,
+            rows_json=json.dumps(rows),
+            outcome="success" if not failed else "partial",
+        )
+        if _has_errors(finalized):
+            errors.extend(_result_errors(finalized))
+
+    certified = facade.gates(
+        certify=True,
+        mode="certify",
+        certify_mode="dry-run" if dry_run else "execute",
+        plan_file=_schema_gate_plan_file(effective_plan_path),
+        schedule_file=schedule_file,
+        run_id=run_id,
+    )
+    if _has_errors(certified):
+        errors.extend(_result_errors(certified))
+    return errors
+
+
 def _schedule_state_for_task(schedule_file: Path, task_id: str) -> dict[str, bool]:
     try:
         data = json.loads(schedule_file.read_text(encoding="utf-8"))
@@ -2277,7 +2420,9 @@ def _log_review_route_called(
 def _reviewer_for_task(config: RunnerConfig, assignment_plan: AssignmentPlan) -> tuple[str, str]:
     if config.skip_cross_review:
         return "none", "none"
-    route = assignment_plan.reviewer.route or assignment_plan.reviewer.provider
+    if assignment_plan.reviewer.route is None:
+        return "none", "none"
+    route = assignment_plan.reviewer.route
     return route, assignment_plan.reviewer.provider
 
 
@@ -2420,6 +2565,7 @@ def _run_phase_d_loop(
     tasks: Sequence[Mapping[str, Any]],
     effective_plan_path: Path,
     run_id: str,
+    starting_sha: str | None,
     parallel: int,
     warnings: Sequence[str],
     route_decision_payload: Mapping[str, Any] | None = None,
@@ -2494,6 +2640,28 @@ def _run_phase_d_loop(
                 active_batch=next_batch,
                 status="completed",
             )
+            finalize_errors = _finalize_completed_run(
+                facade,
+                schedule_file=schedule_file,
+                plans_dir=plans_dir,
+                effective_plan_path=effective_plan_path,
+                tasks=tasks,
+                assignment_plan=assignment_plan,
+                run_id=run_id,
+                starting_sha=starting_sha,
+                dry_run=config.dry_run,
+            )
+            if finalize_errors:
+                _log(facade, "run_end", run_id=run_id, outcome="failed", reason="finalization_failed")
+                return _summary(
+                    status="failed",
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    dry_run=config.dry_run,
+                    completed_phase="finalization",
+                    warnings=warnings,
+                    errors=finalize_errors,
+                )
             _log(facade, "run_end", run_id=run_id, outcome="success")
             return _summary(
                 status="completed",
@@ -3047,7 +3215,10 @@ def run(
                 errors=_result_errors(deps),
             )
 
-    gate = facade.gates(check="schema-valid,fixture-valid,execution-safe,review-safe", plan_file=effective_plan_path)
+    gate = facade.gates(
+        check="schema-valid,fixture-valid,execution-safe,review-safe",
+        plan_file=_schema_gate_plan_file(effective_plan_path),
+    )
     if _has_errors(gate):
         return _summary(
             status="failed",
@@ -3132,16 +3303,22 @@ def run(
                 warnings=warnings,
                 errors=_result_errors(build),
             )
+        registry = providers or provider_registry(plan_ops=facade)
+        resolved_capabilities = capabilities or {
+            name: adapter.capability for name, adapter in registry.items()
+        }
         tasks = list(build.get("tasks", []))
         assignment_plan = resolve_assignments(
             tasks,
             config,
-            capabilities or DEFAULT_PROVIDER_CAPABILITIES,
+            resolved_capabilities,
         )
         existing_state = _read_schedule_state(schedule_file)
+        existing_task_state = _read_schedule_task_state(schedule_file)
         schedule = _schedule_from_build(
             build,
             existing_plan_review_state=existing_state,
+            existing_task_state=existing_task_state,
         )
         write = facade.write_schedule(schedule_file=schedule_file, payload=schedule)
         if _has_errors(write):
@@ -3176,8 +3353,6 @@ def run(
                 errors=_result_errors(schedule_gate),
             )
 
-        registry = providers or provider_registry(plan_ops=facade)
-
         pre = call_plan_review_route(
             _route_payload(
                 stage="pre_dispatch",
@@ -3198,6 +3373,12 @@ def run(
                     warnings=warnings,
                     errors=batch_errors,
                 )
+            if config.dry_run:
+                return _dry_run_phase_2_summary(
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    warnings=warnings,
+                )
             return _run_phase_d_loop(
                 facade=facade,
                 registry=registry,
@@ -3208,6 +3389,7 @@ def run(
                 tasks=tasks,
                 effective_plan_path=effective_plan_path,
                 run_id=run_id,
+                starting_sha=preflight.get("starting_sha"),
                 parallel=parallel,
                 warnings=warnings,
                 route_decision_payload=route_decision_for_phase_d(),
@@ -3245,6 +3427,12 @@ def run(
                     warnings=[*warnings, skipped["reason"]],
                     errors=batch_errors,
                 )
+            if config.dry_run:
+                return _dry_run_phase_2_summary(
+                    run_id=run_id,
+                    plan_path=effective_plan_path,
+                    warnings=[*warnings, skipped["reason"]],
+                )
             return _run_phase_d_loop(
                 facade=facade,
                 registry=registry,
@@ -3255,6 +3443,7 @@ def run(
                 tasks=tasks,
                 effective_plan_path=effective_plan_path,
                 run_id=run_id,
+                starting_sha=preflight.get("starting_sha"),
                 parallel=parallel,
                 warnings=[*warnings, skipped["reason"]],
                 route_decision_payload=route_decision_for_phase_d(),
@@ -3310,6 +3499,12 @@ def run(
                         warnings=warnings,
                         errors=batch_errors,
                     )
+                if config.dry_run:
+                    return _dry_run_phase_2_summary(
+                        run_id=run_id,
+                        plan_path=effective_plan_path,
+                        warnings=warnings,
+                    )
                 return _run_phase_d_loop(
                     facade=facade,
                     registry=registry,
@@ -3320,6 +3515,7 @@ def run(
                     tasks=tasks,
                     effective_plan_path=effective_plan_path,
                     run_id=run_id,
+                    starting_sha=preflight.get("starting_sha"),
                     parallel=parallel,
                     warnings=warnings,
                     route_decision_payload=route_decision_for_phase_d(),
@@ -3422,6 +3618,12 @@ def run(
                         warnings=warnings,
                         errors=batch_errors,
                     )
+                if config.dry_run:
+                    return _dry_run_phase_2_summary(
+                        run_id=run_id,
+                        plan_path=effective_plan_path,
+                        warnings=warnings,
+                    )
                 return _run_phase_d_loop(
                     facade=facade,
                     registry=registry,
@@ -3432,6 +3634,7 @@ def run(
                     tasks=tasks,
                     effective_plan_path=effective_plan_path,
                     run_id=run_id,
+                    starting_sha=preflight.get("starting_sha"),
                     parallel=parallel,
                     warnings=warnings,
                     route_decision_payload=route_decision_for_phase_d(),
@@ -3521,6 +3724,7 @@ def run(
                     errors=[post_author],
                 )
             existing_state = _read_schedule_state(schedule_file)
+            existing_task_state = _read_schedule_task_state(schedule_file)
             build = facade.build_tasks(
                 plans_dir=effective_plan_path,
                 filter_ids=",".join(task_ids) if task_ids else "",
@@ -3538,6 +3742,7 @@ def run(
             schedule = _schedule_from_build(
                 build,
                 existing_plan_review_state=existing_state,
+                existing_task_state=existing_task_state,
             )
             write = facade.write_schedule(schedule_file=schedule_file, payload=schedule)
             if _has_errors(write):

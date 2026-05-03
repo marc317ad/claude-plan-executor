@@ -14,6 +14,16 @@ user_invocable: true
 
 **Wrapper-internal path: Bash.** `plan_codex_dispatch.py`, `plan_claude_dispatch.py`, `plan_gemini_dispatch.py`, and dispatch-template subprocess walkthroughs remain Bash because they execute inside wrapper subprocesses that the orchestrator never observes mid-stream. Ordinary shell probes (`git diff`, `git log`, `date`) also remain Bash.
 
+## Script runner bridge
+
+When the user explicitly asks to run the script runner, invoke `implement_plan.py` with the user's arguments instead of manually walking this MCP orchestration. Use the project Python, for example:
+
+```bash
+$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/implement_plan.py" <plan-path> [flags]
+```
+
+This is an additional entry point for non-interactive or MCP-unavailable contexts. It does not replace MCP tools, and it should not be preferred in interactive Claude/Codex sessions where `plan_ops__*` tools are available.
+
 ## Plan-ops transport bootstrap
 
 Run this bootstrap before the readiness check, Phase 0 preflight, or any other plan operation:

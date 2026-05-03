@@ -521,6 +521,40 @@ def test_skill_cli_reference_covers_plan_review_route_flags() -> None:
     )
 
 
+def test_skill_references_implement_plan_script_runner_without_demoting_mcp() -> None:
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "implement_plan.py" in text
+    assert "${CLAUDE_PLUGIN_ROOT}/scripts/implement_plan.py" in text
+    assert "explicitly asks to run the script runner" in lowered
+    assert "does not replace mcp tools" in lowered
+    assert "should not be preferred in interactive claude/codex sessions" in lowered
+    assert "plan_ops__*" in text
+
+
+def test_skill_does_not_claim_script_replaces_or_is_preferred_over_mcp() -> None:
+    text = SKILL_PATH.read_text(encoding="utf-8").lower()
+    forbidden_patterns = [
+        r"implement_plan\.py\s+replaces\s+mcp",
+        r"script runner\s+replaces\s+mcp",
+        r"prefer\s+`?implement_plan\.py`?\s+over\s+mcp",
+        r"prefer\s+the\s+script\s+runner\s+over\s+mcp",
+        r"mcp\s+is\s+deprecated",
+    ]
+
+    matches = [
+        pattern
+        for pattern in forbidden_patterns
+        if re.search(pattern, text)
+    ]
+
+    assert not matches, (
+        "SKILL.md must not claim the script runner replaces MCP or should be "
+        f"preferred over MCP in interactive sessions: {matches!r}"
+    )
+
+
 def test_mcp_index_tool_names_match_registered_tools() -> None:
     index_bare_names = set(_index_tool_names_ordered())
     registered_bare_names = {
