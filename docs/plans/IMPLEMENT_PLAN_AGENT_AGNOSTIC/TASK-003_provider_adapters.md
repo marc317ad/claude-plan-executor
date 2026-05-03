@@ -14,7 +14,7 @@ This task adds adapter classes and tests them with dry-run/stubbed subprocess ca
 
 ### TASK-003: Provider Registry And Adapters
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** critical
 - **Agent:** codex
 - **Files:**

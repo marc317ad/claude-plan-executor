@@ -1,0 +1,11 @@
+{
+  "provider": "stub",
+  "role": "plan_review",
+  "status": "ok",
+  "task_id": "plan",
+  "parsed": {
+    "verdict": "approved",
+    "findings": [],
+    "summary": "stub plan review"
+  }
+}

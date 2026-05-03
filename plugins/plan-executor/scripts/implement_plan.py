@@ -8,11 +8,12 @@ It must not import dispatch wrappers or start subprocesses at import time.
 from dataclasses import dataclass, field
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import re
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -92,13 +93,27 @@ class RunnerState:
 
 @dataclass(frozen=True)
 class DispatchResult:
-    """Provider dispatch result captured by the future runner loop."""
+    """Normalized provider transport result."""
 
     provider: str
     role: str
-    outcome: str
+    status: str
     task_id: str | None = None
-    envelope: Mapping[str, Any] = field(default_factory=dict)
+    parsed: Mapping[str, Any] | None = None
+    raw_envelope: Mapping[str, Any] | None = None
+    error: str | None = None
+
+    @property
+    def outcome(self) -> str:
+        """Backward-compatible alias for early runner-contract tests."""
+
+        return self.status
+
+    @property
+    def envelope(self) -> Mapping[str, Any]:
+        """Backward-compatible alias for early runner-contract tests."""
+
+        return self.raw_envelope or {}
 
 
 DEFAULT_PROVIDER_CAPABILITIES: Mapping[str, ProviderCapability] = {
@@ -108,7 +123,7 @@ DEFAULT_PROVIDER_CAPABILITIES: Mapping[str, ProviderCapability] = {
             "classify": True,
             "implement": True,
             "review": True,
-            "plan_review": True,
+            "plan_review": False,
             "triage": True,
             "author": True,
         },
@@ -145,6 +160,19 @@ DEFAULT_PROVIDER_CAPABILITIES: Mapping[str, ProviderCapability] = {
         route_reviewer="gemini",
     ),
 }
+
+STUB_PROVIDER_CAPABILITY = ProviderCapability(
+    name="stub",
+    roles={role: True for role in RUNNER_ROLES},
+    dispatch_command="fixture",
+    route_implementer="claude",
+    route_reviewer="none",
+)
+
+
+class SubprocessRunner(Protocol):
+    def __call__(self, *args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        ...
 
 
 def _schema_path(schema_name: str) -> Path:
@@ -453,6 +481,445 @@ class PlanOpsFacade:
 
     def build_gemini_dispatch_input(self, **payload: Any) -> dict[str, Any]:
         return self._run_direct("build_gemini_dispatch_input", payload)
+
+
+def _completed_to_dispatch_result(
+    *,
+    provider: str,
+    role: str,
+    completed: subprocess.CompletedProcess[str],
+) -> DispatchResult:
+    raw_text = completed.stdout.strip()
+    raw_envelope: dict[str, Any] | None
+    parsed: Mapping[str, Any] | None = None
+    error: str | None = None
+    if raw_text:
+        try:
+            loaded = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raw_envelope = None
+            error = f"invalid JSON envelope: {exc}"
+        else:
+            if isinstance(loaded, dict):
+                raw_envelope = loaded
+                raw_parsed = loaded.get("parsed", loaded.get("result"))
+                if isinstance(raw_parsed, Mapping):
+                    parsed = raw_parsed
+            else:
+                raw_envelope = None
+                error = "wrapper emitted non-object JSON envelope"
+    else:
+        raw_envelope = None
+        error = "wrapper emitted no JSON envelope"
+
+    if completed.returncode != 0:
+        if completed.stderr.strip():
+            error = completed.stderr.strip()
+        elif raw_envelope and isinstance(raw_envelope.get("error"), str):
+            error = str(raw_envelope["error"])
+        elif error is None:
+            error = f"wrapper exited with {completed.returncode}"
+
+    if raw_envelope and isinstance(raw_envelope.get("status"), str):
+        status = str(raw_envelope["status"])
+    elif raw_envelope and isinstance(raw_envelope.get("outcome"), str):
+        status = str(raw_envelope["outcome"])
+    elif completed.returncode == 0 and error is None:
+        status = "ok"
+    else:
+        status = "error"
+
+    return DispatchResult(
+        provider=provider,
+        role=role,
+        status=status,
+        task_id=(
+            str(raw_envelope.get("task_id"))
+            if raw_envelope and raw_envelope.get("task_id") is not None
+            else None
+        ),
+        parsed=parsed,
+        raw_envelope=raw_envelope,
+        error=error,
+    )
+
+
+def _run_provider_subprocess(
+    command: Sequence[str],
+    *,
+    provider: str,
+    role: str,
+    timeout: int,
+    runner: SubprocessRunner = subprocess.run,
+    stdin_payload: Mapping[str, Any] | None = None,
+) -> DispatchResult:
+    """Run one wrapper command and preserve its JSON envelope."""
+
+    stdin_text = json.dumps(stdin_payload) if stdin_payload is not None else None
+    try:
+        completed = runner(
+            list(command),
+            input=stdin_text,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return DispatchResult(
+            provider=provider,
+            role=role,
+            status="timeout",
+            error=f"provider subprocess timed out after {timeout}s",
+            raw_envelope={
+                "provider": provider,
+                "role": role,
+                "timeout": timeout,
+                "stdout": exc.stdout,
+                "stderr": exc.stderr,
+            },
+        )
+    return _completed_to_dispatch_result(
+        provider=provider,
+        role=role,
+        completed=completed,
+    )
+
+
+class ProviderAdapter:
+    """Common adapter interface over dispatch wrappers."""
+
+    capability: ProviderCapability
+
+    def probe(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def classify(self, **payload: Any) -> DispatchResult:
+        return self._unsupported("classify")
+
+    def implement(self, **payload: Any) -> DispatchResult:
+        return self._unsupported("implement")
+
+    def review(self, **payload: Any) -> DispatchResult:
+        return self._unsupported("review")
+
+    def plan_review(self, **payload: Any) -> DispatchResult:
+        return self._unsupported("plan_review")
+
+    def triage(self, **payload: Any) -> DispatchResult:
+        return self._unsupported("triage")
+
+    def author(self, **payload: Any) -> DispatchResult:
+        return self._unsupported("author")
+
+    def _unsupported(self, role: str) -> DispatchResult:
+        return DispatchResult(
+            provider=self.capability.name,
+            role=role,
+            status="unsupported",
+            error=f"{self.capability.name} does not support {role}",
+            raw_envelope={
+                "provider": self.capability.name,
+                "role": role,
+                "status": "unsupported",
+            },
+        )
+
+
+class WrapperProvider(ProviderAdapter):
+    """Base class for subprocess-backed provider adapters."""
+
+    def __init__(
+        self,
+        *,
+        python: str | None = None,
+        script_dir: Path | None = None,
+        timeout: int = 300,
+        runner: SubprocessRunner = subprocess.run,
+    ) -> None:
+        self.python = python or sys.executable
+        self.script_dir = script_dir or SCRIPT_DIR
+        self.timeout = timeout
+        self.runner = runner
+
+    @property
+    def script_path(self) -> Path:
+        return self.script_dir / self.capability.dispatch_command
+
+    def probe(self) -> dict[str, Any]:
+        return {
+            "provider": self.capability.name,
+            "available": self.script_path.exists() and shutil.which(self.python) is not None,
+            "capability": {
+                "name": self.capability.name,
+                "roles": dict(self.capability.roles),
+                "dispatch_command": self.capability.dispatch_command,
+                "route_implementer": self.capability.route_implementer,
+                "route_reviewer": self.capability.route_reviewer,
+            },
+        }
+
+    def _run(
+        self,
+        role: str,
+        argv: Sequence[str],
+        *,
+        stdin_payload: Mapping[str, Any] | None = None,
+    ) -> DispatchResult:
+        return _run_provider_subprocess(
+            [self.python, str(self.script_path), *argv],
+            provider=self.capability.name,
+            role=role,
+            timeout=self.timeout,
+            runner=self.runner,
+            stdin_payload=stdin_payload,
+        )
+
+
+def _common_task_args(payload: Mapping[str, Any]) -> list[str]:
+    argv = [
+        "--plan-file",
+        str(payload["plan_file"]),
+        "--task-id",
+        str(payload["task_id"]),
+        "--repo-root",
+        str(payload["repo_root"]),
+        "--json",
+    ]
+    if payload.get("dry_run"):
+        argv.append("--dry-run")
+    if payload.get("timeout") is not None:
+        argv.extend(["--timeout", str(payload["timeout"])])
+    if payload.get("target_task_id") is not None:
+        argv.extend(["--target-task-id", str(payload["target_task_id"])])
+    if payload.get("unattended_revert_policy") is not None:
+        argv.extend(["--unattended-revert-policy", str(payload["unattended_revert_policy"])])
+    return argv
+
+
+def _review_args(payload: Mapping[str, Any]) -> list[str]:
+    argv = _common_task_args(payload)
+    if payload.get("files"):
+        files = payload["files"]
+        if isinstance(files, str):
+            files_arg = files
+        else:
+            files_arg = ",".join(str(path) for path in files)
+        argv.extend(["--files", files_arg])
+    if payload.get("review_focus"):
+        argv.extend(["--review-focus", str(payload["review_focus"])])
+    return argv
+
+
+def _declared_files_changed(files: Any) -> list[str] | None:
+    if files is None:
+        return None
+    if isinstance(files, str):
+        declared = [part.strip() for part in files.split(",")]
+    else:
+        declared = [str(path).strip() for path in files]
+    return [path for path in declared if path]
+
+
+def _plan_review_args(payload: Mapping[str, Any]) -> list[str]:
+    argv = [
+        "--schedule-file",
+        str(payload["schedule_file"]),
+        "--repo-root",
+        str(payload["repo_root"]),
+        "--json",
+    ]
+    if payload.get("dry_run"):
+        argv.append("--dry-run")
+    if payload.get("timeout") is not None:
+        argv.extend(["--timeout", str(payload["timeout"])])
+    if payload.get("allow_gaps"):
+        argv.append("--allow-gaps")
+    if payload.get("unattended_revert_policy") is not None:
+        argv.extend(["--unattended-revert-policy", str(payload["unattended_revert_policy"])])
+    return argv
+
+
+class CodexProvider(WrapperProvider):
+    capability = DEFAULT_PROVIDER_CAPABILITIES["codex"]
+
+    def implement(self, **payload: Any) -> DispatchResult:
+        return self._run("implement", ["implement", *_common_task_args(payload)])
+
+    def review(self, **payload: Any) -> DispatchResult:
+        return self._run("review", ["review", *_review_args(payload)])
+
+    def plan_review(self, **payload: Any) -> DispatchResult:
+        return self._run("plan_review", ["plan-review", *_plan_review_args(payload)])
+
+
+class GeminiProvider(WrapperProvider):
+    capability = DEFAULT_PROVIDER_CAPABILITIES["gemini"]
+
+    def implement(self, **payload: Any) -> DispatchResult:
+        return self._unsupported("implement")
+
+    def review(self, **payload: Any) -> DispatchResult:
+        return self._run("review", ["review", *_review_args(payload)])
+
+    def plan_review(self, **payload: Any) -> DispatchResult:
+        return self._run("plan_review", ["plan-review", *_plan_review_args(payload)])
+
+
+class ClaudeProvider(WrapperProvider):
+    capability = DEFAULT_PROVIDER_CAPABILITIES["claude"]
+
+    def __init__(
+        self,
+        *,
+        plan_ops: PlanOpsFacade | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.plan_ops = plan_ops or PlanOpsFacade(python=self.python, timeout=self.timeout)
+
+    def _claude(self, role: str, variant: str, **payload: Any) -> DispatchResult:
+        build_payload: dict[str, Any] = {
+            "plan_file": payload["plan_file"],
+            "task_id": payload["task_id"],
+            "variant": variant,
+            "repo_root": payload.get("repo_root"),
+            "analyst_annotations": payload.get("analyst_annotations"),
+            "target_task_id": payload.get("target_task_id"),
+            "starting_sha": payload.get("starting_sha"),
+            "dispatch_context": payload.get("dispatch_context"),
+            "run_id": payload.get("run_id"),
+            "output": "-",
+        }
+        declared_files = _declared_files_changed(payload.get("files"))
+        if declared_files is not None:
+            build_payload["declared_files_changed"] = declared_files
+        dispatch_input = self.plan_ops.build_claude_dispatch_input(**build_payload)
+        if dispatch_input.get("ok") is False:
+            error_value = dispatch_input.get("error")
+            if isinstance(error_value, Mapping):
+                error_message = str(error_value.get("message", error_value))
+            else:
+                error_message = str(error_value)
+            return DispatchResult(
+                provider=self.capability.name,
+                role=role,
+                status="error",
+                raw_envelope=dispatch_input,
+                error=error_message,
+            )
+        envelope = dispatch_input.get("envelope", dispatch_input)
+        if declared_files is not None and isinstance(envelope, Mapping):
+            envelope = dict(envelope)
+            envelope["declared_files_changed"] = declared_files
+        argv = ["run", "--input", "-", "--output", "-"]
+        if payload.get("timeout") is not None:
+            argv.extend(["--timeout", str(payload["timeout"])])
+        if payload.get("dry_run"):
+            argv.append("--dry-run")
+        return self._run(role, argv, stdin_payload=envelope)
+
+    def classify(self, **payload: Any) -> DispatchResult:
+        return self._claude("classify", "analyst", **payload)
+
+    def implement(self, **payload: Any) -> DispatchResult:
+        return self._claude("implement", "default", **payload)
+
+    def review(self, **payload: Any) -> DispatchResult:
+        return self._claude("review", "role-swap", **payload)
+
+    def plan_review(self, **payload: Any) -> DispatchResult:
+        return self._unsupported("plan_review")
+
+    def triage(self, **payload: Any) -> DispatchResult:
+        return self._claude("triage", "analyst", **payload)
+
+    def author(self, **payload: Any) -> DispatchResult:
+        return self._claude("author", "rework", **payload)
+
+
+class StubProvider(ProviderAdapter):
+    capability = STUB_PROVIDER_CAPABILITY
+
+    def __init__(self, *, fixtures_dir: Path | None = None) -> None:
+        self.fixtures_dir = fixtures_dir or (
+            SCRIPT_DIR.parents[2]
+            / "tests"
+            / "scripts"
+            / "fixtures"
+            / "implement_plan_runner"
+            / "providers"
+        )
+
+    def probe(self) -> dict[str, Any]:
+        return {
+            "provider": "stub",
+            "available": True,
+            "capability": {
+                "name": self.capability.name,
+                "roles": dict(self.capability.roles),
+                "dispatch_command": self.capability.dispatch_command,
+                "route_implementer": self.capability.route_implementer,
+                "route_reviewer": self.capability.route_reviewer,
+            },
+        }
+
+    def _fixture(self, role: str, **payload: Any) -> DispatchResult:
+        path = self.fixtures_dir / f"{role}.json"
+        if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            raw = {
+                "provider": "stub",
+                "role": role,
+                "status": "ok",
+                "task_id": payload.get("task_id"),
+                "parsed": {"verdict": "stub", "findings": [], "summary": "stub fixture"},
+            }
+        return DispatchResult(
+            provider="stub",
+            role=role,
+            status=str(raw.get("status", "ok")),
+            task_id=str(raw.get("task_id")) if raw.get("task_id") is not None else None,
+            parsed=raw.get("parsed") if isinstance(raw.get("parsed"), Mapping) else None,
+            raw_envelope=raw,
+            error=raw.get("error") if isinstance(raw.get("error"), str) else None,
+        )
+
+    def classify(self, **payload: Any) -> DispatchResult:
+        return self._fixture("classify", **payload)
+
+    def implement(self, **payload: Any) -> DispatchResult:
+        return self._fixture("implement", **payload)
+
+    def review(self, **payload: Any) -> DispatchResult:
+        return self._fixture("review", **payload)
+
+    def plan_review(self, **payload: Any) -> DispatchResult:
+        return self._fixture("plan_review", **payload)
+
+    def triage(self, **payload: Any) -> DispatchResult:
+        return self._fixture("triage", **payload)
+
+    def author(self, **payload: Any) -> DispatchResult:
+        return self._fixture("author", **payload)
+
+
+def provider_registry(
+    *,
+    runner: SubprocessRunner = subprocess.run,
+    plan_ops: PlanOpsFacade | None = None,
+    timeout: int = 300,
+    include_stub: bool = True,
+) -> dict[str, ProviderAdapter]:
+    registry: dict[str, ProviderAdapter] = {
+        "codex": CodexProvider(runner=runner, timeout=timeout),
+        "gemini": GeminiProvider(runner=runner, timeout=timeout),
+        "claude": ClaudeProvider(runner=runner, plan_ops=plan_ops, timeout=timeout),
+    }
+    if include_stub:
+        registry["stub"] = StubProvider()
+    return registry
 
 
 def _split_csv(value: str | None) -> tuple[str, ...] | None:

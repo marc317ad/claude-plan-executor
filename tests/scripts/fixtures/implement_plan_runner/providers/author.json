@@ -1,0 +1,10 @@
+{
+  "provider": "stub",
+  "role": "author",
+  "status": "ok",
+  "task_id": "001",
+  "parsed": {
+    "status": "completed",
+    "summary": "stub author"
+  }
+}
