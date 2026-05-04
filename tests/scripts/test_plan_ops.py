@@ -20426,6 +20426,89 @@ class TestDecomposePlan:
         task = plan_ops._parse_task_block(body, level=3)
         assert task["reversion_guidance"] == "none"
 
+    def test_render_child_task_file_byte_stable_canonical(
+        self, tmp_path: Path,
+    ) -> None:
+        """Pin the byte-exact output of `_render_child_task_file` for the
+        canonical decomposer fixture's first task. Wiring the renderer
+        through the plugin-local template constant
+        (`_DECOMPOSED_CHILD_SCAFFOLD`) MUST not perturb the rendered
+        bytes — downstream parsers (`_parse_task_block` at level=3,
+        `_gate_schema_valid`, `build-tasks`) depend on the exact shape.
+        """
+        src_text = (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+            encoding="utf-8",
+        )
+        plan_context = plan_ops._extract_plan_context_section(src_text)
+        # Parse the first H2 task block (`## TASK-001: Seed scratch directory`).
+        _, raw_blocks = plan_ops._split_task_blocks_at_level(src_text, level=2)
+        assert raw_blocks, "canonical fixture lost its H2 task headers"
+        raw_id, title, block_text, _src_line = raw_blocks[0]
+        task = plan_ops._parse_task_block(block_text, level=2)
+        task["id"] = raw_id
+        task["title"] = title
+        rendered = plan_ops._render_child_task_file(
+            task, plan_context=plan_context,
+        )
+        expected = (
+            "# TASK-001 — Seed scratch directory\n"
+            "\n"
+            "## Goal\n"
+            "\n"
+            "Seed scratch directory\n"
+            "\n"
+            "## Context\n"
+            "\n"
+            f"{plan_context}\n"
+            "\n"
+            "## Verification\n"
+            "\n"
+            "- `scratch/` exists at repo root.\n"
+            "- Directory is committed via `scratch/.gitkeep` so git tracks it.\n"
+            "\n"
+            "## Tasks\n"
+            "\n"
+            "### TASK-001: Seed scratch directory\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - scratch/.gitkeep (create)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `test -d scratch`\n"
+            "- **Acceptance criteria:**\n"
+            "  - `scratch/` exists at repo root.\n"
+            "  - Directory is committed via `scratch/.gitkeep` so git tracks it.\n"
+            "- **Reversion guidance:** `rm -rf scratch`\n"
+            "\n"
+            "**Description:**\n"
+            "Create the scratch parent directory that the sibling tasks write into.\n"
+            "Minimal seeder so TASK-002 and TASK-003 can share a common parent\n"
+            "without stepping on each other's file locks.\n"
+        )
+        assert rendered == expected, (
+            f"byte-stable rendering drift:\n--- expected ---\n{expected!r}\n"
+            f"--- got ---\n{rendered!r}"
+        )
+        # Empty-description fallback: when the source omits the description,
+        # the file ends at `**Description:**\n` (no trailing blank body).
+        empty_desc_task = dict(task)
+        empty_desc_task["description"] = ""
+        rendered_empty = plan_ops._render_child_task_file(
+            empty_desc_task, plan_context=plan_context,
+        )
+        assert rendered_empty.endswith("**Description:**\n"), rendered_empty
+        # Reversion-guidance sentinel still emits when source omits it.
+        no_rev_task = dict(task)
+        no_rev_task["reversion_guidance"] = None
+        rendered_no_rev = plan_ops._render_child_task_file(
+            no_rev_task, plan_context=plan_context,
+        )
+        assert "- **Reversion guidance:** none\n" in rendered_no_rev, (
+            rendered_no_rev
+        )
+
     def test_decompose_force_removes_stale_children(
         self, tmp_path: Path,
     ) -> None:

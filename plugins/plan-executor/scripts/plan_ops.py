@@ -32,6 +32,7 @@ import json
 import os
 import re
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
@@ -3009,6 +3010,57 @@ def _extract_plan_context_section(plan_text: str) -> str | None:
     return body or None
 
 
+# ---------------------------------------------------------------------------
+# Child-plan rendering scaffold
+# ---------------------------------------------------------------------------
+#
+# `_DECOMPOSED_CHILD_SCAFFOLD` is the runtime authority for child-plan
+# markdown shape. It is a module-level constant so a missing or unreadable
+# `templates/decomposed_child.md.template` file in an installed plugin
+# context cannot break execution. The sibling template file mirrors this
+# scaffold (with the same `${...}` placeholder grammar) for human
+# authoring + drift testing — see `TestDecomposedTemplateDrift` in
+# `tests/scripts/test_plan_ops.py`.
+#
+# Placeholder slots:
+#   ${TID}           Three-digit task id (e.g. `001`).
+#   ${TITLE}         Human-readable task title.
+#   ${CONTEXT}       Parent-plan `## Context` body, or task description
+#                    fallback, or stub line.
+#   ${VERIFICATION}  Multi-line bullet list (no trailing newline).
+#   ${METADATA}      Multi-line metadata bullets for the H3 block (no
+#                    trailing newline) — Status/Priority/Agent?/Files/
+#                    Dependencies/Test command/Acceptance criteria/
+#                    Reversion guidance, in that order.
+#   ${DESCRIPTION}   Either an empty string (when the source omitted the
+#                    description, so the rendered file ends at the
+#                    `**Description:**` header) or `\n` + the description
+#                    body (so the body sits on the line after the header).
+_DECOMPOSED_CHILD_SCAFFOLD = (
+    "# TASK-${TID} — ${TITLE}\n"
+    "\n"
+    "## Goal\n"
+    "\n"
+    "${TITLE}\n"
+    "\n"
+    "## Context\n"
+    "\n"
+    "${CONTEXT}\n"
+    "\n"
+    "## Verification\n"
+    "\n"
+    "${VERIFICATION}\n"
+    "\n"
+    "## Tasks\n"
+    "\n"
+    "### TASK-${TID}: ${TITLE}\n"
+    "\n"
+    "${METADATA}\n"
+    "\n"
+    "**Description:**${DESCRIPTION}\n"
+)
+
+
 def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> str:
     """Render a decomposed task dict as a child-plan markdown file.
 
@@ -3024,24 +3076,18 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
     section body; it is used to populate the child's `## Context`
     section verbatim so the child carries the same narrative context as
     the parent plan. If absent, the task's `description` is used.
+
+    The fixed-shape scaffolding is provided by the module-level
+    `_DECOMPOSED_CHILD_SCAFFOLD` constant; only the variable bits
+    (context body, verification bullets, metadata bullets, description)
+    are assembled here and substituted in.
     """
     tid = task["id"]
     title = task["title"]
-    parts: list[str] = []
-    # ---- Top-level sections required by `_gate_schema_valid` ------------
-    # Goal: derived from the task title (deterministic, 1:1 mapping).
-    parts.append(f"# TASK-{tid} — {title}")
-    parts.append("")
-    parts.append("## Goal")
-    parts.append("")
-    parts.append(title)
-    parts.append("")
-    # Context: prefer the parent plan's `## Context` block for parity
+    # ---- Context: prefer the parent plan's `## Context` block for parity
     # with hand-authored child plans (see the shipped
     # `tests/fixtures/directory_mode_plan/TASK-001_seed.md`); otherwise
     # fall back to the task's own description, otherwise a stub.
-    parts.append("## Context")
-    parts.append("")
     context_body = (plan_context or "").strip()
     if not context_body:
         context_body = (task.get("description") or "").strip()
@@ -3050,56 +3096,45 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
             f"Auto-decomposed child for TASK-{tid}. See the source plan for "
             "broader context."
         )
-    parts.append(context_body)
-    parts.append("")
-    # Verification: derived from the task's acceptance-criteria list.
-    parts.append("## Verification")
-    parts.append("")
+    # ---- Verification: derived from the task's acceptance-criteria list.
     ac_list = task.get("acceptance_criteria") or []
     if ac_list:
-        for ac in ac_list:
-            parts.append(f"- {ac}")
+        verification_lines = [f"- {ac}" for ac in ac_list]
     else:
-        parts.append("- See acceptance criteria under the task block below.")
-    parts.append("")
-    # Tasks section wraps the H3 task block.
-    parts.append("## Tasks")
-    parts.append("")
-    # ---- H3 task block (unchanged grammar, preserves byte-identical
-    # `build-tasks` input) -----------------------------------------------
-    parts.append(f"### TASK-{tid}: {title}")
-    parts.append("")
-    # Metadata bullets in canonical order.
-    parts.append(f"- **Status:** {task.get('status') or 'pending'}")
+        verification_lines = ["- See acceptance criteria under the task block below."]
+    verification = "\n".join(verification_lines)
+    # ---- Metadata: H3 task-block bullets in canonical order.
+    metadata_lines: list[str] = []
+    metadata_lines.append(f"- **Status:** {task.get('status') or 'pending'}")
     priority = task.get("priority")
     if priority:
-        parts.append(f"- **Priority:** {priority}")
+        metadata_lines.append(f"- **Priority:** {priority}")
     agent = task.get("agent")
     if agent:
-        parts.append(f"- **Agent:** {agent}")
+        metadata_lines.append(f"- **Agent:** {agent}")
     # Files: always emit the standalone marker form for predictability.
-    parts.append("- **Files:**")
+    metadata_lines.append("- **Files:**")
     if task.get("files"):
         for f in task["files"]:
-            parts.append(f"  - {f}")
+            metadata_lines.append(f"  - {f}")
     # Dependencies: inline list, `[]` if empty for parser unambiguity.
     deps = task.get("depends_on") or []
     if deps:
-        parts.append(f"- **Dependencies:** [{', '.join(deps)}]")
+        metadata_lines.append(f"- **Dependencies:** [{', '.join(deps)}]")
     else:
-        parts.append("- **Dependencies:** []")
+        metadata_lines.append("- **Dependencies:** []")
     test_cmd = task.get("test_command")
     if test_cmd is None or test_cmd == "":
-        parts.append("- **Test command:** none")
+        metadata_lines.append("- **Test command:** none")
     elif test_cmd.strip().lower() == "none":
         # Source wrote the literal sentinel; preserve it unwrapped so the
         # round-trip is byte-identical.
-        parts.append("- **Test command:** none")
+        metadata_lines.append("- **Test command:** none")
     else:
-        parts.append(f"- **Test command:** `{test_cmd}`")
-    parts.append("- **Acceptance criteria:**")
+        metadata_lines.append(f"- **Test command:** `{test_cmd}`")
+    metadata_lines.append("- **Acceptance criteria:**")
     for ac in task.get("acceptance_criteria") or []:
-        parts.append(f"  - {ac}")
+        metadata_lines.append(f"  - {ac}")
     # `**Reversion guidance:**` is emitted UNCONDITIONALLY so the child
     # grammar matches the pinned contract stated in the plan's task
     # description (child files always include the section). When the
@@ -3108,16 +3143,23 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
     # literal string "none" which downstream consumers treat as absent).
     reversion = task.get("reversion_guidance")
     if reversion:
-        parts.append(f"- **Reversion guidance:** {reversion}")
+        metadata_lines.append(f"- **Reversion guidance:** {reversion}")
     else:
-        parts.append("- **Reversion guidance:** none")
-    parts.append("")
+        metadata_lines.append("- **Reversion guidance:** none")
+    metadata = "\n".join(metadata_lines)
+    # ---- Description: empty source → just the `**Description:**` header
+    # (placeholder substitutes to ``); non-empty source → newline + body
+    # (so the body sits on the line immediately after the header).
     description = task.get("description") or ""
-    parts.append("**Description:**")
-    if description:
-        parts.append(description)
-    parts.append("")
-    return "\n".join(parts)
+    description_slot = f"\n{description}" if description else ""
+    return string.Template(_DECOMPOSED_CHILD_SCAFFOLD).substitute(
+        TID=tid,
+        TITLE=title,
+        CONTEXT=context_body,
+        VERIFICATION=verification,
+        METADATA=metadata,
+        DESCRIPTION=description_slot,
+    )
 
 
 def _decompose_plan(

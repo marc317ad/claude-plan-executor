@@ -5,17 +5,21 @@
      `<short_slug>` with task-specific values. The H3 `### TASK-NNN:` block
      below mirrors what `_render_child_task_file` emits in
      `plugins/plan-executor/scripts/plan_ops.py` and what
-     `_gate_schema_valid` enforces. The full directory-level guide for
-     decomposed plans lives in
-     `templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md`. For hand-authoring a
-     single `### TASK-NNN:` block inside a whole-plan markdown file, use the
-     sibling `TASK.md.template` instead. -->
+     `_gate_schema_valid` enforces. The runtime authority for child
+     rendering is the module-level `_DECOMPOSED_CHILD_SCAFFOLD` constant
+     in `plan_ops.py`; this template is the human-authoring artifact and
+     is kept aligned via the drift tests in
+     `tests/scripts/test_plan_ops.py::TestDecomposedTemplateDrift`. The
+     full directory-level guide for decomposed plans lives in
+     `templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md`. For hand-authoring
+     a single `### TASK-NNN:` block inside a whole-plan markdown file,
+     use the sibling `TASK.md.template` instead. -->
 
-# TASK-001 - <title>
+# TASK-001 — <title>
 
 ## Goal
 
-<One or two sentences describing the system-visible outcome of this child task.>
+<title>
 
 ## Context
 

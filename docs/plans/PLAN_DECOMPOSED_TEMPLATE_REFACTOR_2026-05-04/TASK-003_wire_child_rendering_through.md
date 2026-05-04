@@ -32,7 +32,7 @@ when the documented template stops matching the parser constants.
 
 ### TASK-003: Wire child rendering through the plugin-local template
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (modify) - load or embed the child template through a small renderer helper
