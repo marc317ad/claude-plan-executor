@@ -1,0 +1,178 @@
+{
+  "outcome": "needs-enrichment",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Add reproduction tests for MCP builder file-output acknowledgement",
+      "files": [
+        "`tests/scripts/test_plan_ops_mcp_conformance.py`",
+        "`tests/scripts/test_plan_ops_mcp_schemas.py`",
+        "`tests/scripts/fixtures/plan_ops_pure_core/tier_b/build-claude-dispatch-input__happy_file_mode.expected.json`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops_mcp_conformance.py tests/scripts/test_plan_ops_mcp_schemas.py -k \"build_claude_dispatch_input or stdout_suppressed or output\"",
+      "priority": "high",
+      "plan_file": "TASK-001_add_reproduction_tests_for.md",
+      "description": "",
+      "acceptance_criteria": [
+        "Add or extend a test that calls `plan_ops__build_claude_dispatch_input` with `output` set to a temp file.",
+        "Assert the file is written under MCP.",
+        "Assert the MCP structured response contains an explicit file-output acknowledgement such as `output_written: true` and `output: \"<path>\"`.",
+        "Assert no public MCP response contains keys beginning with `__plan_ops_`.",
+        "Assert CLI `--output <path> --json` still writes the file and emits no stdout.",
+        "Assert output schema documents the acknowledgement fields.",
+        "This task is expected to fail before TASK-002 and must not be implemented in parallel with TASK-002 by a separate worker."
+      ]
+    },
+    {
+      "id": "002",
+      "title": "Implement MCP-only acknowledgement for file-output builder calls",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`plugins/plan-executor/scripts/plan_ops_mcp_server.py`",
+        "`plugins/plan-executor/scripts/schemas/mcp/build_claude_dispatch_input.output.json`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_mcp_conformance.py tests/scripts/test_plan_ops_mcp_schemas.py -k \"build_claude_dispatch_input or build-claude-dispatch-input\"",
+      "priority": "high",
+      "plan_file": "TASK-002_implement_mcp_only_acknowledgement.md",
+      "description": "",
+      "acceptance_criteria": [
+        "Preserve CLI behavior: file-output mode writes the dispatch JSON to the requested path and suppresses stdout.",
+        "Preserve default MCP behavior when `output` is omitted or `\"-\"`: return the dispatch envelope as today.",
+        "In MCP mode with `output != \"-\"`, return a small structured acknowledgement such as `{ok:true, output_written:true, output:\"<path>\"}` instead of the dispatch envelope.",
+        "Add a generic MCP-server defensive strip for public results so no internal `__plan_ops_*` marker can leak from any plan_ops pure core.",
+        "Audit in-tree call sites and tests for code that reads the dispatch envelope out of the MCP response while also setting `output`; migrate those sites to read the file or to omit `output`.",
+        "Keep side-effect conformance tests green."
+      ]
+    },
+    {
+      "id": "003",
+      "title": "Rewrite SKILL.md Claude-wrapper recipes for MCP mode",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`tests/scripts/test_implement_plan_mcp_e2e.py`",
+        "`tests/scripts/test_implement_plan_transport_bootstrap.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_implement_plan_mcp_e2e.py tests/scripts/test_implement_plan_transport_bootstrap.py -k \"claude_envelope_extract or skill or build_claude_dispatch_input\"",
+      "priority": "critical",
+      "plan_file": "TASK-003_rewrite_skill_md_claude.md",
+      "description": "",
+      "acceptance_criteria": [
+        "Replace or qualify `Pipe stdout into plan_claude_dispatch.py run --input -` wording so it applies only to CLI fallback.",
+        "Add a canonical MCP-mode recipe: 1. Call `plan_ops__build_claude_dispatch_input` with `output:\"<tmp dispatch input>\"`. 2. Verify the tool response says the output was written. 3. Run `plan_claude_dispatch.py run --input <tmp dispatch input>` in Bash. 4. Feed the wrapper JSON to `plan_ops__claude_envelope_extract` with native `payload`. 5. Route only the normalized extractor output.",
+        "Update Phase D role-swap, bounded remediation, narrow remediation, and analyst/implementer dispatch references to point at the same recipe instead of ad hoc `--input -` wording.",
+        "Add drift tests that fail if SKILL.md says to pipe MCP builder output directly into Bash or routes Claude wrapper envelopes without `plan_ops__claude_envelope_extract`.",
+        "Confirm every named test file exists before implementation; if a transport test has been renamed, update this plan and scope the actual file."
+      ]
+    },
+    {
+      "id": "004",
+      "title": "Add dispatch-site extractor ordering regression tests",
+      "files": [
+        "`tests/scripts/test_implement_plan_runner_phase_d.py`",
+        "`tests/scripts/test_implement_plan_provider_adapters.py`",
+        "`tests/scripts/test_implement_plan_mcp_e2e.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_implement_plan_runner_phase_d.py tests/scripts/test_implement_plan_provider_adapters.py tests/scripts/test_implement_plan_mcp_e2e.py -k \"claude_envelope_extract or remediation or scope_violation\"",
+      "priority": "high",
+      "plan_file": "TASK-004_add_dispatch_site_extractor.md",
+      "description": "",
+      "acceptance_criteria": [
+        "Cover the canonical sequence `build_claude_dispatch_input -> plan_claude_dispatch.py run -> claude_envelope_extract -> route` for at least implementer and one remediation path.",
+        "Include the MCP file-output path where `build_claude_dispatch_input` returns a slim acknowledgement, and assert the runner does not mistake that acknowledgement for a wrapper envelope.",
+        "Verify routing consumes normalized extractor fields (`status`, `outcome`, `scope_violation`, `error`) rather than raw wrapper `.status` / `.result`.",
+        "Include a non-`ok` wrapper status case and assert commit is forbidden before any Phase D route can mark the task committable.",
+        "Include a `scope_violation` case and assert the normalized `scope_violation` field drives pause/reconcile behavior."
+      ]
+    },
+    {
+      "id": "005",
+      "title": "Run focused audit and document operator guidance",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`docs/plans/PLAN_IMPLEMENT_PLAN_MCP_DISPATCH_ERGONOMICS_2026-05-04.md`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops_mcp_conformance.py tests/scripts/test_implement_plan_mcp_e2e.py && venv/bin/python plugins/plan-executor/scripts/plan_ops.py audit --json",
+      "priority": "medium",
+      "plan_file": "TASK-005_run_focused_audit_and.md",
+      "description": "",
+      "acceptance_criteria": [
+        "Run `plan_ops__audit` after the skill/tool changes.",
+        "Record whether any audit finding remains advisory or blocking.",
+        "Add a numbered operator rule in the skill: in MCP mode, do not switch the whole run to CLI fallback because a builder result cannot be piped; materialize the dispatch input, run the Bash wrapper with `--input <file>`, then continue with MCP for extraction and later plan operations."
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "003",
+        "001",
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/plan_ops_mcp_server.py",
+        "plugins/plan-executor/scripts/schemas/mcp/build_claude_dispatch_input.output.json",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/fixtures/plan_ops_pure_core/tier_b/build-claude-dispatch-input__happy_file_mode.expected.json",
+        "tests/scripts/test_implement_plan_mcp_e2e.py",
+        "tests/scripts/test_implement_plan_transport_bootstrap.py",
+        "tests/scripts/test_plan_ops_mcp_conformance.py",
+        "tests/scripts/test_plan_ops_mcp_schemas.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "004",
+        "005"
+      ],
+      "file_locks": [
+        "docs/plans/PLAN_IMPLEMENT_PLAN_MCP_DISPATCH_ERGONOMICS_2026-05-04.md",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_implement_plan_mcp_e2e.py",
+        "tests/scripts/test_implement_plan_provider_adapters.py",
+        "tests/scripts/test_implement_plan_runner_phase_d.py"
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "task_id": "001",
+      "type": "missing-description",
+      "severity": "soft",
+      "detail": "TASK-001 in TASK-001_add_reproduction_tests_for.md has no `**Description:**` section"
+    },
+    {
+      "task_id": "002",
+      "type": "missing-description",
+      "severity": "soft",
+      "detail": "TASK-002 in TASK-002_implement_mcp_only_acknowledgement.md has no `**Description:**` section"
+    },
+    {
+      "task_id": "003",
+      "type": "missing-description",
+      "severity": "soft",
+      "detail": "TASK-003 in TASK-003_rewrite_skill_md_claude.md has no `**Description:**` section"
+    },
+    {
+      "task_id": "004",
+      "type": "missing-description",
+      "severity": "soft",
+      "detail": "TASK-004 in TASK-004_add_dispatch_site_extractor.md has no `**Description:**` section"
+    },
+    {
+      "task_id": "005",
+      "type": "missing-description",
+      "severity": "soft",
+      "detail": "TASK-005 in TASK-005_run_focused_audit_and.md has no `**Description:**` section"
+    }
+  ],
+  "risks": []
+}

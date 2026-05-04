@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "PLAN - /implement-plan MCP Dispatch Ergonomics",
+  "source_plan_file": "PLAN_IMPLEMENT_PLAN_MCP_DISPATCH_ERGONOMICS_2026-05-04.md",
+  "created": "2026-05-04",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_add_reproduction_tests_for.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_implement_mcp_only_acknowledgement.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_rewrite_skill_md_claude.md",
+      "priority": "critical",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_add_dispatch_site_extractor.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_run_focused_audit_and.md",
+      "priority": "medium",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
