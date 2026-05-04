@@ -121,3 +121,19 @@ assertion in the test file and the asserted span in `SKILL.md` (or its
 absence) — then verify against `plan_ops.py` and the MCP schemas under
 `plugins/plan-executor/scripts/schemas/mcp/` whether the protocol the
 assertion pins is still active.
+
+## Execution log — 20260504T165123 (paused)
+
+Starting SHA: `cbcaaa832a1041ae740ff538147bcb06933267c1`  → Ending SHA: `cbcaaa832a1041ae740ff538147bcb06933267c1`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | n/a | paused | no-diff | Triage success; 17 rows ledger in /tmp/envelope_003.json. Awaiting persistence path (commit-task rejects empty --files). |
+
+## Execution log — 20260504T172041 (success)
+
+Starting SHA: `cbcaaa832a1041ae740ff538147bcb06933267c1`  → Ending SHA: `cbcaaa832a1041ae740ff538147bcb06933267c1`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | n/a | no-diff (triage-only) | no-diff | 17-row drift ledger produced (8 moved-to-schema, 1 retired, 7 restore-prose, 1 genuine-loss); deliverable in implementer report; ledger in /tmp/task003_inner.json; consumed by TASK-004 in same run via --analyst-annotations |

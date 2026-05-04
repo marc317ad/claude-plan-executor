@@ -128,3 +128,11 @@ For `retired` rows, delete the test. For `restore-prose` rows (expected to
 be the minority), restore the narrative line to `SKILL.md`. The refactor's
 intent is that `SKILL.md` does not duplicate payload shapes that already
 live in MCP schema JSON; do not re-inline payload structures.
+
+## Execution log — 20260504T172041 (success)
+
+Starting SHA: `cbcaaa832a1041ae740ff538147bcb06933267c1`  → Ending SHA: `a1f6a5368290be05a7bfa28dddcad168f6cedc7c`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | codex | clean (post-D.2a.5 bounded-remediation; D.5 needs-rework→remediation→re-review clean) [remediation-flag-missing] | a1f6a536 | 3 files (test_plan_ops.py, test_implement_plan_directory_smoke.py, SKILL.md); 45/46 tests pass; 1 expected-fail (genuine-loss row #3, target_task_id required[] over-constraint at codex_plan_review_schema.json:30 — flagged for user adjudication). Codex needs-rework→D.5 needs-rework→bounded remediation fixed SKILL.md:521+525 D.5 verdict allowlist drift→re-review clean. Commit body MISSING [remediation] trailer due to review-route gap (route returns remediation_tag=false on post-rework clean verdict regardless of retries_used; SKILL §D.2a.5 says it should be true). Filed for follow-up. |

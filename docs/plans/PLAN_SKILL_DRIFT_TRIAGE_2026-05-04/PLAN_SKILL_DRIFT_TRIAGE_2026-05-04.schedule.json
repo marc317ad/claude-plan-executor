@@ -1,43 +1,6 @@
 {
+  "outcome": "valid",
   "tasks": [
-    {
-      "id": "001",
-      "title": "Fix preflight smoke test invocation",
-      "files": [
-        "`tests/scripts/test_implement_plan_directory_smoke.py` (modify) - update `test_preflight_passes_on_clean_directory_copy` to pass `--unattended-revert-policy`"
-      ],
-      "dependencies": [],
-      "test_command": "venv/bin/pytest tests/scripts/test_implement_plan_directory_smoke.py::TestPreflight::test_preflight_passes_on_clean_directory_copy",
-      "priority": "high",
-      "plan_file": "TASK-001_fix_preflight_smoke_test.md",
-      "description": "The preflight CLI now hard-requires `--unattended-revert-policy` so unattended\nruns cannot silently discard work on a pause path. The smoke test predates\nthat requirement and invokes preflight without the flag, producing\n`unattended-revert-policy-required` and a non-zero exit. Add the flag with a\nvalue matching the allowlist.",
-      "acceptance_criteria": [
-        "`test_preflight_passes_on_clean_directory_copy` passes.",
-        "The invocation passes a value drawn from the same allowlist `plan_ops.py` advertises in its preflight error message: `pause`, `fail-fast`, or `preserve-only`. Use `fail-fast` (matches the unattended-execution intent of a smoke test).",
-        "No other test in the file is modified."
-      ],
-      "agent": "claude"
-    },
-    {
-      "id": "002",
-      "title": "Reconcile dispatch-templates.md slot and ladder assertions",
-      "files": [
-        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (modify) - restore or update the Phase B narrow-remediation slot block and the triage prioritization ladder if the slot/row contract is still active in `plan_ops.py`",
-        "`tests/scripts/test_plan_ops.py` (modify) - rewrite or delete the two assertions only if the contract has demonstrably retired"
-      ],
-      "dependencies": [],
-      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py::TestPhaseBNarrowRemediationTemplate tests/scripts/test_plan_ops.py::TestTask007TriageRoutingBlockingFirst",
-      "priority": "high",
-      "plan_file": "TASK-002_reconcile_dispatch_templates_md.md",
-      "description": "Two failing tests pin protocol-shape patterns inside `dispatch-templates.md`\n(Phase B narrow-remediation slot block; Task-007 triage prioritization ladder\nincluding the `blocking=true` row). Each is small but needs a code-grounded\njudgment: was the template legitimately reshaped, or did the slim drop a\nload-bearing slot? Restore or update the right side accordingly.",
-      "acceptance_criteria": [
-        "Both `TestPhaseBNarrowRemediationTemplate::test_template_embeds_the_three_json_slots` and the two `TestTask007TriageRoutingBlockingFirst` cases pass.",
-        "For each failing assertion, the implementer's report names which side was wrong (template lost the slot/row vs. test pins a retired contract) and cites the `plan_ops.py` symbol or schema file that confirms the classification (for example `_render_narrow_remediation_template`, `_order_triage_findings`, or the relevant MCP schema under `plugins/plan-executor/scripts/schemas/`).",
-        "No new tests are added.",
-        "No edits to `SKILL.md` (that is TASK-004's surface)."
-      ],
-      "agent": "claude"
-    },
     {
       "id": "003",
       "title": "Triage SKILL.md drift failures and produce a per-test ledger",
@@ -46,7 +9,7 @@
       "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py tests/scripts/test_implement_plan_directory_smoke.py -k \"skill_md or SkillMd or Documentation or AuditDocReferences or AutoPromote or ClassifierFanOut or D2a6 or D5Route or D2aBinding or PlanReviewDocumentation or Task007PlanReviewSchema or Task019SkillMdGrep or Task007AuthorPerChildTargeting or SkillRoutingDocumentation\"",
       "priority": "high",
       "plan_file": "TASK-003_triage_skill_md_drift.md",
-      "description": "Catalogue every SKILL.md drift failure with a code-grounded classification so\nTASK-004 can apply a deterministic fix per row. Read both sides \u2014 the failing\nassertion in the test file and the asserted span in `SKILL.md` (or its\nabsence) \u2014 then verify against `plan_ops.py` and the MCP schemas under\n`plugins/plan-executor/scripts/schemas/mcp/` whether the protocol the\nassertion pins is still active.",
+      "description": "Catalogue every SKILL.md drift failure with a code-grounded classification so\nTASK-004 can apply a deterministic fix per row. Read both sides \u2014 the failing\nassertion in the test file and the asserted span in `SKILL.md` (or its\nabsence) \u2014 then verify against `plan_ops.py` and the MCP schemas under\n`plugins/plan-executor/scripts/schemas/mcp/` whether the protocol the\nassertion pins is still active.\n\n## Execution log \u2014 20260504T165123 (paused)\n\nStarting SHA: `cbcaaa832a1041ae740ff538147bcb06933267c1`  \u2192 Ending SHA: `cbcaaa832a1041ae740ff538147bcb06933267c1`\n\n| Task | Agent | Reviewer | Verdict | Commit | Notes |\n|---|---|---|---|---|---|\n| 003 | claude | n/a | paused | no-diff | Triage success; 17 rows ledger in /tmp/envelope_003.json. Awaiting persistence path (commit-task rejects empty --files). |",
       "acceptance_criteria": [
         "Implementer report contains a ledger row for every failing assertion under the SKILL.md cluster (~18 rows), each with: `test_node_id`, `assertion_text`, `classification` \u2208 {`moved-to-schema`, `retired`, `restore-prose`, `genuine-loss`}, `token_searched` (the literal string grep'd from the assertion), `schema_hits` (list of schema JSON files where the token appears, empty if none), `code_hits` (list of `plan_ops.py` / wrapper file:line references where the underlying protocol is still active, empty if retired), `evidence_path` (the primary citation supporting the classification), and `proposed_fix` (one of: \"rewrite test to grep <schema_path>\", \"delete test\", \"restore SKILL.md prose: <verbatim line>\", or \"FLAG genuine-loss; do not auto-fix\").",
         "The ledger MUST include a \"no information silently lost\" certification: every row classified `moved-to-schema` cites a schema JSON that actually contains the asserted token (the implementer ran `grep -r '<token>' plugins/plan-executor/scripts/schemas/` and pasted the matching line); every row classified `retired` cites a `git log -S` or `git log --diff-filter=D` reference confirming deliberate removal; every row classified `genuine-loss` cites the still-active code path that the lost prose was describing.",
@@ -81,44 +44,15 @@
         "For every test deletion, the implementer cites the corresponding ledger row's `retired` evidence path in `concerns_for_reviewer[]`."
       ],
       "agent": "claude"
-    },
-    {
-      "id": "005",
-      "title": "Verify full regression suite green",
-      "files": [],
-      "dependencies": [
-        "001",
-        "002",
-        "004"
-      ],
-      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py tests/scripts/test_implement_plan_directory_smoke.py",
-      "priority": "high",
-      "plan_file": "TASK-005_verify_full_regression_suite.md",
-      "description": "End-to-end verification that TASK-001, TASK-002, and TASK-004 collectively\nrestored the green baseline without introducing new drift. The implementer\nshould run the full pytest commands listed and capture the output tail.",
-      "acceptance_criteria": [
-        "`tests/scripts/test_plan_ops.py` passes with zero failures EXCEPT any rows TASK-003 classified `genuine-loss`. Such rows remain failing by design and are enumerated in the implementer's report under `concerns_for_reviewer[]` with their still-active code paths, copied forward from TASK-004's report.",
-        "`tests/scripts/test_implement_plan_directory_smoke.py` passes with zero failures except `genuine-loss` carve-outs, same rule as above.",
-        "The implementer report includes a `genuine_loss_summary[]` listing each such row's `test_node_id`, `token_searched`, and `code_hits` so the user has the adjudication queue in one place.",
-        "`plan_ops.py audit --json` reports advisory-clean (no findings introduced by this plan; pre-existing audit findings, if any, must be the same set as before this plan started).",
-        "`plan_ops.py gates --check schema-valid,fixture-valid,execution-safe,review-safe --plan-file plugins/plan-executor/fixtures/sample_phase4.md --json` passes.",
-        "No new tests are added unless a concrete behavior gap surfaces during verification (in which case the implementer report MUST cite the gap)."
-      ],
-      "agent": "claude"
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "001",
-        "002",
         "003"
       ],
-      "file_locks": [
-        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
-        "tests/scripts/test_implement_plan_directory_smoke.py",
-        "tests/scripts/test_plan_ops.py"
-      ]
+      "file_locks": []
     },
     {
       "index": 2,
@@ -130,16 +64,8 @@
         "tests/scripts/test_implement_plan_directory_smoke.py",
         "tests/scripts/test_plan_ops.py"
       ]
-    },
-    {
-      "index": 3,
-      "task_ids": [
-        "005"
-      ],
-      "file_locks": []
     }
   ],
-  "outcome": "valid",
   "gaps": [],
   "risks": []
 }
