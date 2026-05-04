@@ -21,8 +21,16 @@
       "file": "TASK-002_<short_slug>.md",
       "priority": "medium",
       "depends_on": ["001"],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_<short_slug>.md",
+      "priority": "low",
+      "depends_on": ["002"],
+      "status": "Superseded",
+      "superseded_by": ["002"]
     }
   ]
 }

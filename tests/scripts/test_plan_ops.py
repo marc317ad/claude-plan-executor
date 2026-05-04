@@ -24642,3 +24642,142 @@ class Test_parse_plan_review_report_reviewer_field:
         assert body["findings_count"] == 1
         assert body["findings"][0]["target_task_id"] == "002"
         assert body["schedule_ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# TASK-002 — Decomposed-plan template drift tests against parser constants
+# ---------------------------------------------------------------------------
+#
+# These drift tests pin the decomposed-plan templates (the root directory
+# guide and the plugin-local child / index templates) to the runtime
+# authority in `plan_ops.py`. If `ALLOWED_TASK_STATUSES`,
+# `ALLOWED_INDEX_STATUSES`, `_TASK_REQUIRED_BULLETS`, or
+# `_TASK_REQUIRED_PROSE_HEADERS` change, the templates must change too;
+# otherwise authoring guidance silently diverges from what `_gate_schema_valid`
+# and `_parse_index_roster` accept.
+
+
+class TestDecomposedTemplateDrift:
+    """Drift guards: decomposed-plan templates must mention every member
+    of the parser constants that govern accepted statuses and required
+    task fields. Imports are taken from `plan_ops` directly so renaming
+    or extending those constants forces a corresponding template edit.
+    """
+
+    ROOT_TEMPLATE = (
+        REPO_ROOT / "templates" / "DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md"
+    )
+    CHILD_TEMPLATE = (
+        REPO_ROOT / "plugins" / "plan-executor" / "templates"
+        / "decomposed_child.md.template"
+    )
+    INDEX_TEMPLATE = (
+        REPO_ROOT / "plugins" / "plan-executor" / "templates"
+        / "00_INDEX.json.template"
+    )
+
+    def test_root_template_lists_every_allowed_task_status(self) -> None:
+        text = self.ROOT_TEMPLATE.read_text(encoding="utf-8")
+        for status in plan_ops.ALLOWED_TASK_STATUSES:
+            assert status in text, (
+                f"ALLOWED_TASK_STATUSES member {status!r} missing from "
+                f"{self.ROOT_TEMPLATE}"
+            )
+
+    def test_root_template_lists_every_allowed_index_status(self) -> None:
+        text = self.ROOT_TEMPLATE.read_text(encoding="utf-8")
+        for status in plan_ops.ALLOWED_INDEX_STATUSES:
+            assert status in text, (
+                f"ALLOWED_INDEX_STATUSES member {status!r} missing from "
+                f"{self.ROOT_TEMPLATE}"
+            )
+
+    def test_index_json_template_lists_every_allowed_index_status(
+        self,
+    ) -> None:
+        text = self.INDEX_TEMPLATE.read_text(encoding="utf-8")
+        for status in plan_ops.ALLOWED_INDEX_STATUSES:
+            assert status in text, (
+                f"ALLOWED_INDEX_STATUSES member {status!r} missing from "
+                f"{self.INDEX_TEMPLATE}"
+            )
+
+    def test_root_template_declares_every_required_task_bullet(self) -> None:
+        text = self.ROOT_TEMPLATE.read_text(encoding="utf-8")
+        for field in plan_ops._TASK_REQUIRED_BULLETS:
+            assert f"**{field}:**" in text, (
+                f"_TASK_REQUIRED_BULLETS member {field!r} missing from "
+                f"{self.ROOT_TEMPLATE}"
+            )
+
+    def test_child_template_declares_every_required_task_bullet(self) -> None:
+        text = self.CHILD_TEMPLATE.read_text(encoding="utf-8")
+        for field in plan_ops._TASK_REQUIRED_BULLETS:
+            assert f"**{field}:**" in text, (
+                f"_TASK_REQUIRED_BULLETS member {field!r} missing from "
+                f"{self.CHILD_TEMPLATE}"
+            )
+
+    def test_root_template_declares_every_required_prose_header(self) -> None:
+        text = self.ROOT_TEMPLATE.read_text(encoding="utf-8")
+        for field in plan_ops._TASK_REQUIRED_PROSE_HEADERS:
+            assert f"**{field}:**" in text, (
+                f"_TASK_REQUIRED_PROSE_HEADERS member {field!r} missing "
+                f"from {self.ROOT_TEMPLATE}"
+            )
+
+    def test_child_template_declares_every_required_prose_header(self) -> None:
+        text = self.CHILD_TEMPLATE.read_text(encoding="utf-8")
+        for field in plan_ops._TASK_REQUIRED_PROSE_HEADERS:
+            assert f"**{field}:**" in text, (
+                f"_TASK_REQUIRED_PROSE_HEADERS member {field!r} missing "
+                f"from {self.CHILD_TEMPLATE}"
+            )
+
+    def test_child_template_has_top_level_section_contract(self) -> None:
+        """Mirror `_gate_schema_valid`'s top-level section contract:
+        `## Goal`, either `## Context` or `## Scoped Context`, and
+        `## Verification` must appear as top-level (`^## `) headings.
+        """
+        text = self.CHILD_TEMPLATE.read_text(encoding="utf-8")
+        assert re.search(r"^## Goal\b", text, re.MULTILINE), (
+            f"child template missing `## Goal`: {self.CHILD_TEMPLATE}"
+        )
+        has_context = re.search(r"^## Context\b", text, re.MULTILINE)
+        has_scoped = re.search(r"^## Scoped Context\b", text, re.MULTILINE)
+        assert has_context or has_scoped, (
+            f"child template missing `## Context` or `## Scoped Context`: "
+            f"{self.CHILD_TEMPLATE}"
+        )
+        assert re.search(r"^## Verification\b", text, re.MULTILINE), (
+            f"child template missing `## Verification`: {self.CHILD_TEMPLATE}"
+        )
+
+    def test_index_json_template_parses_as_json(self) -> None:
+        """`00_INDEX.json.template` MUST parse as JSON as-is, with
+        placeholder tokens (`<...>`, `YYYY-MM-DD`) appearing only inside
+        JSON string values. If the template ever needs free-form
+        placeholders that break JSON parseability, the contract has
+        changed and `_parse_index_roster` consumers will need updating
+        too."""
+        raw = self.INDEX_TEMPLATE.read_text(encoding="utf-8")
+        # Parses as-is — no preprocessing of placeholder tokens.
+        parsed = json.loads(raw)
+        assert parsed["schema_version"] == 1
+        assert isinstance(parsed["chunks"], list)
+        # Ensure each `<...>` placeholder occurs only inside a JSON
+        # string. We walk per-line and require an odd number of unescaped
+        # `"` characters before the placeholder column (i.e., currently
+        # inside a string literal).
+        for match in re.finditer(r"<[^<>\n]+>", raw):
+            line_start = raw.rfind("\n", 0, match.start()) + 1
+            line_end = raw.find("\n", match.end())
+            if line_end < 0:
+                line_end = len(raw)
+            line = raw[line_start:line_end]
+            col = match.start() - line_start
+            quote_count = line[:col].count('"')
+            assert quote_count % 2 == 1, (
+                f"placeholder {match.group()!r} appears outside a JSON "
+                f"string in {self.INDEX_TEMPLATE}"
+            )

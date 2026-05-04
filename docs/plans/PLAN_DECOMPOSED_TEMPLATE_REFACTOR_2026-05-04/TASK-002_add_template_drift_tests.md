@@ -33,7 +33,7 @@ when the documented template stops matching the parser constants.
 
 ### TASK-002: Add template drift tests against parser constants
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_plan_ops.py` (modify) - add drift tests for root and plugin-local templates
