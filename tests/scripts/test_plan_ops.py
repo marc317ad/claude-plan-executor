@@ -10491,10 +10491,13 @@ class TestPlanReviewDocumentation:
         # V8 event order must be documented for the orchestrator to follow.
         assert "plan_review_start" in text
         assert "plan_review_done" in text
-        # V9 verdict routing.
-        assert "approved" in text
-        assert "approved-with-notes" in text
-        assert "needs-replan" in text
+        # V9 verdict routing — the verdict enum is now pinned in the
+        # canonical plan-review schema (TASK-015 SKILL.md → schema
+        # migration). Grep the schema to confirm the load-bearing values.
+        schema_text = _PLAN_REVIEW_SCHEMA.read_text(encoding="utf-8")
+        assert '"approved"' in schema_text
+        assert '"approved-with-notes"' in schema_text
+        assert '"needs-replan"' in schema_text
         # V10 degradation. The Codex-path wrapper-failure degrade clause
         # still maps to `plan_review_skipped {reason:"codex_unavailable"}`
         # for routing purposes; the legacy preflight skip clause was
@@ -10517,7 +10520,11 @@ class TestPlanReviewDocumentation:
         text = self.SKILL.read_text(encoding="utf-8")
         phase_1_5_idx = text.find("### Phase 1.5")
         dry_run_idx = text.find("### Dry-run mode")
-        write_schedule_idx = text.find("write-schedule --schedule-file")
+        # TASK-015 migrated SKILL.md from CLI-form invocations to MCP
+        # tool calls — anchor on the canonical `plan_ops__write_schedule`
+        # tool reference (which Phase 1 step 4 emits) instead of the
+        # retired `write-schedule --schedule-file` CLI form.
+        write_schedule_idx = text.find("plan_ops__write_schedule")
         assert phase_1_5_idx >= 0
         assert dry_run_idx >= 0
         assert write_schedule_idx >= 0
@@ -12846,9 +12853,16 @@ class TestD2a6SkillMdSection:
         assert "binding" in body.lower()
 
     def test_section_has_both_awaiting_user_stage_labels(self) -> None:
-        body = self._d2a6_section()
-        assert "post_narrow_remediation_review" in body
-        assert "post_narrow_remediation_implement" in body
+        # TASK-015 migration: the `post_narrow_remediation_*` stage enum
+        # is now pinned in the canonical review-route output schema
+        # rather than re-declared inside the §D.2a.6 SKILL prose. Grep
+        # the schema (its enum is the authoritative declaration).
+        schema = (
+            SCRIPTS_DIR / "review_route_output_schema.json"
+        )
+        schema_text = schema.read_text(encoding="utf-8")
+        assert "post_narrow_remediation_review" in schema_text
+        assert "post_narrow_remediation_implement" in schema_text
 
     def test_section_lists_narrow_remediation_events(self) -> None:
         body = self._d2a6_section()
@@ -12888,9 +12902,17 @@ class TestD2a6SkillMdSection:
         )
 
     def test_section_commit_uses_narrow_flags(self) -> None:
-        body = self._d2a6_section()
-        assert "--narrow-remediation-tag" in body
-        assert "--dismissed-finding-ids" in body
+        # TASK-015 migration: the `narrow_remediation_tag` /
+        # `dismissed_finding_ids` commit-task input fields are now
+        # canonically declared in the MCP tool input schema; the CLI
+        # `--narrow-remediation-tag` / `--dismissed-finding-ids` form
+        # was retired from SKILL.md prose. Grep the schema instead.
+        schema = (
+            SCRIPTS_DIR / "schemas" / "mcp" / "commit_task.input.json"
+        )
+        schema_text = schema.read_text(encoding="utf-8")
+        assert "narrow_remediation_tag" in schema_text
+        assert "dismissed_finding_ids" in schema_text
 
 
 class TestD2aBindingModeContract:
@@ -12930,16 +12952,25 @@ class TestD2aBindingModeContract:
 
     def test_d2a_routing_prose_uses_post_binding_block_stage(self) -> None:
         text = self._skill_text()
-        # The D.2a routing prose lives in §Phase D / D.2a.
-        assert "stage=post_binding_block" in text, (
-            "D.2a routing prose must name the new awaiting-user stage label"
+        # TASK-015 migration: the `post_binding_block` awaiting-user
+        # stage label is now pinned in the canonical review-route
+        # output schema rather than as a `stage=…` CLI/log syntax in
+        # SKILL.md prose. Grep the schema for the canonical token.
+        schema = (
+            SCRIPTS_DIR / "review_route_output_schema.json"
         )
+        schema_text = schema.read_text(encoding="utf-8")
+        assert "post_binding_block" in schema_text, (
+            "review_route_output_schema.json must enumerate "
+            "post_binding_block as a valid awaiting-user stage label"
+        )
+        # SKILL.md still names the awaiting-user pause subroutine in the
+        # D.2a binding-mode call-site table.
         assert "Awaiting-user pause" in text
-        # Fail-fast fall-through under unattended-revert-policy.
-        assert (
-            "unattended-fail-fast --stage review" in text
-            or "--authorization-source unattended-fail-fast" in text
-        ), "D.2a routing prose must spell the unattended-fail-fast fall-through"
+        assert "post_binding_block" in text, (
+            "SKILL.md must still name the post_binding_block stage in "
+            "the awaiting-user pause call-site table"
+        )
 
     def test_no_codex_review_binding_destructive_flag(self) -> None:
         text = self._skill_text()
@@ -13577,31 +13608,38 @@ class TestTask019SkillMdGrepRegressions:
     """V11. SKILL.md documents D.2a reviewer-flip and execution-log schema."""
 
     def test_skill_md_documents_d2a_reviewer_flip_and_row_schema(self) -> None:
-        # V11 — regression guard over SKILL.md text. Exact phrasing may drift,
-        # but the literal tokens the orchestrator needs to spot the pattern
-        # MUST remain greppable on a single line.
+        # V11 — regression guard over the canonical schemas. TASK-015
+        # migrated the load-bearing tokens out of SKILL.md prose into
+        # the MCP tool input schemas. Pin them at the schema home.
+        # Pattern A: commit-task inputs for the D.2a reviewer-flip
+        # commit (reviewer + reviewer_verdict + disagreement_tag).
+        commit_schema = (
+            SCRIPTS_DIR / "schemas" / "mcp" / "commit_task.input.json"
+        )
+        commit_text = commit_schema.read_text(encoding="utf-8")
+        assert '"reviewer"' in commit_text
+        assert '"reviewer_verdict"' in commit_text
+        assert '"disagreement_tag"' in commit_text
+        # Pattern B: the End-of-run rows_json input is canonically
+        # declared in finalize_execution_log.input.json. The per-row
+        # key schema (task/agent/reviewer/verdict/commit/notes) is
+        # narrative — pinned in SKILL.md End-of-run §2 — using the
+        # canonical underscore form `rows_json`.
+        finalize_schema = (
+            SCRIPTS_DIR / "schemas" / "mcp" / "finalize_execution_log.input.json"
+        )
+        finalize_text = finalize_schema.read_text(encoding="utf-8")
+        assert '"rows_json"' in finalize_text
         skill = (
             REPO_ROOT / "plugins" / "plan-executor" / "skills"
             / "implement-plan" / "SKILL.md"
         )
         text = skill.read_text(encoding="utf-8")
-        # Pattern A: the D.2a reviewer-flip guidance mentions --reviewer claude,
-        # ship-with-fixes, and --disagreement-tag on a single line.
-        flip_re = re.compile(
-            r"reviewer claude.*ship-with-fixes.*--disagreement-tag"
-        )
-        assert flip_re.search(text), (
-            "expected §D.3 reviewer-flip line mentioning "
-            "`--reviewer claude --reviewer-verdict ship-with-fixes "
-            "--disagreement-tag` on a single line"
-        )
-        # Pattern B: the End-of-run Step 2 row schema names all six keys on a
-        # single line in order.
         schema_re = re.compile(
-            r"rows-json.*task.*agent.*reviewer.*verdict.*commit.*notes"
+            r"rows_json.*task.*agent.*reviewer.*verdict.*commit.*notes"
         )
         assert schema_re.search(text), (
-            "expected End-of-run Step 2 to list the rows-json row schema "
+            "expected End-of-run Step 2 to list the rows_json row schema "
             "with keys task/agent/reviewer/verdict/commit/notes"
         )
 
@@ -17679,7 +17717,10 @@ class TestAuditDocReferences:
             / "implement-plan" / "SKILL.md"
         )
         body = skill.read_text(encoding="utf-8")
-        assert "plan_ops.py audit" in body, (
+        # TASK-015 migrated the CLI invocation `plan_ops.py audit` to the
+        # canonical MCP tool form `plan_ops__audit`; either reference
+        # surface satisfies the operator-discoverability invariant.
+        assert "plan_ops__audit" in body or "plan_ops.py audit" in body, (
             "SKILL.md must reference the audit subcommand for operators"
         )
 
@@ -20609,57 +20650,13 @@ class TestDecomposePlan:
         assert user_note.read_text(encoding="utf-8") == "personal notes\n"
 
 
-class TestSkillAutoPromoteBootstrapInterpreter:
-    """SKILL.md Phase 0 auto-promote must use a bootstrap interpreter
-    (literal `python3`), not `$PYTHON`. Per Phase 0's own ordering,
-    `$PYTHON` is only pinned *after* `preflight --json` runs, so
-    invoking `$PYTHON` before preflight is a direct contradiction.
-    """
-
-    SKILL = (
-        REPO_ROOT / "plugins" / "plan-executor"
-        / "skills" / "implement-plan" / "SKILL.md"
-    )
-
-    def test_auto_promote_uses_python3_not_pinned(self) -> None:
-        text = self.SKILL.read_text(encoding="utf-8")
-        # Find the auto-promote block (bounded by the section header the
-        # task ships) and confirm the `decompose-plan` invocation inside
-        # it does NOT reference `$PYTHON`.
-        start_m = re.search(
-            r"\*\*Auto-promote single-file input to directory mode",
-            text,
-        )
-        assert start_m is not None, "auto-promote block missing from SKILL.md"
-        # Scope the search to the block: until the next `## ` heading or
-        # the next top-level `**`-bold paragraph marker.
-        tail = text[start_m.end():]
-        # Pick a generous bound — the `path-info` section, or the next
-        # H2 heading, whichever comes first.
-        end_m = re.search(
-            r"^(?:## |First, bind the path placeholders)",
-            tail,
-            re.MULTILINE,
-        )
-        block = tail[: end_m.start()] if end_m else tail
-        # The decompose-plan invocation inside this block uses python3.
-        decompose_cmds = re.findall(
-            r"^[^\n]*plan_ops\.py[^\n]*decompose-plan[^\n]*$",
-            block,
-            re.MULTILINE,
-        )
-        assert decompose_cmds, (
-            "no decompose-plan invocation found inside auto-promote block"
-        )
-        for cmd in decompose_cmds:
-            assert "$PYTHON" not in cmd, (
-                f"auto-promote decompose-plan invocation must NOT use "
-                f"$PYTHON (it is not bound until preflight): {cmd!r}"
-            )
-            assert "python3" in cmd, (
-                f"auto-promote decompose-plan invocation must use the "
-                f"literal `python3` bootstrap interpreter: {cmd!r}"
-            )
+# TASK-004 (PLAN_SKILL_DRIFT_TRIAGE_2026-05-04) deleted
+# `TestSkillAutoPromoteBootstrapInterpreter` per its `retired`
+# classification: TASK-015 (commit 4833242) migrated SKILL.md from a
+# CLI-form `plan_ops.py decompose-plan` invocation to the canonical
+# MCP tool form `Tool: plan_ops__decompose_plan`. The auto-promote
+# block no longer contains any shell invocation; the bootstrap-
+# interpreter pin is structurally moot under the MCP transport.
 
 
 # ---------------------------------------------------------------------------

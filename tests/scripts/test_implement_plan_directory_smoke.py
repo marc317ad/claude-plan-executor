@@ -807,6 +807,20 @@ class TestSingleFileAutoPromote:
         assert "Auto-promote single-file input to directory mode" in skill_text, (
             "SKILL.md Phase 0 auto-promote step heading drifted"
         )
-        assert "decompose-plan --plan-file" in skill_text, (
-            "SKILL.md Phase 0 invocation example drifted"
+        # TASK-015 migrated SKILL.md's Phase 0 invocation from the CLI
+        # form `plan_ops.py decompose-plan --plan-file <abs>` to the
+        # canonical MCP tool form `plan_ops__decompose_plan` with input
+        # `{"plan_file": "<abs>"}`. The `plan_file` input is pinned in
+        # the tool's input schema; grep there for the canonical shape.
+        from pathlib import Path
+        repo_root = Path(__file__).resolve().parents[2]
+        decompose_schema = (
+            repo_root / "plugins" / "plan-executor" / "scripts"
+            / "schemas" / "mcp" / "decompose_plan.input.json"
+        )
+        decompose_schema_text = decompose_schema.read_text(encoding="utf-8")
+        assert '"plan_file"' in decompose_schema_text, (
+            "decompose_plan.input.json must pin the `plan_file` input "
+            "(the MCP-tool form replaces the legacy "
+            "`decompose-plan --plan-file` CLI invocation example)"
         )

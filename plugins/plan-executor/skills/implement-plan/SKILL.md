@@ -284,7 +284,7 @@ Pseudo-syntax (for illustration; the actual tool-call shape is N parallel Bash i
 #   dispatches them in parallel; the orchestrator receives N v3 envelopes on stdout.
 ```
 
-Each payload sets `agent="plan-analyst"`, carries the absolute child plan path under `payload.plan_path`, the orchestrator-known `trace.run_id`, and an `output_instructions.schema_path` reference to the analyst result schema (`plugins/plan-executor/scripts/schemas/claude_dispatch_output.json`'s inner `result` shape — see `dispatch-templates.md` §Phase A-single transport header for the canonical payload skeleton). Each dispatch uses the **Phase A-single** template from `dispatch-templates.md` (agent `plan-analyst`, model `sonnet` — narrower scope than the retired whole-plan opus dispatch); the per-child agent reads exactly its one child file and the wrapper returns a v3 envelope whose inner `result` is `{agent: "claude"|"codex", classification_reason: "<one-line justification>"}`.
+Each payload sets `agent="plan-analyst"`, carries the absolute child plan path under `payload.plan_path`, the orchestrator-known `trace.run_id`, and an `output_instructions.schema_path` reference to the analyst result schema (`plugins/plan-executor/scripts/schemas/claude_dispatch_output.json`'s inner `result` shape — see `dispatch-templates.md` §Phase A-single transport header for the canonical payload skeleton). Each dispatch uses the **Phase A-single** template (`templates.PhaseASingle`) from `dispatch-templates.md` (agent `plan-analyst`, model `sonnet` — narrower scope than the retired whole-plan opus dispatch); the per-child agent reads exactly its one child file and the wrapper returns a v3 envelope whose inner `result` is `{agent: "claude"|"codex", classification_reason: "<one-line justification>"}`.
 
 **Extraction:** invoke `plan_ops__claude_envelope_extract` with `agent:"plan-analyst"` per §Dispatch error handling (Claude wrapper). On `status==ok` the per-child classifier seam's `result` is `{agent, classification_reason}` (no `parse-schedule` round-trip); the whole-plan analyst seam's `result.schedule` flows through `parse-schedule`.
 
@@ -355,7 +355,7 @@ Fire triage only when `plan-review-route stage=post_review` returns `dispatch_tr
 
 After parsing the triage report, call `plan-review-route stage=post_triage` with the first review envelope, triage envelope, and flags, log `plan_review_route_called {stage, action}`, then comply with the returned action (`proceed_to_phase_2`, `dispatch_plan_author_per_finding`, `halt_plan_review_failed`, or `unknown_state`). If the action is `unknown_state`, pause for the operator using the returned pause payload; do not reconstruct the triage verdict table in conversation context.
 
-`plan-review-route` enriches the per-finding payload before emitting `dispatch_plan_author_per_finding`; dispatch those payloads with the Phase 1.5a templates.
+`plan-review-route` enriches the per-finding payload before emitting `dispatch_plan_author_per_finding`; dispatch those payloads with the Phase 1.5a templates. Each per-finding payload carries `target_task_id` plus the resolved `child_plan_file`; the orchestrator dispatches one `plan-author` per finding (per-child fan-out). A finding with `target_task_id=null` is a **schedule-level** finding (not a per-child finding) — its author dispatch targets `00_INDEX.json` (or carries `files_edited: []`) rather than a child plan file.
 
 After author edits, re-run Phase 1 from disk (`build-tasks → classifier → write-schedule`) and then re-run plan review. Call `plan-review-route stage=post_review attempt=2` with the re-review envelope; a second `needs-replan` returns `halt_plan_review_failed{reason_detail:"second_needs_replan"}` (binding rule — no second triage). Author failure, malformed report, out-of-scope write, or analyst invalid result during the re-run are local error paths: emit `run_end reason=plan_review_failed` directly without re-calling `plan-review-route`.
 
@@ -492,7 +492,7 @@ If `--skip-cross-review`, log `review_skipped`, skip to D.3, and show the mandat
 | Claude implemented, `claude_only=false` | `Bash: $PYTHON plan_codex_dispatch.py review --plan-file <abs> --task-id NNN --repo-root <abs> --files <files_changed> --review-focus bugs` | `clean | minor-findings | needs-rework` |
 | Codex implemented, `claude_only=false` | `code-reviewer` Agent (`model:"sonnet"`) | `ship | ship-with-fixes | needs-rework` |
 
-Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}`. When findings are non-empty, include the full findings payload. Codex wrapper `{timeout, parse_error, failure}` logs `review_skipped` only when no fallback reviewer is selected; an explicit skip-review path uses `reviewer:"none"`. Gemini fallback is opt-in via `--allow-gemini-fallback`, only for transient Codex review failures of Claude-implemented work; when Gemini produces the fallback review, pass `reviewer:"gemini"` and its parsed envelope to `plan_ops__review_route`.
+Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}`. When findings are non-empty, include the full findings payload. Codex wrapper `{timeout, parse_error, failure}` outcomes map to the prefixed run-log reason vocabulary `codex_review_timeout` / `codex_review_parse_error` / `codex_review_failure` (carried on `review_skipped` and `review_fallback_used` events) and log `review_skipped` only when no fallback reviewer is selected; an explicit skip-review path uses `reviewer:"none"`. Gemini fallback is opt-in via `--allow-gemini-fallback`, only for transient Codex review failures of Claude-implemented work; when Gemini produces the fallback review, pass `reviewer:"gemini"` and its parsed envelope to `plan_ops__review_route`.
 
 #### D.2 — Route by verdict
 
@@ -516,9 +516,23 @@ The payload, not SKILL-side special casing, expresses Claude-only routing (`revi
 
 Minor findings always persist into the run summary and commit body. If the route returns `fail`, inspect `args.policy_kind`, `args.unattended_revert_policy`, `args.authorization_source`, and `args.fail_stage` before choosing D.4 rescue/pause versus an operator-pinned unattended failure path. If the route returns `unknown_state`, pause immediately with the returned `pause_payload`.
 
+#### D.2a — Escalation
+
+When `review-route` returns `dispatch_d5`, the D.5 adjudicator (`code-reviewer`, `model:"sonnet"`) returns one of `ship | ship-with-fixes | partial-agreement | needs-rework`. The route table below maps each verdict to the next orchestrator action:
+
+| D.5 verdict | Next action |
+|---|---|
+| `ship` / `ship-with-fixes` | D.3 commit (with `disagreement_tag` if D.5 overrules a prior `needs-rework`). |
+| `needs-rework` | D.2a.5 bounded remediation (`plan-implementer`, full rework). |
+| `partial-agreement` | D.2a.6 narrow-remediation retry (`plan-remediator`, load-bearing findings only). |
+
+`partial-agreement` carries an in-range, disjoint `load_bearing[]` / `dismissed[]` index split plus a non-empty `summary` justification; malformed splits halt with structured `partial-agreement-*` errors.
+
 #### D.2a.6 — Narrow-remediation retry
 
-One `plan-remediator` attempt may address only D.5 load-bearing findings; dismissed findings are context. On retry success, re-run D.1 and treat that re-review as binding. `clean | minor-findings` commits with `narrow_remediation_tag` and `dismissed_finding_ids`; second-review or implementation failure pauses with the appropriate `post_narrow_remediation_*` stage.
+`plan-remediator` is dispatched as **one attempt** that may address only the D.5 load-bearing findings; dismissed findings are context only. The retry wrap is logged with `narrow_remediation_start` before the dispatch and `narrow_remediation_done` after. On retry success, re-run D.1 and treat that re-review as binding. `clean | minor-findings` commits via `plan_ops__commit_task` with `narrow_remediation_tag` and `dismissed_finding_ids` route-provided inputs; second-review failure pauses with `stage:"post_narrow_remediation_review"` and retry-implement failure pauses with `stage:"post_narrow_remediation_implement"`.
+
+**Binding-mode exemption.** Under `--codex-review-binding` the D.2a.6 narrow-remediation path is **not entered** — the binding-mode contract skips D.2a.5, D.2a.6, and D.5 entirely. The run pauses for user instruction by default (Awaiting-user pause `stage:"post_binding_block"`); cron/CI runs that need an unattended fall-through must opt in via `--unattended-revert-policy fail-fast`, which authorizes a structured `fail-task` instead of the pause.
 
 #### D.2b — Role-swap retry
 

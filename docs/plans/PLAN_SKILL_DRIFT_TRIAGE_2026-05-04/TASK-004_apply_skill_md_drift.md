@@ -102,7 +102,7 @@ tests/scripts/test_implement_plan_directory_smoke.py::TestSingleFileAutoPromote:
 
 ### TASK-004: Apply SKILL.md drift ledger
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
