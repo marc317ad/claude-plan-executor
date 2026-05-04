@@ -2,46 +2,21 @@
   "outcome": "valid",
   "tasks": [
     {
-      "id": "003",
-      "title": "Triage SKILL.md drift failures and produce a per-test ledger",
+      "id": "005",
+      "title": "Verify full regression suite green",
       "files": [],
       "dependencies": [],
-      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py tests/scripts/test_implement_plan_directory_smoke.py -k \"skill_md or SkillMd or Documentation or AuditDocReferences or AutoPromote or ClassifierFanOut or D2a6 or D5Route or D2aBinding or PlanReviewDocumentation or Task007PlanReviewSchema or Task019SkillMdGrep or Task007AuthorPerChildTargeting or SkillRoutingDocumentation\"",
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py tests/scripts/test_implement_plan_directory_smoke.py",
       "priority": "high",
-      "plan_file": "TASK-003_triage_skill_md_drift.md",
-      "description": "Catalogue every SKILL.md drift failure with a code-grounded classification so\nTASK-004 can apply a deterministic fix per row. Read both sides \u2014 the failing\nassertion in the test file and the asserted span in `SKILL.md` (or its\nabsence) \u2014 then verify against `plan_ops.py` and the MCP schemas under\n`plugins/plan-executor/scripts/schemas/mcp/` whether the protocol the\nassertion pins is still active.\n\n## Execution log \u2014 20260504T165123 (paused)\n\nStarting SHA: `cbcaaa832a1041ae740ff538147bcb06933267c1`  \u2192 Ending SHA: `cbcaaa832a1041ae740ff538147bcb06933267c1`\n\n| Task | Agent | Reviewer | Verdict | Commit | Notes |\n|---|---|---|---|---|---|\n| 003 | claude | n/a | paused | no-diff | Triage success; 17 rows ledger in /tmp/envelope_003.json. Awaiting persistence path (commit-task rejects empty --files). |",
+      "plan_file": "TASK-005_verify_full_regression_suite.md",
+      "description": "End-to-end verification that TASK-001, TASK-002, and TASK-004 collectively\nrestored the green baseline without introducing new drift. The implementer\nshould run the full pytest commands listed and capture the output tail.",
       "acceptance_criteria": [
-        "Implementer report contains a ledger row for every failing assertion under the SKILL.md cluster (~18 rows), each with: `test_node_id`, `assertion_text`, `classification` \u2208 {`moved-to-schema`, `retired`, `restore-prose`, `genuine-loss`}, `token_searched` (the literal string grep'd from the assertion), `schema_hits` (list of schema JSON files where the token appears, empty if none), `code_hits` (list of `plan_ops.py` / wrapper file:line references where the underlying protocol is still active, empty if retired), `evidence_path` (the primary citation supporting the classification), and `proposed_fix` (one of: \"rewrite test to grep <schema_path>\", \"delete test\", \"restore SKILL.md prose: <verbatim line>\", or \"FLAG genuine-loss; do not auto-fix\").",
-        "The ledger MUST include a \"no information silently lost\" certification: every row classified `moved-to-schema` cites a schema JSON that actually contains the asserted token (the implementer ran `grep -r '<token>' plugins/plan-executor/scripts/schemas/` and pasted the matching line); every row classified `retired` cites a `git log -S` or `git log --diff-filter=D` reference confirming deliberate removal; every row classified `genuine-loss` cites the still-active code path that the lost prose was describing.",
-        "No source files, no test files, and no `SKILL.md` are modified by this task.",
-        "Classification ordering (priority): `moved-to-schema` first, else `retired`, else `restore-prose`, else `genuine-loss`. Default to `moved-to-schema` whenever the token appears in any schema JSON. Use `restore-prose` only when the asserted content is narrative (ladder ordering, protocol words, route-table rows) with no schema home AND SKILL.md has the surrounding section but lost the specific line. Use `genuine-loss` when the protocol is still active in code but the token is absent from both schemas and current SKILL.md \u2014 this is a refactor bug to surface, not silently patch.",
-        "Test command runs all SKILL.md drift tests and is allowed to report failures \u2014 this task does not fix them."
-      ],
-      "agent": "claude"
-    },
-    {
-      "id": "004",
-      "title": "Apply SKILL.md drift ledger",
-      "files": [
-        "`tests/scripts/test_plan_ops.py` (modify) - rewrite assertions to grep schema JSON for `moved-to-schema` rows; delete assertions for `retired` rows",
-        "`tests/scripts/test_implement_plan_directory_smoke.py` (modify) - same scope as above for the three SKILL.md drift cases under this file",
-        "`plugins/plan-executor/skills/implement-plan/SKILL.md` (modify) - restore narrative content only for `restore-prose` rows (sparingly \u2014 payload shapes belong in schema JSON, not re-inlined here)"
-      ],
-      "dependencies": [
-        "003"
-      ],
-      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py tests/scripts/test_implement_plan_directory_smoke.py -k \"skill_md or SkillMd or Documentation or AuditDocReferences or AutoPromote or ClassifierFanOut or D2a6 or D5Route or D2aBinding or PlanReviewDocumentation or Task007PlanReviewSchema or Task019SkillMdGrep or Task007AuthorPerChildTargeting or SkillRoutingDocumentation\"",
-      "priority": "high",
-      "plan_file": "TASK-004_apply_skill_md_drift.md",
-      "description": "Apply the per-row classification produced by TASK-003. For `moved-to-schema`\nrows, rewrite the test to grep the cited schema JSON instead of `SKILL.md`.\nFor `retired` rows, delete the test. For `restore-prose` rows (expected to\nbe the minority), restore the narrative line to `SKILL.md`. The refactor's\nintent is that `SKILL.md` does not duplicate payload shapes that already\nlive in MCP schema JSON; do not re-inline payload structures.",
-      "acceptance_criteria": [
-        "Every failing assertion enumerated in TASK-003's ledger that was classified `moved-to-schema`, `retired`, or `restore-prose` now passes or has been deleted per the ledger.",
-        "For `genuine-loss` rows: the test stays failing AND the implementer surfaces each row in `concerns_for_reviewer[]` with the still-active code path. Do NOT silently restore the prose or invent a schema entry \u2014 the user adjudicates these.",
-        "Edits follow the ledger row's `proposed_fix` field verbatim; deviations are listed in `plan_adaptations[]` with a one-line rationale.",
-        "`dispatch-templates.md` is NOT touched by this task (TASK-002's surface).",
-        "`plan_ops.py` and the MCP schemas under `plugins/plan-executor/scripts/schemas/` are NOT modified.",
-        "The `plan_ops.py audit` subcommand still reports advisory-clean after these edits (no new findings introduced).",
-        "For every test deletion, the implementer cites the corresponding ledger row's `retired` evidence path in `concerns_for_reviewer[]`."
+        "`tests/scripts/test_plan_ops.py` passes with zero failures EXCEPT any rows TASK-003 classified `genuine-loss`. Such rows remain failing by design and are enumerated in the implementer's report under `concerns_for_reviewer[]` with their still-active code paths, copied forward from TASK-004's report.",
+        "`tests/scripts/test_implement_plan_directory_smoke.py` passes with zero failures except `genuine-loss` carve-outs, same rule as above.",
+        "The implementer report includes a `genuine_loss_summary[]` listing each such row's `test_node_id`, `token_searched`, and `code_hits` so the user has the adjudication queue in one place.",
+        "`plan_ops.py audit --json` reports advisory-clean (no findings introduced by this plan; pre-existing audit findings, if any, must be the same set as before this plan started).",
+        "`plan_ops.py gates --check schema-valid,fixture-valid,execution-safe,review-safe --plan-file plugins/plan-executor/fixtures/sample_phase4.md --json` passes.",
+        "No new tests are added unless a concrete behavior gap surfaces during verification (in which case the implementer report MUST cite the gap)."
       ],
       "agent": "claude"
     }
@@ -50,20 +25,9 @@
     {
       "index": 1,
       "task_ids": [
-        "003"
+        "005"
       ],
       "file_locks": []
-    },
-    {
-      "index": 2,
-      "task_ids": [
-        "004"
-      ],
-      "file_locks": [
-        "plugins/plan-executor/skills/implement-plan/SKILL.md",
-        "tests/scripts/test_implement_plan_directory_smoke.py",
-        "tests/scripts/test_plan_ops.py"
-      ]
     }
   ],
   "gaps": [],

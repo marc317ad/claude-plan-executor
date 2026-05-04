@@ -120,3 +120,11 @@ tests/scripts/test_implement_plan_directory_smoke.py::TestSingleFileAutoPromote:
 End-to-end verification that TASK-001, TASK-002, and TASK-004 collectively
 restored the green baseline without introducing new drift. The implementer
 should run the full pytest commands listed and capture the output tail.
+
+## Execution log — 20260504T180456 (success)
+
+Starting SHA: `bb27cce77db3c06e0f42fd2a3d967ac5adee1a43`  → Ending SHA: `bb27cce77db3c06e0f42fd2a3d967ac5adee1a43`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | claude | n/a | verification-pass | no-diff | Verification-only: 1070 pass, 2 skip, 1 expected genuine-loss carve-out (TestTask007PlanReviewSchemaTargetTaskIdOptional). Status flipped via 00_INDEX.json edit (TASK-003 precedent). Concerns: target_task_id required[] over-constraint flagged in concerns_for_reviewer[]. |
