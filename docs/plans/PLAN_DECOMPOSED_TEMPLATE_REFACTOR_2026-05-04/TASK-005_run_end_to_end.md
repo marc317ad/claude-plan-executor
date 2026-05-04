@@ -32,7 +32,7 @@ when the documented template stops matching the parser constants.
 
 ### TASK-005: Run end-to-end decomposer and directory-mode regression checks
 
-- **Status:** pending
+- **Status:** Done
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_plan_ops.py` (modify) - add focused regression coverage only if an uncovered bug is found during verification
