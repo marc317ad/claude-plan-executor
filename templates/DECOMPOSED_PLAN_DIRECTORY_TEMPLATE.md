@@ -286,27 +286,38 @@ venv/bin/python plugins/plan-executor/scripts/implement_plan.py \
 - Use `Read targets` and `Symbol targets` for large files so implementers read
   the relevant code before editing.
 
-## Current Source Of Truth And Refactor Guidance
+## Current Source Of Truth And Drift Tests
 
-The decomposer already has most of this information, but it is fragmented:
+`plugins/plan-executor/scripts/plan_ops.py` is the runtime authority for the
+contract. The executable grammar lives in `_task_header_re`,
+`_extract_metadata_field`, `_extract_bullet_list`, `_parse_task_block`,
+`_decompose_plan`, `_render_child_task_file`, `_parse_index_roster`,
+`_build_tasks`, and `_gate_schema_valid`. The rendering shape used by
+`_render_child_task_file` is the in-module constant `_DECOMPOSED_CHILD_SCAFFOLD`
+— no template file is read at runtime, so a missing or stale template asset in
+an installed plugin cannot break execution.
 
-- `plugins/plan-executor/scripts/plan_ops.py` owns the executable grammar:
-  `_task_header_re`, `_extract_metadata_field`, `_extract_bullet_list`,
-  `_parse_task_block`, `_decompose_plan`, `_render_child_task_file`,
-  `_parse_index_roster`, `_build_tasks`, and `_gate_schema_valid`.
-- `plugins/plan-executor/templates/TASK.md.template` covers only the reusable
-  `### TASK-NNN:` block.
-- `docs/plans/build-plan-decomposer-plugin.md` documents a richer historical
-  decomposer plugin shape, including `00_INDEX.md`, `_manifest.json`, and more
-  status values. That plugin is not present in this checkout and its richer
-  shape is not the active executor contract.
+The reusable authoring assets are:
 
-Recommended refactor:
+- `plugins/plan-executor/templates/TASK.md.template` — the H3-block-only
+  scaffold for hand-authored whole-plan files.
+- `plugins/plan-executor/templates/decomposed_child.md.template` — the full
+  child-file scaffold that mirrors `_DECOMPOSED_CHILD_SCAFFOLD` for human
+  authoring of decomposed-directory plans.
+- `plugins/plan-executor/templates/00_INDEX.json.template` — the minimal
+  roster scaffold matching `_parse_index_roster`.
+- This root guide (`templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md`) — the
+  human-readable directory guide that decomposer agents consult.
 
-- Keep `plan_ops.py` as the runtime authority.
-- Move the rendering strings used by `_render_child_task_file` toward reusable
-  template assets under `plugins/plan-executor/templates/`, or generate this
-  document from the same constants used by the parser.
-- Add a small drift test that validates this root template mentions the current
-  required roster fields, task fields, body status vocabulary, index status
-  vocabulary, and validation commands.
+Drift between these documents and the parser is enforced by
+`TestDecomposedTemplateDrift` in `tests/scripts/test_plan_ops.py`. The drift
+suite asserts that this root guide and the plugin templates list every allowed
+task-body status, every allowed `00_INDEX.json` chunk status, every required
+task-block bullet, every required prose header, and that the index template
+parses as JSON. Adding or renaming any of those constants in `plan_ops.py`
+without updating these documents will fail the suite.
+
+A historical `plugins/plan-decomposer` plugin (with `00_INDEX.md`,
+`_manifest.json`, and a richer status vocabulary) is **not** present in this
+checkout and is **not** required to use the active executor. Treat any
+references to it as historical context only.

@@ -23,6 +23,24 @@ Inside Claude Code:
 
 Restart Claude Code afterwards. `/implement-plan` should appear in the slash-command list.
 
+## Authoring plans
+
+`/implement-plan` and `implement_plan.py` consume **decomposed-plan
+directories** (`docs/plans/<PLAN_SLUG>/` containing `00_INDEX.json` plus one
+`TASK-NNN_<slug>.md` child per task). When authoring a plan by hand, by an
+external decomposer agent, or via `plan_ops.py decompose-plan`, follow the
+canonical guide at
+[`templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md`](templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md).
+That guide documents the directory shape, the `00_INDEX.json` roster contract,
+the required child-file sections, status vocabularies, and the validation
+commands. Reusable scaffolds live alongside the parser at
+[`plugins/plan-executor/templates/`](plugins/plan-executor/templates/) — see its
+[`README.md`](plugins/plan-executor/templates/README.md) for which file to
+copy. `plugins/plan-executor/scripts/plan_ops.py` remains the runtime authority
+for the contract; drift between templates, the root guide, and the parser
+constants is pinned by `TestDecomposedTemplateDrift` in
+`tests/scripts/test_plan_ops.py`.
+
 ## What this plugin provides
 
 - **Slash command**: `/implement-plan <plan-path>` (dispatches the skill)

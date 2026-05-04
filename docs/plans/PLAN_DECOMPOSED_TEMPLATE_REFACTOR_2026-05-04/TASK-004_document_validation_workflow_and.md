@@ -31,7 +31,7 @@ when the documented template stops matching the parser constants.
 
 ### TASK-004: Document validation workflow and refactor boundary
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md` (modify) - update refactor guidance to reflect completed assets and tests

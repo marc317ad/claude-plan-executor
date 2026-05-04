@@ -10,6 +10,17 @@ This directory ships canonical authoring templates for plan-executor artifacts.
   - Copy `00_INDEX.json.template` for the roster. It is the minimal scaffold matching `_parse_index_roster` (`schema_version`, `chunks`, and per-chunk `task_id`, `file`, `depends_on`, `status`, `superseded_by`).
 - **Decomposer agents** authoring or generating a directory-mode plan should consult the full human guide at `templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md` (root-level) for the directory shape, status vocabularies, validation commands, and notes; the plugin-local templates above are the reusable assets to copy.
 
-`plan_ops.py` remains the runtime authority for the contract. The plugin-local templates and the root directory guide must stay aligned with the parser constants — drift tests live alongside `plan_ops.py` tests.
+## Ownership and runtime authority
+
+`plan_ops.py` remains the runtime authority for the contract. Every template file in this directory is a **human authoring aid** — none of them are read at runtime by `_render_child_task_file` or by any other parser entry point. `_render_child_task_file` renders from the in-module constant `_DECOMPOSED_CHILD_SCAFFOLD` in `plugins/plan-executor/scripts/plan_ops.py`; `decomposed_child.md.template` mirrors that constant so humans (and external decomposer agents) can author child files that match what the renderer would emit.
+
+| File | Role | Mirrored runtime authority |
+| ---- | ---- | -------------------------- |
+| `TASK.md.template` | Human authoring aid — `### TASK-NNN:` block scaffold for whole-plan markdown files. | `_parse_task_block` (parser side; renderer is not involved). |
+| `decomposed_child.md.template` | Human authoring aid — full child-file scaffold for decomposed-directory plans. | `_DECOMPOSED_CHILD_SCAFFOLD` constant, used by `_render_child_task_file`. |
+| `00_INDEX.json.template` | Human authoring aid — minimal roster scaffold. | `_parse_index_roster`. |
+| `code-reviewer.md.template` | Human authoring aid — per-project reviewer subagent starter. | n/a (per-project asset). |
+
+Drift between these templates, the root guide at `templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md`, and the parser constants is pinned by `TestDecomposedTemplateDrift` in `tests/scripts/test_plan_ops.py`. If you change a status vocabulary, required bullet, or required prose header in `plan_ops.py`, the drift suite will fail until the templates and the root guide are updated to match.
 
 Sibling `code-reviewer.md.template` follows the same drop-in convention.
