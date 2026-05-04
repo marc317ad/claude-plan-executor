@@ -12774,9 +12774,17 @@ class TestPhaseBNarrowRemediationTemplate:
 
     def test_template_embeds_the_three_json_slots(self) -> None:
         body = self._narrow_section()
-        assert "load_bearing_findings_json" in body
-        assert "dismissed_findings_json" in body
-        assert "d5_summary" in body
+        # Slot names migrated to the `dispatch_context` shape emitted by
+        # `review-route` (TASK-001 of `wrapper_autoclean_authorization`):
+        # `<findings_for_retry>` / `<dismissed_for_context>` / `<d5_summary>`
+        # replace the legacy `load_bearing_findings_json` /
+        # `dismissed_findings_json` placeholders. Anchor on the
+        # angle-bracketed placeholder form so the assertion matches the
+        # rendered slot block rather than incidental prose mentions of
+        # the same token elsewhere in the section.
+        assert "<findings_for_retry>" in body
+        assert "<dismissed_for_context>" in body
+        assert "<d5_summary>" in body
 
     def test_template_labels_dismissed_as_do_not_fix(self) -> None:
         body = self._narrow_section()

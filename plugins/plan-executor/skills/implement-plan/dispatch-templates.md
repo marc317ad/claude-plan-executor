@@ -331,7 +331,7 @@ Structurally this is a plan-level clone of Phase D.5: the verdict rubric, the di
 > > <findings_for_payload>
 > > ```
 > >
-> > **Findings are already presorted by the router.** Do NOT re-sort. Items with `target_task_id=null` are schedule-level concerns — evaluate them against the supplied schedule context when `schedule_path` is present.
+> > **Findings are already presorted by the router via `plan_ops.py order-triage-findings` (TASK-007 prioritization ladder).** Do NOT re-sort. The ladder is `blocking=true` first, then non-blocking `severity=critical`, then non-blocking `severity=important`, then non-blocking `severity=minor`, with source order as the in-tier tie-breaker. Items with `target_task_id=null` are schedule-level concerns — evaluate them against the supplied schedule context when `schedule_path` is present.
 > >
 > > **Index contract — use `source_index`, NOT array positions.** Your output indices (`load_bearing` / `dismissed`) MUST reference the `source_index` values carried on each finding above, NOT positions in this presorted array. `source_index` corresponds to the original reviewer `parsed.findings[]` order (the downstream parser validates indices against `findings_count`).
 >

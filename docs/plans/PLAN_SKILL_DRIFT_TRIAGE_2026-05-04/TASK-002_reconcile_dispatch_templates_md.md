@@ -99,7 +99,7 @@ tests/scripts/test_implement_plan_directory_smoke.py::TestSingleFileAutoPromote:
 
 ### TASK-002: Reconcile dispatch-templates.md slot and ladder assertions
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
