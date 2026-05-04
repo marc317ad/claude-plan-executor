@@ -32,7 +32,7 @@ when the documented template stops matching the parser constants.
 
 ### TASK-001: Add canonical decomposed-plan template assets
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/templates/decomposed_child.md.template` (create) - reusable child-plan file scaffold matching `_render_child_task_file`

@@ -1,0 +1,54 @@
+<!-- Copy this file when authoring a child task file inside a decomposed
+     plan directory (`docs/plans/<PLAN_SLUG>/TASK-NNN_<short_slug>.md`).
+     Replace `001` with the matching roster `task_id` (zero-padded, optional
+     single uppercase suffix — e.g. `001` or `004A`). Replace `<title>` and
+     `<short_slug>` with task-specific values. The H3 `### TASK-NNN:` block
+     below mirrors what `_render_child_task_file` emits in
+     `plugins/plan-executor/scripts/plan_ops.py` and what
+     `_gate_schema_valid` enforces. The full directory-level guide for
+     decomposed plans lives in
+     `templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md`. For hand-authoring a
+     single `### TASK-NNN:` block inside a whole-plan markdown file, use the
+     sibling `TASK.md.template` instead. -->
+
+# TASK-001 - <title>
+
+## Goal
+
+<One or two sentences describing the system-visible outcome of this child task.>
+
+## Context
+
+<Shared plan context plus task-specific background. Use `## Scoped Context`
+instead of `## Context` if the child needs a narrower context section.>
+
+## Verification
+
+- <How an operator or test can verify this child task after implementation.>
+
+## Tasks
+
+### TASK-001: <title>
+
+- **Status:** pending
+- **Priority:** high
+- **Files:**
+  - `<file_path>` (create|modify|delete) - <one-line reason this file is touched>
+- **Dependencies:** []
+- **Test command:** `venv/bin/pytest <path_to_test_file>`
+- **Acceptance criteria:**
+  - <Measurable behavioral assertion 1 — reference a file/line/symbol or observable behavior.>
+  - <Measurable assertion 2 — a test that passes or a specific invariant.>
+  - <Scope boundary, e.g. "no files outside the declared Files list are modified".>
+- **Reversion guidance:** <One sentence naming the exact files to restore or delete if this task must be rolled back.>
+
+**Description:**
+<Two to five sentences explaining what this task changes and why. State the
+user-visible or system-visible outcome. Avoid restating the file list; explain
+intent.>
+
+**Implementation notes:**
+<One to three sentences of concrete guidance: the specific function to edit,
+the enum member to add, the regex to adjust, or the shape of the new data.
+Name symbols and line ranges when useful. Keep this non-empty for Claude-tier
+tasks — `plan-analyst` flags empty Implementation notes as an enrichment gap.>
