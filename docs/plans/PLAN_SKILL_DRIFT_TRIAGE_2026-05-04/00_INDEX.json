@@ -13,7 +13,7 @@
       "file": "TASK-001_fix_preflight_smoke_test.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {

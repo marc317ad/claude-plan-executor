@@ -184,6 +184,7 @@ class TestPreflight:
 
         cp = _run_plan_ops(
             "preflight", "--plan-file", str(plan_dir), "--json",
+            "--unattended-revert-policy", "fail-fast",
             cwd=repo,
         )
         assert cp.returncode == 0, (cp.stdout, cp.stderr)
