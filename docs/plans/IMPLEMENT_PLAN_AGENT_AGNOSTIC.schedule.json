@@ -2,33 +2,29 @@
   "outcome": "valid",
   "tasks": [
     {
-      "id": "001",
-      "title": "Runner Contracts And Schemas",
+      "id": "008",
+      "title": "E2E, Documentation, And SKILL Bridge",
       "files": [
-        "`plugins/plan-executor/scripts/implement_plan.py` (new, contract definitions only)",
-        "`plugins/plan-executor/scripts/schemas/implement_plan_runner_config.json` (new)",
-        "`plugins/plan-executor/scripts/schemas/implement_plan_runner_state.json` (new)",
-        "`plugins/plan-executor/scripts/schemas/implement_plan_provider_capability.json` (new)",
-        "`tests/scripts/test_implement_plan_runner_contracts.py` (new)"
+        "`plugins/plan-executor/scripts/implement_plan.py`",
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`README.md`",
+        "`tests/scripts/test_implement_plan_runner_e2e.py` (new)",
+        "`tests/scripts/test_skill_cli_reference_drift.py`"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_implement_plan_runner_contracts.py",
-      "priority": "critical",
-      "plan_file": "TASK-001_runner_contracts.md",
-      "description": "Establish the runner's JSON and Python contracts before orchestration code\nexists, with import-safe schema validation and provider capability fixtures.\n\n## Verification\n\nRun the task test command and confirm importing `implement_plan.py` has no side effects.\n\n## Non-goals\n\n- Calling `plan_ops.py`.\n- Spawning Codex, Claude, or Gemini.\n- Adding CLI behavior beyond `--help` being import-safe if implemented.",
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_implement_plan_runner_e2e.py tests/scripts/test_skill_cli_reference_drift.py",
+      "priority": "high",
+      "plan_file": "TASK-008_e2e_docs_and_skill_bridge.md",
+      "description": "Prove the integrated script runner with stub providers, document the new entry\npoint, and add a small SKILL bridge for users who explicitly ask for script\nexecution.\n\n## Verification\n\nRun the task test command and the manual smoke from the parent plan.\n\n## Non-goals\n\n- Making the script the default slash-command implementation.\n- Live paid model e2e in CI.\n- Removing any MCP tool or wrapper CLI.\n- Changing the preferred interactive path away from MCP when `plan_ops__*` tools are available.\n\n## Execution log \u2014 20260503T204933 (paused)\n\nStarting SHA: `ee01d1d88d4dc6c6f1fb34fc256d33d8a76f2933`  \u2192 Ending SHA: `ee01d1d88d4dc6c6f1fb34fc256d33d8a76f2933`\n\n| Task | Agent | Reviewer | Verdict | Commit | Notes |\n|---|---|---|---|---|---|\n| TASK-008 | codex | gemini | needs-rework |  | Paused after Gemini review; implementation tests passed; dirty work preserved for remediation. |",
       "acceptance_criteria": [
-        "`implement_plan.py` exists and is importable without importing live wrapper backends or launching subprocesses.",
-        "Contract dataclasses or typed dicts exist for `RunnerConfig`, `RunnerState`, `ProviderCapability`, `TaskAssignment`, and `DispatchResult`.",
-        "JSON schemas exist for runner config, runner state, and provider capabilities.",
-        "Runner config supports `plan`, `parallel`, `provider_preference`, `assignments`, `reviewers`, `plan_reviewer`, `allow_provider_fallback`, `dry_run`, `skip_cross_review`, `skip_plan_review`, `unattended_revert_policy`, and `agent_args`.",
-        "Provider capability schema represents roles: `classify`, `implement`, `review`, `plan_review`, `triage`, and `author`.",
-        "Provider capability schema includes route identity fields for the current route schemas: `route_implementer` is nullable or one of `claude|codex`, and `route_reviewer` is nullable or one of `codex|gemini|claude|none`.",
-        "Capability validation rejects providers that claim `implement` support without a supported `route_implementer`.",
-        "Gemini capability fixtures mark implementation unsupported, `route_implementer=null`, `route_reviewer=gemini`, and review/plan-review supported.",
-        "Claude capability fixtures mark implementation/classification/authoring supported through `plan_claude_dispatch.py`.",
-        "Codex capability fixtures mark implementation/review/plan-review supported through `plan_codex_dispatch.py`.",
-        "Tests validate happy and invalid config examples, including unsupported provider names and invalid task assignment syntax.",
-        "No phase execution code is added beyond validation helpers."
+        "E2E test runs a multi-task decomposed plan through the runner with `StubProvider` and asserts run-log event order through Phase 1.5, Phase B, Phase D, commits/fails, and finalization.",
+        "E2E test includes one pause/resume path.",
+        "E2E test includes explicit assignment arguments and auto assignment through provider preference.",
+        "README documents the script entry point, provider capability model, config file shape, and when to use MCP, the SKILL, or the script.",
+        "SKILL gains a short section: when the user asks to run the script runner, invoke `implement_plan.py` with the user's arguments instead of manually walking the MCP orchestration.",
+        "Slash command behavior remains backward-compatible; `/implement-plan` still invokes the SKILL unless explicitly changed by a future plan. Do not reference or edit `plugins/plan-executor/commands/implement-plan.md` unless that file exists by the time this task is implemented.",
+        "Drift tests assert SKILL references the runner command and does not claim the script replaces MCP tools or should be preferred over MCP in interactive Claude/Codex sessions where `plan_ops__*` tools are available.",
+        "Manual smoke command from `PLAN_IMPLEMENT_PLAN_AGENT_AGNOSTIC.md` exits successfully in dry-run/stub mode."
       ],
       "agent": "codex"
     }
@@ -37,17 +33,48 @@
     {
       "index": 1,
       "task_ids": [
-        "001"
+        "008"
       ],
       "file_locks": [
+        "README.md",
         "plugins/plan-executor/scripts/implement_plan.py",
-        "plugins/plan-executor/scripts/schemas/implement_plan_provider_capability.json",
-        "plugins/plan-executor/scripts/schemas/implement_plan_runner_config.json",
-        "plugins/plan-executor/scripts/schemas/implement_plan_runner_state.json",
-        "tests/scripts/test_implement_plan_runner_contracts.py"
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_implement_plan_runner_e2e.py",
+        "tests/scripts/test_skill_cli_reference_drift.py"
       ]
     }
   ],
   "gaps": [],
-  "risks": []
+  "risks": [],
+  "state": {
+    "done": [
+      "008"
+    ],
+    "failed": [],
+    "blocked": [],
+    "committed": [
+      {
+        "task_id": "008",
+        "sha": "05a5ca1c54700172917a2893d510cc1fbf02e444"
+      }
+    ],
+    "locked_files": [],
+    "review_notes": {},
+    "retries_used": {}
+  },
+  "plan_review_state": {
+    "attempt": 1,
+    "first_verdict": "approved",
+    "first_findings_count": 0,
+    "second_verdict": null,
+    "second_findings_count": 0,
+    "triage_dispatched": false,
+    "triage_verdict": null,
+    "load_bearing_indices": [],
+    "dismissed_indices": [],
+    "author_dispatches_completed": [],
+    "auto_revise_round_completed": false,
+    "skipped_reason": null,
+    "task_plan_file_map": {}
+  }
 }
