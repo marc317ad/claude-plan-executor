@@ -119,7 +119,7 @@ Out of scope:
 
 ### TASK-001: Add reproduction tests for MCP builder file-output acknowledgement
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_plan_ops_mcp_conformance.py`
