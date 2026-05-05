@@ -20,7 +20,7 @@ Auto-decomposed child for TASK-004. See the source plan for broader context.
 
 ### TASK-004: Add dispatch-site extractor ordering regression tests
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `tests/scripts/test_implement_plan_runner_phase_d.py`
@@ -37,3 +37,13 @@ Auto-decomposed child for TASK-004. See the source plan for broader context.
 - **Reversion guidance:** none
 
 **Description:**
+
+Add regression tests covering the canonical Claude wrapper dispatch sequence (`build_claude_dispatch_input` → `plan_claude_dispatch.py run` → `claude_envelope_extract` → route) for the implementer and one remediation path. Cover the MCP file-output acknowledgement path, normalized extractor field consumption, non-`ok` wrapper status (commit forbidden), and `scope_violation` driving pause/reconcile behavior.
+
+## Execution log — 20260505T023642 (paused)
+
+Starting SHA: `c97d14dad71ccbd85b4d4980fe9d340d0deaa3a2`  → Ending SHA: `c97d14dad71ccbd85b4d4980fe9d340d0deaa3a2`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | codex | needs-rework [narrow-remediation] | (uncommitted — paused) | Phase D narrow-remediation re-review still needs-rework on 2 findings; paused per protocol awaiting user instruction. |

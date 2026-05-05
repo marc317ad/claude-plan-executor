@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,10 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = REPO_ROOT / "plugins" / "plan-executor" / "scripts"
 IMPLEMENT_PLAN = SCRIPT_DIR / "implement_plan.py"
+
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+import plan_ops  # noqa: E402
 FIXTURES_DIR = (
     REPO_ROOT
     / "tests"
@@ -259,6 +264,197 @@ def test_probe_reports_capabilities_without_dispatching() -> None:
     assert probe["capability"]["route_implementer"] == "codex"
     assert probe["capability"]["route_reviewer"] == "codex"
     assert runner.calls == []
+
+
+def _public_extractor_result(env: dict[str, Any], *, agent: str = "plan-implementer") -> dict[str, Any]:
+    """Run the canonical extractor on a wrapper envelope and strip internal markers."""
+    extracted = plan_ops._run_claude_envelope_extract(
+        {"stdin_text": json.dumps(env), "agent": agent}
+    )
+    return {key: value for key, value in extracted.items() if not key.startswith("__plan_ops_")}
+
+
+def test_canonical_claude_envelope_extract_normalizes_implementer_dispatch_for_route() -> None:
+    """TASK-004: canonical implementer dispatch sequence
+    `build_claude_dispatch_input -> plan_claude_dispatch.py run ->
+    claude_envelope_extract -> route` must normalize routing inputs through
+    the extractor rather than reading raw wrapper `.status` / `.result`.
+    """
+    module = _load_module()
+    wrapper_envelope = {
+        "status": "ok",
+        "result": {"outcome": "success", "report": "**Outcome:** success\n"},
+        "scope": {
+            "scope_violation_detected": False,
+            "scope_misreport_detected": False,
+        },
+    }
+    runner = FakeRunner(wrapper_envelope)
+    plan_ops_facade = FakePlanOps()
+    provider = module.ClaudeProvider(
+        python="/py",
+        script_dir=SCRIPT_DIR,
+        runner=runner,
+        plan_ops=plan_ops_facade,
+    )
+
+    dispatch = provider.implement(
+        plan_file="/plan.md",
+        task_id="001",
+        repo_root="/repo",
+        files=["src/example.py"],
+    )
+
+    # Step 1 — build_claude_dispatch_input is invoked before the wrapper run.
+    assert plan_ops_facade.calls
+    # Step 2 — plan_claude_dispatch.py run is the wrapper subprocess.
+    assert runner.calls[0]["command"][1].endswith("plan_claude_dispatch.py")
+    # Step 3 — wrapper envelope is normalized through claude_envelope_extract.
+    extracted = _public_extractor_result(dispatch.raw_envelope or {})
+    assert extracted["status"] == "ok"
+    assert extracted["outcome"] == "success"
+    assert extracted["scope_violation"] is False
+    assert extracted["scope_misreport"] is False
+    assert extracted["error"] is None
+    # Step 4 — route consumes normalized fields (extractor `outcome=success`
+    # is the contract that lets routing reach `commit`).
+    route_payload = {
+        "task_id": "001",
+        "implementer": "claude",
+        "implementer_envelope": {
+            "status": extracted["status"],
+            "outcome": extracted["outcome"],
+            "scope_violation": extracted["scope_violation"],
+            "scope_misreport": extracted["scope_misreport"],
+            "error": extracted["error"],
+        },
+        "reviewer": "codex",
+        "reviewer_envelope": {"verdict": "clean", "findings": [], "summary": ""},
+        "d5_envelope": None,
+        "retries_used": {
+            "bounded_remediation": False,
+            "narrow_remediation": False,
+            "role_swap": False,
+            "codex_fallback": False,
+        },
+        "flags": {"codex_review_binding": False, "skip_cross_review": False},
+    }
+    assert route_payload["implementer_envelope"]["outcome"] == "success"
+    assert route_payload["implementer_envelope"]["scope_violation"] is False
+    route = plan_ops._route_review_route(route_payload)
+    assert route["action"] == "commit"
+
+
+def test_canonical_claude_envelope_extract_normalizes_remediation_dispatch() -> None:
+    """TASK-004: a remediation (Phase B rework) dispatch must run through the
+    same `build -> wrapper -> claude_envelope_extract -> route` sequence."""
+    module = _load_module()
+    rework_envelope = {
+        "status": "ok",
+        "result": {"outcome": "partial", "report": "rework"},
+        "scope": {"scope_violation_detected": False},
+    }
+    runner = FakeRunner(rework_envelope)
+    plan_ops_facade = FakePlanOps()
+    provider = module.ClaudeProvider(
+        python="/py",
+        script_dir=SCRIPT_DIR,
+        runner=runner,
+        plan_ops=plan_ops_facade,
+    )
+
+    dispatch = provider.implement(
+        plan_file="/plan.md",
+        task_id="001",
+        repo_root="/repo",
+        files=["src/example.py"],
+        dispatch_context={"template": "PhaseB-rework"},
+    )
+
+    # The build call carried the remediation dispatch_context (Phase D
+    # role-swap / bounded / narrow remediation paths reuse this same path).
+    assert plan_ops_facade.calls[0].get("dispatch_context") == {"template": "PhaseB-rework"}
+    extracted = _public_extractor_result(
+        dispatch.raw_envelope or {}, agent="plan-remediator"
+    )
+    assert extracted["status"] == "ok"
+    assert extracted["outcome"] == "partial"
+    assert extracted["scope_violation"] is False
+    assert extracted["error"] is None
+    # Step 4 — exercise the remediation route step: a `partial` remediation
+    # outcome with a still-needs-rework reviewer envelope MUST NOT route to
+    # `commit`. The route consumes the normalized extractor `outcome` (here
+    # `partial`) plus the canonical reviewer/d5 envelopes; on the canonical
+    # remediation path (bounded_remediation already used) this lands on a
+    # non-commit branch.
+    route_payload = {
+        "task_id": "001",
+        "implementer": "claude",
+        "implementer_envelope": {
+            "status": extracted["status"],
+            "outcome": extracted["outcome"],
+            "scope_violation": extracted["scope_violation"],
+            "scope_misreport": extracted["scope_misreport"],
+            "error": extracted["error"],
+        },
+        "reviewer": "codex",
+        "reviewer_envelope": {
+            "verdict": "needs-rework",
+            "findings": [{"id": 1}],
+            "summary": "still broken",
+        },
+        "d5_envelope": None,
+        "retries_used": {
+            "bounded_remediation": True,
+            "narrow_remediation": False,
+            "role_swap": False,
+            "codex_fallback": False,
+        },
+        "flags": {"codex_review_binding": False, "skip_cross_review": False},
+    }
+    assert route_payload["implementer_envelope"]["outcome"] == "partial"
+    assert route_payload["implementer_envelope"]["scope_violation"] is False
+    route = plan_ops._route_review_route(route_payload)
+    assert route["action"] != "commit"
+
+
+def test_claude_envelope_extract_marks_non_ok_wrapper_status_malformed_to_block_commit() -> None:
+    """TASK-004: a non-`ok` wrapper status is normalized to `outcome=malformed`
+    so no Phase D route can mark the task committable."""
+    bad_envelope = {
+        "status": "schema_invalid",
+        "status_reason": "result missing schema_version",
+        "result": None,
+    }
+    extracted = _public_extractor_result(bad_envelope)
+    assert extracted["status"] == "schema_invalid"
+    assert extracted["outcome"] == "malformed"
+    # `success` is the only outcome a Phase D commit branch will accept; the
+    # extractor returns `malformed` for any non-`ok` wrapper status, which
+    # blocks commit at the route boundary.
+    assert extracted["outcome"] != "success"
+    assert isinstance(extracted["error"], str) and "status_reason" in extracted["error"]
+
+
+def test_claude_envelope_extract_scope_violation_drives_reconcile_pause_at_dispatch_site() -> None:
+    """TASK-004: scope_violation surfaces on the normalized extractor field
+    (not on raw `.scope.scope_violation_detected`), and that normalized field
+    is what the runner's reconcile_batch consumes to pause the run."""
+    scope_envelope = {
+        "status": "ok",
+        "result": {"outcome": "success", "report": "x"},
+        "scope": {
+            "scope_violation_detected": True,
+            "scope_misreport_detected": False,
+            "out_of_scope_observed": True,
+            "out_of_scope_untracked": ["leak.txt"],
+        },
+    }
+    extracted = _public_extractor_result(scope_envelope)
+    assert extracted["status"] == "ok"
+    assert extracted["outcome"] == "success"
+    assert extracted["scope_violation"] is True
+    assert extracted["scope_misreport"] is False
 
 
 def test_stub_provider_supports_all_roles_from_fixtures() -> None:

@@ -510,3 +510,103 @@ def test_reconcile_batch_can_pause_run(tmp_path: Path) -> None:
     assert result["status"] == "paused"
     assert result["completed_phase"] == "reconcile_batch"
     assert facade.reconcile_calls
+
+
+class _ScopeViolationClaude(FakeProvider):
+    """FakeProvider whose implementer envelope mirrors the normalized
+    extractor output so the dispatch site exercises the
+    `claude_envelope_extract -> reconcile_batch -> pause` chain."""
+
+    def implement(self, **payload: Any):
+        self.implement_calls.append(dict(payload))
+        return _MODULE.DispatchResult(
+            provider=self.capability.name,
+            role="implement",
+            status="ok",
+            parsed={
+                "status": "completed",
+                "files_changed": ["src/001.py"],
+                "diff_summary": "ok",
+            },
+            raw_envelope={
+                "status": "ok",
+                "outcome": "success",
+                "result": {"files_changed": ["src/001.py"]},
+                "scope_violation": True,
+                "scope_misreport": False,
+                "error": None,
+            },
+        )
+
+
+def test_scope_violation_in_implementer_envelope_drives_reconcile_pause(tmp_path: Path) -> None:
+    """TASK-004: a normalized `scope_violation` field on the implementer
+    dispatch envelope must reach reconcile_batch and drive the pause/reconcile
+    branch instead of being silently lost."""
+    facade = FakeFacade(tmp_path, reconcile_paused=True)
+    providers = _providers(codex_reviews=[{"verdict": "clean", "findings": [], "summary": ""}])
+    providers["claude"] = _ScopeViolationClaude(_MODULE, "claude")
+    config = _MODULE.RunnerConfig(
+        plan=str(_plan(tmp_path)),
+        skip_plan_review=True,
+        plan_reviewer=None,
+        provider_preference=("claude", "codex", "gemini"),
+    )
+    result = _run(tmp_path, facade, providers, config)
+
+    assert result["status"] == "paused"
+    assert result["completed_phase"] == "reconcile_batch"
+    assert facade.reconcile_calls
+    payload = facade.reconcile_calls[0]["payload"]
+    assert payload[0]["task_id"] == "001"
+    # TASK-004: the runner must drive reconcile/pause from the *normalized*
+    # extractor field `scope_violation`, not from the raw wrapper-side
+    # `scope.scope_violation_detected`. The reconcile payload is therefore
+    # expected to carry the post-extractor shape directly.
+    assert payload[0]["envelope"]["status"] == "ok"
+    assert payload[0]["envelope"]["scope_violation"] is True
+    assert payload[0]["envelope"]["scope_misreport"] is False
+    assert payload[0]["envelope"]["error"] is None
+    assert "scope" not in payload[0]["envelope"]
+
+
+class _NonOkWrapperClaude(FakeProvider):
+    """FakeProvider that returns a non-`ok` wrapper envelope; the extractor
+    normalizes this to `outcome=malformed`, which must block any commit."""
+
+    def implement(self, **payload: Any):
+        self.implement_calls.append(dict(payload))
+        return _MODULE.DispatchResult(
+            provider=self.capability.name,
+            role="implement",
+            status="error",
+            error="schema_invalid: result missing",
+            raw_envelope={
+                "status": "schema_invalid",
+                "status_reason": "result missing schema_version",
+                "result": None,
+            },
+        )
+
+
+def test_non_ok_wrapper_status_in_remediation_dispatch_blocks_commit(tmp_path: Path) -> None:
+    """TASK-004: a non-`ok` wrapper status from the implementer dispatch must
+    not be promoted to commit by Phase D — `claude_envelope_extract` would
+    return `outcome=malformed` and the runner short-circuits to a failed
+    summary before any review/route can mark the task committable."""
+    facade = FakeFacade(tmp_path)
+    providers = _providers()
+    providers["claude"] = _NonOkWrapperClaude(_MODULE, "claude")
+    config = _MODULE.RunnerConfig(
+        plan=str(_plan(tmp_path)),
+        skip_plan_review=True,
+        plan_reviewer=None,
+        provider_preference=("claude", "codex", "gemini"),
+    )
+    result = _run(tmp_path, facade, providers, config)
+
+    assert result["status"] == "failed"
+    assert result["completed_phase"] == "implement"
+    assert facade.commit_calls == []
+    assert facade.route_calls == []
+    assert providers["codex"].review_calls == []

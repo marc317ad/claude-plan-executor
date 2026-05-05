@@ -640,6 +640,30 @@ def test_mcp_e2e_skill_claude_envelope_extract_recipe_uses_build_claude_dispatch
         )
 
 
+def test_canonical_build_claude_dispatch_input_acknowledgement_not_mistaken_for_wrapper_envelope_via_claude_envelope_extract() -> None:
+    """TASK-004: when `plan_ops__build_claude_dispatch_input` is called with an
+    `output` path under MCP, it returns a slim acknowledgement (`ok`,
+    `output_written`, `output`) — NOT a wrapper envelope. Feeding that
+    acknowledgement into `claude_envelope_extract` must surface
+    `outcome="malformed"` so the runner cannot mistake the build-side ack for
+    a wrapper envelope at any dispatch site.
+    """
+    ack = {"ok": True, "output_written": True, "output": "/tmp/dispatch.json"}
+    extracted = plan_ops._run_claude_envelope_extract(
+        {"stdin_text": json.dumps(ack), "agent": "plan-implementer"}
+    )
+    public = {
+        key: value for key, value in extracted.items() if not key.startswith("__plan_ops_")
+    }
+    # Slim ack carries no `status` / `result` — extractor MUST classify it as
+    # non-`ok` and refuse to surface a routable success outcome.
+    assert public["status"] is None
+    assert public["outcome"] == "malformed"
+    assert public["result"] is None
+    assert public["scope_violation"] is False
+    assert isinstance(public["error"], str) and public["error"]
+
+
 @requires_mcp
 @pytest.mark.parametrize("tool_name", _index()["tool_names_ordered"])
 def test_inner_loop_index_tools_have_mcp_event_sequence(tool_name: str, tmp_path: Path) -> None:
