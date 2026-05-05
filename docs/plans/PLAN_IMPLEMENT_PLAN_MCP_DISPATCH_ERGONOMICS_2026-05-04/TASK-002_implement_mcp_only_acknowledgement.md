@@ -40,3 +40,11 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 
 **Description:**
 Implement the green half of the MCP dispatch-input acknowledgement change. The task updates the plan-ops pure core, MCP server result shaping, and public MCP output schema so file-output builder calls keep their side effect while returning a small acknowledgement instead of a full dispatch envelope.
+
+## Execution log — 20260505T015332 (success)
+
+Starting SHA: `a2a0546ecc568931c9657edf3ccd164f67019261`  → Ending SHA: `f9fa5d2907b7a7e6e036045db044172a5c2151fc`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| TASK-002 | claude | codex | needs-rework [disagreement] | f9fa5d2 | D.5 (sonnet) overruled Codex needs-rework: _error_tool_result already calls _public_result first, so the claimed marker-strip gap does not exist. |

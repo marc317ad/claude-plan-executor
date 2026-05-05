@@ -5,9 +5,9 @@
       "id": "002",
       "title": "Implement MCP-only acknowledgement for file-output builder calls",
       "files": [
-        "plugins/plan-executor/scripts/plan_ops.py",
-        "plugins/plan-executor/scripts/plan_ops_mcp_server.py",
-        "plugins/plan-executor/scripts/schemas/mcp/build_claude_dispatch_input.output.json"
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`plugins/plan-executor/scripts/plan_ops_mcp_server.py`",
+        "`plugins/plan-executor/scripts/schemas/mcp/build_claude_dispatch_input.output.json`"
       ],
       "dependencies": [],
       "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py tests/scripts/test_plan_ops_mcp_conformance.py tests/scripts/test_plan_ops_mcp_schemas.py -k \"build_claude_dispatch_input or build-claude-dispatch-input\"",
@@ -23,7 +23,7 @@
         "Keep side-effect conformance tests green."
       ],
       "agent": "claude",
-      "classification_reason": "Precision executor/MCP/schema change needs Claude-tier coordination."
+      "classification_reason": "API contract change, multi-file coordination, in-tree audit required"
     }
   ],
   "batches": [
