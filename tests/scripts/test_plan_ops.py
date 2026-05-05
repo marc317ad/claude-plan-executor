@@ -10573,11 +10573,11 @@ def _finding(
     return entry
 
 
-class TestTask007PlanReviewSchemaTargetTaskIdOptional:
+class TestTask007PlanReviewSchemaTargetTaskIdRequired:
     """TASK-007 — `codex_plan_review_schema.json` findings[*] gains an
-    optional `target_task_id: string | null` field. It is NOT in the
-    required list, and `additionalProperties: false` continues to apply
-    (the field is enumerated in `properties`).
+    explicit `target_task_id: string | null` field. Current structured
+    output validation requires every property to appear in `required`;
+    schedule-level findings use null.
     """
 
     SCHEMA = _PLAN_REVIEW_SCHEMA
@@ -10597,13 +10597,13 @@ class TestTask007PlanReviewSchemaTargetTaskIdOptional:
             types = [types]
         assert "string" in types and "null" in types, prop
 
-    def test_schema_target_task_id_not_in_required(self) -> None:
+    def test_schema_target_task_id_is_required_nullable(self) -> None:
         schema = json.loads(self.SCHEMA.read_text(encoding="utf-8"))
         finding = schema["properties"]["findings"]["items"]
         required = set(finding.get("required", []))
-        assert "target_task_id" not in required, (
-            "target_task_id must remain optional so pre-TASK-007 Codex "
-            "envelopes continue to validate"
+        assert "target_task_id" in required, (
+            "Codex structured output requires every property to be listed "
+            "in required; use null for schedule-level findings"
         )
 
     def test_schema_finding_additional_properties_stays_false(self) -> None:

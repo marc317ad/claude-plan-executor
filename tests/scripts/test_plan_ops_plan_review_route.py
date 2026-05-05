@@ -48,9 +48,14 @@ FINDINGS = [
 ]
 
 
-def _review(verdict: str | None = "approved", *, outcome: str = "success",
-            reviewer: str = "codex") -> dict:
-    return {
+def _review(
+    verdict: str | None = "approved",
+    *,
+    outcome: str = "success",
+    reviewer: str = "codex",
+    envelope_error: str | None = None,
+) -> dict:
+    payload = {
         "outcome": outcome,
         "reviewer": reviewer,
         "verdict": verdict,
@@ -59,6 +64,9 @@ def _review(verdict: str | None = "approved", *, outcome: str = "success",
         "summary": "summary",
         "schedule_ok": verdict != "needs-replan",
     }
+    if envelope_error is not None:
+        payload["envelope_error"] = envelope_error
+    return payload
 
 
 def _payload(stage: str, **overrides: object) -> dict:
@@ -123,6 +131,20 @@ def test_post_review_codex_transient_outcomes_skip(outcome: str) -> None:
     out = plan_ops.route(_payload(
         "post_review",
         plan_review_envelope=_review(None, outcome=outcome, reviewer="codex"),
+    ))
+    assert out["action"] == "skip_plan_review"
+    assert out["reason"] == f"codex_plan_review_{outcome}"
+
+
+def test_post_review_codex_not_found_keeps_unavailable_reason() -> None:
+    out = plan_ops.route(_payload(
+        "post_review",
+        plan_review_envelope=_review(
+            None,
+            outcome="failure",
+            reviewer="codex",
+            envelope_error="codex binary not found on PATH",
+        ),
     ))
     assert out["action"] == "skip_plan_review"
     assert out["reason"] == "codex_unavailable"

@@ -13772,7 +13772,11 @@ def _plan_review_route(payload: dict) -> dict:
             reason = (
                 "claude_review_failure"
                 if outcome == "failure" and reviewer == "claude"
-                else "codex_unavailable"
+                else (
+                    "codex_unavailable"
+                    if env.get("envelope_error") == "codex binary not found on PATH"
+                    else f"codex_plan_review_{outcome}"
+                )
             )
             return _with_plan_review_state_transitions({
                 "action": "skip_plan_review",

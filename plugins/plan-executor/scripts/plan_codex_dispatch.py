@@ -2360,10 +2360,15 @@ def cmd_plan_review(args) -> int:
             return 1
 
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raw_parts = []
+            if codex["stdout"]:
+                raw_parts.append(f"[stdout]\n{codex['stdout']}")
+            if codex["stderr"]:
+                raw_parts.append(f"[stderr]\n{codex['stderr']}")
             emit(make_envelope(
                 "plan", "plan-review", "failure",
                 exit_code=codex["exit_code"],
-                raw=codex["stderr"] or codex["stdout"],
+                raw="\n".join(raw_parts),
                 error="Codex produced no output file",
                 extra={
                     "wall_seconds": codex["wall_seconds"],

@@ -39,3 +39,4 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 - **Reversion guidance:** none
 
 **Description:**
+Implement the green half of the MCP dispatch-input acknowledgement change. The task updates the plan-ops pure core, MCP server result shaping, and public MCP output schema so file-output builder calls keep their side effect while returning a small acknowledgement instead of a full dispatch envelope.
