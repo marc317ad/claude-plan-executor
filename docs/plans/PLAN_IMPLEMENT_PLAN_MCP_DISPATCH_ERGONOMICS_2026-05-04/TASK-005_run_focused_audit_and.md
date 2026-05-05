@@ -34,3 +34,11 @@ Auto-decomposed child for TASK-005. See the source plan for broader context.
 **Description:**
 
 Run `plan_ops__audit` after the TASK-001…004 skill/tool changes land, capture whether any check is advisory vs blocking, and add a numbered operator rule to `SKILL.md` documenting the MCP-mode dispatch-input materialization workaround so operators do not flip the entire run to CLI fallback when a builder result cannot be piped.
+
+## Execution log — 20260505T030128 (success)
+
+Starting SHA: `7acafc671bf68705fb4cd7e1bfc11722ba66a94e`  → Ending SHA: `5ea50109815f3b171c8678c56e5eda9224e48416`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 005 | codex | claude | ship-with-fixes | 5ea5010 | Pre-dispatch format-only edit added missing **Description:** to satisfy build-tasks schema (per §Rules narrow plan-file body edits). 1 minor finding; rule-4 wording could cross-reference §Claude wrapper dispatch recipe to disambiguate MCP `output:` arg vs CLI `--output` flag. |

@@ -2,39 +2,35 @@
   "outcome": "valid",
   "tasks": [
     {
-      "id": "004",
-      "title": "Add dispatch-site extractor ordering regression tests",
+      "id": "005",
+      "title": "Run focused audit and document operator guidance",
       "files": [
-        "`tests/scripts/test_implement_plan_runner_phase_d.py`",
-        "`tests/scripts/test_implement_plan_provider_adapters.py`",
-        "`tests/scripts/test_implement_plan_mcp_e2e.py`"
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`docs/plans/PLAN_IMPLEMENT_PLAN_MCP_DISPATCH_ERGONOMICS_2026-05-04.md`"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/pytest -q tests/scripts/test_implement_plan_runner_phase_d.py tests/scripts/test_implement_plan_provider_adapters.py tests/scripts/test_implement_plan_mcp_e2e.py -k \"claude_envelope_extract or remediation or scope_violation\"",
-      "priority": "high",
-      "plan_file": "TASK-004_add_dispatch_site_extractor.md",
-      "description": "Add regression tests covering the canonical Claude wrapper dispatch sequence.",
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops_mcp_conformance.py tests/scripts/test_implement_plan_mcp_e2e.py && venv/bin/python plugins/plan-executor/scripts/plan_ops.py audit --json",
+      "priority": "medium",
+      "plan_file": "TASK-005_run_focused_audit_and.md",
+      "description": "Run `plan_ops__audit` after the TASK-001\u2026004 skill/tool changes land, capture whether any check is advisory vs blocking, and add a numbered operator rule to `SKILL.md` documenting the MCP-mode dispatch-input materialization workaround so operators do not flip the entire run to CLI fallback when a builder result cannot be piped.",
       "acceptance_criteria": [
-        "Cover the canonical sequence build_claude_dispatch_input -> plan_claude_dispatch.py run -> claude_envelope_extract -> route for at least implementer and one remediation path.",
-        "Include the MCP file-output path where build_claude_dispatch_input returns a slim acknowledgement, and assert the runner does not mistake that acknowledgement for a wrapper envelope.",
-        "Verify routing consumes normalized extractor fields (status, outcome, scope_violation, error) rather than raw wrapper .status / .result.",
-        "Include a non-ok wrapper status case and assert commit is forbidden before any Phase D route can mark the task committable.",
-        "Include a scope_violation case and assert the normalized scope_violation field drives pause/reconcile behavior."
+        "Run `plan_ops__audit` after the skill/tool changes.",
+        "Record whether any audit finding remains advisory or blocking.",
+        "Add a numbered operator rule in the skill: in MCP mode, do not switch the whole run to CLI fallback because a builder result cannot be piped; materialize the dispatch input, run the Bash wrapper with `--input <file>`, then continue with MCP for extraction and later plan operations."
       ],
-      "agent": "claude",
-      "classification_reason": "multi-file integration tests, complex pipeline coverage design"
+      "agent": "codex",
+      "classification_reason": "two files, medium priority, concrete documentation addition"
     }
   ],
   "batches": [
     {
       "index": 1,
       "task_ids": [
-        "004"
+        "005"
       ],
       "file_locks": [
-        "tests/scripts/test_implement_plan_mcp_e2e.py",
-        "tests/scripts/test_implement_plan_provider_adapters.py",
-        "tests/scripts/test_implement_plan_runner_phase_d.py"
+        "docs/plans/PLAN_IMPLEMENT_PLAN_MCP_DISPATCH_ERGONOMICS_2026-05-04.md",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md"
       ]
     }
   ],
