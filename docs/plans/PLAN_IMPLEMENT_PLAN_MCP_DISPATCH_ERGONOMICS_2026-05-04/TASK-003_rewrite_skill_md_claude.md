@@ -20,7 +20,7 @@ Auto-decomposed child for TASK-003. See the source plan for broader context.
 
 ### TASK-003: Rewrite SKILL.md Claude-wrapper recipes for MCP mode
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** critical
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
@@ -37,3 +37,11 @@ Auto-decomposed child for TASK-003. See the source plan for broader context.
 - **Reversion guidance:** none
 
 **Description:**
+
+## Execution log — 20260505T020741 (paused)
+
+Starting SHA: `8532454b36bd055cab8da841ac5824d2e427e06b`  → Ending SHA: `8532454b36bd055cab8da841ac5824d2e427e06b`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | codex | needs-rework [remediation] (D.5-binding) | (paused, no commit) | Bounded remediation applied dispatch_context note; second Codex review surfaced new finding on AC4 drift test thoroughness (only enumerates 4 sections, lacks global negative scan); D.5 concurred binding needs-rework. |

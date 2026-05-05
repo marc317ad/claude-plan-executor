@@ -29,7 +29,7 @@
       "file": "TASK-003_rewrite_skill_md_claude.md",
       "priority": "critical",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {

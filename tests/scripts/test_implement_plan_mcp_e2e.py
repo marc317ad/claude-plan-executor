@@ -605,6 +605,41 @@ def test_mcp_e2e_skill_contract_rejects_inline_python_envelope_parsing() -> None
         assert fragment not in skill_text
 
 
+def test_mcp_e2e_skill_claude_envelope_extract_recipe_uses_build_claude_dispatch_input_output_path() -> None:
+    """SKILL.md must document the MCP-mode wrapper recipe: build to file, run,
+    then route through plan_ops__claude_envelope_extract with native payload.
+    Drift here re-introduces ad hoc `--input -` shell pipes that break MCP mode.
+    """
+
+    skill_text = (REPO_ROOT / "plugins" / "plan-executor" / "skills" / "implement-plan" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Claude wrapper dispatch recipe (canonical)" in skill_text
+    # The MCP-mode recipe writes the envelope to disk via `output: "..."` and
+    # then invokes plan_claude_dispatch.py with that on-disk path.
+    assert '"output": "<tmp dispatch input path>"' in skill_text
+    assert "--input <tmp dispatch input path>" in skill_text
+    # And every wrapper-envelope routing point is normalized through MCP.
+    assert (
+        'Tool: plan_ops__claude_envelope_extract with input {"agent":'
+        in skill_text
+    )
+    # The legacy unqualified pipe form must not appear outside CLI-fallback context.
+    legacy = "Pipe stdout into `plan_claude_dispatch.py run --input -`"
+    if legacy in skill_text:
+        idx = skill_text.find(legacy)
+        window = skill_text[max(0, idx - 200) : idx]
+        assert (
+            "CLI fallback" in window
+            or "CLI-fallback" in window
+            or "cli-fallback" in window
+        ), (
+            "SKILL.md still recommends piping the MCP builder response into Bash "
+            "without a CLI-fallback qualifier."
+        )
+
+
 @requires_mcp
 @pytest.mark.parametrize("tool_name", _index()["tool_names_ordered"])
 def test_inner_loop_index_tools_have_mcp_event_sequence(tool_name: str, tmp_path: Path) -> None:
