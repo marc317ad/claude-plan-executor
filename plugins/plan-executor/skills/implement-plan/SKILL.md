@@ -644,11 +644,12 @@ The orchestrator's job after Phase B/D mechanical work is THREE narrative duties
 
 ### Pre-invocation checklist
 
-Three process rules that would have prevented every doc-fixable error in run `20260417T214309`. Run these before invoking the active plan-ops transport or dispatching a subagent — especially after a context compaction.
+Four process rules that would have prevented every doc-fixable error in run `20260417T214309`. Run these before invoking the active plan-ops transport or dispatching a subagent — especially after a context compaction.
 
 1. **Grep `ALLOWED_*` constants in `plan_ops.py` before any `log-event` or `commit-task` call that uses enum-valued inputs** (event names, reviewer verdicts, severity values, outcome values). **Why:** prevents error 2 (invented `log-event type=d5_review_done` outside `ALLOWED_LOG_EVENTS`).
 2. **Read the relevant `_validate_*` function in `plan_ops.py` before handing untrusted payloads to a `plan_ops__parse_*` tool.** The validator checks the envelope shape, not what downstream code consumes. **Why:** prevents error 1 (fed bare `parsed` object to `parse-plan-review-report` instead of the full `{subcommand,outcome,parsed}` envelope).
 3. **Never Agent-dispatch a subagent file created during the current run.** The Claude Code Agent registry **snapshots at session start**; newly-created subagent files become available in the next fresh session, not the one that created them. If you must retry within the current session, fall back to the closest existing subagent with an inlined prompt matching the new subagent's contract. **Why:** prevents error 4 (Agent-registry miss on the same-session-created `plan-remediator`).
+4. **In MCP mode, materialize wrapper dispatch input instead of flipping the run to CLI fallback.** If a builder result cannot be piped, write the dispatch input to a temporary file via the builder's `output` argument, invoke the Bash wrapper with `--input <file>`, then continue with MCP for envelope extraction and later plan operations. **Why:** MCP builder responses are tool acknowledgements, not stdin-ready dispatch envelopes; whole-run CLI fallback is reserved for the bootstrap case where plan_ops tools are hidden.
 
 ## Command reference
 

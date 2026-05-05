@@ -18,7 +18,7 @@ Auto-decomposed child for TASK-005. See the source plan for broader context.
 
 ### TASK-005: Run focused audit and document operator guidance
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
@@ -32,3 +32,5 @@ Auto-decomposed child for TASK-005. See the source plan for broader context.
 - **Reversion guidance:** none
 
 **Description:**
+
+Run `plan_ops__audit` after the TASK-001…004 skill/tool changes land, capture whether any check is advisory vs blocking, and add a numbered operator rule to `SKILL.md` documenting the MCP-mode dispatch-input materialization workaround so operators do not flip the entire run to CLI fallback when a builder result cannot be piped.
