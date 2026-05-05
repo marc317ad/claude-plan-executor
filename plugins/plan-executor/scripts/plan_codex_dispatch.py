@@ -847,6 +847,56 @@ def _snapshot_baseline(repo_root: str) -> dict:
     }
 
 
+def _walk_schema_nodes(node: object, pointer: str = "$"):
+    if isinstance(node, dict):
+        yield pointer, node
+        for key, child in node.items():
+            if isinstance(child, (dict, list)):
+                yield from _walk_schema_nodes(child, f"{pointer}.{key}")
+    elif isinstance(node, list):
+        for index, child in enumerate(node):
+            if isinstance(child, (dict, list)):
+                yield from _walk_schema_nodes(child, f"{pointer}[{index}]")
+
+
+def validate_openai_strict_output_schema(schema_path: str | Path) -> list[str]:
+    """Return OpenAI/Codex structured-output schema compatibility errors."""
+    path = Path(schema_path)
+    try:
+        schema = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return [f"{path}: cannot read schema: {exc}"]
+    except json.JSONDecodeError as exc:
+        return [f"{path}: schema is not valid JSON: {exc}"]
+
+    errors: list[str] = []
+    for pointer, node in _walk_schema_nodes(schema):
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") != "object" or node.get("additionalProperties") is not False:
+            continue
+        properties = node.get("properties")
+        required = node.get("required")
+        if not isinstance(properties, dict):
+            errors.append(f"{pointer}: object schema must define properties")
+            continue
+        if not isinstance(required, list):
+            errors.append(f"{pointer}: object schema must define required as a list")
+            continue
+        property_keys = set(properties.keys())
+        required_keys = set(required)
+        missing = sorted(property_keys - required_keys)
+        extra = sorted(required_keys - property_keys)
+        if missing or extra:
+            detail = []
+            if missing:
+                detail.append(f"missing required entries for properties: {missing}")
+            if extra:
+                detail.append(f"required entries without properties: {extra}")
+            errors.append(f"{pointer}: " + "; ".join(detail))
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Codex invocation
 # ---------------------------------------------------------------------------
@@ -863,13 +913,28 @@ def invoke_codex(
     """Invoke Codex CLI with structured output + JSONL monitoring.
 
     Returns dict:
-        status: 'ok' | 'timeout' | 'codex_not_found'
+        status: 'ok' | 'timeout' | 'codex_not_found' | 'output_schema_invalid'
         exit_code: int (-1 for timeout/not_found)
         stdout: str (JSONL event stream)
         stderr: str
         file_changes: list[str] (parsed from JSONL file_change events)
         wall_seconds: float
     """
+    schema_errors = validate_openai_strict_output_schema(schema_path)
+    if schema_errors:
+        return {
+            "status": "output_schema_invalid",
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": (
+                "Output schema is not compatible with Codex structured output:\n"
+                + "\n".join(f"- {error}" for error in schema_errors)
+            ),
+            "file_changes": [],
+            "wall_seconds": 0.0,
+            "dropped_bytes": 0,
+        }
+
     cmd = [
         "codex", "exec",
         "--full-auto",
@@ -1753,6 +1818,16 @@ def cmd_implement(args) -> int:
             ))
             return 1
 
+        if codex["status"] == "output_schema_invalid":
+            emit(make_envelope(
+                task["task_id"], "implement", "failure",
+                exit_code=-1,
+                raw=codex["stderr"],
+                error=codex["stderr"],
+                extra={"effective_timeout": effective_timeout},
+            ))
+            return 1
+
         # Missing output file (Appendix D A2: exit code unreliable)
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
             emit(make_envelope(
@@ -2106,6 +2181,16 @@ def cmd_review(args) -> int:
             ))
             return 1
 
+        if codex["status"] == "output_schema_invalid":
+            emit(make_envelope(
+                task["task_id"], "review", "failure",
+                exit_code=-1,
+                raw=codex["stderr"],
+                error=codex["stderr"],
+                extra={"effective_timeout": effective_timeout},
+            ))
+            return 1
+
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
             emit(make_envelope(
                 task["task_id"], "review", "failure",
@@ -2356,6 +2441,16 @@ def cmd_plan_review(args) -> int:
             emit(make_envelope(
                 "plan", "plan-review", "failure",
                 error="codex binary not found on PATH",
+            ))
+            return 1
+
+        if codex["status"] == "output_schema_invalid":
+            emit(make_envelope(
+                "plan", "plan-review", "failure",
+                exit_code=-1,
+                raw=codex["stderr"],
+                error=codex["stderr"],
+                extra={"effective_timeout": effective_timeout},
             ))
             return 1
 

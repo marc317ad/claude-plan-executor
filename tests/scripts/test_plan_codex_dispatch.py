@@ -124,6 +124,43 @@ def _fake_codex_returning(parsed_body: dict):
     return fake
 
 
+def test_invoke_codex_rejects_non_strict_output_schema_before_cli(
+    tmp_path, monkeypatch,
+):
+    schema = tmp_path / "bad_schema.json"
+    schema.write_text(
+        json.dumps({
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "optional_but_nullable": {"type": ["string", "null"]},
+            },
+            "required": ["ok"],
+            "additionalProperties": False,
+        }),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "codex_out.json"
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("Codex CLI should not run for an invalid schema")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+
+    result = wrapper.invoke_codex(
+        prompt="prompt",
+        workdir=str(tmp_path),
+        schema_path=str(schema),
+        output_path=str(output_path),
+        timeout_sec=30,
+    )
+
+    assert result["status"] == "output_schema_invalid"
+    assert result["exit_code"] == -1
+    assert "optional_but_nullable" in result["stderr"]
+    assert not output_path.exists()
+
+
 def _plan_review_args(
     schedule_file: Path,
     repo_root: Path,
