@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "plan_ops__build_claude_dispatch_input output",
-  "description": "JSON envelope emitted by `build-claude-dispatch-input --json`. Mirrors the bash CLI envelope verbatim; tool-specific fields are permitted via additionalProperties.",
+  "description": "Result returned by `build-claude-dispatch-input`. Two shapes: when `output` is omitted or the stdout sentinel `-`, returns the full dispatch envelope (mirrors the bash CLI envelope verbatim). When `output` is a filesystem path, the envelope is written to that file and the MCP transport returns a small `{ok, output_written, output}` acknowledgement instead — the on-disk file is the canonical artifact and the MCP response carries no envelope. Tool-specific fields are permitted via additionalProperties.",
   "type": "object",
   "properties": {
     "errors": {
@@ -27,6 +27,18 @@
     "outcome": {
       "type": "string",
       "description": "Subcommand-specific outcome label when the envelope carries one (e.g. 'valid', 'needs-enrichment')."
+    },
+    "ok": {
+      "type": "boolean",
+      "description": "Acknowledgement flag set to true on the file-output MCP path. Absent on the stdout/envelope path."
+    },
+    "output_written": {
+      "type": "boolean",
+      "description": "Acknowledgement marker — true when the dispatch envelope was written to the requested `output` path under the MCP transport. The MCP response intentionally omits the envelope itself; read it from the file."
+    },
+    "output": {
+      "type": "string",
+      "description": "Absolute path of the dispatch envelope file written by the file-output MCP path. Mirrors the request's `output` argument."
     }
   },
   "additionalProperties": true

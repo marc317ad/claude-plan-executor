@@ -416,9 +416,15 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                    'x-cli-emits-json': True},
   'output_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                     'title': 'plan_ops__build_claude_dispatch_input output',
-                    'description': 'JSON envelope emitted by `build-claude-dispatch-input --json`. '
-                                   'Mirrors the bash CLI envelope verbatim; tool-specific fields '
-                                   'are permitted via additionalProperties.',
+                    'description': 'Result returned by `build-claude-dispatch-input`. Two shapes: '
+                                   'when `output` is omitted or the stdout sentinel `-`, returns '
+                                   'the full dispatch envelope (mirrors the bash CLI envelope '
+                                   'verbatim). When `output` is a filesystem path, the envelope is '
+                                   'written to that file and the MCP transport returns a small '
+                                   '`{ok, output_written, output}` acknowledgement instead — the '
+                                   'on-disk file is the canonical artifact and the MCP response '
+                                   'carries no envelope. Tool-specific fields are permitted via '
+                                   'additionalProperties.',
                     'type': 'object',
                     'properties': {'errors': {'type': 'array',
                                               'items': {'type': ['object', 'string']},
@@ -431,7 +437,25 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                    'outcome': {'type': 'string',
                                                'description': 'Subcommand-specific outcome label '
                                                               'when the envelope carries one (e.g. '
-                                                              "'valid', 'needs-enrichment')."}},
+                                                              "'valid', 'needs-enrichment')."},
+                                   'ok': {'type': 'boolean',
+                                          'description': 'Acknowledgement flag set to true on the '
+                                                         'file-output MCP path. Absent on the '
+                                                         'stdout/envelope path.'},
+                                   'output_written': {'type': 'boolean',
+                                                      'description': 'Acknowledgement marker — '
+                                                                     'true when the dispatch '
+                                                                     'envelope was written to the '
+                                                                     'requested `output` path '
+                                                                     'under the MCP transport. The '
+                                                                     'MCP response intentionally '
+                                                                     'omits the envelope itself; '
+                                                                     'read it from the file.'},
+                                   'output': {'type': 'string',
+                                              'description': 'Absolute path of the dispatch '
+                                                             'envelope file written by the '
+                                                             'file-output MCP path. Mirrors the '
+                                                             "request's `output` argument."}},
                     'additionalProperties': True},
   'subcommand': 'build-claude-dispatch-input',
   'run_callable_name': '_run_build_claude_dispatch_input',
@@ -2252,6 +2276,18 @@ async def _dispatch_registered_tool(
     result = getattr(plan_ops, entry["run_callable_name"])(payload)
     if isinstance(result, dict) and result.get("errors"):
         return _error_tool_result(result)
+    if isinstance(result, dict):
+        # MCP-only acknowledgement substitution: file-output builder
+        # calls return a small `{ok, output_written, output}` shape
+        # rather than leaking the full dispatch envelope through the
+        # MCP transport. The on-disk file is the canonical artifact.
+        ack = result.get("__plan_ops_mcp_acknowledgement__")
+        if isinstance(ack, dict):
+            return dict(ack)
+        # Generic defensive strip: no internal `__plan_ops_*` marker
+        # may leak into a public MCP result, regardless of which pure
+        # core produced it.
+        return plan_ops._public_result(result)
     return result
 
 def build_server() -> Server:

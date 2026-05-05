@@ -21,7 +21,7 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 
 ### TASK-002: Implement MCP-only acknowledgement for file-output builder calls
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`

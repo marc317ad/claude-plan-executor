@@ -2259,6 +2259,10 @@ def _emit_or_die(args, result: dict) -> None:
     exit_marker = result.pop("__plan_ops_exit_code__", None)
     text_output = result.pop("__plan_ops_text_output__", None)
     stdout_suppressed = bool(result.pop("__plan_ops_stdout_suppressed__", False))
+    # The MCP-only acknowledgement marker is consumed by the MCP server
+    # path; the CLI path (this function) drops it so the on-wire byte
+    # image stays envelope-shaped.
+    result.pop("__plan_ops_mcp_acknowledgement__", None)
 
     if exit_marker is None:
         exit_code = 1 if result.get("errors") or result.get("error") else 0
@@ -11856,13 +11860,22 @@ def _bcdi_to_envelope_result(envelope: dict, output: str) -> dict:
     returned for `_emit_or_die` to JSON-render. When ``output`` is a
     filesystem path, the envelope is written there and
     ``__plan_ops_stdout_suppressed__`` is set so the CLI exits 0 with
-    no stdout (preserving the pre-codemod byte image).
+    no stdout (preserving the pre-codemod byte image). MCP callers
+    get an ``__plan_ops_mcp_acknowledgement__`` marker carrying the
+    small ``{ok, output_written, output}`` shape so the MCP server
+    can return that acknowledgement instead of the full dispatch
+    envelope (which is what the file-output mode is for).
     """
     result = _result(envelope, exit_code=0)
     if output != "-":
         text = json.dumps(envelope, indent=2, sort_keys=False) + "\n"
         Path(output).write_text(text, encoding="utf-8")
         result["__plan_ops_stdout_suppressed__"] = True
+        result["__plan_ops_mcp_acknowledgement__"] = {
+            "ok": True,
+            "output_written": True,
+            "output": output,
+        }
     return result
 
 
