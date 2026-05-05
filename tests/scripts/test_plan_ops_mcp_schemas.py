@@ -295,6 +295,16 @@ def test_output_schemas_declare_errors_and_warnings(index: dict) -> None:
         assert "warnings" not in required, f"{tool_name}: output must not require `warnings`"
 
 
+def test_build_claude_dispatch_input_output_schema_declares_file_ack(index: dict) -> None:
+    entry = index["tools"]["plan_ops__build_claude_dispatch_input"]
+    out = _load(MCP_DIR / entry["output_schema"])
+    properties = out.get("properties", {})
+
+    assert properties["output_written"]["type"] == "boolean"
+    assert properties["output"]["type"] == "string"
+    assert "acknowledg" in properties["output_written"].get("description", "").lower()
+
+
 # ---------- $ref reuse ------------------------------------------------------
 
 
