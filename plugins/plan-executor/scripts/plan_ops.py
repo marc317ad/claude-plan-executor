@@ -12350,7 +12350,7 @@ def _extract_dispatch_template_section(template_text: str, heading: str) -> str 
     if start == -1:
         return None
     tail = template_text[start:]
-    next_heading = re.search(r"^## Phase ", tail[len(heading):], re.MULTILINE)
+    next_heading = re.search(r"^(## Phase |### Variant )", tail[len(heading):], re.MULTILINE)
     if next_heading:
         return tail[: len(heading) + next_heading.start()]
     return tail

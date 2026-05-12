@@ -1,0 +1,21 @@
+Apply a plan-review finding to the legacy whole-plan file at `/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-author-legacy-whole-plan/plan_file.md`. Your write scope is exactly that file.
+
+Target task id: `001`
+
+Plan-review finding (single router-provided entry):
+
+```json
+{
+  "blocking": true,
+  "concern": "The task lacks a verification bullet.",
+  "section": "TASK-001 acceptance criteria",
+  "severity": "important",
+  "source_index": 0,
+  "suggested_change": "Add explicit verification criteria.",
+  "target_task_id": "001"
+}
+```
+
+Apply a minimum-change edit. Preserve untouched sections verbatim. Do NOT edit child plan files, roster files, source code, tests, or configuration.
+
+**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.

@@ -1,0 +1,22 @@
+{
+  "context": {
+    "files_changed": [
+      "src/example.py"
+    ],
+    "plan_file": "/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/code-reviewer-d5/plan_file.md",
+    "reviewer_findings": [
+      {
+        "file": "src/example.py",
+        "issue": "Rendered output omits the required field.",
+        "line": 12,
+        "severity": "major",
+        "suggested_fix": "Forward the placeholder."
+      }
+    ],
+    "task_id": "001",
+    "wrapper_checks_json": {
+      "symbol_warnings": []
+    }
+  },
+  "template_id": "code-reviewer-d5"
+}

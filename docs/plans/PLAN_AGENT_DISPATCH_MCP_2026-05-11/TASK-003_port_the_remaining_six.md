@@ -23,7 +23,7 @@ Extend the MCP tool added in TASK-001 with the remaining eight `template_id` val
 
 ### TASK-003: Port the remaining six template variants
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (edit — extend `_AGENT_DISPATCH_TEMPLATES` dict and per-variant render helpers)

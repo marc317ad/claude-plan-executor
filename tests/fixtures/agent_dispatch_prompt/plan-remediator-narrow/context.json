@@ -1,0 +1,22 @@
+{
+  "context": {
+    "analyst_annotations_json": {
+      "analyst": "none"
+    },
+    "d5_summary": "Finding 0 is load-bearing.",
+    "dismissed_for_context": [],
+    "findings_for_retry": [
+      {
+        "file": "src/example.py",
+        "issue": "Rendered output omits the required field.",
+        "line": 12,
+        "severity": "major",
+        "suggested_fix": "Forward the placeholder."
+      }
+    ],
+    "plan_file": "/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-remediator-narrow/plan_file.md",
+    "starting_sha": "abc1234",
+    "task_id": "001"
+  },
+  "template_id": "plan-remediator-narrow"
+}

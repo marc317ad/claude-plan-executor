@@ -1,0 +1,111 @@
+Adjudicate specifically `### TASK-002:` (this child plan file declares 2 `### TASK-NNN:` H3 headings; read only the matching block).
+
+Scope: `src/second.py`.
+
+Gemini (a peer reviewer) returned `needs-rework` on this task and flagged the findings below. Independently review the change and decide whether each finding is load-bearing (a ship-blocker) or a nitpick that should be dismissed.
+
+The `Gemini` placeholder is rendered as `Codex` or `Gemini` per the active Phase D.1 dispatch (TASK-007). The findings shape and dispatch contract are reviewer-agnostic; downstream prose continues to refer to "Codex findings" because the `[
+  {
+    "file": "src/example.py",
+    "issue": "Rendered output omits the required field.",
+    "line": 12,
+    "severity": "major",
+    "suggested_fix": "Forward the placeholder."
+  }
+]` placeholder name is unchanged for v1.
+
+Task (verbatim from plan):
+
+```markdown
+### TASK-002: Second fixture task
+
+- **Status:** pending
+- **Priority:** high
+- **Files:** src/second.py
+- **Dependencies:** none
+- **Test command:** none
+- **Acceptance criteria:**
+  - Select the second block when target_task_id is supplied.
+
+**Description:**
+Second task for multi-heading injection.
+```
+
+Codex findings (verbatim from `parsed.findings` of the wrapper envelope):
+
+```json
+[
+  {
+    "file": "src/example.py",
+    "issue": "Rendered output omits the required field.",
+    "line": 12,
+    "severity": "major",
+    "suggested_fix": "Forward the placeholder."
+  }
+]
+```
+
+Wrapper checks (verbatim from `envelope.wrapper_checks`):
+
+```json
+{
+  "symbol_warnings": [
+    {
+      "cited_symbol": "missing",
+      "file": "src/second.py",
+      "finding_index": 0,
+      "status": "not-found"
+    }
+  ]
+}
+```
+
+The `symbol_warnings` list flags cases where Codex cited a specific function, helper, or flag (e.g., `_some_helper(`, `--some-flag`) that does NOT exist in the cited file — a hallucination signal. An empty list means no hallucinated-symbol warnings are surfaced (either the wrapper ran the check and found none, or this envelope came from a failure/timeout/parse-error path where the check did not run and the orchestrator substituted the empty-list default). A non-empty list is what carries information; an empty list tells you nothing either way. Use a `not-found` warning as a **tiebreaker**, not a decision rule: it is a strong dismissal signal for that individual finding but still requires the dismissal-evidence gate below.
+
+Return your verdict (`ship | ship-with-fixes | partial-agreement | needs-rework`) and a brief justification.
+
+**Verdict decision rubric — pick the verdict that matches the split, not a stronger one:**
+
+1. `ship` — you disagree with Codex entirely; none of the findings are load-bearing. Commit proceeds with a bare `[disagreement]` tag.
+2. `ship-with-fixes` — you disagree with Codex about ship-blockers; any residual concerns are minor follow-ups. Commit proceeds with a bare `[disagreement]` tag.
+3. `partial-agreement` — the findings split cleanly: at least one is load-bearing AND at least one can be safely dismissed. Use this verdict ONLY when both buckets are non-empty. Triggers the narrow-remediation retry (D.2a.6) scoped to the load-bearing subset; dismissed indices are recorded in the commit trailer.
+4. `needs-rework` — all findings are load-bearing. Triggers the full bounded-remediation retry (D.2a.5).
+
+**Dismissal-evidence gate (required before labeling any finding `dismissed`).** The decision rubric above answers *what verdict fits the split*; the dismissal-evidence gate answers *do you know the finding is wrong*. Before labeling a Codex finding `dismissed`, you MUST cite one of:
+
+1. **A concrete verification move:** trace the cited control-flow path by hand, run the task's declared test command (`pytest -k <name>`, etc.), read the cited symbol in the repo, or reproduce the failure Codex describes. If the verification refutes the finding, `dismissed` is appropriate.
+2. **An explicit spec contradiction:** the plan's acceptance criteria or Implementation Playbook mandates the behavior Codex objects to. In this case, label the disposition `spec-deference` (not `dismissed`) and include a one-line note on why the critique has merit despite the spec conflict. `spec-deference` surfaces the finding for a future plan-review pass rather than silently burying it.
+
+`spec-deference` applies only when the implementer followed the plan's literal wording AND Codex is disputing what the plan mandated. If the implementer deviated from the plan's literal wording, even for a verified-correct surrounding-code pattern match, internal-helper substitution, or semantically equivalent alternative, use `dismissed` with concrete verification evidence (or surface it as `minor-findings`) — NOT `spec-deference`.
+
+Worked example: Plan names mechanism A; implementer uses mechanism B with identical output because surrounding code already uses B. Codex flags the deviation. With pattern evidence, disposition is `dismissed`, not `spec-deference`. Contrast: plan mandates behavior X, implementer implemented X, and Codex objects to X; disposition is `spec-deference`.
+
+"Plan says so" without a `spec-deference` label is a protocol violation — it pretends the spec is unimpeachable. If you cannot verify the finding AND there is no explicit spec conflict, downgrade to a `minor-findings`-style note and let the commit proceed with the finding recorded rather than dismissed.
+
+**Hard rules for `partial-agreement`:**
+
+- Emit this verdict only when BOTH `load_bearing` and `dismissed` are non-empty. If every finding is load-bearing → use `needs-rework`. If no finding is → use `ship-with-fixes`. A unanimous split (empty bucket on either side) is a contract violation — the parser rejects it with `partial-agreement-invalid-split`.
+- Indices in `load_bearing` and `dismissed` MUST be 0-based positions into the Codex `findings[]` array above, disjoint, and in range. There is no `id` field on Codex findings; array index is the reference.
+
+**Output shape:**
+
+- For `ship` / `ship-with-fixes` / `needs-rework`:
+
+  ```json
+  {"verdict": "ship", "summary": "<one-line justification>"}
+  ```
+
+- For `partial-agreement` (findings array of length 4, indices 0..3):
+
+  ```json
+  {
+    "verdict": "partial-agreement",
+    "load_bearing": [0, 2],
+    "dismissed": [1, 3],
+    "summary": "<one-line justification naming which findings fall in which bucket>"
+  }
+  ```
+
+**Parallel-tree caveat:** other batch-mates' unstaged changes to disjoint files may be in the working tree — focus strictly on the scope files listed above.
+
+**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash.

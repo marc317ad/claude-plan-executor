@@ -1,0 +1,8 @@
+{
+  "context": {
+    "allow_gaps_demotion": true,
+    "plan_basename": "PLAN_FIXTURE",
+    "schedule_path": "/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-reviewer/schedule.json"
+  },
+  "template_id": "plan-reviewer"
+}

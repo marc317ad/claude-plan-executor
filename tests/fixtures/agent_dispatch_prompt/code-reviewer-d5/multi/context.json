@@ -1,0 +1,31 @@
+{
+  "context": {
+    "files_changed": [
+      "src/second.py"
+    ],
+    "plan_file": "/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/code-reviewer-d5/multi/plan_file.md",
+    "reviewer": "Gemini",
+    "reviewer_findings": [
+      {
+        "file": "src/example.py",
+        "issue": "Rendered output omits the required field.",
+        "line": 12,
+        "severity": "major",
+        "suggested_fix": "Forward the placeholder."
+      }
+    ],
+    "target_task_id": "002",
+    "task_id": "002",
+    "wrapper_checks_json": {
+      "symbol_warnings": [
+        {
+          "cited_symbol": "missing",
+          "file": "src/second.py",
+          "finding_index": 0,
+          "status": "not-found"
+        }
+      ]
+    }
+  },
+  "template_id": "code-reviewer-d5"
+}

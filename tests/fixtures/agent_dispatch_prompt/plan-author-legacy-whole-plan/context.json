@@ -1,0 +1,16 @@
+{
+  "context": {
+    "finding": {
+      "blocking": true,
+      "concern": "The task lacks a verification bullet.",
+      "section": "TASK-001 acceptance criteria",
+      "severity": "important",
+      "source_index": 0,
+      "suggested_change": "Add explicit verification criteria.",
+      "target_task_id": "001"
+    },
+    "plan_path": "/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-author-legacy-whole-plan/plan_file.md",
+    "target_task_id": "001"
+  },
+  "template_id": "plan-author-legacy-whole-plan"
+}

@@ -1,0 +1,23 @@
+{
+  "context": {
+    "findings": [
+      {
+        "blocking": true,
+        "concern": "The task lacks a verification bullet.",
+        "section": "TASK-001 acceptance criteria",
+        "severity": "important",
+        "source_index": 0,
+        "suggested_change": "Add explicit verification criteria.",
+        "target_task_id": "001"
+      }
+    ],
+    "gaps": [
+      {
+        "location": "TASK-001",
+        "severity": "hard"
+      }
+    ],
+    "source": "codex"
+  },
+  "template_id": "plan-review-triage"
+}

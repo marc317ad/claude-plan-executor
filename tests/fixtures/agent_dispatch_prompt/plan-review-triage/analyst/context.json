@@ -1,0 +1,25 @@
+{
+  "context": {
+    "findings": [
+      {
+        "blocking": true,
+        "concern": "The task lacks a verification bullet.",
+        "section": "TASK-001 acceptance criteria",
+        "severity": "important",
+        "source_index": 0,
+        "suggested_change": "Add explicit verification criteria.",
+        "target_task_id": "001"
+      }
+    ],
+    "gaps": [
+      {
+        "location": "TASK-001",
+        "missing_field": "Acceptance criteria",
+        "severity": "hard"
+      }
+    ],
+    "schedule_path": "/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-review-triage/analyst/schedule.json",
+    "source": "analyst"
+  },
+  "template_id": "plan-review-triage"
+}

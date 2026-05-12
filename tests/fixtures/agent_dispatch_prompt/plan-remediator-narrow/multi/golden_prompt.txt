@@ -1,0 +1,101 @@
+Apply the narrow-remediation patch specifically `### TASK-002:` (this child plan file declares 2 `### TASK-NNN:` H3 headings; read only the matching block).
+
+Apply a narrow remediation patch to this task's existing implementation at `/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-remediator-narrow/multi/plan_file.md`. The prior attempt is **still in the working tree** — it was NOT reverted. Codex (peer reviewer) returned `needs-rework` and the third-opinion code-reviewer (Phase D.5) adjudicated the findings into two buckets: `load_bearing` (ship-blockers you MUST fix) and `dismissed` (non-blockers you MUST NOT fix). Patch the current working-tree edits with a minimal, surgical fix that addresses each load-bearing finding only. Do NOT rebuild from the base commit; do NOT re-do work that is already correct; do NOT act on dismissed findings even if you notice them along the way.
+
+Plan context:
+
+```markdown
+Shared execution context for fixture rendering.
+
+### TASK-001: Fixture task
+
+- **Status:** pending
+- **Priority:** high
+- **Files:** src/example.py
+- **Dependencies:** none
+- **Test command:** `pytest tests/example_test.py`
+- **Acceptance criteria:**
+  - Preserve fixture behavior.
+  - Render exact prompt bytes.
+
+**Description:**
+Exercise the Agent dispatch prompt renderer.
+
+### TASK-002: Second fixture task
+
+- **Status:** pending
+- **Priority:** high
+- **Files:** src/second.py
+- **Dependencies:** none
+- **Test command:** none
+- **Acceptance criteria:**
+  - Select the second block when target_task_id is supplied.
+
+**Description:**
+Second task for multi-heading injection.
+```
+
+Task (verbatim from plan):
+
+```markdown
+### TASK-002: Second fixture task
+
+- **Status:** pending
+- **Priority:** high
+- **Files:** src/second.py
+- **Dependencies:** none
+- **Test command:** none
+- **Acceptance criteria:**
+  - Select the second block when target_task_id is supplied.
+
+**Description:**
+Second task for multi-heading injection.
+```
+
+Base commit SHA: `abc1234`
+
+Load-bearing findings (D.5 ruled these ship-blockers — fix each one; forwarded as `dispatch_context.findings_for_retry`):
+
+```json
+[
+  {
+    "file": "src/example.py",
+    "issue": "Rendered output omits the required field.",
+    "line": 12,
+    "severity": "major",
+    "suggested_fix": "Forward the placeholder."
+  }
+]
+```
+
+Dismissed findings — **DO NOT fix — context only**. D.5 ruled these non-load-bearing; acting on them silently re-inflates the retry's scope. Echo each in the mandatory `**Dismissed findings noted:**` report section without acting on it (forwarded as `dispatch_context.dismissed_for_context`):
+
+```json
+[
+  {
+    "index": 1
+  }
+]
+```
+
+Third-opinion (D.5) summary — why the load-bearing findings are load-bearing:
+
+```
+Only finding 0 is load-bearing.
+```
+
+Analyst annotations (verbatim, may be empty):
+
+```json
+{
+  "analyst": "none"
+}
+```
+
+**Scope rule (the touch-only-these-lines contract):** the union of `(file, line)` coordinates across `load_bearing_findings[]` defines your permitted edit region. Unjustified edits outside that region flip the outcome to `scope-violation`. **Fix narrowly, do not scope-inflate.** Address each load-bearing finding directly. Do NOT refactor unrelated code, do NOT add docstrings to untouched regions, do NOT tidy formatting outside the edited scope. If a finding cannot be reconciled with the plan's acceptance criteria, report `plan-incorrect` — do not invent a compromise.
+
+You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec (including the mandatory `**Dismissed findings noted:**` and `**Scope violations:**` sections). Do not commit. Do not use `git stash`.
+
+**Parallel-tree caveat:** other implementers and reviewers may be running concurrently on disjoint files; unstaged changes to disjoint files may be in the working tree. Focus strictly on the scope files listed in the task's `Files:` field. Trust the diff when classifying test failures; do NOT use `git stash` (it would collide).
+
+**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.

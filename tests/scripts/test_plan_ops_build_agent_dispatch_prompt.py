@@ -11,7 +11,6 @@ FIXTURE_DIR = (
     / "tests"
     / "fixtures"
     / "agent_dispatch_prompt"
-    / "code-reviewer-d-claude"
 )
 
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -19,9 +18,18 @@ import plan_ops  # noqa: E402
 
 
 def _fixture_payload() -> dict:
-    payload = json.loads((FIXTURE_DIR / "context.json").read_text(encoding="utf-8"))
-    payload["context"]["plan_file"] = str((FIXTURE_DIR / "plan_file.md").resolve())
+    fixture_dir = FIXTURE_DIR / "code-reviewer-d-claude"
+    payload = json.loads((fixture_dir / "context.json").read_text(encoding="utf-8"))
+    payload["context"]["plan_file"] = str((fixture_dir / "plan_file.md").resolve())
     return payload
+
+
+def _payload_from_fixture(name: str) -> dict:
+    return json.loads((FIXTURE_DIR / name / "context.json").read_text(encoding="utf-8"))
+
+
+def _golden_from_fixture(name: str) -> str:
+    return (FIXTURE_DIR / name / "golden_prompt.txt").read_text(encoding="utf-8")
 
 
 def test_code_reviewer_d_claude_renders_to_golden() -> None:
@@ -30,9 +38,7 @@ def test_code_reviewer_d_claude_renders_to_golden() -> None:
     assert result["ok"] is True
     assert result["agent"] == "code-reviewer"
     assert result["model"] == "sonnet"
-    assert result["prompt"] == (FIXTURE_DIR / "golden_prompt.txt").read_text(
-        encoding="utf-8"
-    )
+    assert result["prompt"] == _golden_from_fixture("code-reviewer-d-claude")
 
 
 def test_code_reviewer_d_claude_prepends_target_task_id_for_multi_heading(
@@ -97,6 +103,120 @@ def test_code_reviewer_d_claude_missing_files_changed_schema_error() -> None:
 
     assert result["ok"] is False
     assert result["errors"]
+
+
+def test_schema_exposes_all_agent_dispatch_template_ids() -> None:
+    schema = json.loads(
+        (
+            SCRIPTS_DIR
+            / "schemas"
+            / "mcp"
+            / "build_agent_dispatch_prompt.input.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert schema["properties"]["template_id"]["enum"] == [
+        "code-reviewer-d-claude",
+        "code-reviewer-d5",
+        "plan-reviewer",
+        "plan-author-task-targeted",
+        "plan-author-schedule-level",
+        "plan-author-legacy-whole-plan",
+        "plan-review-triage",
+        "plan-remediator-narrow",
+        "plan-remediator-rescue",
+    ]
+    assert len(schema["oneOf"]) == 9
+
+
+def test_new_agent_dispatch_variants_render_to_golden() -> None:
+    expected = {
+        "code-reviewer-d5": ("code-reviewer", "sonnet"),
+        "code-reviewer-d5/multi": ("code-reviewer", "sonnet"),
+        "plan-reviewer": ("plan-reviewer", "sonnet"),
+        "plan-author-task-targeted": ("plan-author", "opus"),
+        "plan-author-task-targeted/multi": ("plan-author", "opus"),
+        "plan-author-schedule-level": ("plan-author", "opus"),
+        "plan-author-legacy-whole-plan": ("plan-author", "opus"),
+        "plan-review-triage/analyst": ("plan-review-triage", "sonnet"),
+        "plan-review-triage/codex": ("plan-review-triage", "sonnet"),
+        "plan-remediator-narrow": ("plan-remediator", "opus"),
+        "plan-remediator-narrow/multi": ("plan-remediator", "opus"),
+        "plan-remediator-rescue": ("plan-remediator", "opus"),
+        "plan-remediator-rescue/multi": ("plan-remediator", "opus"),
+    }
+
+    for fixture_name, (agent, model) in expected.items():
+        result = plan_ops._run_build_agent_dispatch_prompt(
+            _payload_from_fixture(fixture_name)
+        )
+
+        assert result["ok"] is True, fixture_name
+        assert result["agent"] == agent
+        assert result["model"] == model
+        assert result["prompt"] == _golden_from_fixture(fixture_name)
+
+
+def test_target_task_id_variants_prepend_multi_heading_injection() -> None:
+    cases = {
+        "code-reviewer-d5/multi": "Adjudicate specifically `### TASK-002:`",
+        "plan-author-task-targeted/multi": (
+            "Apply the plan-review finding specifically `### TASK-002:`"
+        ),
+        "plan-remediator-narrow/multi": (
+            "Apply the narrow-remediation patch specifically `### TASK-002:`"
+        ),
+        "plan-remediator-rescue/multi": (
+            "Apply the D.4 rescue specifically `### TASK-002:`"
+        ),
+    }
+
+    for fixture_name, prefix in cases.items():
+        result = plan_ops._run_build_agent_dispatch_prompt(
+            _payload_from_fixture(fixture_name)
+        )
+
+        assert result["ok"] is True
+        assert result["prompt"].startswith(prefix)
+
+
+def test_plan_review_triage_source_discrimination() -> None:
+    analyst = plan_ops._run_build_agent_dispatch_prompt(
+        _payload_from_fixture("plan-review-triage/analyst")
+    )
+    codex = plan_ops._run_build_agent_dispatch_prompt(
+        _payload_from_fixture("plan-review-triage/codex")
+    )
+
+    assert "Analyst gaps from `findings_for_payload`" in analyst["prompt"]
+    assert "**Same-family caveat.**" in analyst["prompt"]
+    assert "Plan-review findings from `findings_for_payload`" in codex["prompt"]
+    assert "**Same-family caveat.**" not in codex["prompt"]
+
+
+def test_new_agent_dispatch_variants_missing_required_fields_schema_errors() -> None:
+    cases = {
+        "code-reviewer-d5": ("wrapper_checks_json", "/context/wrapper_checks_json"),
+        "plan-reviewer": ("schedule_path", "/context/schedule_path"),
+        "plan-author-task-targeted": ("finding", "/context/finding"),
+        "plan-author-schedule-level": ("finding", "/context/finding"),
+        "plan-author-legacy-whole-plan": ("finding", "/context/finding"),
+        "plan-review-triage/analyst": ("source", "/context/source"),
+        "plan-remediator-narrow": ("findings_for_retry", "/context/findings_for_retry"),
+        "plan-remediator-rescue": ("reviewer_source", "/context/reviewer_source"),
+    }
+
+    for fixture_name, (field, path) in cases.items():
+        payload = _payload_from_fixture(fixture_name)
+        del payload["context"][field]
+
+        result = plan_ops._run_build_agent_dispatch_prompt(payload)
+
+        assert result["ok"] is False, fixture_name
+        assert {
+            "code": "required-field-missing",
+            "path": path,
+        }.items() <= result["errors"][0].items()
 
 
 def test_code_reviewer_d_claude_missing_target_task_id_for_multi_heading(

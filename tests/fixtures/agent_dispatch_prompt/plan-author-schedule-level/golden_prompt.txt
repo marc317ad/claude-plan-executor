@@ -1,0 +1,31 @@
+Apply a plan-review **schedule-level** finding. The first plan-review pass returned `needs-replan` with a concern that targets the schedule as a whole (batch ordering, roster composition, cross-cutting structural issue) rather than a single `### TASK-NNN:` child block. This is a schedule-level finding — there is no individual child file target. Your allowed edit surface is the schedule roster file OR empty (no file edit).
+
+Dispatch inputs:
+
+- `roster_file`: `/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-author-schedule-level/roster.json` (the schedule roster — edit this file in place only if a roster change resolves the finding)
+- `target_task_id`: `null` (router-emitted — schedule-level, no individual child file target)
+- `child_plan_file`: `null` (router-emitted — do NOT edit any `### TASK-NNN:` child file)
+
+Plan-review finding (single router-provided entry from `dispatch_context.per_finding_dispatches[i]`):
+
+```json
+{
+  "blocking": true,
+  "concern": "The task lacks a verification bullet.",
+  "section": "TASK-001 acceptance criteria",
+  "severity": "important",
+  "source_index": 0,
+  "suggested_change": "Add explicit verification criteria.",
+  "target_task_id": null
+}
+```
+
+This is a schedule-level finding — no individual child file targets. You may edit `roster_file` (the absolute path named above) OR emit `files_edited: []` with a justification note if no roster change is warranted for this finding. Do NOT edit any `### TASK-NNN:` child file, source code, tests, or configuration on this path.
+
+Apply a minimum-change roster edit (adjust `chunks[]` ordering, `depends_on` wiring, or metadata fields) when the finding translates concretely into a roster change. Preserve untouched sections of the roster verbatim — do not re-flow or re-format `chunks[]` entries the finding does not reference. If the finding is vague, contradictory, or does not translate into a concrete roster change, skip it with a written rationale in your report under `**Findings skipped:**` rather than invent intent; in that case `**Files edited:**` MUST be the empty list `[]`.
+
+Emit a markdown report with three sections: `**Findings actioned:**` (one bullet per finding applied, with the file:line anchor into `roster_file`), `**Findings skipped:**` (one bullet per finding not applied, with rationale), `**Files edited:**` (`[roster_file]` for a roster edit, or `[]` for a no-op).
+
+The `--no-auto-revise` orchestrator flag exists for users who prefer to apply revisions by hand; if you are seeing this prompt, auto-revise is on and you are expected to revise.
+
+**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.

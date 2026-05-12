@@ -1,0 +1,81 @@
+Apply a single-shot D.4 rescue to this task's existing implementation at `/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-remediator-rescue/plan_file.md`. The prior attempt is **still in the working tree** — it was NOT reverted. The reviewer (`codex` — `codex` or `claude` per the original Phase D dispatch) returned `needs-rework` and the orchestrator is invoking the single-shot rescue path before halting. There is no D.5 third-opinion adjudication on this branch — every reviewer finding below is treated as load-bearing for the rescue attempt. Patch the current working-tree edits with a minimal, surgical fix that addresses each rescue finding. Do NOT rebuild from the base commit; do NOT re-do work that is already correct.
+
+Plan context:
+
+```markdown
+Single-task context.
+
+### TASK-001: Fixture task
+
+- **Status:** pending
+- **Priority:** high
+- **Files:** src/example.py
+- **Dependencies:** none
+- **Test command:** `pytest tests/example_test.py`
+- **Acceptance criteria:**
+  - Preserve fixture behavior.
+  - Render exact prompt bytes.
+
+**Description:**
+Exercise the Agent dispatch prompt renderer.
+```
+
+Task (verbatim from plan):
+
+```markdown
+### TASK-001: Fixture task
+
+- **Status:** pending
+- **Priority:** high
+- **Files:** src/example.py
+- **Dependencies:** none
+- **Test command:** `pytest tests/example_test.py`
+- **Acceptance criteria:**
+  - Preserve fixture behavior.
+  - Render exact prompt bytes.
+
+**Description:**
+Exercise the Agent dispatch prompt renderer.
+```
+
+Base commit SHA: `abc1234`
+
+Reviewer source: `codex` (`codex` or `claude` — the role of the reviewer whose verdict triggered the rescue).
+
+Rescue findings (verbatim from the reviewer's findings array — every entry is load-bearing for this rescue):
+
+```json
+[
+  {
+    "file": "src/example.py",
+    "issue": "Rendered output omits the required field.",
+    "line": 12,
+    "severity": "major",
+    "suggested_fix": "Forward the placeholder."
+  }
+]
+```
+
+Dismissed findings — D.4 rescue does NOT carry a dismissed bucket. The literal value below is the empty list:
+
+```json
+[]
+```
+
+Echo the empty-marker literal `(none — D.4 rescue does not carry dismissed findings)` in the mandatory `**Dismissed findings noted:**` report section — do NOT enumerate per-index acks (there are no indices to ack on this branch).
+
+Analyst annotations (verbatim, may be empty):
+
+```json
+{
+  "analyst": "none"
+}
+```
+
+**Scope rule (the touch-only-these-lines contract):** the union of `(file, line)` coordinates across `rescue_findings[]` defines your permitted edit region. Unjustified edits outside that region flip the outcome to `scope-violation`. **Fix narrowly, do not scope-inflate.** Address each rescue finding directly. Do NOT refactor unrelated code, do NOT add docstrings to untouched regions, do NOT tidy formatting outside the edited scope. If a finding cannot be reconciled with the plan's acceptance criteria, report `plan-incorrect` — do not invent a compromise.
+
+You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec (including the mandatory `**Dismissed findings noted:**` and `**Scope violations:**` sections). Do not commit. Do not use `git stash`.
+
+**Parallel-tree caveat:** other implementers and reviewers may be running concurrently on disjoint files; unstaged changes to disjoint files may be in the working tree. Focus strictly on the scope files listed in the task's `Files:` field. Trust the diff when classifying test failures; do NOT use `git stash` (it would collide).
+
+**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.
