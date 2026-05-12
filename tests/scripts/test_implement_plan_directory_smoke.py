@@ -884,3 +884,101 @@ class TestSingleFileAutoPromote:
             "(the MCP-tool form replaces the legacy "
             "`decompose-plan --plan-file` CLI invocation example)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase D-Claude MCP render-path prose-pin (PLAN_AGENT_DISPATCH_MCP TASK-002)
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseDClaudeUsesMcpRenderPath:
+    """Phase D-Claude dispatch must go through
+    `plan_ops__build_agent_dispatch_prompt` with
+    `template_id="code-reviewer-d-claude"`, NOT through an
+    `awk`/`Read` against `dispatch-templates.md`.
+
+    The orchestrator is prose-driven (SKILL.md), so this is enforced
+    as a prose-pin pair on SKILL.md + dispatch-templates.md plus a
+    schema/registry check that the named `template_id` is honored by
+    the MCP tool. A live `/implement-plan` dry-run trace is not
+    available in this harness (Step (c) above documents the same
+    prose-driven nature); the prose pin is the load-bearing
+    regression backstop.
+    """
+
+    def test_skill_md_pins_canonical_agent_dispatch_recipe(self) -> None:
+        skill_text = SKILL_PATH.read_text(encoding="utf-8")
+        # New recipe section exists.
+        assert "## Canonical Agent dispatch recipe" in skill_text, (
+            "SKILL.md must declare the canonical Agent dispatch recipe"
+        )
+        # The MCP tool name is pinned in the recipe.
+        assert "plan_ops__build_agent_dispatch_prompt" in skill_text, (
+            "SKILL.md recipe must invoke plan_ops__build_agent_dispatch_prompt"
+        )
+        # The explicit "do NOT read dispatch-templates.md at dispatch time"
+        # rule is pinned (this is the structural protection against the
+        # legacy markdown-read path sneaking back in).
+        assert "Do NOT read `dispatch-templates.md`" in skill_text, (
+            "SKILL.md recipe must forbid reading dispatch-templates.md "
+            "at dispatch time"
+        )
+
+    def test_skill_md_phase_d1_routes_via_agent_dispatch_recipe(
+        self,
+    ) -> None:
+        skill_text = SKILL_PATH.read_text(encoding="utf-8")
+        # Both Phase D.1 rows that dispatch the `code-reviewer` Agent
+        # MUST reference the canonical recipe + the named template_id.
+        assert "code-reviewer-d-claude" in skill_text, (
+            "SKILL.md Phase D.1 must name template_id "
+            "`code-reviewer-d-claude` so the MCP tool can render the "
+            "Phase D-Claude template"
+        )
+        assert "§Canonical Agent dispatch recipe" in skill_text, (
+            "SKILL.md Phase D.1 must reference §Canonical Agent "
+            "dispatch recipe (the runtime render path)"
+        )
+
+    def test_dispatch_templates_md_carries_header_note(self) -> None:
+        templates_path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "dispatch-templates.md"
+        )
+        text = templates_path.read_text(encoding="utf-8")
+        # The Phase D-Claude section gains a header note pointing
+        # readers at the SKILL recipe and disclaiming runtime read.
+        assert (
+            "Rendered by plan_ops__build_agent_dispatch_prompt(template_id="
+            "\"code-reviewer-d-claude\""
+        ) in text, (
+            "dispatch-templates.md Phase D-Claude section must carry "
+            "the MCP-render header note"
+        )
+        assert (
+            "The orchestrator does not read this section at runtime"
+            in text
+        ), (
+            "dispatch-templates.md Phase D-Claude header note must "
+            "disclaim runtime read"
+        )
+
+    def test_mcp_tool_registers_code_reviewer_d_claude_template(
+        self,
+    ) -> None:
+        """Registry-level assertion (in lieu of a live tool-use trace):
+        the `plan_ops__build_agent_dispatch_prompt` tool's input schema
+        + implementation honor `template_id="code-reviewer-d-claude"`.
+        """
+        schema_path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "scripts"
+            / "schemas" / "mcp"
+            / "build_agent_dispatch_prompt.input.json"
+        )
+        assert schema_path.is_file(), schema_path
+        schema_text = schema_path.read_text(encoding="utf-8")
+        # The named template_id is enumerated as a valid input.
+        assert "code-reviewer-d-claude" in schema_text, (
+            "build_agent_dispatch_prompt input schema must enumerate "
+            "template_id `code-reviewer-d-claude`"
+        )

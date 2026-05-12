@@ -23,11 +23,12 @@ Cut over the Phase D-Claude dispatch site from the markdown-read pattern to the 
 
 ### TASK-002: Cut over Phase D-Claude in SKILL + dispatch-templates
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (edit — Phase D.1 sections, plus add `## Canonical Agent dispatch recipe` near line 101)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit — add header note to Phase D-Claude section)
+  - `plugins/plan-executor/scripts/plan_ops.py` (edit — adjust `_extract_agent_blockquote` to select the LAST contiguous blockquote run so the new template header note doesn't break body-byte-identity; required by implementer plan-adaptation)
   - `tests/scripts/test_implement_plan_directory_smoke.py` (edit — add assertion that no `awk` against `dispatch-templates.md` runs in the dry-run trace)
 - **Dependencies:** [001]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_implement_plan_directory_smoke.py tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`

@@ -46,7 +46,7 @@ The CLI fallback is allowed only for `plan_ops.py` subcommands and only after th
 1. **Parallel dispatch per batch.** Up to `--parallel N` dispatches in a SINGLE message inside Phase B. Claude-tier via Agent, Codex-tier via Bash — both kick off in the same message when a batch contains both.
 2. **Trust the analyst's schedule.** Batches with disjoint `file_locks` are parallel-safe. Do not add extra safety reasoning.
 3. **Your job is routing only.** Pick tasks from the analyst's schedule, dispatch, interpret reports, commit/revert. No code reading, no diff judgment, no scope inflation.
-4. **Dispatch prompts must be self-contained.** Read `${CLAUDE_PLUGIN_ROOT}/skills/implement-plan/dispatch-templates.md` for the templates. Every Agent prompt includes the full task block verbatim + "You do NOT have the Agent tool."
+4. **Dispatch prompts must be self-contained.** The dispatch-templates.md file is the canonical authoring location and may be inspected by humans, but at runtime the orchestrator does NOT read it directly. The asymmetry is resolved as follows: **wrapper dispatches** (Claude/Codex/Gemini wrapper subprocess sites) use the wrapper-input builders (`plan_ops__build_claude_dispatch_input`, etc.) which render the templates internally; **in-process Agent dispatches** use the agent-prompt builder `plan_ops__build_agent_dispatch_prompt` (see §Canonical Agent dispatch recipe). The legacy `Read ${CLAUDE_PLUGIN_ROOT}/skills/implement-plan/dispatch-templates.md` instruction is preserved here strictly as a fallback for direct inspection — it is explicitly NOT the runtime path. Every Agent prompt includes the full task block verbatim + "You do NOT have the Agent tool."
 5. **Timeouts on Bash calls.** 5000ms for idioms (printf, git status). Bash-call outer timeout MUST cover the wrapper's effective internal timeout plus a small buffer. Implement: task-shape-aware wrapper default, derived from declared file count, acceptance criteria count, non-trivial test command, directory-scoped file entries, and complex test/router/parser/state markers; capped at 1800s. Review: `max(180_000ms, 30_000 * len(files))`. Plan-review: `180_000ms` (flat). The wrapper enforces its own internal timeout; pass `--timeout N` only to override. **Claude wrapper default dispatch timeout: 1800s (30 min)** — applied by `plan_claude_dispatch.py` (`DEFAULT_DISPATCH_TIMEOUT_SEC`, BUG-145) when neither `input.overrides.timeout_sec` nor `--timeout` is supplied.
 6. **Subagent errors.** If a dispatch returns `[Tool result missing due to internal error]` or no parseable report, treat as failure. Log it, restore partial changes, do NOT retry silently. Claude-implementer `malformed` outcome goes to `fail-task stage=implement reason=malformed_report`.
 7. **Cross-review asymmetry.** Claude implements → Codex reviews; Codex implements → Claude reviews. Escalation path differs by direction — see Phase D.2.
@@ -109,6 +109,20 @@ Every Claude-wrapper dispatch — Phase B implementer, Phase 1 Step 2 per-child 
 5. **Route only the normalized extractor output.** Use `{status, outcome, result, scope_violation, scope_misreport, error}` from step 4 to drive the §Dispatch error handling routing table. Do not parse the raw wrapper envelope inline.
 
 **CLI fallback (`PLAN_OPS_TRANSPORT=cli-fallback`).** Only when the bootstrap selected the CLI fallback, the steps collapse onto stdin/stdout shell pipes: pipe `plan_ops.py build-claude-dispatch-input ... --output -` stdout into `plan_claude_dispatch.py run --input -`, then pipe the wrapper stdout into `plan_ops.py claude-envelope-extract --agent <...> --stdin`. The `--input -` and `--stdin` shell pipes are CLI-fallback only; they are a protocol violation under MCP mode.
+
+## Canonical Agent dispatch recipe
+
+Every in-process `Agent` dispatch — Phase D-Claude `code-reviewer` (both `claude_only=true` and the Codex-implemented Claude-cross-review branch), Phase D.5 adjudicator, Phase 1 Step 2 per-child classifier `Agent` fan-out, and every other site whose dispatch template lives in `dispatch-templates.md` — uses the same five-step recipe. Apply it verbatim at every Agent dispatch site; do not render the markdown template inline.
+
+Do NOT read `dispatch-templates.md` from Bash or `Read` at dispatch time. The MCP tool reads it on the orchestrator's behalf and returns the rendered string. The template file remains the canonical authoring location.
+
+1. **Build the rendered prompt.** Call `Tool: plan_ops__build_agent_dispatch_prompt with input {"template_id": "<id>", "context": {...}}`. The MCP transport reads `dispatch-templates.md`, substitutes the `context` placeholders, and returns the rendered envelope.
+2. **Assert `ok == true`.** Any other response is a build failure — halt the dispatch site (per §Dispatch error handling) without invoking `Agent`.
+3. **Extract `agent`, `model`, `prompt`** from the response.
+4. **Dispatch the in-process subagent.** `Agent(subagent_type=agent, model=model, prompt=prompt)`. Do not splice in additional context out-of-band; the rendered `prompt` is self-contained by contract.
+5. **Parse the result.** Hand the Agent's reply to the appropriate `plan_ops__parse_*` tool (`plan_ops__parse_reviewer_envelope`, `plan_ops__parse_implementer_report`, etc.) — never parse the reply inline.
+
+**CLI fallback (`PLAN_OPS_TRANSPORT=cli-fallback`).** Substitute `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" build-agent-dispatch-prompt --template-id <id> --context-file <path> --json` for step 1 and the matching `plan_ops.py parse-*` CLI for step 5; the in-process `Agent` invocation in step 4 is unchanged.
 
 ## plan_ops MCP reference
 
@@ -520,9 +534,9 @@ If `--skip-cross-review`, log `review_skipped`, skip to D.3, and show the mandat
 
 | Condition | Reviewer path | Verdict vocabulary |
 |---|---|---|
-| `claude_only=true` | `code-reviewer` Agent (`model:"sonnet"`, Phase D-Claude template) | `ship | ship-with-fixes | needs-rework` |
+| `claude_only=true` | `code-reviewer` Agent via §Canonical Agent dispatch recipe with `template_id:"code-reviewer-d-claude"` (renders the Phase D-Claude template; `model:"sonnet"`) | `ship | ship-with-fixes | needs-rework` |
 | Claude implemented, `claude_only=false` | `Bash: $PYTHON plan_codex_dispatch.py review --plan-file <abs> --task-id NNN --repo-root <abs> --files <files_changed> --review-focus bugs` | `clean | minor-findings | needs-rework` |
-| Codex implemented, `claude_only=false` | `code-reviewer` Agent (`model:"sonnet"`) | `ship | ship-with-fixes | needs-rework` |
+| Codex implemented, `claude_only=false` | `code-reviewer` Agent via §Canonical Agent dispatch recipe with `template_id:"code-reviewer-d-claude"` (`model:"sonnet"`) | `ship | ship-with-fixes | needs-rework` |
 
 Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}`. When findings are non-empty, include the full findings payload. The Phase D-Claude reviewer envelope is structured per the dispatch-template's required fenced-JSON output (`{verdict, summary, findings:[{blocking, severity, file?, line?, issue, suggested_fix?}]}`); every finding carries `blocking: bool` and a `ship-with-fixes` verdict with any `blocking: true` finding is treated by `review-route` as a contradictory soft-pass and escalated to remediation (narrow-remediation on `claude_only=true`, role-swap on Codex-implemented work). This is the structural backstop against the "ship-with-fixes on incomplete implementation" failure mode — reviewer drift alone cannot ship partial work. Codex wrapper `{timeout, parse_error, failure}` outcomes map to the prefixed run-log reason vocabulary `codex_review_timeout` / `codex_review_parse_error` / `codex_review_failure` (carried on `review_skipped` and `review_fallback_used` events) and log `review_skipped` only when no fallback reviewer is selected; an explicit skip-review path uses `reviewer:"none"`. Gemini fallback is opt-in via `--allow-gemini-fallback`, only for transient Codex review failures of Claude-implemented work; when Gemini produces the fallback review, pass `reviewer:"gemini"` and its parsed envelope to `plan_ops__review_route`.
 

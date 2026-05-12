@@ -12162,14 +12162,46 @@ def cmd_resolve_read_targets(args: argparse.Namespace) -> None:
 
 _AGENT_DISPATCH_TEMPLATE_AGENT = {
     "code-reviewer-d-claude": "code-reviewer",
+    "code-reviewer-d5": "code-reviewer",
+    "plan-reviewer": "plan-reviewer",
+    "plan-author-task-targeted": "plan-author",
+    "plan-author-schedule-level": "plan-author",
+    "plan-author-legacy-whole-plan": "plan-author",
+    "plan-review-triage": "plan-review-triage",
+    "plan-remediator-narrow": "plan-remediator",
+    "plan-remediator-rescue": "plan-remediator",
 }
 
 _AGENT_DISPATCH_TEMPLATE_MODEL = {
     "code-reviewer-d-claude": "sonnet",
+    "code-reviewer-d5": "sonnet",
+    "plan-reviewer": "sonnet",
+    "plan-author-task-targeted": "opus",
+    "plan-author-schedule-level": "opus",
+    "plan-author-legacy-whole-plan": "opus",
+    "plan-review-triage": "sonnet",
+    "plan-remediator-narrow": "opus",
+    "plan-remediator-rescue": "opus",
 }
 
 _AGENT_DISPATCH_TEMPLATE_HEADING = {
     "code-reviewer-d-claude": "## Phase D-Claude — code-reviewer on Codex work",
+    "code-reviewer-d5": "## Phase D.5 — code-reviewer third opinion (§8.4 escalation)",
+    "plan-reviewer": "## Phase 1.5-Claude — plan-reviewer dispatch (claude_only path)",
+    "plan-author-task-targeted": "### Variant A — Task-targeted dispatch (`variant == \"A\"`)",
+    "plan-author-schedule-level": "### Variant B — Schedule-level dispatch (`variant == \"B\"`)",
+    "plan-author-legacy-whole-plan": "## Phase A — plan-analyst whole-plan dispatch (LEGACY — retained for direct CLI callers)",
+    "plan-review-triage": "## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)",
+    "plan-remediator-narrow": "## Phase B-narrow-remediation — Narrow-remediation retry (D.2a.6)",
+    "plan-remediator-rescue": "## Phase D.4-rescue — plan-remediator dispatch (single-shot rescue)",
+}
+
+_AGENT_DISPATCH_TARGET_INJECTION_VERBS = {
+    "code-reviewer-d-claude": "Reviewing",
+    "code-reviewer-d5": "Adjudicate",
+    "plan-author-task-targeted": "Apply the plan-review finding",
+    "plan-remediator-narrow": "Apply the narrow-remediation patch",
+    "plan-remediator-rescue": "Apply the D.4 rescue",
 }
 
 
@@ -12217,14 +12249,94 @@ def _validate_build_agent_dispatch_prompt_input(payload: object) -> list[dict]:
         elif "files_changed" not in context:
             errors.append({"path": "$.context.files_changed", "message": "required field missing"})
         return errors
+    if isinstance(payload, dict) and isinstance(payload.get("template_id"), str):
+        branch_context = _agent_dispatch_context_schema_for_template(
+            schema,
+            payload.get("template_id"),
+        )
+        if branch_context is not None:
+            required_errors = []
+            for key in ("template_id", "context"):
+                if key not in payload:
+                    required_errors.append(
+                        {
+                            "path": f"/{key}",
+                            "code": "required-field-missing",
+                            "message": f"{key!r} is a required property",
+                        }
+                    )
+            if required_errors:
+                return required_errors
+            context_schema = dict(branch_context)
+            context_schema["$defs"] = schema.get("$defs", {})
+            context_validator = jsonschema.Draft202012Validator(context_schema)
+            context_errors = list(context_validator.iter_errors(payload.get("context")))
+            if context_errors:
+                return [
+                    {
+                        "path": "/context" + _jsonschema_error_path(error),
+                        "code": _jsonschema_error_code(error),
+                        "message": error.message,
+                    }
+                    for error in sorted(context_errors, key=lambda item: list(item.path))
+                ]
     validator = jsonschema.Draft202012Validator(schema)
     return [
         {
-            "path": "$" + "".join(f".{part}" for part in error.path),
+            "path": _jsonschema_error_path(error),
+            "code": _jsonschema_error_code(error),
             "message": error.message,
         }
         for error in sorted(validator.iter_errors(payload), key=lambda item: list(item.path))
     ]
+
+
+def _agent_dispatch_context_schema_for_template(
+    schema: dict,
+    template_id: str,
+) -> dict | None:
+    for branch in schema.get("oneOf", []):
+        if branch.get("properties", {}).get("template_id", {}).get("const") != template_id:
+            continue
+        context_schema = branch.get("properties", {}).get("context")
+        if not isinstance(context_schema, dict):
+            return None
+        ref = context_schema.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            return schema.get("$defs", {}).get(ref.rsplit("/", 1)[-1])
+        return context_schema
+    return None
+
+
+def _jsonschema_error_path(error: object) -> str:
+    parts = list(getattr(error, "path", []))
+    if getattr(error, "validator", None) == "required":
+        missing = re.search(r"'([^']+)' is a required property", getattr(error, "message", ""))
+        if missing:
+            parts.append(missing.group(1))
+    pointer = "".join(
+        f"/{str(part).replace('~', '~0').replace('/', '~1')}" for part in parts
+    )
+    return pointer or "/"
+
+
+def _jsonschema_error_code(error: object) -> str:
+    validator = getattr(error, "validator", None)
+    if validator == "required":
+        return "required-field-missing"
+    if validator == "oneOf":
+        return "template-context-mismatch"
+    if validator == "enum":
+        return "invalid-enum"
+    if validator == "const":
+        return "invalid-const"
+    if validator == "additionalProperties":
+        return "additional-property"
+    if validator == "type":
+        return "invalid-type"
+    if validator == "pattern":
+        return "invalid-pattern"
+    return "schema-validation-error"
 
 
 def _agent_dispatch_template_path() -> Path:
@@ -12245,8 +12357,15 @@ def _extract_dispatch_template_section(template_text: str, heading: str) -> str 
 
 
 def _extract_agent_blockquote(section: str) -> str:
+    # Collect every contiguous blockquote run in the section, then return
+    # the LAST one. Earlier runs are orientation notes (e.g., the
+    # `> Rendered by plan_ops__build_agent_dispatch_prompt(...)` header
+    # note that directs human readers at SKILL.md §Canonical Agent
+    # dispatch recipe); the real template body is the final run, which
+    # always extends to the section terminator.
     lines = section.splitlines()
-    out: list[str] = []
+    runs: list[list[str]] = []
+    current: list[str] = []
     in_quote = False
     for line in lines:
         if line.startswith(">"):
@@ -12254,13 +12373,50 @@ def _extract_agent_blockquote(section: str) -> str:
             unquoted = line[1:]
             if unquoted.startswith(" "):
                 unquoted = unquoted[1:]
-            out.append(unquoted)
+            current.append(unquoted)
             continue
         if in_quote:
             if line.strip():
-                break
-            out.append("")
+                # Non-blank, non-quote line terminates the run.
+                runs.append(current)
+                current = []
+                in_quote = False
+            else:
+                # Blank line inside an ongoing blockquote run (matches the
+                # legacy extractor behaviour — a `>` followed by `>` with
+                # only a blank gap stays one run).
+                current.append("")
+    if current:
+        runs.append(current)
+    if not runs:
+        return "\n"
+    out = runs[-1]
     return "\n".join(out).strip() + "\n"
+
+
+def _json_for_prompt(value: object) -> str:
+    if isinstance(value, str):
+        try:
+            return json.dumps(json.loads(value), indent=2, sort_keys=True)
+        except json.JSONDecodeError:
+            return value
+    return json.dumps(value, indent=2, sort_keys=True)
+
+
+def _extract_task_block_for_prompt(plan_text: str, task_id: str) -> str | None:
+    normalized = _normalize_task_id(task_id)
+    if normalized is None:
+        return None
+    _, blocks = _split_task_blocks(plan_text)
+    for raw_id, block in blocks:
+        if _normalize_task_id(raw_id) == normalized:
+            return block.strip()
+    return None
+
+
+def _context_section_for_prompt(plan_text: str) -> str:
+    context = _extract_plan_context_section(plan_text)
+    return context if context is not None else "(none)"
 
 
 def _render_review_target_task_id_injection(
@@ -12268,6 +12424,7 @@ def _render_review_target_task_id_injection(
     target_task_id: str | None,
     *,
     plan_file: str,
+    template_id: str = "code-reviewer-d-claude",
 ) -> str | dict:
     heading_count = count_task_headings(plan_text)
     if target_task_id is None:
@@ -12290,8 +12447,9 @@ def _render_review_target_task_id_injection(
             f"target_task_id is not parseable: {target_task_id!r}",
             path="$.context.target_task_id",
         )
+    verb = _AGENT_DISPATCH_TARGET_INJECTION_VERBS.get(template_id, "Implement")
     return (
-        f"Reviewing specifically `### TASK-{normalized}:` (this child "
+        f"{verb} specifically `### TASK-{normalized}:` (this child "
         f"plan file declares {heading_count} `### TASK-NNN:` H3 headings; "
         "read only the matching block).\n\n"
     )
@@ -12336,44 +12494,38 @@ def _run_build_agent_dispatch_prompt(payload: dict) -> dict:
 
     template_id = payload["template_id"]
     context = payload["context"]
-    plan_file = Path(context["plan_file"])
-    if not plan_file.is_absolute():
-        return _agent_dispatch_error(
-            "plan-file-not-absolute",
-            f"plan_file must be absolute: {plan_file}",
-            path="$.context.plan_file",
-        )
-    if not plan_file.is_file():
-        return _agent_dispatch_error(
-            "plan-file-not-found",
-            f"plan file not found: {plan_file}",
-            path="$.context.plan_file",
-        )
-    plan_text = _load_text(plan_file)
-    task_id = _normalize_task_id(context["task_id"])
-    if task_id is None:
+    prompt_plan_key = {
+        "plan-reviewer": None,
+        "plan-author-task-targeted": "child_plan_file",
+        "plan-author-schedule-level": "roster_file",
+        "plan-author-legacy-whole-plan": "plan_path",
+        "plan-review-triage": None,
+    }.get(template_id, "plan_file")
+    plan_file = Path(".")
+    plan_text = ""
+    if prompt_plan_key is not None:
+        plan_file = Path(context[prompt_plan_key])
+        if not plan_file.is_absolute():
+            return _agent_dispatch_error(
+                "plan-file-not-absolute",
+                f"{prompt_plan_key} must be absolute: {plan_file}",
+                path=f"$.context.{prompt_plan_key}",
+            )
+        if not plan_file.is_file():
+            return _agent_dispatch_error(
+                "plan-file-not-found",
+                f"plan file not found: {plan_file}",
+                path=f"$.context.{prompt_plan_key}",
+            )
+        plan_text = _load_text(plan_file)
+    task_id = context.get("task_id") or context.get("target_task_id")
+    normalized_task_id = _normalize_task_id(task_id) if task_id is not None else None
+    if task_id is not None and normalized_task_id is None:
         return _agent_dispatch_error(
             "task-id-invalid",
-            f"task_id is not parseable: {context['task_id']!r}",
+            f"task_id is not parseable: {task_id!r}",
             path="$.context.task_id",
         )
-
-    description = _extract_task_description(plan_text, task_id)
-    acceptance_criteria = _extract_task_acceptance_criteria(plan_text, task_id)
-    if description is None or acceptance_criteria is None:
-        return _agent_dispatch_error(
-            "task-not-found",
-            f"task {task_id} not present in plan {plan_file}",
-            path="$.context.task_id",
-        )
-
-    injection = _render_review_target_task_id_injection(
-        plan_text,
-        context.get("target_task_id"),
-        plan_file=str(plan_file),
-    )
-    if isinstance(injection, dict):
-        return injection
 
     template_path = _agent_dispatch_template_path()
     if not template_path.is_file():
@@ -12391,16 +12543,17 @@ def _run_build_agent_dispatch_prompt(payload: dict) -> dict:
             f"template section not found: {_AGENT_DISPATCH_TEMPLATE_HEADING[template_id]}",
         )
     prompt = _extract_agent_blockquote(section)
-    prompt = prompt.replace(
-        "<comma-separated files from Codex wrapper's files_changed>",
-        ", ".join(context["files_changed"]),
+    render_result = _render_agent_dispatch_prompt_body(
+        template_id,
+        context,
+        prompt,
+        plan_file=plan_file,
+        plan_text=plan_text,
+        normalized_task_id=normalized_task_id,
     )
-    prompt = prompt.replace("<verbatim from TASK-NNN Description>", description)
-    prompt = prompt.replace(
-        "<verbatim from TASK-NNN Acceptance criteria>",
-        acceptance_criteria,
-    )
-    prompt = injection + prompt
+    if isinstance(render_result, dict):
+        return render_result
+    prompt = render_result
     return _result(
         {
             "ok": True,
@@ -12410,6 +12563,233 @@ def _run_build_agent_dispatch_prompt(payload: dict) -> dict:
         },
         exit_code=0,
     )
+
+
+def _render_agent_dispatch_prompt_body(
+    template_id: str,
+    context: dict,
+    prompt: str,
+    *,
+    plan_file: Path,
+    plan_text: str,
+    normalized_task_id: str | None,
+) -> str | dict:
+    injection = ""
+    if template_id in _AGENT_DISPATCH_TARGET_INJECTION_VERBS:
+        injection = _render_review_target_task_id_injection(
+            plan_text,
+            context.get("target_task_id"),
+            plan_file=str(plan_file),
+            template_id=template_id,
+        )
+        if isinstance(injection, dict):
+            return injection
+
+    if template_id == "code-reviewer-d-claude":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        description = _extract_task_description(plan_text, normalized_task_id)
+        acceptance_criteria = _extract_task_acceptance_criteria(plan_text, normalized_task_id)
+        if description is None or acceptance_criteria is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        prompt = prompt.replace(
+            "<comma-separated files from Codex wrapper's files_changed>",
+            ", ".join(context["files_changed"]),
+        )
+        prompt = prompt.replace("<verbatim from TASK-NNN Description>", description)
+        prompt = prompt.replace(
+            "<verbatim from TASK-NNN Acceptance criteria>",
+            acceptance_criteria,
+        )
+        return injection + prompt
+
+    if template_id == "code-reviewer-d5":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        task_block = _extract_task_block_for_prompt(plan_text, normalized_task_id)
+        if task_block is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        reviewer = context.get("reviewer", "Codex")
+        prompt = prompt.replace(
+            "<comma-separated files from Claude implementer's files_changed>",
+            ", ".join(context["files_changed"]),
+        )
+        prompt = prompt.replace("<reviewer>", reviewer)
+        prompt = prompt.replace("<entire TASK-NNN block>", task_block)
+        prompt = prompt.replace("<codex_findings_json>", _json_for_prompt(context["reviewer_findings"]))
+        prompt = prompt.replace("<wrapper_checks_json>", _json_for_prompt(context["wrapper_checks_json"]))
+        return injection + prompt
+
+    if template_id == "plan-reviewer":
+        prompt = prompt.replace("<absolute schedule path>", context["schedule_path"])
+        prompt = prompt.replace("<plan directory basename>", context["plan_basename"])
+        allow = "true" if context["allow_gaps_demotion"] else "false"
+        prompt = prompt.replace("<true|false>", allow)
+        if not context["allow_gaps_demotion"]:
+            prompt = re.sub(
+                r"\n\*\*Allow-gaps demotion clause.*?standard verdict vocabulary unchanged\.\n",
+                "\n",
+                prompt,
+                flags=re.DOTALL,
+            )
+        return prompt
+
+    if template_id == "plan-author-task-targeted":
+        prompt = prompt.replace(
+            "<per_finding_dispatches[i].child_plan_file>",
+            context["child_plan_file"],
+        )
+        prompt = prompt.replace(
+            "<per_finding_dispatches[i].target_task_id>",
+            context["target_task_id"],
+        )
+        prompt = prompt.replace(
+            "<per_finding_dispatches[i].finding>",
+            _json_for_prompt(context["finding"]),
+        )
+        return injection + prompt
+
+    if template_id == "plan-author-schedule-level":
+        prompt = prompt.replace(
+            "<orchestrator-resolved absolute path to 00_INDEX.json>",
+            context["roster_file"],
+        )
+        prompt = prompt.replace(
+            "<per_finding_dispatches[i].finding>",
+            _json_for_prompt(context["finding"]),
+        )
+        return prompt
+
+    if template_id == "plan-author-legacy-whole-plan":
+        return (
+            f"Apply a plan-review finding to the legacy whole-plan file at "
+            f"`{context['plan_path']}`. Your write scope is exactly that file.\n\n"
+            f"Target task id: `{context.get('target_task_id')}`\n\n"
+            "Plan-review finding (single router-provided entry):\n\n"
+            "```json\n"
+            f"{_json_for_prompt(context['finding'])}\n"
+            "```\n\n"
+            "Apply a minimum-change edit. Preserve untouched sections verbatim. "
+            "Do NOT edit child plan files, roster files, source code, tests, or configuration.\n\n"
+            "**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.\n"
+        )
+
+    if template_id == "plan-review-triage":
+        return _render_plan_review_triage_prompt(context, prompt)
+
+    if template_id == "plan-remediator-narrow":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        task_block = _extract_task_block_for_prompt(plan_text, normalized_task_id)
+        if task_block is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        prompt = prompt.replace("<absolute plan path>", str(plan_file))
+        prompt = prompt.replace("<## Context section verbatim>", _context_section_for_prompt(plan_text))
+        prompt = prompt.replace("<entire TASK-NNN block>", task_block)
+        prompt = prompt.replace("<starting_sha>", context["starting_sha"])
+        prompt = prompt.replace("<findings_for_retry>", _json_for_prompt(context["findings_for_retry"]))
+        prompt = prompt.replace("<dismissed_for_context>", _json_for_prompt(context["dismissed_for_context"]))
+        prompt = prompt.replace("<d5_summary>", context["d5_summary"])
+        prompt = prompt.replace("<analyst_annotations_json>", _json_for_prompt(context["analyst_annotations_json"]))
+        return injection + prompt
+
+    if template_id == "plan-remediator-rescue":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        task_block = _extract_task_block_for_prompt(plan_text, normalized_task_id)
+        if task_block is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        prompt = prompt.replace("<absolute plan path>", str(plan_file))
+        prompt = prompt.replace("<reviewer_source>", context["reviewer_source"])
+        prompt = prompt.replace("<## Context section verbatim>", _context_section_for_prompt(plan_text))
+        prompt = prompt.replace("<entire TASK-NNN block>", task_block)
+        prompt = prompt.replace("<starting_sha>", context["starting_sha"])
+        prompt = prompt.replace("<rescue_findings_json>", _json_for_prompt(context["rescue_findings_json"]))
+        prompt = prompt.replace("<analyst_annotations_json>", _json_for_prompt(context["analyst_annotations_json"]))
+        return injection + prompt
+
+    return prompt
+
+
+def _render_plan_review_triage_prompt(context: dict, prompt: str) -> str:
+    source = context["source"]
+    rendered_source = "codex-plan-review" if source == "codex" else "plan-analyst"
+    evidence = context["findings"] if source == "codex" else context["gaps"]
+    findings_count = len(evidence)
+    schedule_text = ""
+    if context.get("schedule_path"):
+        schedule_text = f", `schedule_path={context['schedule_path']}`"
+    prompt = prompt.replace(
+        "Scope: `source=<source>`, `findings_count=<N>`; include `schedule_path=<absolute schedule path>` only when supplied.",
+        f"Scope: `source={rendered_source}`, `findings_count={findings_count}`{schedule_text}.",
+    )
+    prompt = prompt.replace("<source>", rendered_source)
+    prompt = prompt.replace("<findings_for_payload>", _json_for_prompt(evidence))
+    if source == "codex":
+        prompt = re.sub(
+            r"\n\*If `source == plan-analyst`:.*?(?=\nReturn your verdict)",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+        prompt = re.sub(
+            r"\n\*Source-specific verification moves — if `source == plan-analyst`:.*?(?=\n\*Same-family caveat)",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+        prompt = re.sub(
+            r"\n\*Same-family caveat.*?over silently dismissing it\.\n",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+    else:
+        prompt = re.sub(
+            r"\n\*If `source == codex-plan-review`:.*?(?=\n\*If `source == plan-analyst`)",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+        prompt = re.sub(
+            r"\n\*Source-specific verification moves — if `source == codex-plan-review`:.*?(?=\n\*Source-specific verification moves — if `source == plan-analyst`)",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+    return prompt
 
 
 def cmd_build_agent_dispatch_prompt(args: argparse.Namespace) -> None:
@@ -13684,7 +14064,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_badp.add_argument(
         "--template-id",
         default=None,
-        choices=["code-reviewer-d-claude"],
+        choices=sorted(_AGENT_DISPATCH_TEMPLATE_AGENT),
         help="Dispatch prompt template id",
     )
     p_badp.add_argument(
