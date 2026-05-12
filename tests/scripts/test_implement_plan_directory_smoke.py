@@ -198,6 +198,66 @@ class TestPreflight:
         assert body["python_path"], body
         assert Path(body["python_path"]).is_absolute(), body
 
+    def test_preflight_passes_when_decompose_just_created_dir(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression: Phase 0 auto-promote runs `decompose-plan` against a
+        single-file plan, producing a sibling directory whose contents are
+        all brand-new untracked. `git status --porcelain` collapses such a
+        directory to a single entry `?? <plan_dir_rel>/`. Preflight must
+        recognize that bare directory entry as the just-created plan dir
+        and classify its contents as `plan_doc`, not `source_blocking` —
+        otherwise the orchestrator halts on its own decompose output.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # Commit only the single-file plan; the produced directory will be
+        # untracked at preflight time, just like the live auto-promote path.
+        single_file = repo / "test_plan.md"
+        single_file.write_text(
+            (DECOMPOSER_INPUTS / "canonical.md").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        _git_init(repo)
+
+        cp_d = _run_plan_ops(
+            "decompose-plan", "--plan-file", str(single_file), "--json",
+            cwd=repo,
+        )
+        assert cp_d.returncode == 0, (cp_d.stdout, cp_d.stderr)
+        produced = Path(json.loads(cp_d.stdout)["produced_dir"])
+        assert produced.is_dir(), produced
+
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout
+        # Sanity: git really does collapse the fresh dir to a single entry.
+        # If git's defaults change and individual files start showing up
+        # without `-uall`, the bug also goes away — but the assertion below
+        # still validates the classifier; this just documents the trigger.
+        assert any(
+            line.endswith("test_plan/") for line in porcelain.splitlines()
+        ), porcelain
+
+        cp = _run_plan_ops(
+            "preflight", "--plan-file", str(produced), "--json",
+            "--unattended-revert-policy", "fail-fast",
+            cwd=repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        assert body["pass"] is True, body
+        assert body["dirty_files"]["source_blocking"] == [], body
+        # The collapsed `test_plan/` entry must have been expanded into
+        # individual files, all classified as plan_doc.
+        plan_doc = set(body["dirty_files"]["plan_doc"])
+        assert "test_plan/00_INDEX.json" in plan_doc, body
+        assert any(
+            p.startswith("test_plan/TASK-") and p.endswith(".md")
+            for p in plan_doc
+        ), body
+
 
 # ---------------------------------------------------------------------------
 # (b) build-tasks produces a fat manifest matching the roster

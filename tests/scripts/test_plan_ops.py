@@ -4119,6 +4119,7 @@ class TestFailTaskPartitionCleanup:
             ".claude",
             "_run_lock.json",
             "docs/plans/_run_log.jsonl",
+            "docs/plans/spans.jsonl",
             ".codex/session.json",
             ".claude/skills/plan.md",
             "docs/plans/anything.schedule.json",
@@ -16311,6 +16312,34 @@ class TestGateCommitSafeAlwaysIgnoreConsistency:
         )
         assert result["status"] == "pass", result
 
+    def test_spans_log_change_is_ignored(self, tmp_path: Path) -> None:
+        """`docs/plans/spans.jsonl` is a COMMIT_ALWAYS_IGNORE member;
+        a commit that touches it alongside a declared Files: entry passes.
+        Mirrors the `_run_log.jsonl` case so the wrapper's parallel
+        bookkeeping appends never trip commit-safe."""
+        repo, plans_dir, plan = self._make_repo(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        (plans_dir / "spans.jsonl").write_text(
+            '{"agent":"plan-analyst","status":"ok"}\n', encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "add",
+             "example/seed.py",
+             "docs/plans/spans.jsonl"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat(TASK-001): seed + spans"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "pass", result
+
     def test_schedule_sidecar_for_current_plan_is_ignored(
         self, tmp_path: Path,
     ) -> None:
@@ -19820,7 +19849,15 @@ class TestDecomposePlan:
                 f"--force rerun produced non-identical content for {name}"
             )
 
-    def test_missing_metadata_structured_error(self, tmp_path: Path) -> None:
+    def test_missing_metadata_filled_with_defaults(self, tmp_path: Path) -> None:
+        """A plan missing `**Priority:**` no longer halts the decomposer.
+
+        The decomposer fills routine omissions with sensible defaults and
+        records each substitution in `defaults_applied`. The produced
+        child markdown must satisfy `_gate_schema_valid` so the run can
+        proceed past Phase 0 auto-promote without tripping the schema
+        gate on a content-level omission the renderer can patch in place.
+        """
         src = tmp_path / "missing_metadata.md"
         src.write_text(
             (DECOMPOSER_INPUTS_DIR / "missing_metadata.md").read_text(
@@ -19829,17 +19866,33 @@ class TestDecomposePlan:
             encoding="utf-8",
         )
         cp = _run("decompose-plan", "--plan-file", str(src), "--json")
-        assert cp.returncode == 1
-        err = _parse_json(cp)["errors"]
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)
+        assert out["errors"] == [], out
+        defaults = out.get("defaults_applied") or []
         assert any(
-            e["code"] == "missing-required-metadata"
-            and e["task_id"] == "001"
-            and e["field"] == "Priority"
-            for e in err
-        ), err
-        # Source-line pinning must name a real line in the fixture.
-        src_lines = src.read_text(encoding="utf-8").splitlines()
-        assert all(1 <= e["source_line"] <= len(src_lines) for e in err), err
+            d["task_id"] == "001"
+            and d["field"] == "Priority"
+            and d["default"] == "medium"
+            for d in defaults
+        ), defaults
+        # Produced child must pass the schema-valid gate end-to-end AND
+        # carry a non-empty `**Description:**` body so plan-review's
+        # Intent completeness check (`tasks[i].description` non-empty)
+        # does not halt the run downstream.
+        produced = Path(out["produced_dir"])
+        children = sorted(produced.glob("TASK-*.md"))
+        assert children, list(produced.iterdir())
+        gate = plan_ops._gate_schema_valid(children[0])
+        assert gate["status"] == "pass", gate
+        body = children[0].read_text(encoding="utf-8")
+        # Description header is followed by non-empty content (the renderer's
+        # title-plus-rationale fallback fires here because the fixture's
+        # task body for TASK-001 is non-empty, so the assertion is just a
+        # belt-and-braces guarantee that the header never precedes a blank).
+        assert re.search(
+            r"\*\*Description:\*\*\n\S", body, re.MULTILINE,
+        ), body
 
     def test_duplicate_ids_structured_error(self, tmp_path: Path) -> None:
         src = tmp_path / "duplicate_ids.md"
@@ -20320,6 +20373,141 @@ class TestDecomposePlan:
             task = plan_ops._parse_task_block(body, level=3)
             assert task["id"] == chunk["task_id"]
 
+    def test_decompose_fills_missing_required_fields_with_defaults(
+        self, tmp_path: Path,
+    ) -> None:
+        """Decomposing a plan that omits Priority AND Test command must
+        succeed end-to-end — the decomposer is a transformer, not a
+        content reviewer. Routine omissions get filled with sensible
+        defaults and surface in `defaults_applied`; the produced child
+        passes `_gate_schema_valid` so Phase 0 auto-promote flows
+        straight through preflight without halting on a content miss
+        the renderer can patch in place. This is the post-fix
+        contract: a decomposer that decomposes a plan is also
+        responsible for ensuring that plan satisfies the immediate
+        downstream gate (schema-valid).
+        """
+        src = tmp_path / "missing_both.md"
+        src.write_text(
+            (
+                "# Bare-bones plan\n"
+                "\n"
+                "## Goal\n"
+                "Stub goal.\n"
+                "\n"
+                "## Context\n"
+                "Stub context.\n"
+                "\n"
+                "## Verification\n"
+                "- The single task lands cleanly.\n"
+                "- `venv/bin/pytest tests/scripts/test_plan_ops.py -k stub` passes.\n"
+                "\n"
+                "## Tasks\n"
+                "\n"
+                "## TASK-001: Stub task with neither Priority nor Test command\n"
+                "\n"
+                "- **Status:** pending\n"
+                "- **Files:**\n"
+                "  - scratch/stub.txt (create)\n"
+                "- **Dependencies:** []\n"
+                "- **Acceptance criteria:**\n"
+                "  - `scratch/stub.txt` exists.\n"
+                "- **Reversion guidance:** `rm -f scratch/stub.txt`\n"
+                "\n"
+                "**Description:**\n"
+                "Source intentionally omits Priority and Test command.\n"
+            ),
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(src, tmp_path / "out", force=True)
+        assert res["ok"] is True, res
+        defaults = res.get("defaults_applied") or []
+        # Priority filled with the neutral default.
+        assert any(
+            d["task_id"] == "001"
+            and d["field"] == "Priority"
+            and d["default"] == "medium"
+            for d in defaults
+        ), defaults
+        # Test command inferred from the parent's `## Verification` runner
+        # fragment rather than collapsed to "none".
+        assert any(
+            d["task_id"] == "001"
+            and d["field"] == "Test command"
+            and "pytest" in d["default"]
+            for d in defaults
+        ), defaults
+        produced = Path(res["produced_dir"])
+        children = sorted(produced.glob("TASK-*.md"))
+        assert children, list(produced.iterdir())
+        body = children[0].read_text(encoding="utf-8")
+        # Required bullets all materialize on the rendered child.
+        for field in plan_ops._TASK_REQUIRED_BULLETS:
+            assert re.search(
+                rf"^\s*-\s*\*\*{re.escape(field)}:\*\*",
+                body,
+                re.MULTILINE,
+            ), (field, body)
+        # Schema-valid gate passes.
+        gate = plan_ops._gate_schema_valid(children[0])
+        assert gate["status"] == "pass", gate
+
+    def test_decompose_test_command_falls_back_to_none(
+        self, tmp_path: Path,
+    ) -> None:
+        """When neither the task block nor the parent `## Verification`
+        section names a runnable test command, Test command collapses
+        to the stable `none` sentinel rather than halting decomposition.
+        """
+        src = tmp_path / "no_runner.md"
+        src.write_text(
+            (
+                "# No-runner plan\n"
+                "\n"
+                "## Goal\n"
+                "Stub goal.\n"
+                "\n"
+                "## Context\n"
+                "Stub context.\n"
+                "\n"
+                "## Verification\n"
+                "- Manual smoke check; no automated runner.\n"
+                "\n"
+                "## Tasks\n"
+                "\n"
+                "## TASK-001: Stub task with no runner anywhere\n"
+                "\n"
+                "- **Status:** pending\n"
+                "- **Priority:** medium\n"
+                "- **Files:**\n"
+                "  - scratch/stub.txt (create)\n"
+                "- **Dependencies:** []\n"
+                "- **Acceptance criteria:**\n"
+                "  - `scratch/stub.txt` exists.\n"
+                "- **Reversion guidance:** `rm -f scratch/stub.txt`\n"
+                "\n"
+                "**Description:**\n"
+                "Source omits Test command; verification names no runner.\n"
+            ),
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(src, tmp_path / "out", force=True)
+        assert res["ok"] is True, res
+        defaults = res.get("defaults_applied") or []
+        assert any(
+            d["task_id"] == "001"
+            and d["field"] == "Test command"
+            and d["default"] == "none"
+            and d["source"] == "decomposer-default"
+            for d in defaults
+        ), defaults
+        produced = Path(res["produced_dir"])
+        children = sorted(produced.glob("TASK-*.md"))
+        body = children[0].read_text(encoding="utf-8")
+        assert "**Test command:** none" in body, body
+        gate = plan_ops._gate_schema_valid(children[0])
+        assert gate["status"] == "pass", gate
+
     def test_decompose_force_rerun_is_cross_day_idempotent(
         self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
     ) -> None:
@@ -20541,13 +20729,23 @@ class TestDecomposePlan:
             f"--- got ---\n{rendered!r}"
         )
         # Empty-description fallback: when the source omits the description,
-        # the file ends at `**Description:**\n` (no trailing blank body).
+        # the renderer auto-fills the body with `<title>. (Auto-filled by
+        # decompose-plan; ...)` so plan-review's Intent completeness check
+        # (`tasks[i].description` non-empty) does not route the run to
+        # `needs-replan`. Verify the header is followed by the title + the
+        # explanatory rationale, NOT a bare empty line.
         empty_desc_task = dict(task)
         empty_desc_task["description"] = ""
         rendered_empty = plan_ops._render_child_task_file(
             empty_desc_task, plan_context=plan_context,
         )
-        assert rendered_empty.endswith("**Description:**\n"), rendered_empty
+        assert "**Description:**\nSeed scratch directory." in rendered_empty, (
+            rendered_empty
+        )
+        assert "Auto-filled by decompose-plan" in rendered_empty, rendered_empty
+        # The header is NEVER followed immediately by a blank-only line —
+        # plan-review treats that as missing intent and halts the run.
+        assert "**Description:**\n\n" not in rendered_empty, rendered_empty
         # Reversion-guidance sentinel still emits when source omits it.
         no_rev_task = dict(task)
         no_rev_task["reversion_guidance"] = None

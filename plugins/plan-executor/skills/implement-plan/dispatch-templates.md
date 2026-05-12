@@ -81,7 +81,7 @@ The agent-behavior body below is byte-identical to the pre-migration wording —
 
 > Classify exactly one task from the plan at `<absolute child plan path>`. Repo root: `<repo_root>`.
 >
-> Read the child plan file verbatim (it typically carries a single `### TASK-NNN:` H3 heading plus the standard metadata block — Status, Implementer, Priority, Files, Dependencies, Test command, Acceptance criteria, Description, Implementation notes, Reversion guidance — but **may carry >1 H3 heading** when several sibling sub-tasks share a single child file; in that case the orchestrator passes `target_task_id` as a first-class dispatch field and the renderer auto-injects an "Implement specifically `### TASK-NNN:`" first-instruction line per the §`target_task_id` auto-injection rule above). If the selected task's metadata block declares `Implementer: claude` or `Implementer: codex`, emit that exact value as `agent` and do not reclassify it. Otherwise: Use the `claude` vs `codex` heuristics from your agent spec's classification rubric (scope ≤30 lines and ≤3 files plus a concrete test command → codex; multi-file coordination, async/routing/API contract changes, new module creation, priority `critical`, `Test command: none`, or underspecified acceptance criteria → claude). Do NOT emit a schedule, gaps, risks, or a batch table.
+> Read the child plan file verbatim (it typically carries a single `### TASK-NNN:` H3 heading plus the standard metadata block — Status, Implementer, Priority, Files, Dependencies, Test command, Acceptance criteria, Description, Implementation notes, Reversion guidance — but **may carry >1 H3 heading** when several sibling sub-tasks share a single child file; in that case the orchestrator passes `target_task_id` as a first-class dispatch field and the renderer auto-injects an "Implement specifically `### TASK-NNN:`" first-instruction line per the §`target_task_id` auto-injection rule above). If the selected task's metadata block declares `Implementer: claude` or `Implementer: codex`, emit that exact value as `agent` and do not reclassify it. Otherwise: Use the `claude` vs `codex` heuristics from your agent spec's classification rubric (default is `codex`; route to `claude` only when AC is underspecified, implementation notes describe a tradeoff to weigh, `(create)` covers a non-leaf module with un-enumerated call sites, the task mutates a cross-cutting state-machine contract — `plan_ops`/dispatch-templates/schedule shape — or priority is `critical` AND one of the above also holds; scope, file count, line count, and `Test command: none` are NOT discriminators on their own). Do NOT emit a schedule, gaps, risks, or a batch table.
 >
 > You are classifying ONE task — return only the minimal JSON below. Do not re-validate structure, do not compute batches, do not surface cross-task gaps (`compute-schedule` handles DAG + file-disjointness downstream).
 >
@@ -628,11 +628,44 @@ Agent dispatch, `model: "sonnet"` (explicit v1 choice — see Open risks 3):
 >
 > Verify this change addresses the task without regressions or scope creep. Focus on correctness and domain-specific patterns from the project. Flag pre-existing issues in Minor/nits only.
 >
+> **Acceptance-criterion completeness gate (required before `ship` or `ship-with-fixes`).** Enumerate each acceptance-criteria bullet from the task block above and, for each one, cite the file + symbol (or test name) in the diff that satisfies it. An acceptance criterion you cannot cite is presumed unmet — that is a `needs-rework`, never `ship-with-fixes`. "Looks roughly done" without per-AC citation is a protocol violation: complex plans omit things by accident, and `ship-with-fixes` is not a soft-pass channel.
+>
+> **Verdict decision ladder — pick the verdict that matches the work, not a stronger or weaker one:**
+>
+> 1. `ship` — every acceptance criterion is met and cited above; no issues, or only forward-looking suggestions a human reviewer would file as follow-ups without asking for revision.
+> 2. `ship-with-fixes` — every acceptance criterion is met and cited above; residual concerns exist but are non-blocking nits (style drift, naming, a clearer log message, an undersold docstring) that a human reviewer would merge with a follow-up note. **NEVER use this verdict for missing implementation, an unmet acceptance criterion, an absent declared test, a semantic bug, or scope inflation.** Every entry in `findings[]` under this verdict MUST carry `blocking: false`. A `blocking: true` finding under `ship-with-fixes` is a self-contradiction — the router treats it as a structural violation and routes to remediation.
+> 3. `needs-rework` — any acceptance criterion is unmet or unverifiable, any declared behavior is missing, any required test for a declared verification criterion is absent, there is a semantic bug, or scope inflated past the task's file allow-list. This verdict triggers a remediation pass (under `claude_only=true` it routes to D.4 rescue; on Codex-implemented work it triggers D.2b role-swap). Use it whenever a human reviewer would block merge on the finding alone. Bundling several nits into a `needs-rework` is wrong — list each as a non-blocking finding under `ship-with-fixes` instead.
+>
+> Heuristic when unsure: ask "would a human reviewer block merge on this finding alone?" If yes → `blocking: true`; if no → `blocking: false`. Then pick the verdict that fits the set: any `blocking: true` → `needs-rework`; no blocking issues but non-trivial findings → `ship-with-fixes`; no findings at all → `ship`.
+>
+> **Output (required fenced `json` block, no prose outside it):**
+>
+> ```json
+> {
+>   "verdict": "ship | ship-with-fixes | needs-rework",
+>   "summary": "<one-paragraph justification; for `ship` / `ship-with-fixes` it MUST enumerate per-AC citations>",
+>   "findings": [
+>     {
+>       "blocking": true,
+>       "severity": "major | minor | nit",
+>       "file": "<path or null>",
+>       "line": 0,
+>       "issue": "<what is wrong>",
+>       "suggested_fix": "<concrete remediation>"
+>     }
+>   ]
+> }
+> ```
+>
+> `findings[]` MUST be present (may be empty array for `ship`). Every entry MUST carry `blocking: bool` and `severity ∈ {major, minor, nit}`. `file` / `line` are optional only when the finding has no specific anchor (e.g., a global concern about test coverage); prefer concrete anchors. Findings are forwarded verbatim into the remediator's dispatch context when the router escalates a contradictory `ship-with-fixes`.
+>
 > **Parallel-tree caveat:** other batch-mates' unstaged changes to disjoint files may be in the working tree — focus strictly on the scope files listed above.
 >
 > **You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash.
 
 The parallel-tree caveat is a deliberate divergence from design §10 line 889; mirrors `.claude/skills/fix-bugs/dispatch-templates.md` Phase D.1. Do not align back without updating both.
+
+The verdict decision ladder, completeness gate, and structured `findings[]` output were added to close the "soft-pass on incomplete work" failure mode where the prior under-specified prompt let the reviewer pick `ship-with-fixes` on tasks the implementer had not actually finished. The router enforces the `blocking: true` → escalate-to-remediation rule structurally in `plan_ops._route_review_route` so reviewer drift alone cannot ship partial work.
 
 ## Phase D.5 — code-reviewer third opinion (§8.4 escalation)
 

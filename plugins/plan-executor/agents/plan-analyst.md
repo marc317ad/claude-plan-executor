@@ -26,34 +26,31 @@ You are a per-child task classifier. You receive ONE decomposed child plan file 
 
 **Classification rubric.**
 
-Route to `codex` when ALL of:
-
-- ≤3 files changed
-- ≤30 lines estimated (read files in `Files:` to assess scope; for `(create)` entries, estimate from the task's Description + Implementation notes)
-- Concrete, bounded implementation with clear acceptance criteria
-- Has an explicit test command (not `none`, not an indirect wrapper like `make test`)
-- No async patterns, routing changes, or API contract modifications
-- Not creating a new architectural module
-- Priority is not `critical`
+Default is `codex`. Codex (GPT-5.5) handles concrete multi-file edits, mechanical refactors, test-driven implementation, new leaf modules from a concrete sketch, and routing/wiring changes when the contract is laid out in the plan. Scope (file count, line count) is NOT a discriminator on its own — both backends handle large diffs.
 
 Route to `claude` when ANY of:
 
-- Multi-file coordination or cross-cutting changes
-- Async / routing / pipeline modifications
-- New file/module creation requiring design decisions
-- Complex business logic or domain-sensitive correctness
-- Architecture-sensitive changes with tradeoff analysis needed
-- `Test command: none`
-- Priority `critical`
-- Spec is underspecified (the implementer would have to invent behavior)
+- Acceptance criteria are underspecified — the implementer would have to invent observable behavior to satisfy them
+- Implementation notes describe a tradeoff to weigh, not a recipe to apply (architecture-sensitive judgment)
+- `Files:` lists `(create)` for a non-leaf module whose call sites are NOT enumerated in the plan (design decisions deferred to the implementer)
+- Task mutates a cross-cutting state-machine contract: `plan_ops` schema/protocol, dispatch templates, schedule shape, run-log event vocabulary, or another surface the SKILL pins
+- Priority is `critical` AND any of the above also holds (criticality alone is not a complexity signal)
 
-Record a short `classification_reason` (≤10 words, e.g., "single file, mechanical"; "multi-file wiring, async"; "critical priority"; "underspecified acceptance criteria").
+Otherwise → `codex`.
 
-Scope estimation approach:
+Record a short `classification_reason` (≤10 words, e.g., "default codex"; "underspecified AC"; "tradeoff in notes"; "protocol-shape change"; "critical + underspecified").
 
-- Read each `(modify)` / `(delete)` file; skim to judge complexity signals (async, routing, API surface). Use `:line_range` as a read hint when present.
-- For `(create)` files, use the task Description + Implementation notes. If the sketch is <30 lines of concrete logic and the new file is a leaf (no new wiring), Codex-tier; otherwise Claude-tier.
-- Do not read files just to count lines.
+Signals that are NOT discriminators (do not route to `claude` on these alone):
+
+- File count, line count, total diff size.
+- `Test command: none` — that's a documentation gap surfaced by the `missing-test-command` detector, not a complexity signal.
+- Priority `critical` by itself.
+- Generic "multi-file coordination", "async/routing/pipeline", or "new file creation" framing — only matters when AC or notes leave the mechanism underspecified.
+
+Scope inspection approach:
+
+- Read `(modify)` / `(delete)` files only to judge whether the spec is concrete enough — NOT to count lines or estimate effort. Use `:line_range` as a read hint when present.
+- For `(create)` files, judge from Description + Implementation notes whether the sketch fully pins behavior. Concrete sketch → `codex`; abstract sketch with judgment calls left open → `claude`.
 
 **Output contract.** Emit exactly one fenced ```json block. No markdown report, no prose outside the fence, no other fields.
 
@@ -78,7 +75,7 @@ Any additional fields or prose outside the fenced JSON block will be rejected by
 - Read-only. Bash is for inspection only.
 - No Agent tool. No subagent dispatch. No inline `python3` heredocs beyond trivially inspecting the child file.
 - Forbidden commands: `git add`, `git commit`, `git stash`, `git restore`, `git checkout <path>`, `mv`, `rm`, `cp`, `touch`, output redirection (`>`, `>>`), package installers — any mutating command.
-- Be conservative: when the rubric is ambiguous, prefer `claude`. The classifier does not estimate difficulty heuristically beyond the rubric above; vague signals route `claude` by default so the implementer has enough headroom.
+- Ambiguous signals route to `codex` by default — `codex` is the default tier, `claude` is the explicit-justification path. The remediation ladder (`D.2a.5 → D.2a.6 → D.4 rescue → D.2b role-swap`) escalates Codex failures to Claude when warranted; first-pass dispatch does not need to pre-pay for that headroom. The classifier does not estimate difficulty heuristically beyond the rubric above.
 
 ## Legacy mode (whole-plan analysis — retained for direct CLI callers)
 
@@ -217,34 +214,26 @@ In **directory mode**, the scheduler also needs the per-task dependency set so `
 
 ### Step 6 — Classify each task (claude vs codex)
 
-**Route to `codex` when ALL of:**
-
-- ≤3 files changed
-- ≤30 lines estimated (read each file in `files` to assess scope; for `(create)`, estimate from the task's description and implementation notes)
-- Concrete, bounded implementation with clear acceptance criteria
-- Has an explicit test command (not `none`, not `unresolvable-test`)
-- No async patterns, routing changes, or API contract modifications
-- Not creating a new architectural module
-- Priority is not `critical`
+Default is `codex`. Codex (GPT-5.5) handles concrete multi-file edits, mechanical refactors, test-driven implementation, new leaf modules from a concrete sketch, and routing/wiring changes when the contract is laid out in the plan. Scope (file count, line count) is NOT a discriminator on its own.
 
 **Route to `claude` when ANY of:**
 
-- Multi-file coordination or cross-cutting changes
-- Async / routing / pipeline modifications
-- New file/module creation requiring design decisions
-- Complex business logic or domain-sensitive correctness
-- Architecture-sensitive changes with tradeoff analysis needed
-- `Test command: none`
-- Priority `critical`
-- Spec is underspecified (the implementer would have to invent behavior)
+- Acceptance criteria are underspecified — the implementer would have to invent observable behavior
+- Implementation notes describe a tradeoff to weigh, not a recipe to apply
+- `Files:` lists `(create)` for a non-leaf module whose call sites are NOT enumerated in the plan
+- Task mutates a cross-cutting state-machine contract: `plan_ops` schema/protocol, dispatch templates, schedule shape, run-log event vocabulary
+- Priority is `critical` AND any of the above also holds
 
-Record a short `classification_reason` (≤10 words, e.g., "single file, mechanical"; "multi-file wiring, async"; "critical priority"; "underspecified acceptance criteria").
+Otherwise → `codex`.
 
-Scope estimation approach:
+Record a short `classification_reason` (≤10 words, e.g., "default codex"; "underspecified AC"; "tradeoff in notes"; "protocol-shape change"; "critical + underspecified").
 
-- Read each `(modify)` / `(delete)` file; skim to judge complexity signals (async, routing, API surface). Use `:line_range` as a read hint when present.
-- For `(create)` files, use the task description + implementation notes. If the sketch is <30 lines of concrete logic and the new file is a leaf (no new wiring), Codex-tier; otherwise Claude-tier.
-- Do not read files just to count lines.
+Signals that are NOT discriminators (do not route to `claude` on these alone): file count, line count, total diff size, `Test command: none`, priority `critical` by itself, generic "multi-file coordination" / "async/routing/pipeline" / "new file creation" framing.
+
+Scope inspection approach:
+
+- Read `(modify)` / `(delete)` files only to judge whether the spec is concrete enough — NOT to count lines. Use `:line_range` as a read hint when present.
+- For `(create)` files, judge from description + implementation notes whether the sketch fully pins behavior. Concrete sketch → Codex; abstract sketch with judgment calls left open → Claude.
 
 ### Step 7 — Identify gaps and risks
 

@@ -2277,6 +2277,29 @@ def _emit_or_die(args, result: dict) -> None:
     _emit(args, result, exit_code=exit_code)
 
 
+def _normalize_csv_or_list(value: object) -> list[str]:
+    """Accept either CLI-shape CSV string or MCP-shape list of strings.
+
+    The MCP server delivers oneOf-string|array params as their native
+    JSON shape; the CLI delivers a single argparse string. Shared
+    `_run_*` payload normalizers must accept both.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [s.strip() for s in value if isinstance(s, str) and s.strip()]
+    return [s.strip() for s in str(value).split(",") if s.strip()]
+
+
+def _normalize_json_or_list(value: object) -> list:
+    """Accept either CLI-shape JSON string or MCP-shape list payload."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return list(value)
+    return json.loads(value)
+
+
 def _normalize_task_id(raw: str) -> str | None:
     if raw is None:
         return None
@@ -3014,6 +3037,60 @@ def _extract_plan_context_section(plan_text: str) -> str | None:
     return body or None
 
 
+def _extract_plan_verification_bullets(plan_text: str) -> list[str]:
+    """Return the bullet items under the whole-plan `## Verification` section.
+
+    Used by the decomposer to backfill empty per-task `**Acceptance criteria:**`
+    bullets: if a task block omits AC entirely, the parent plan's verification
+    bullets are a near-perfect substitute (the verification section IS the
+    plan's success criteria). Returns `[]` if the section is missing or has
+    no top-level bullets.
+    """
+    m = re.search(r"^## Verification\s*$", plan_text, re.MULTILINE)
+    if not m:
+        return []
+    tail = plan_text[m.end():]
+    end_m = re.search(r"^## ", tail, re.MULTILINE)
+    if end_m:
+        tail = tail[: end_m.start()]
+    bullets: list[str] = []
+    for line in tail.splitlines():
+        stripped = line.lstrip()
+        # Top-level bullets only — nested sub-bullets are skipped to keep the
+        # backfill list short and aligned with the parent's headline asserts.
+        indent = len(line) - len(stripped)
+        if indent == 0 and stripped.startswith("- ") and len(stripped) > 2:
+            bullets.append(stripped[2:].strip())
+    return bullets
+
+
+def _infer_test_command_from_plan(plan_text: str) -> str | None:
+    """Best-effort inference of a `**Test command:**` from plan prose.
+
+    Scans the whole-plan `## Verification` section for an inline-code
+    fragment whose payload looks like a runnable test invocation (`pytest …`,
+    `venv/bin/pytest …`, `npm test …`, `cargo test …`, `go test …`). Returns
+    the bare command (sans backticks) on the first hit, or None if nothing
+    matches. The decomposer only consults this when a task block omits
+    `**Test command:**` entirely — it is a courtesy fallback, not a primary
+    parse path.
+    """
+    m = re.search(r"^## Verification\s*$", plan_text, re.MULTILINE)
+    if not m:
+        return None
+    tail = plan_text[m.end():]
+    end_m = re.search(r"^## ", tail, re.MULTILINE)
+    if end_m:
+        tail = tail[: end_m.start()]
+    # Inline-code payload that starts with a recognized test runner.
+    runner_re = re.compile(
+        r"`((?:venv/bin/)?(?:pytest|python\s+-m\s+pytest|npm\s+test|"
+        r"cargo\s+test|go\s+test)\b[^`]*)`"
+    )
+    hit = runner_re.search(tail)
+    return hit.group(1).strip() if hit else None
+
+
 # ---------------------------------------------------------------------------
 # Child-plan rendering scaffold
 # ---------------------------------------------------------------------------
@@ -3151,11 +3228,27 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
     else:
         metadata_lines.append("- **Reversion guidance:** none")
     metadata = "\n".join(metadata_lines)
-    # ---- Description: empty source → just the `**Description:**` header
-    # (placeholder substitutes to ``); non-empty source → newline + body
-    # (so the body sits on the line immediately after the header).
-    description = task.get("description") or ""
-    description_slot = f"\n{description}" if description else ""
+    # ---- Description: ALWAYS non-empty. Plan-review (Phase 1.5) treats
+    # `tasks[i].description` empty/trivial as a likely-blocking gap and
+    # routes the run to `needs-replan` (see `plan-reviewer.md` Intent
+    # completeness check + `plan_codex_dispatch.py` / `plan_gemini_dispatch.py`
+    # prompt line 6). A bare `**Description:**` header would satisfy
+    # `_gate_schema_valid` but halt the run downstream. Fallback chain
+    # when the source task omits the body:
+    #   1. task title (always available, name-grounded)
+    #   2. plus a one-line rationale pointing back at the parent context
+    # so an implementer reading the child knows where to look. The
+    # placeholder is a single short sentence — terse but non-empty,
+    # which is the contract plan-review actually checks.
+    description = (task.get("description") or "").strip()
+    if not description:
+        description = (
+            f"{title}. (Auto-filled by decompose-plan; the source plan "
+            f"omitted a `**Description:**` body for TASK-{tid}. See the "
+            f"parent plan's `## Context` and `## Verification` sections "
+            f"for the full intent.)"
+        )
+    description_slot = f"\n{description}"
     return string.Template(_DECOMPOSED_CHILD_SCAFFOLD).substitute(
         TID=tid,
         TITLE=title,
@@ -3265,29 +3358,84 @@ def _decompose_plan(
             continue
         seen_ids[tid] = source_line
         parsed.append(task)
-    # Validate required metadata per task.
+    # Backfill schema-required task fields with sensible defaults so a
+    # decomposed plan never fails the downstream `_gate_schema_valid`
+    # check on a missing `**Priority:**` / `**Test command:**` /
+    # `**Acceptance criteria:**` bullet. The decomposer is a transformer,
+    # not a content reviewer — surfacing structural errors for these
+    # routine omissions just halts a run on something the renderer can
+    # patch in place. Defaults applied here are reported back as
+    # `defaults_applied` (informational, non-fatal) so the operator can
+    # see what the decomposer filled in.
+    #
+    # Defaults:
+    #   - **Priority:**          → "medium" (neutral; PRIORITY_RANKS-valid)
+    #   - **Test command:**      → light inference from the parent plan's
+    #                              `## Verification` section, else "none"
+    #   - **Acceptance criteria:** → fall back to the parent plan's
+    #                                `## Verification` bullets if any,
+    #                                else leave empty (renderer still
+    #                                emits the bullet header so
+    #                                `_gate_schema_valid` is satisfied)
+    inferred_test_command = _infer_test_command_from_plan(plan_text)
+    parent_verification_bullets = _extract_plan_verification_bullets(plan_text)
+    defaults_applied: list[dict] = []
     for task in parsed:
         tid = task["id"]
         if not task.get("priority"):
-            errors.append(
+            task["priority"] = "medium"
+            defaults_applied.append(
                 {
-                    "code": "missing-required-metadata",
                     "task_id": tid,
                     "field": "Priority",
-                    "message": f"TASK-{tid} missing `**Priority:**` metadata",
-                    "source_line": task["source_line"],
+                    "default": "medium",
+                    "source": "decomposer-default",
                 }
             )
         if task.get("test_command") is None:
-            errors.append(
+            if inferred_test_command:
+                task["test_command"] = inferred_test_command
+                defaults_applied.append(
+                    {
+                        "task_id": tid,
+                        "field": "Test command",
+                        "default": inferred_test_command,
+                        "source": "plan-verification-inference",
+                    }
+                )
+            else:
+                task["test_command"] = "none"
+                defaults_applied.append(
+                    {
+                        "task_id": tid,
+                        "field": "Test command",
+                        "default": "none",
+                        "source": "decomposer-default",
+                    }
+                )
+        if not task.get("acceptance_criteria") and parent_verification_bullets:
+            task["acceptance_criteria"] = list(parent_verification_bullets)
+            defaults_applied.append(
                 {
-                    "code": "missing-required-metadata",
                     "task_id": tid,
-                    "field": "Test command",
-                    "message": (
-                        f"TASK-{tid} missing `**Test command:**` metadata"
-                    ),
-                    "source_line": task["source_line"],
+                    "field": "Acceptance criteria",
+                    "default": "(copied from parent `## Verification`)",
+                    "source": "plan-verification-inference",
+                }
+            )
+        # Description body MUST be non-empty so plan-review's Intent
+        # completeness check (`tasks[i].description` non-empty) does not
+        # route the run to `needs-replan`. The renderer applies a
+        # title-plus-rationale fallback inside `_render_child_task_file`
+        # when the source omits the body; we record the substitution
+        # here so operators can see the decomposer filled it in.
+        if not (task.get("description") or "").strip():
+            defaults_applied.append(
+                {
+                    "task_id": tid,
+                    "field": "Description",
+                    "default": "(auto-filled from task title + parent context pointer)",
+                    "source": "decomposer-default",
                 }
             )
     # Validate dependency ids exist in the plan.
@@ -3463,6 +3611,7 @@ def _decompose_plan(
         "produced_dir": str(target),
         "task_count": len(parsed),
         "children": [c["file"] for c in chunks],
+        "defaults_applied": defaults_applied,
 
     }
 
@@ -5598,11 +5747,13 @@ def _run_preflight(payload: dict) -> dict:
         return _result({'error': f'missing-roster-chunk: chunks[].file declared in {roster_path} but missing on disk: {missing_chunks}'}, exit_code=1)
     toplevel_cp = _git(['rev-parse', '--show-toplevel'])
     plan_dir_rel: str
+    repo_root: Path | None = None
     if toplevel_cp.returncode == 0 and toplevel_cp.stdout.strip():
         try:
             repo_root = Path(toplevel_cp.stdout.strip()).resolve()
             plan_dir_rel = plan.resolve().relative_to(repo_root).as_posix()
         except (OSError, ValueError):
+            repo_root = None
             plan_dir_rel = plan.as_posix()
     else:
         plan_dir_rel = plan.as_posix()
@@ -5622,22 +5773,50 @@ def _run_preflight(payload: dict) -> dict:
     dirty: dict[str, list] = {'plan_doc': [], 'orchestrator_state': [], 'plan_scope_dirty': [], 'source_blocking': []}
     warnings: list[str] = []
     status = _git(['status', '--porcelain'])
+    ignore_basename = plan.name
     for line in status.stdout.splitlines():
         if len(line) < 4:
             continue
         path = line[3:]
-        is_plan_doc = path in plan_doc_set
-        ignore_basename = plan.name
-        if is_plan_doc:
-            dirty['plan_doc'].append(path)
-        elif _is_preflight_always_ignored(path, _PLAN_DIR_POSIX, ignore_basename):
-            dirty['orchestrator_state'].append(path)
-        elif path in scope:
-            tid = scope[path]
-            dirty['plan_scope_dirty'].append({'path': path, 'task_id': tid})
-            warnings.append(f'{path} is dirty and TASK-{tid} will write to it')
-        else:
-            dirty['source_blocking'].append(path)
+        # `git status --porcelain` collapses fully-untracked directories
+        # to a single entry with a trailing slash. The Phase 0
+        # auto-promote step (decompose-plan) creates the plan directory
+        # fresh, so on a brand-new run the entire plan_dir is reported
+        # as one line `?? <plan_dir_rel>/`. Without expansion, that bare
+        # directory path matches no entry in plan_doc_set and falls
+        # through to source_blocking — halting preflight on the very
+        # files it just legitimately created. Expand directory entries
+        # at or under the plan_dir to their constituent files so the
+        # classifier below can recognize them as plan_doc /
+        # orchestrator_state. We deliberately do NOT expand directories
+        # outside plan_dir_rel: that preserves git's default `-unormal`
+        # collapse for unrelated untracked dirs (e.g. node_modules/),
+        # which the operator presumably wants to stay collapsed.
+        paths_to_classify: list[str] = [path]
+        if path.endswith('/') and repo_root is not None and plan_dir_rel:
+            dir_rel = path.rstrip('/')
+            if dir_rel == plan_dir_rel or dir_rel.startswith(plan_dir_rel + '/'):
+                try:
+                    expanded = [
+                        sub.relative_to(repo_root).as_posix()
+                        for sub in (repo_root / dir_rel).rglob('*')
+                        if sub.is_file()
+                    ]
+                except (OSError, ValueError):
+                    expanded = []
+                if expanded:
+                    paths_to_classify = sorted(expanded)
+        for p in paths_to_classify:
+            if p in plan_doc_set:
+                dirty['plan_doc'].append(p)
+            elif _is_preflight_always_ignored(p, _PLAN_DIR_POSIX, ignore_basename):
+                dirty['orchestrator_state'].append(p)
+            elif p in scope:
+                tid = scope[p]
+                dirty['plan_scope_dirty'].append({'path': p, 'task_id': tid})
+                warnings.append(f'{p} is dirty and TASK-{tid} will write to it')
+            else:
+                dirty['source_blocking'].append(p)
     codex_available = shutil.which('codex') is not None
     gemini_available = _resolve_gemini_available()
     sha_cp = _git(['rev-parse', 'HEAD'])
@@ -7054,7 +7233,7 @@ def _run_commit_task(payload: dict) -> dict:
             exit_code=1,
         )
 
-    files = [f.strip() for f in payload["files"].split(",") if f.strip()]
+    files = _normalize_csv_or_list(payload["files"])
     if not files:
         return _result(
             {"error": "--files must list at least one file"},
@@ -7066,10 +7245,7 @@ def _run_commit_task(payload: dict) -> dict:
         return _result({"error": f"plan file not found: {plan}"}, exit_code=1)
 
     try:
-        minor = (
-            json.loads(payload["reviewer_minor_findings"])
-            if payload["reviewer_minor_findings"] else []
-        )
+        minor = _normalize_json_or_list(payload["reviewer_minor_findings"])
     except json.JSONDecodeError as e:
         return _result(
             {"error": f"invalid --reviewer-minor-findings: {e}"},
@@ -7756,7 +7932,7 @@ def _run_fail_task(payload: dict) -> dict:
         event_fields["reversion_guidance"] = payload["reversion_guidance"]
     if payload.get("reviewer_findings"):
         try:
-            parsed_findings = json.loads(payload["reviewer_findings"])
+            parsed_findings = _normalize_json_or_list(payload["reviewer_findings"])
         except json.JSONDecodeError as e:
             return _result(
                 {"error": f"invalid --reviewer-findings: {e}"}, exit_code=1,
@@ -11029,7 +11205,7 @@ def _run_audit(payload: dict) -> dict:
 
     requested: list[str] | None = None
     if payload["check"]:
-        requested = [s.strip() for s in payload["check"].split(",") if s.strip()]
+        requested = _normalize_csv_or_list(payload["check"])
         unknown = [name for name in requested if name not in AUDIT_CHECK_NAMES]
         if unknown:
             return _result(
@@ -11234,7 +11410,7 @@ def _run_gates(payload: dict) -> dict:
             exit_code=0 if certified else 1,
         )
 
-    requested = [s.strip() for s in str(payload.get("check", "")).split(",") if s.strip()]
+    requested = _normalize_csv_or_list(payload.get("check"))
     unknown = [g for g in requested if g not in GATE_NAMES]
     if unknown:
         return _result({"error": f"unknown gate name(s): {unknown}; known: {list(GATE_NAMES)}"}, exit_code=1)
@@ -13526,6 +13702,28 @@ _REVIEW_ROUTE_ACTIONS = {
 _CODEX_VERDICTS = {"clean", "minor-findings", "needs-rework"}
 # Claude reviewer verdict vocabulary (review of Codex work, or claude_only).
 _CLAUDE_VERDICTS = {"ship", "ship-with-fixes", "needs-rework"}
+
+
+def _blocking_findings(findings: object) -> list[dict]:
+    """Subset of reviewer findings flagged `blocking: true`.
+
+    The Phase D-Claude reviewer template (dispatch-templates.md §Phase
+    D-Claude) requires every entry of `findings[]` to carry a `blocking:
+    bool` discriminator and forbids `blocking: true` under
+    `ship-with-fixes`. A contradictory `ship-with-fixes` envelope
+    (verdict says soft-pass; a finding says ship-blocker) is treated by
+    the router as a structural escalation to remediation — incomplete
+    implementation must never reach commit through the soft-pass channel.
+    Legacy envelopes without the `blocking` field on every entry route
+    as-if no blocking findings were declared (backward-compat: prior
+    reviewers emitted only verdict + summary).
+    """
+    if not isinstance(findings, list):
+        return []
+    return [
+        f for f in findings
+        if isinstance(f, dict) and f.get("blocking") is True
+    ]
 # D.5 third-opinion verdict vocabulary.
 _D5_VERDICTS = {"ship", "ship-with-fixes", "partial-agreement", "needs-rework"}
 # Reviewer identity vocabulary (TASK-001 PHASE_D_STATE_MACHINE_COMPLETION).
@@ -14320,6 +14518,51 @@ def _route_review_route(payload: dict) -> dict:
                     f"expected one of {sorted(_CLAUDE_VERDICTS)!r}",
                     task_id=task_id,
                 )
+            blocking = _blocking_findings(rev_findings)
+            if rev_verdict == "ship-with-fixes" and blocking:
+                # Contradictory envelope: reviewer chose the soft-pass verdict
+                # but flagged ship-blocking findings. Per Phase D-Claude
+                # template, this is incomplete implementation — escalate to
+                # narrow-remediation (touch-only) instead of committing.
+                if narrow_used:
+                    return {
+                        "action": "pause_awaiting_user",
+                        "args": {
+                            "task_id": task_id,
+                            "pause_payload": {
+                                "stage": "post_narrow_remediation_review",
+                                "codex_findings": list(rev_findings),
+                                "d5_summary": (
+                                    "ship-with-fixes with blocking findings "
+                                    "after narrow-remediation already used"
+                                ),
+                                "dismissed_finding_indices": [],
+                            },
+                        },
+                    }
+                return {
+                    "action": "dispatch_narrow_remediation",
+                    "args": {
+                        "task_id": task_id,
+                        "dispatch_context": {
+                            "template": "PhaseB-narrow-remediation",
+                            "findings_for_retry": list(blocking),
+                            "dismissed_for_context": [
+                                f for f in rev_findings
+                                if f not in blocking
+                            ] if isinstance(rev_findings, list) else [],
+                            "d5_summary": (
+                                "ship-with-fixes verdict carried "
+                                f"{len(blocking)} blocking finding(s); "
+                                "Phase D-Claude reviewer template forbids "
+                                "blocking findings under ship-with-fixes "
+                                "(incomplete implementation must not "
+                                "soft-pass). Reviewer summary: "
+                                f"{rev_summary}"
+                            ),
+                        },
+                    },
+                }
             if rev_verdict in ("ship", "ship-with-fixes"):
                 return {
                     "action": "commit",
@@ -14410,6 +14653,44 @@ def _route_review_route(payload: dict) -> dict:
             f"expected one of {sorted(_CLAUDE_VERDICTS)!r}",
             task_id=task_id,
         )
+
+    rev_blocking = _blocking_findings(rev_findings)
+    if rev_verdict == "ship-with-fixes" and rev_blocking:
+        # Contradictory envelope on Codex-implemented work: soft-pass verdict
+        # with ship-blocking findings. Per Phase D-Claude template this is
+        # incomplete implementation — escalate to the existing D.2b role-swap
+        # remediation lane rather than committing partial work.
+        if role_swap_used:
+            return {
+                "action": "fail",
+                "args": {
+                    "task_id": task_id,
+                    "fail_stage": "review",
+                    "policy_kind": "role_swap_exhausted",
+                    "authorization_source": "phase-d2b-role-swap-exhausted",
+                    "fail_reason": (
+                        "role-swap retry exhausted; Claude reviewer "
+                        "ship-with-fixes with blocking findings on Codex work "
+                        "after one role-swap attempt"
+                    ),
+                },
+            }
+        return {
+            "action": "dispatch_role_swap",
+            "args": {
+                "task_id": task_id,
+                "dispatch_context": {
+                    "template": "PhaseB-rework",
+                    "findings_for_retry": list(rev_blocking),
+                    "d5_summary": (
+                        "ship-with-fixes verdict carried "
+                        f"{len(rev_blocking)} blocking finding(s); "
+                        "incomplete implementation must not soft-pass. "
+                        f"Reviewer summary: {rev_summary}"
+                    ),
+                },
+            },
+        }
 
     if rev_verdict in ("ship", "ship-with-fixes"):
         return {

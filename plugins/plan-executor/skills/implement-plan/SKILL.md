@@ -143,7 +143,7 @@ CLI surface:
 Required:  <plan-path>
 
 Optional:
-  --dry-run               Analyze + print; no dispatch, no edits, no commits (sticky)
+  --dry-run               Analyze + print; no dispatch, no edits, no commits (sticky). Exceptions: (a) Phase 0 auto-promote commit still runs (predates starting_sha; required for preflight to pass); (b) the Phase 1.5 plan-revision cycle (plan-author per finding → Phase 1 re-run → second-pass plan-review) runs end-to-end so the printed schedule reflects the revised plan. Phase B/D implementation/commit dispatches remain gated.
   --parallel N            Max concurrent tasks per batch (default: 2)
   --codex-only            Filter schedule to codex tasks
   --claude-only           Filter schedule to claude tasks
@@ -184,7 +184,14 @@ mirror failure does not block the run.
 
 **Auto-promote single-file input to directory mode (TASK-001).** Before any other Phase 0 step, if `pathlib.Path(plan_path).is_file()` — i.e. the user passed a single markdown plan, not a decomposed directory — invoke `Tool: plan_ops__decompose_plan with input {"plan_file": "<absolute plan>"}` so every downstream phase can assume directory mode.
 
-The subcommand reads whole-plan `## TASK-NNN:` markdown and writes a sibling directory at `<file-parent>/<file-stem>/` with `00_INDEX.json` + one `TASK-NNN_<slug>.md` child per task (each child uses the `### TASK-NNN:` H3 heading downstream parsers expect). Success → rebind `<plan-path>` ← `produced_dir`. Malformed input → structured `errors[*]` (missing headers, duplicate ids, unresolvable deps, cycles) — halt without acquiring the lock. Append `decompose_auto_promote` with `Tool: plan_ops__log_event with input {"event": "decompose_auto_promote", "fields_json": {"source_file": "<original plan-path>", "produced_dir": "<produced_dir>", "task_count": <n>}}`.
+The subcommand reads whole-plan `## TASK-NNN:` markdown and writes a sibling directory at `<file-parent>/<file-stem>/` with `00_INDEX.json` + one `TASK-NNN_<slug>.md` child per task (each child uses the `### TASK-NNN:` H3 heading downstream parsers expect). Success → rebind `<plan-path>` ← `produced_dir`. The decomposer also fills routine omissions (missing `**Priority:**`, missing `**Test command:**`, empty `**Acceptance criteria:**`) with sensible defaults and surfaces each substitution in `defaults_applied` — those are informational, NOT halts. Malformed input → structured `errors[*]` (missing headers, duplicate ids, unresolvable deps, cycles) — halt without acquiring the lock. Append `decompose_auto_promote` with `Tool: plan_ops__log_event with input {"event": "decompose_auto_promote", "fields_json": {"source_file": "<original plan-path>", "produced_dir": "<produced_dir>", "task_count": <n>}}`.
+
+**Commit the auto-promote output BEFORE preflight runs — including under `--dry-run`.** Predates `starting_sha` and is structurally outside the run, so the standard "never `git commit` directly" rule AND the `--dry-run` "no edits, no commits (sticky)" rule are both suspended at this single site. Skipping the commit on dry-run guarantees `source_blocking` halts preflight; do not skip:
+
+```bash
+git add "<original plan-path>" "<produced_dir>/00_INDEX.json" "<produced_dir>"/TASK-*.md
+git -c commit.gpgsign=false commit -m "chore(implement-plan): auto-promote $(basename "<original plan-path>") to directory mode"
+```
 
 Do NOT read the produced child files into context — `ls` of the directory is enough; downstream phases open children on demand. The produced directory is treated identically to a user-authored decomposed directory; `run_start.plan_file` reflects the directory basename. See §Input shape below for canonical bindings.
 
@@ -264,7 +271,7 @@ Phase 1 now runs as a four-step protocol: a deterministic `build-tasks` synthesi
 
 `Tool: plan_ops__build_tasks with input {"plans_dir": "<plans_dir>"}`
 
-Capture `{ok, outcome, tasks, batches, warnings, errors}`. Every `tasks[i]` carries `id`, `title`, `files`, `dependencies`, `priority`, `plan_file` (child basename), `description` (non-empty string per child), `acceptance_criteria` (ordered `string[]`), and optionally `agent` (emitted iff the child file declares `**Agent:**`). `batches` from this call is the topo + file-lock ordering `_build_tasks` computed and is carried verbatim into the persisted schedule (no orchestrator-side rebatch — `compute-schedule` and `build-tasks` share the same canonical batcher).
+Capture `{ok, outcome, tasks, batches, warnings, errors}`. Every `tasks[i]` carries `id`, `title`, `files`, `dependencies`, `priority`, `plan_file` (child basename), `description` (non-empty string per child), `acceptance_criteria` (ordered `string[]`), and optionally `agent` (emitted iff the child file declares `**Agent:**`; otherwise Step 2's classifier fan-out populates it). `batches` from this call is the topo + file-lock ordering `_build_tasks` computed and is carried verbatim into the persisted schedule (no orchestrator-side rebatch — `compute-schedule` and `build-tasks` share the same canonical batcher).
 
 Branch on the structured result:
 
@@ -394,7 +401,14 @@ Canonical event order: `run_start` → optional analyst triage/author retry → 
 
 ### Dry-run mode
 
-If `--dry-run`: print the schedule + intended dispatches. Release lock. Exit. Dry-run scope is sticky — a follow-up "actually run it" message requires a fresh invocation without `--dry-run`, or explicit user instruction.
+If `--dry-run`: print the (post-revision, if applicable) schedule + intended Phase B/D dispatches. Release lock. Exit. Dry-run scope is sticky — a follow-up "actually run it" message requires a fresh invocation without `--dry-run`, or explicit user instruction.
+
+Two dispatch/edit sites are exempt from dry-run gating:
+
+1. **Phase 0 auto-promote commit** — sole commit exempt; without it preflight halts on `source_blocking`.
+2. **Phase 1.5 plan-revision cycle** — when `plan-review-route` returns `dispatch_plan_author_per_finding` (Phase 1.5.5) or `partial-agreement` / `needs-rework` from analyst triage (Phase 1-triage), the orchestrator dispatches `plan-author` per finding, re-runs Phase 1 end-to-end, and (on the Codex source) re-dispatches plan-review with `attempt=2`. The binding-second-verdict rule still applies; a second `needs-replan` halts per the normal `reason_detail:"second_needs_replan"` path. Author edits target only the resolved `child_plan_file` (or `00_INDEX.json` for schedule-level findings) — other task files are not touched. Phase B (implement) and Phase D (review/commit) dispatches remain gated.
+
+Rationale: dry-run is meant to surface the schedule the user would actually execute. A `needs-replan` that's never authored leaves the dry-run output showing a plan the executor would have rejected — failing the "useful preview" purpose.
 
 ## Execute mode — per-batch A→E loop
 
@@ -507,7 +521,7 @@ If `--skip-cross-review`, log `review_skipped`, skip to D.3, and show the mandat
 | Claude implemented, `claude_only=false` | `Bash: $PYTHON plan_codex_dispatch.py review --plan-file <abs> --task-id NNN --repo-root <abs> --files <files_changed> --review-focus bugs` | `clean | minor-findings | needs-rework` |
 | Codex implemented, `claude_only=false` | `code-reviewer` Agent (`model:"sonnet"`) | `ship | ship-with-fixes | needs-rework` |
 
-Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}`. When findings are non-empty, include the full findings payload. Codex wrapper `{timeout, parse_error, failure}` outcomes map to the prefixed run-log reason vocabulary `codex_review_timeout` / `codex_review_parse_error` / `codex_review_failure` (carried on `review_skipped` and `review_fallback_used` events) and log `review_skipped` only when no fallback reviewer is selected; an explicit skip-review path uses `reviewer:"none"`. Gemini fallback is opt-in via `--allow-gemini-fallback`, only for transient Codex review failures of Claude-implemented work; when Gemini produces the fallback review, pass `reviewer:"gemini"` and its parsed envelope to `plan_ops__review_route`.
+Log `review_start` then `review_done {task_id, reviewer, verdict, findings_count, minor_findings[]?, disagreement_tag?}`. When findings are non-empty, include the full findings payload. The Phase D-Claude reviewer envelope is structured per the dispatch-template's required fenced-JSON output (`{verdict, summary, findings:[{blocking, severity, file?, line?, issue, suggested_fix?}]}`); every finding carries `blocking: bool` and a `ship-with-fixes` verdict with any `blocking: true` finding is treated by `review-route` as a contradictory soft-pass and escalated to remediation (narrow-remediation on `claude_only=true`, role-swap on Codex-implemented work). This is the structural backstop against the "ship-with-fixes on incomplete implementation" failure mode — reviewer drift alone cannot ship partial work. Codex wrapper `{timeout, parse_error, failure}` outcomes map to the prefixed run-log reason vocabulary `codex_review_timeout` / `codex_review_parse_error` / `codex_review_failure` (carried on `review_skipped` and `review_fallback_used` events) and log `review_skipped` only when no fallback reviewer is selected; an explicit skip-review path uses `reviewer:"none"`. Gemini fallback is opt-in via `--allow-gemini-fallback`, only for transient Codex review failures of Claude-implemented work; when Gemini produces the fallback review, pass `reviewer:"gemini"` and its parsed envelope to `plan_ops__review_route`.
 
 #### D.2 — Route by verdict
 

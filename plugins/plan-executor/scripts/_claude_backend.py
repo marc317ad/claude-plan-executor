@@ -290,12 +290,16 @@ def _render_phase_a_single_classifier_body(
             "`Implementer: codex`, emit that exact value as `agent` and "
             "do not reclassify it. Otherwise: Use the `claude` vs "
             "`codex` heuristics from your agent spec's classification "
-            "rubric (scope ≤30 lines and ≤3 files plus a concrete test "
-            "command → codex; multi-file coordination, async/routing/API "
-            "contract changes, new module creation, priority `critical`, "
-            "`Test command: none`, or underspecified acceptance criteria "
-            "→ claude). Do NOT emit a schedule, gaps, risks, or a batch "
-            "table."
+            "rubric (default is `codex`; route to `claude` only when "
+            "AC is underspecified, implementation notes describe a "
+            "tradeoff to weigh, `(create)` covers a non-leaf module "
+            "with un-enumerated call sites, the task mutates a "
+            "cross-cutting state-machine contract — `plan_ops` / "
+            "dispatch-templates / schedule shape — or priority is "
+            "`critical` AND one of the above also holds; scope, file "
+            "count, line count, and `Test command: none` are NOT "
+            "discriminators on their own). Do NOT emit a schedule, "
+            "gaps, risks, or a batch table."
         ),
         "",
         (

@@ -32,6 +32,15 @@ PROTECTED_EXACT_PATHS = frozenset({
 PROTECTED_PATH_PREFIXES = (
     "docs/plans/_run_log.jsonl",
     "docs/plans/_run_lock.json",
+    # Wrapper-side span audit log (PLAN_NESTED_DISPATCH TASK-006). Concurrent
+    # plan_claude_dispatch invocations (e.g. the 9 parallel plan-analyst
+    # classifiers in Phase 1) all append to this file at Step 12, AFTER each
+    # wrapper's own apply_cleanup at Step 9. Without this entry, sibling
+    # writes that land inside any single wrapper's baseline->cleanup window
+    # show up as observed delta and -- for plan-analyst's empty declared
+    # scope -- trip scope_violation_detected, surfacing as status=schema_invalid
+    # and the orchestrator's analyst_invalid halt. Mirrors _run_log.jsonl.
+    "docs/plans/spans.jsonl",
     ".claude/",
     ".codex/",
     "plugins/plan-executor/scripts/plan_ops.py",
@@ -62,6 +71,7 @@ PROTECTED_PATH_GLOBS: tuple[str, ...] = (
 COMMIT_ALWAYS_IGNORE: frozenset[str] = frozenset({
     "docs/plans/_run_log.jsonl",
     "docs/plans/_run_lock.json",
+    "docs/plans/spans.jsonl",
     "docs/plans/00_INDEX.json",
     "docs/plans/DUAL_AGENT_Plans/00_INDEX.json",
 })

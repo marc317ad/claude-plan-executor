@@ -2,31 +2,32 @@
   "outcome": "valid",
   "tasks": [
     {
-      "id": "008",
-      "title": "Wrapper/reconcile edge hardening",
+      "id": "010",
+      "title": "Process drift-guard polish",
       "files": [
+        "tests/scripts/test_skill_cli_reference_drift.py (edit)",
+        "tests/scripts/test_plan_ops_mcp_registrations.py (edit)",
+        "tests/scripts/test_plan_ops_mcp_conformance.py (edit)",
+        "tests/scripts/test_implement_plan_process_conformance.py (create/edit)",
         "plugins/plan-executor/scripts/plan_ops.py (edit)",
-        "plugins/plan-executor/scripts/plan_codex_dispatch.py (edit, if the independent test runner path lives there)",
-        "tests/scripts/test_plan_ops.py (edit)",
-        "tests/scripts/test_reconcile_batch_scope.py (create/edit, or use an existing focused reconcile scope test file)",
-        "tests/scripts/test_implement_plan_deferred_tests.py (create/edit, or use an existing focused implement-plan wrapper test file)",
-        "tests/scripts/fixtures/runlog/deferred_test.jsonl (create, or equivalent fixture documenting deferred-test event shape)"
+        "plugins/plan-executor/scripts/plan_ops_mcp_server.py (edit, if needed for shared constants or generated registry)",
+        "plugins/plan-executor/scripts/_codegen/mcp_tool_registrations.py (edit, if needed for shared constants or check mode)",
+        "plugins/plan-executor/scripts/schemas/mcp/_index.json (edit, if needed)",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md (edit, if needed)"
       ],
       "dependencies": [],
-      "test_command": "venv/bin/python -m pytest tests/scripts/test_reconcile_batch_scope.py tests/scripts/test_implement_plan_deferred_tests.py && venv/bin/python -m pytest tests/scripts/test_plan_ops.py -k \"reconcile_batch\"",
-      "priority": "high",
-      "plan_file": "TASK-008_WRAPPER_RECONCILE_EDGES.md",
-      "description": "Teach the wrapper and reconcile logic to handle the conventions that Phase 1.5 already uses in task documents: deferred test ownership and declared directory scopes with annotations. This task should reduce operator prompts caused by false positives without weakening the existing fail-closed behavior for malformed markers, real out-of-scope edits, or real test failures.",
+      "test_command": "venv/bin/python -m pytest tests/scripts/test_skill_cli_reference_drift.py tests/scripts/test_plan_ops_mcp_registrations.py tests/scripts/test_implement_plan_process_conformance.py && venv/bin/python -m pytest tests/scripts/test_plan_ops_mcp_conformance.py",
+      "priority": "medium",
+      "plan_file": "TASK-010_PROCESS_DRIFT_GUARD_POLISH.md",
+      "description": "Polish the process-level drift guards around the Phase 1.5 state machine and transport surfaces. This task should make future prompt/code drift cheap to detect without adding new runtime routing behavior.",
       "acceptance_criteria": [
-        "The independent test runner recognizes `deferred (TASK-NNN)` as a first-class deferral marker and does not execute it as shell.",
-        "Deferred test commands record a structured deferred-test run-log event with `event: test_deferred`, `task_id`, `deferred_to`, and optional `note`.",
-        "Deferred test commands allow the normal review/commit path to continue when the implementer reports success and no other failure is present.",
-        "Malformed deferred markers, including `deferred` without a task reference, fail closed with a clear wrapper pause/error.",
-        "`reconcile-batch` treats declared directory scope entries as covering files below them, including trailing-slash entries and entries rendered with recognized suffix annotations.",
-        "`reconcile-batch` strips recognized scope annotations before path normalization; at minimum `(create)`, `(modify)`, and `(delete)` are supported case-insensitively with optional surrounding whitespace.",
-        "Unknown scope annotations do not silently widen scope.",
-        "Regression tests cover nested tracked and untracked files under a declared directory, deferred markers not invoking `/bin/sh`, malformed deferred markers, and deferred test handling preserving review-before-commit.",
-        "Real out-of-scope files and real shell test failures still pause or fail as before."
+        "`_argparse_subcommand_flags` or its replacement is scope-aware enough that reused parser variable names cannot over-collect flags from unrelated subcommands.",
+        "Public CLI/MCP/SKILL conformance verifies every public `plan_ops.py` subcommand has consistent representation across argparse subcommands and flags, SKILL CLI reference table, MCP `TOOL_REGISTRY` entries where applicable, and MCP input/output schema index where applicable.",
+        "CLI-only or MCP-only exceptions are encoded in a single Python module-level constant consumed by the conformance test and, where practical, the MCP registry/codegen path.",
+        "Drift detection fails when a public flag is renamed, not only when command counts change.",
+        "MCP registry/codegen byte stability is checked deterministically. If the codegen script does not have a read-only check mode, tests assert `render_block()` against the committed server block.",
+        "Process conformance tests for resumed paused runs assert review events precede commit events, `commit_done.reviewer_verdict` is populated consistently when a review occurred, and resumed runs close with a final success or paused event that supersedes earlier paused `run_end` entries.",
+        "Deferred-test events from TASK-008 use the frozen shape and do not weaken review-before-commit checks."
       ],
       "agent": "codex"
     }
@@ -35,18 +36,36 @@
     {
       "index": 1,
       "task_ids": [
-        "008"
+        "010"
       ],
       "file_locks": [
-        "plugins/plan-executor/scripts/plan_codex_dispatch.py",
+        "plugins/plan-executor/scripts/_codegen/mcp_tool_registrations.py",
         "plugins/plan-executor/scripts/plan_ops.py",
-        "tests/scripts/fixtures/runlog/deferred_test.jsonl",
-        "tests/scripts/test_implement_plan_deferred_tests.py",
-        "tests/scripts/test_plan_ops.py",
-        "tests/scripts/test_reconcile_batch_scope.py"
+        "plugins/plan-executor/scripts/plan_ops_mcp_server.py",
+        "plugins/plan-executor/scripts/schemas/mcp/_index.json",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_implement_plan_process_conformance.py",
+        "tests/scripts/test_plan_ops_mcp_conformance.py",
+        "tests/scripts/test_plan_ops_mcp_registrations.py",
+        "tests/scripts/test_skill_cli_reference_drift.py"
       ]
     }
   ],
   "gaps": [],
-  "risks": []
+  "risks": [],
+  "plan_review_state": {
+    "attempt": 1,
+    "first_verdict": "approved",
+    "first_findings_count": 0,
+    "second_verdict": null,
+    "second_findings_count": 0,
+    "triage_dispatched": false,
+    "triage_verdict": null,
+    "load_bearing_indices": [],
+    "dismissed_indices": [],
+    "author_dispatches_completed": [],
+    "auto_revise_round_completed": false,
+    "skipped_reason": null,
+    "task_plan_file_map": {}
+  }
 }
