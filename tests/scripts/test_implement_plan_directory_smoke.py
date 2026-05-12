@@ -940,6 +940,95 @@ class TestPhaseDClaudeUsesMcpRenderPath:
             "dispatch recipe (the runtime render path)"
         )
 
+    def test_skill_md_all_eight_phases_use_canonical_agent_recipe(
+        self,
+    ) -> None:
+        """TASK-004 cutover assertion: across the eight in-process Agent
+        dispatch phases — Phase 1.5-Claude, Phase 1.5a (three variants),
+        Phase 1-triage, Phase 1.5.5, Phase D-Claude, Phase D.5,
+        Phase D.2a.6, and Phase D.4-rescue — SKILL.md names the
+        corresponding template_id and there are zero `awk` / `Read`
+        invocations against `dispatch-templates.md` outside the
+        §Canonical Agent dispatch recipe documentation block.
+        """
+        import re
+
+        skill_text = SKILL_PATH.read_text(encoding="utf-8")
+        required_template_ids = [
+            "code-reviewer-d-claude",   # Phase D-Claude (TASK-002)
+            "code-reviewer-d5",          # Phase D.5
+            "plan-reviewer",             # Phase 1.5-Claude
+            "plan-author-task-targeted", # Phase 1.5a variant A
+            "plan-author-schedule-level",# Phase 1.5a variant B
+            "plan-author-legacy-whole-plan", # Phase 1.5a legacy variant C
+            "plan-review-triage",        # Phase 1-triage + Phase 1.5.5
+            "plan-remediator-narrow",    # Phase D.2a.6
+            "plan-remediator-rescue",    # Phase D.4-rescue
+        ]
+        for tid in required_template_ids:
+            assert tid in skill_text, (
+                f"SKILL.md must name template_id `{tid}` so the "
+                "MCP tool can render the corresponding template at "
+                "dispatch time"
+            )
+
+        # Zero `awk`/`Read` invocations against `dispatch-templates.md`
+        # outside the §Canonical Agent dispatch recipe documentation
+        # block. The recipe section itself names the file in a "do NOT
+        # read" rule; everything else must avoid it entirely.
+        offenders: list[str] = []
+        for match in re.finditer(
+            r"(awk[^\n]*dispatch-templates|Read[^\n]*dispatch-templates\.md)",
+            skill_text,
+        ):
+            # Skip matches inside the canonical recipe block (the only
+            # site that names `dispatch-templates.md` legitimately).
+            start = match.start()
+            preceding = skill_text[:start]
+            heading = preceding.rfind("## ")
+            if heading != -1:
+                next_nl = skill_text.find("\n", heading)
+                section_heading = skill_text[heading:next_nl]
+                if "Canonical Agent dispatch recipe" in section_heading:
+                    continue
+            offenders.append(match.group(0))
+        assert offenders == [], (
+            "SKILL.md must not contain `awk`/`Read` invocations "
+            "against dispatch-templates.md outside the §Canonical "
+            f"Agent dispatch recipe block — found: {offenders!r}"
+        )
+
+    def test_dispatch_templates_md_seven_sections_carry_header_note(
+        self,
+    ) -> None:
+        """TASK-004 cutover assertion: each of the seven non-D-Claude
+        dispatch-template sections gains the same header-note pattern
+        TASK-002 added to Phase D-Claude.
+        """
+        templates_path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "dispatch-templates.md"
+        )
+        text = templates_path.read_text(encoding="utf-8")
+        for tid in [
+            "plan-reviewer",
+            "plan-author-task-targeted",
+            "plan-author-schedule-level",
+            "plan-author-legacy-whole-plan",
+            "plan-review-triage",
+            "code-reviewer-d5",
+            "plan-remediator-narrow",
+            "plan-remediator-rescue",
+        ]:
+            needle = (
+                "Rendered by plan_ops__build_agent_dispatch_prompt("
+                f'template_id="{tid}"'
+            )
+            assert needle in text, (
+                "dispatch-templates.md section for template_id "
+                f"`{tid}` must carry the MCP-render header note"
+            )
+
     def test_dispatch_templates_md_carries_header_note(self) -> None:
         templates_path = (
             REPO_ROOT / "plugins" / "plan-executor" / "skills"

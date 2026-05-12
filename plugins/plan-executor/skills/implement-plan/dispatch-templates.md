@@ -100,6 +100,8 @@ The agent-behavior body below is byte-identical to the pre-migration wording —
 
 ## Phase A — plan-analyst whole-plan dispatch (LEGACY — retained for direct CLI callers)
 
+> Rendered by plan_ops__build_agent_dispatch_prompt(template_id="plan-author-legacy-whole-plan", ...). The orchestrator does not read this section at runtime — see SKILL.md §Canonical Agent dispatch recipe.
+
 **Legacy-only.** The orchestrator no longer dispatches this template by default. The per-task-dispatch refactor (v2) replaced whole-plan analyst dispatch with `plan_ops.py build-tasks` (deterministic fat-manifest synthesis) plus the per-child classifier fan-out above. This template is retained so direct CLI callers who still want a whole-plan analyst report (for offline inspection, debugging, or legacy integration) have a documented prompt. Do not wire it from SKILL.md.
 
 > Analyze this plan and emit the structured schedule defined by your agent spec. The plan file is at `<absolute plan path>`. Repo root: `<repo_root>`.
@@ -156,6 +158,8 @@ Wrapper emits one JSON envelope on stdout with `outcome ∈ {success, failure, t
 Orchestrator routing consumes the parsed verdict through `plan-review-route` (see SKILL.md §Phase 1.5). The router owns `--skip-plan-review`, reviewer availability/fallback, `--codex-plan-review-binding`, `--no-auto-revise`, second-pass binding, dismissed-index tracking, and the selected findings payload for any author fan-out. This template only describes the dispatch payload and wrapper contract.
 
 ## Phase 1.5-Claude — plan-reviewer dispatch (claude_only path)
+
+> Rendered by plan_ops__build_agent_dispatch_prompt(template_id="plan-reviewer", ...). The orchestrator does not read this section at runtime — see SKILL.md §Canonical Agent dispatch recipe.
 
 Dispatched in place of the Codex wrapper above when `plan-review-route` returns `action == "dispatch_claude_reviewer"` (the router emits this when `claude_only=true` is bound at Phase 0 preflight from `--claude-only OR (codex_available == false)`). The verdict-routing ladder, `--codex-plan-review-binding` mutex, the auto-revise `plan-author` path, and the `--allow-gaps` demotion all consume the parsed verdict — they are agnostic to the dispatch mechanism.
 
@@ -247,6 +251,8 @@ Two visually distinct prompt variants render based on `target_task_id`. The orch
 
 ### Variant A — Task-targeted dispatch (`variant == "A"`)
 
+> Rendered by plan_ops__build_agent_dispatch_prompt(template_id="plan-author-task-targeted", ...). The orchestrator does not read this section at runtime — see SKILL.md §Canonical Agent dispatch recipe.
+
 Renders when the per-finding entry has `variant == "A"` (equivalently `target_task_id != null` and `child_plan_file != null`). Inputs come from that single router entry: `finding`, `target_task_id`, `child_plan_file`. No roster path is rendered on this path.
 
 > Apply a plan-review finding to the child plan at `<per_finding_dispatches[i].child_plan_file>`. The first plan-review pass returned `needs-replan`; your job is to revise THIS child plan file so a second review can proceed. Your edit target is exactly one `### TASK-NNN:` sub-heading block in this file.
@@ -273,6 +279,8 @@ Renders when the per-finding entry has `variant == "A"` (equivalently `target_ta
 ---
 
 ### Variant B — Schedule-level dispatch (`variant == "B"`)
+
+> Rendered by plan_ops__build_agent_dispatch_prompt(template_id="plan-author-schedule-level", ...). The orchestrator does not read this section at runtime — see SKILL.md §Canonical Agent dispatch recipe.
 
 Renders when the per-finding entry has `variant == "B"` (equivalently `target_task_id == null` and `child_plan_file == null`). Router-supplied inputs from that entry are `finding` and `target_task_id: null`; the router does NOT emit a `roster_file` field, so the orchestrator resolves the roster path as `<plans_dir>/00_INDEX.json` and renders it inline below.
 
@@ -303,6 +311,8 @@ Renders when the per-finding entry has `variant == "B"` (equivalently `target_ta
 After all per-finding authors return, the orchestrator re-runs Phase 1 end-to-end (`build-tasks` → classifier fan-out → `write-schedule` + `schedule-valid` gate) for structural re-validation of the revised plan. If the second-pass `build-tasks` surfaces fatal `errors[]`, the orchestrator halts with `run_end reason=plan_review_failed reason_detail=author_introduced_structural_defect`. Otherwise (clean tasks, or tasks with warnings), plan review runs once more; that second verdict is binding and no second triage is dispatched.
 
 ## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)
+
+> Rendered by plan_ops__build_agent_dispatch_prompt(template_id="plan-review-triage", ...). The orchestrator does not read this section at runtime — see SKILL.md §Canonical Agent dispatch recipe.
 
 Dispatched at TWO orchestrator seams sharing one template, one agent, one parser, one schema. The Phase 1.5.5 seam is rendered when `plan-review-route` returns `action == "dispatch_triage"`; the Phase 1-triage (analyst) seam is dispatched directly by the orchestrator without a router round-trip (the analyst path predates `plan-review-route`):
 
@@ -671,6 +681,8 @@ The verdict decision ladder, completeness gate, and structured `findings[]` outp
 
 ## Phase D.5 — code-reviewer third opinion (§8.4 escalation)
 
+> Rendered by plan_ops__build_agent_dispatch_prompt(template_id="code-reviewer-d5", ...). The orchestrator does not read this section at runtime — see SKILL.md §Canonical Agent dispatch recipe.
+
 **`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading, the orchestrator's render path prepends an "Adjudicate specifically `### TASK-NNN:`" first-instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting the field for a >1-heading file is a render-time error.
 
 Dispatched only when Codex reviewing a Claude-implemented task returns `needs-rework` AND the user did not pass `--codex-review-binding`. Agent dispatch, `model: "sonnet"`:
@@ -825,9 +837,11 @@ After retry success, re-run Phase D-Codex (wrapper review) on the re-implementat
 
 ## Phase B-narrow-remediation — Narrow-remediation retry (D.2a.6)
 
-Narrow-remediation dispatch, migrated to the v3 wrapper as of TASK-005. The orchestrator builds the canonical wrapper input via `plan_ops.py build-claude-dispatch-input --variant narrow-remediation --dispatch-context <findings_for_retry+dismissed_for_context+d5_summary.json>` (TASK-001 of `wrapper_autoclean_authorization`) and pipes its stdout into `plan_claude_dispatch.py run --input -`. The dispatch context carries the three JSON slots `findings_for_retry`, `dismissed_for_context`, and `d5_summary`. The subcommand emits `agent: "plan-remediator"`, `overrides.model: "opus"`, the schema-required top-level `declared_files_changed` populated from the task's `Files:` list, and `payload.dispatch_context: {findings_for_retry, dismissed_for_context, d5_summary}` (forwarded verbatim from `review-route`'s `dispatch_context`) — replacing the prior hand-built JSON skeleton. Strictly one attempt. The wrapper returns a v3 envelope on stdout; the orchestrator asserts `.status=="ok"` and reads `.result.outcome` per the remediator outcome vocabulary `success | partial | failed | plan-incorrect | blocked | malformed | scope-violation`. The extra `scope-violation` outcome (not present in implementer) and `malformed` both round-trip and are validated by the TASK-002 remediator schema. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
+> Rendered by plan_ops__build_agent_dispatch_prompt(template_id="plan-remediator-narrow", ...). The orchestrator does not read this section at runtime — see SKILL.md §Canonical Agent dispatch recipe.
 
-**Invariant:** every dispatch site MUST be threaded through `build-claude-dispatch-input`; do NOT hand-craft the input JSON. The wrapper's input schema makes `declared_files_changed` REQUIRED at the top level — omitting it returns `status: input_invalid` and refuses to spawn the agent. The `(file, line)` union derived from `load_bearing_findings[]` defines the touch-only-these-lines edit region: the wrapper's delta-bounded cleanup enforces file-level scope (envelope's `scope.declared_files_changed[]` and `scope.observed_delta_tracked[]` must both be subsets of that union); line-level enforcement stays orchestrator-side against the existing diff-hunks helper in `plan_ops.py`. The mandatory `**Dismissed findings noted:**` report section surfaces as `.result.report.dismissed_findings_acknowledged[]`; the orchestrator's D.5 gate reads from there. `output_instructions.schema_path` MUST point at `tests/scripts/fixtures/claude_dispatch/schemas/remediator_result.json` (TASK-002 schema). `malformed` outcomes — emitted when transport succeeded but `.result` failed schema validation — route the same as `failed` for D.2a.6 stage `implement`; `scope-violation` routes to the awaiting-user pause with `stage:"post_narrow_remediation_implement"`.
+Narrow-remediation dispatch, migrated to the in-process Agent dispatch path as of TASK-004 of `PLAN_AGENT_DISPATCH_MCP`. The orchestrator renders the dispatch prompt via `plan_ops__build_agent_dispatch_prompt` with `template_id="plan-remediator-narrow"` (see SKILL.md §Canonical Agent dispatch recipe) and dispatches `Agent(subagent_type: "plan-remediator", model: "opus")`. The renderer reads this section's prompt body (below the `<!-- TRANSPORT BOUNDARY -->` marker) on the orchestrator's behalf — the orchestrator never reads `dispatch-templates.md` at runtime. The `context` payload carries the three slots `findings_for_retry`, `dismissed_for_context`, and `d5_summary` (forwarded verbatim from `review-route`'s `dispatch_context`). Strictly one attempt. The Agent's reply is parsed via `plan_ops__parse_implementer_report` (or the matching remediator parser) per the remediator outcome vocabulary `success | partial | failed | plan-incorrect | blocked | scope-violation`. The agent-behavior body below the `<!-- TRANSPORT BOUNDARY -->` marker is byte-identical to the pre-migration wording.
+
+**Invariant:** every dispatch site MUST be threaded through `plan_ops__build_agent_dispatch_prompt`; do NOT hand-render the prompt inline. The `(file, line)` union derived from `load_bearing_findings[]` defines the touch-only-these-lines edit region; line-level enforcement stays orchestrator-side against the existing diff-hunks helper in `plan_ops.py`. The mandatory `**Dismissed findings noted:**` report section surfaces in the parsed report; the orchestrator's D.5 gate reads from there. A `scope-violation` outcome routes to the awaiting-user pause with `stage:"post_narrow_remediation_implement"`.
 
 <!-- TRANSPORT BOUNDARY - do not edit below in this plan -->
 
@@ -890,6 +904,8 @@ The `<findings_for_retry>`, `<dismissed_for_context>`, and `<d5_summary>` placeh
 After retry success, re-run Phase D-Codex (wrapper review) on the re-implementation. `clean | minor-findings` → D.3 commit with `--narrow-remediation-tag --dismissed-finding-ids <comma-separated indices from D.5's dismissed bucket>`. `needs-rework` on the re-review triggers the D.2a.6 awaiting-user pause (see SKILL.md §D.2a.6 step 7); the orchestrator does NOT call `fail-task`. A retry outcome of `scope-violation` — or any other non-success outcome — triggers the same awaiting-user pause with `stage:"post_narrow_remediation_implement"`.
 
 ## Phase D.4-rescue — plan-remediator dispatch (single-shot rescue)
+
+> Rendered by plan_ops__build_agent_dispatch_prompt(template_id="plan-remediator-rescue", ...). The orchestrator does not read this section at runtime — see SKILL.md §Canonical Agent dispatch recipe.
 
 **`target_task_id` (TASK-007).** First-class dispatch field. When the resolved child plan file carries >1 `### TASK-NNN:` H3 heading, the orchestrator's render path prepends ``Apply the D.4 rescue specifically to `### TASK-NNN:` ...`` as the first instruction line per §`target_task_id` auto-injection rule. Single-heading files render unchanged. Omitting the field for a >1-heading file is a render-time error.
 

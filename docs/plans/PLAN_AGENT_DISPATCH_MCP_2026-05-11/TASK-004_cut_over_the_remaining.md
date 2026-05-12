@@ -22,11 +22,12 @@ Final cutover. Each of the seven non-D-Claude in-process Agent dispatch sites in
 
 ### TASK-004: Cut over the remaining eight dispatch sites + final SKILL pass
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** medium
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (edit — Phase 1.5-Claude, Phase 1.5a, Phase 1-triage, Phase 1.5.5, Phase D.5, Phase D.2a.6, Phase D.4-rescue sections)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit — add header notes to the seven section bodies)
+  - `CLAUDE.md` (edit — refresh the Subagent dispatch contract line per AC[4])
   - `tests/scripts/test_implement_plan_directory_smoke.py` (edit — extend the no-awk-against-dispatch-templates assertion to cover all eight phases)
 - **Dependencies:** [002, 003]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_implement_plan_directory_smoke.py tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`

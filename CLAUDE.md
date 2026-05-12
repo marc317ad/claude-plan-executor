@@ -51,7 +51,7 @@ Allowed plan-file mutations: `**Status:**` flips, `**Agent:**` flips (post-class
 
 ## Subagent dispatch contract
 
-Subagents do not see this conversation — embed the full task block verbatim plus the dispatch-template skeleton. Subagents have no Agent tool; they cannot dispatch further. A subagent that returns `[Tool result missing due to internal error]` or no parseable report is a failure — log it, do not retry silently. `status != ok` on a Claude wrapper envelope forbids `commit-task` for that task.
+Subagents do not see this conversation. For wrapper dispatches use `plan_ops__build_*_dispatch_input`; for in-process Agent dispatches use `plan_ops__build_agent_dispatch_prompt`. Both render the dispatch payload from `dispatch-templates.md` in Python — the orchestrator never reads template bodies at dispatch time. Subagents have no Agent tool; they cannot dispatch further. A subagent that returns `[Tool result missing due to internal error]` or no parseable report is a failure — log it, do not retry silently. `status != ok` on a Claude wrapper envelope forbids `commit-task` for that task.
 
 ## Run-state source of truth
 
