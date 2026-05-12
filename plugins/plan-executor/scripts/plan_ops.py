@@ -117,6 +117,10 @@ DEPENDENCIES_BULLET_RE = re.compile(
 #                   failure, so its dependents must wait for human disposition
 #                   rather than being preemptively blocked.
 ALLOWED_TASK_STATUSES = {"pending", "in-progress", "done", "failed", "blocked", "skipped", "paused"}
+# Per-task agent vocabulary — mirrors the `**Agent:**` bullet emitted by
+# `_emit_child` (`plan_ops.py:3193-3195`). Ordered tuple so MCP enum
+# registrations and unit-test parametrizations track the canonical order.
+ALLOWED_AGENTS = ("claude", "codex")
 ALLOWED_INDEX_STATUSES = {"Done", "Pending", "Superseded"}
 _INDEX_SUPERSEDED_BY: dict[str, list[str]] = {}
 # TASK-008 (per_task_dispatch_refactor_v2): file-mode deprecation aliases were
@@ -4201,6 +4205,117 @@ def mutate_task_status(plan_text: str, task_id: str, new_status: str) -> tuple[s
     return preamble + "".join(updated), prior or ""
 
 
+_AGENT_BULLET_RE = re.compile(
+    r"^(\s*-\s*\*\*Agent:\*\*)\s*(.+?)\s*$", re.MULTILINE,
+)
+_PRIORITY_BULLET_RE = re.compile(
+    r"^(\s*-\s*\*\*Priority:\*\*)\s*(.+?)\s*$", re.MULTILINE,
+)
+_FILES_BULLET_RE = re.compile(
+    r"^(\s*)-\s*\*\*Files:\*\*", re.MULTILINE,
+)
+
+
+def mutate_task_agent(plan_text: str, task_id: str, new_agent: str) -> tuple[str, str]:
+    """Structurally mutate TASK-NNN's `**Agent:**` bullet to `new_agent`.
+
+    Returns ``(updated_plan_text, prior_agent)``. ``prior_agent`` is the
+    empty string when no ``**Agent:**`` bullet existed previously.
+
+    Insertion order (when the bullet is absent) matches ``_emit_child``'s
+    canonical metadata layout (`plan_ops.py:3187-3197`):
+
+    * Between ``**Priority:**`` and ``**Files:**`` when both exist.
+    * Immediately after ``**Priority:**`` if ``**Files:**`` is absent.
+    * Immediately before ``**Files:**`` if ``**Priority:**`` is absent.
+    * Otherwise at the end of the contiguous metadata-bullet run (before
+      the first non-bullet line after the task header).
+
+    Raises ``ValueError`` on: unknown ``new_agent``, task block not found,
+    or a task block carrying no metadata bullets at all.
+    """
+    if new_agent not in ALLOWED_AGENTS:
+        raise ValueError(
+            f"agent {new_agent!r} not in {sorted(ALLOWED_AGENTS)}"
+        )
+    preamble, blocks = _split_task_blocks(plan_text)
+    if not blocks:
+        raise ValueError("no task blocks found in plan")
+    updated: list[str] = []
+    prior: str | None = None
+    matched = False
+    for tid, body in blocks:
+        if tid == task_id and not matched:
+            m = _AGENT_BULLET_RE.search(body)
+            if m:
+                prior = m.group(2).strip()
+                new_line = f"{m.group(1)} {new_agent}"
+                new_body = body[: m.start()] + new_line + body[m.end():]
+            else:
+                prior = ""
+                new_body = _insert_agent_bullet(body, task_id, new_agent)
+            updated.append(new_body)
+            matched = True
+        else:
+            updated.append(body)
+    if not matched:
+        raise ValueError(f"TASK-{task_id} not found in plan")
+    return preamble + "".join(updated), prior or ""
+
+
+def _insert_agent_bullet(body: str, task_id: str, new_agent: str) -> str:
+    """Insert a new ``- **Agent:** <new_agent>`` bullet into ``body``.
+
+    See ``mutate_task_agent`` for the placement rules. Raises
+    ``ValueError`` when the task block carries no metadata bullets at all.
+    """
+    pm = _PRIORITY_BULLET_RE.search(body)
+    fm = _FILES_BULLET_RE.search(body)
+    if pm is not None:
+        line_end = body.find("\n", pm.end())
+        insert_at = len(body) if line_end == -1 else line_end + 1
+        indent = re.match(r"\s*", body[pm.start():]).group(0)
+        prefix = "" if (line_end != -1 or body.endswith("\n")) else "\n"
+        new_line = f"{prefix}{indent}- **Agent:** {new_agent}\n"
+        return body[:insert_at] + new_line + body[insert_at:]
+    if fm is not None:
+        indent = fm.group(1)
+        new_line = f"{indent}- **Agent:** {new_agent}\n"
+        return body[: fm.start()] + new_line + body[fm.start():]
+    # Neither Priority nor Files present — fall back to the end of the
+    # contiguous metadata-bullet run (before the first non-bullet line
+    # after the task header).
+    lines = body.splitlines(keepends=True)
+    header_idx: int | None = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("### TASK-"):
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError(f"TASK-{task_id} block missing header line")
+    last_bullet: int | None = None
+    started = False
+    for i in range(header_idx + 1, len(lines)):
+        line = lines[i]
+        if line.lstrip().startswith("- "):
+            last_bullet = i
+            started = True
+            continue
+        if line.strip() == "" and not started:
+            continue
+        break
+    if last_bullet is None:
+        raise ValueError(
+            f"TASK-{task_id} block has no metadata bullets to anchor Agent insertion"
+        )
+    insert_at = sum(len(lines[i]) for i in range(last_bullet + 1))
+    indent = re.match(r"\s*", lines[last_bullet]).group(0)
+    last_has_newline = lines[last_bullet].endswith("\n")
+    prefix = "" if last_has_newline else "\n"
+    new_line = f"{prefix}{indent}- **Agent:** {new_agent}\n"
+    return body[:insert_at] + new_line + body[insert_at:]
+
+
 def _parse_index_roster(path: Path) -> dict[str, dict]:
     """Parse the JSON sidecar roster for DUAL_AGENT_Plans.
 
@@ -8024,6 +8139,38 @@ def _run_update_plan_header(payload: dict) -> dict:
 def cmd_update_plan_header(args: argparse.Namespace) -> None:
     payload = _args_to_payload_update_plan_header(args)
     result = _run_update_plan_header(payload)
+    _emit_or_die(args, result)
+
+
+def _args_to_payload_set_task_agent(args: argparse.Namespace) -> dict:
+    payload = {
+        "plan_file": pathlib.Path(args.plan_file) if args.plan_file else None,
+        "task_id": args.task_id,
+        "agent": args.agent,
+    }
+    return payload
+
+def _run_set_task_agent(payload: dict) -> dict:
+    plan = Path(payload['plan_file'])
+    if not plan.is_file():
+        return _result({'error': f'plan file not found: {plan}'}, exit_code=1)
+    tid = _normalize_task_id(payload['task_id'])
+    if tid is None:
+        return _result(
+            {'error': f"could not normalize task id {payload['task_id']!r}"},
+            exit_code=1,
+        )
+    text = _load_text(plan)
+    try:
+        mutated, prior = mutate_task_agent(text, tid, payload['agent'])
+    except ValueError as e:
+        return _result({'error': str(e)}, exit_code=1)
+    _write_text(plan, mutated)
+    return _result({'ok': True, 'prior_agent': prior}, exit_code=0)
+
+def cmd_set_task_agent(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_set_task_agent(args)
+    result = _run_set_task_agent(payload)
     _emit_or_die(args, result)
 
 
@@ -13025,6 +13172,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_hdr.add_argument("--status", required=True, choices=sorted(ALLOWED_PLAN_STATUSES))
     _add_json(p_hdr)
 
+    p_sta = sub.add_parser(
+        "set-task-agent",
+        help="Set TASK-NNN's **Agent:** bullet (insert or replace)",
+    )
+    p_sta.add_argument("--plan-file", required=True)
+    p_sta.add_argument("--task-id", required=True)
+    p_sta.add_argument("--agent", required=True, choices=list(ALLOWED_AGENTS))
+    _add_json(p_sta)
+
     p_fin = sub.add_parser("finalize-execution-log",
                            help="Append §5 execution-log markdown table to plan file")
     p_fin.add_argument("--plan-file", required=True)
@@ -15026,6 +15182,7 @@ def main(argv: list[str] | None = None) -> None:
         "fail-task": cmd_fail_task,
         "block-dependents": cmd_block_dependents,
         "update-plan-header": cmd_update_plan_header,
+        "set-task-agent": cmd_set_task_agent,
         "finalize-execution-log": cmd_finalize_execution_log,
         "log-event": cmd_log_event,
         "normalize-task-id": cmd_normalize_task_id,

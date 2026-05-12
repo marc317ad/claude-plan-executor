@@ -22,7 +22,7 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
 
 ### TASK-001: Add `mutate_task_agent` pure helper + `plan_ops__set_task_agent` MCP tool
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py`

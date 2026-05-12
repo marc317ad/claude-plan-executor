@@ -407,6 +407,203 @@ class TestMutateTaskStatus:
 
 
 # ---------------------------------------------------------------------------
+# mutate_task_agent + set-task-agent — replace and canonical-slot insertion
+# ---------------------------------------------------------------------------
+
+
+_PLAN_BODY_NO_AGENT_WITH_PRIORITY = """# Plan: agentless
+
+## Tasks
+
+### TASK-001: Agentless with priority
+
+- **Status:** pending
+- **Priority:** high
+- **Files:**
+  - src/foo.py
+- **Dependencies:** []
+
+Body prose.
+"""
+
+_PLAN_BODY_NO_AGENT_NO_PRIORITY = """# Plan: agentless no priority
+
+## Tasks
+
+### TASK-001: Agentless no priority
+
+- **Status:** pending
+- **Files:**
+  - src/foo.py
+- **Dependencies:** []
+
+Body prose.
+"""
+
+_PLAN_BODY_NO_AGENT_NO_FILES = """# Plan: agentless minimal
+
+## Tasks
+
+### TASK-001: Agentless minimal
+
+- **Status:** pending
+- **Priority:** high
+- **Dependencies:** []
+
+Body prose.
+"""
+
+_PLAN_BODY_BARE = """# Plan: bare
+
+## Tasks
+
+### TASK-001: Bare
+
+- **Status:** pending
+- **Dependencies:** []
+
+Body prose.
+"""
+
+_PLAN_BODY_NO_BULLETS = """# Plan: no bullets
+
+## Tasks
+
+### TASK-001: No bullets
+
+Just a body paragraph, no metadata bullets.
+"""
+
+
+class TestMutateTaskAgent:
+    def test_mutate_task_agent_replace_existing(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(SAMPLE_PLAN_BODY, "001", "codex")
+        assert prior == "claude"
+        assert "- **Status:** open\n- **Agent:** codex\n- **Files:**" in updated
+        # other tasks untouched
+        assert "### TASK-002: Second task with hyphen value\n\n- **Status:** in-progress\n- **Agent:** codex\n" in updated
+
+    def test_mutate_task_agent_idempotent_replace(self) -> None:
+        once, _ = plan_ops.mutate_task_agent(SAMPLE_PLAN_BODY, "001", "codex")
+        twice, prior2 = plan_ops.mutate_task_agent(once, "001", "codex")
+        assert twice == once
+        assert prior2 == "codex"
+
+    def test_mutate_task_agent_insert_after_priority_before_files(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(
+            _PLAN_BODY_NO_AGENT_WITH_PRIORITY, "001", "claude",
+        )
+        assert prior == ""
+        assert (
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+        ) in updated
+
+    def test_mutate_task_agent_insert_before_files_when_no_priority(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(
+            _PLAN_BODY_NO_AGENT_NO_PRIORITY, "001", "codex",
+        )
+        assert prior == ""
+        assert (
+            "- **Status:** pending\n"
+            "- **Agent:** codex\n"
+            "- **Files:**\n"
+        ) in updated
+
+    def test_mutate_task_agent_insert_after_priority_when_no_files(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(
+            _PLAN_BODY_NO_AGENT_NO_FILES, "001", "claude",
+        )
+        assert prior == ""
+        assert (
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Dependencies:** []\n"
+        ) in updated
+
+    def test_mutate_task_agent_insert_at_end_of_run_no_priority_no_files(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(
+            _PLAN_BODY_BARE, "001", "codex",
+        )
+        assert prior == ""
+        assert (
+            "- **Status:** pending\n"
+            "- **Dependencies:** []\n"
+            "- **Agent:** codex\n"
+        ) in updated
+
+    def test_mutate_task_agent_invalid_agent_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            plan_ops.mutate_task_agent(SAMPLE_PLAN_BODY, "001", "bogus")
+
+    def test_mutate_task_agent_missing_task_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            plan_ops.mutate_task_agent(SAMPLE_PLAN_BODY, "999", "claude")
+
+    def test_mutate_task_agent_malformed_block_no_metadata_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            plan_ops.mutate_task_agent(_PLAN_BODY_NO_BULLETS, "001", "claude")
+
+
+class TestSetTaskAgentCLI:
+    def _plan(self, tmp_path: Path, body: str) -> Path:
+        p = tmp_path / "plan.md"
+        p.write_text(body, encoding="utf-8")
+        return p
+
+    def test_set_task_agent_cli_replace(self, tmp_path: Path) -> None:
+        plan = self._plan(tmp_path, SAMPLE_PLAN_BODY)
+        cp = _run(
+            "set-task-agent",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--agent", "codex",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)
+        assert out.get("ok") is True
+        assert out.get("prior_agent") == "claude"
+        text = plan.read_text(encoding="utf-8")
+        assert "- **Status:** open\n- **Agent:** codex\n- **Files:**" in text
+
+    def test_set_task_agent_cli_insert(self, tmp_path: Path) -> None:
+        plan = self._plan(tmp_path, _PLAN_BODY_NO_AGENT_WITH_PRIORITY)
+        cp = _run(
+            "set-task-agent",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--agent", "claude",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)
+        assert out.get("ok") is True
+        assert out.get("prior_agent") == ""
+        text = plan.read_text(encoding="utf-8")
+        assert (
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+        ) in text
+
+    def test_set_task_agent_cli_rejects_bad_agent(self, tmp_path: Path) -> None:
+        plan = self._plan(tmp_path, SAMPLE_PLAN_BODY)
+        cp = _run(
+            "set-task-agent",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--agent", "bogus",
+            "--json",
+        )
+        assert cp.returncode != 0
+
+
+# ---------------------------------------------------------------------------
 # log-event — JSONL append + tail verification
 # ---------------------------------------------------------------------------
 
