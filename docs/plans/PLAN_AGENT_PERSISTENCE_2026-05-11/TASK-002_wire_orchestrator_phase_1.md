@@ -42,3 +42,11 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 
 **Description:**
 Wire orchestrator Phase 1 Step 2 to persist `**Agent:**`; document policy. (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-002. See the parent plan's `## Context` and `## Verification` sections for the full intent.)
+
+## Execution log — 20260512T022637 (success)
+
+Starting SHA: `2cd7e30e60e09f2df91fb31f7a15c2ce8966b2d9`  → Ending SHA: `36dcb5bcf144c675c8e7b2767646258021caa00a`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | claude | claude | ship [disagreement] | 36dcb5bc | Codex round-1: needs-rework (test rename); D.5: ship (AC self-contradiction). Hand-fix Two->Three lead-in. Codex round-2: needs-rework (tests bypass orchestrator); D.5: ship (orchestrator is LLM, tests pin data contract). |

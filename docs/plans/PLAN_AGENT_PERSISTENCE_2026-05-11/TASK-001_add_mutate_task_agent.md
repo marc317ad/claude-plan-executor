@@ -42,3 +42,11 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
 
 **Description:**
 Add `mutate_task_agent` pure helper + `plan_ops__set_task_agent` MCP tool. (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-001. See the parent plan's `## Context` and `## Verification` sections for the full intent.)
+
+## Execution log — 20260512T022637 (success)
+
+Starting SHA: `2cd7e30e60e09f2df91fb31f7a15c2ce8966b2d9`  → Ending SHA: `36dcb5bcf144c675c8e7b2767646258021caa00a`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | codex | clean | 30b99794 |  |
