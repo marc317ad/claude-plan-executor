@@ -61,6 +61,18 @@ def _ns(*, json_output: bool) -> object:
     return type("Args", (), {"json": json_output})()
 
 
+def test_mcp_input_schemas_do_not_use_top_level_combinators() -> None:
+    mcp_schema_dir = SCRIPTS_DIR / "schemas" / "mcp"
+    offenders: list[str] = []
+    for path in sorted(mcp_schema_dir.glob("*.input.json")):
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        keys = sorted({"oneOf", "anyOf", "allOf"} & schema.keys())
+        if keys:
+            offenders.append(f"{path.name}: {', '.join(keys)}")
+
+    assert offenders == []
+
+
 class TestEmitOrDieContract:
     """TASK-000A: marker-bearing terminator contract."""
 

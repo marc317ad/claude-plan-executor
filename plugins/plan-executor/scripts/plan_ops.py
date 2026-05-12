@@ -12226,6 +12226,19 @@ def _agent_dispatch_schema_path() -> Path:
     )
 
 
+_AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE = {
+    "code-reviewer-d-claude": "codeReviewerDClaudeContext",
+    "code-reviewer-d5": "codeReviewerD5Context",
+    "plan-reviewer": "planReviewerContext",
+    "plan-author-task-targeted": "planAuthorTaskTargetedContext",
+    "plan-author-schedule-level": "planAuthorScheduleLevelContext",
+    "plan-author-legacy-whole-plan": "planAuthorLegacyWholePlanContext",
+    "plan-review-triage": "planReviewTriageContext",
+    "plan-remediator-narrow": "planRemediatorNarrowContext",
+    "plan-remediator-rescue": "planRemediatorRescueContext",
+}
+
+
 def _validate_build_agent_dispatch_prompt_input(payload: object) -> list[dict]:
     schema_path = _agent_dispatch_schema_path()
     try:
@@ -12295,6 +12308,12 @@ def _agent_dispatch_context_schema_for_template(
     schema: dict,
     template_id: str,
 ) -> dict | None:
+    def_name = _AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE.get(template_id)
+    if def_name is not None:
+        return schema.get("$defs", {}).get(def_name)
+
+    # Legacy schema compatibility: older sidecars carried top-level oneOf
+    # branches that paired template_id with a context $ref.
     for branch in schema.get("oneOf", []):
         if branch.get("properties", {}).get("template_id", {}).get("const") != template_id:
             continue

@@ -375,59 +375,174 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                   'a supported template_id.',
                    'type': 'object',
                    'properties': {'template_id': {'type': 'string',
-                                                  'enum': ['code-reviewer-d-claude']},
-                                  'context': {'type': 'object'}},
+                                                  'enum': ['code-reviewer-d-claude',
+                                                           'code-reviewer-d5',
+                                                           'plan-reviewer',
+                                                           'plan-author-task-targeted',
+                                                           'plan-author-schedule-level',
+                                                           'plan-author-legacy-whole-plan',
+                                                           'plan-review-triage',
+                                                           'plan-remediator-narrow',
+                                                           'plan-remediator-rescue']},
+                                  'context': {'oneOf': [{'$ref': '#/$defs/codeReviewerDClaudeContext'},
+                                                        {'$ref': '#/$defs/codeReviewerD5Context'},
+                                                        {'$ref': '#/$defs/planReviewerContext'},
+                                                        {'$ref': '#/$defs/planAuthorTaskTargetedContext'},
+                                                        {'$ref': '#/$defs/planAuthorScheduleLevelContext'},
+                                                        {'$ref': '#/$defs/planAuthorLegacyWholePlanContext'},
+                                                        {'$ref': '#/$defs/planReviewTriageContext'},
+                                                        {'$ref': '#/$defs/planRemediatorNarrowContext'},
+                                                        {'$ref': '#/$defs/planRemediatorRescueContext'}]}},
                    'required': ['template_id', 'context'],
-                   'oneOf': [{'properties': {'template_id': {'const': 'code-reviewer-d-claude'},
-                                             'context': {'type': 'object',
-                                                         'properties': {'plan_file': {'description': 'Absolute '
-                                                                                                     'path '
-                                                                                                     'to '
-                                                                                                     'the '
-                                                                                                     'resolved '
-                                                                                                     'child '
-                                                                                                     'plan '
-                                                                                                     'file',
-                                                                                      'type': 'string'},
-                                                                        'task_id': {'description': 'TASK-NNN '
-                                                                                                   'id, '
-                                                                                                   'or '
-                                                                                                   'NNN '
-                                                                                                   '/ '
-                                                                                                   'N, '
-                                                                                                   'the '
-                                                                                                   'review '
-                                                                                                   'targets',
-                                                                                    'type': 'string',
-                                                                                    'pattern': '^(?:TASK-)?\\d{1,3}[A-Z]?$'},
-                                                                        'target_task_id': {'description': 'Optional '
-                                                                                                          'disambiguator '
-                                                                                                          'required '
-                                                                                                          'at '
-                                                                                                          'render '
-                                                                                                          'time '
-                                                                                                          'when '
-                                                                                                          'the '
-                                                                                                          'child '
-                                                                                                          'plan '
-                                                                                                          'carries '
-                                                                                                          '>1 '
-                                                                                                          'H3 '
-                                                                                                          'task '
-                                                                                                          'heading',
-                                                                                           'type': 'string',
-                                                                                           'pattern': '^(?:TASK-)?\\d{1,3}[A-Z]?$'},
-                                                                        'files_changed': {'description': 'The '
-                                                                                                         "wrapper's "
-                                                                                                         'files_changed '
-                                                                                                         'list',
-                                                                                          'type': 'array',
-                                                                                          'items': {'type': 'string'}}},
-                                                         'required': ['plan_file',
-                                                                      'task_id',
-                                                                      'files_changed'],
-                                                         'additionalProperties': False}}}],
                    'additionalProperties': False,
+                   '$defs': {'taskId': {'type': 'string', 'pattern': '^(?:TASK-)?\\d{1,3}[A-Z]?$'},
+                             'jsonValue': True,
+                             'codeReviewerDClaudeContext': {'type': 'object',
+                                                            'properties': {'plan_file': {'description': 'Absolute '
+                                                                                                        'path '
+                                                                                                        'to '
+                                                                                                        'the '
+                                                                                                        'resolved '
+                                                                                                        'child '
+                                                                                                        'plan '
+                                                                                                        'file',
+                                                                                         'type': 'string'},
+                                                                           'task_id': {'$ref': '#/$defs/taskId'},
+                                                                           'target_task_id': {'$ref': '#/$defs/taskId',
+                                                                                              'description': 'Optional '
+                                                                                                             'disambiguator '
+                                                                                                             'required '
+                                                                                                             'at '
+                                                                                                             'render '
+                                                                                                             'time '
+                                                                                                             'when '
+                                                                                                             'the '
+                                                                                                             'child '
+                                                                                                             'plan '
+                                                                                                             'carries '
+                                                                                                             '>1 '
+                                                                                                             'H3 '
+                                                                                                             'task '
+                                                                                                             'heading'},
+                                                                           'files_changed': {'type': 'array',
+                                                                                             'items': {'type': 'string'}}},
+                                                            'required': ['plan_file',
+                                                                         'task_id',
+                                                                         'files_changed'],
+                                                            'additionalProperties': False},
+                             'codeReviewerD5Context': {'type': 'object',
+                                                       'properties': {'plan_file': {'type': 'string'},
+                                                                      'task_id': {'$ref': '#/$defs/taskId'},
+                                                                      'target_task_id': {'$ref': '#/$defs/taskId'},
+                                                                      'files_changed': {'type': 'array',
+                                                                                        'items': {'type': 'string'}},
+                                                                      'reviewer': {'description': 'Rendered '
+                                                                                                  'reviewer '
+                                                                                                  'label; '
+                                                                                                  'defaults '
+                                                                                                  'to '
+                                                                                                  'Codex '
+                                                                                                  'when '
+                                                                                                  'omitted.',
+                                                                                   'type': 'string',
+                                                                                   'enum': ['Codex',
+                                                                                            'Gemini']},
+                                                                      'reviewer_findings': {'$ref': '#/$defs/jsonValue'},
+                                                                      'wrapper_checks_json': {'$ref': '#/$defs/jsonValue',
+                                                                                              'description': 'Verbatim '
+                                                                                                             'wrapper_checks '
+                                                                                                             'JSON. '
+                                                                                                             'Callers '
+                                                                                                             'may '
+                                                                                                             'supply '
+                                                                                                             'the '
+                                                                                                             'default '
+                                                                                                             '{"symbol_warnings": '
+                                                                                                             '[]} '
+                                                                                                             'when '
+                                                                                                             'the '
+                                                                                                             'envelope '
+                                                                                                             'lacks '
+                                                                                                             'wrapper_checks.'}},
+                                                       'required': ['plan_file',
+                                                                    'task_id',
+                                                                    'files_changed',
+                                                                    'reviewer_findings',
+                                                                    'wrapper_checks_json'],
+                                                       'additionalProperties': False},
+                             'planReviewerContext': {'type': 'object',
+                                                     'properties': {'schedule_path': {'type': 'string'},
+                                                                    'plan_basename': {'type': 'string'},
+                                                                    'allow_gaps_demotion': {'type': 'boolean'}},
+                                                     'required': ['schedule_path',
+                                                                  'plan_basename',
+                                                                  'allow_gaps_demotion'],
+                                                     'additionalProperties': False},
+                             'planAuthorTaskTargetedContext': {'type': 'object',
+                                                               'properties': {'child_plan_file': {'type': 'string'},
+                                                                              'target_task_id': {'$ref': '#/$defs/taskId'},
+                                                                              'finding': {'$ref': '#/$defs/jsonValue'}},
+                                                               'required': ['child_plan_file',
+                                                                            'target_task_id',
+                                                                            'finding'],
+                                                               'additionalProperties': False},
+                             'planAuthorScheduleLevelContext': {'type': 'object',
+                                                                'properties': {'roster_file': {'type': 'string'},
+                                                                               'finding': {'$ref': '#/$defs/jsonValue'}},
+                                                                'required': ['roster_file',
+                                                                             'finding'],
+                                                                'additionalProperties': False},
+                             'planAuthorLegacyWholePlanContext': {'type': 'object',
+                                                                  'properties': {'plan_path': {'type': 'string'},
+                                                                                 'target_task_id': {'oneOf': [{'$ref': '#/$defs/taskId'},
+                                                                                                              {'type': 'null'}]},
+                                                                                 'finding': {'$ref': '#/$defs/jsonValue'}},
+                                                                  'required': ['plan_path',
+                                                                               'finding'],
+                                                                  'additionalProperties': False},
+                             'planReviewTriageContext': {'type': 'object',
+                                                         'properties': {'source': {'type': 'string',
+                                                                                   'enum': ['analyst',
+                                                                                            'codex']},
+                                                                        'findings': {'type': 'array'},
+                                                                        'gaps': {'type': 'array'},
+                                                                        'schedule_path': {'type': 'string'}},
+                                                         'required': ['source', 'findings', 'gaps'],
+                                                         'additionalProperties': False},
+                             'planRemediatorNarrowContext': {'type': 'object',
+                                                             'properties': {'plan_file': {'type': 'string'},
+                                                                            'task_id': {'$ref': '#/$defs/taskId'},
+                                                                            'target_task_id': {'$ref': '#/$defs/taskId'},
+                                                                            'starting_sha': {'type': 'string'},
+                                                                            'findings_for_retry': {'$ref': '#/$defs/jsonValue'},
+                                                                            'dismissed_for_context': {'$ref': '#/$defs/jsonValue'},
+                                                                            'd5_summary': {'type': 'string'},
+                                                                            'analyst_annotations_json': {'$ref': '#/$defs/jsonValue'}},
+                                                             'required': ['plan_file',
+                                                                          'task_id',
+                                                                          'starting_sha',
+                                                                          'findings_for_retry',
+                                                                          'dismissed_for_context',
+                                                                          'd5_summary',
+                                                                          'analyst_annotations_json'],
+                                                             'additionalProperties': False},
+                             'planRemediatorRescueContext': {'type': 'object',
+                                                             'properties': {'plan_file': {'type': 'string'},
+                                                                            'task_id': {'$ref': '#/$defs/taskId'},
+                                                                            'target_task_id': {'$ref': '#/$defs/taskId'},
+                                                                            'starting_sha': {'type': 'string'},
+                                                                            'reviewer_source': {'type': 'string',
+                                                                                                'enum': ['codex',
+                                                                                                         'claude']},
+                                                                            'rescue_findings_json': {'$ref': '#/$defs/jsonValue'},
+                                                                            'analyst_annotations_json': {'$ref': '#/$defs/jsonValue'}},
+                                                             'required': ['plan_file',
+                                                                          'task_id',
+                                                                          'starting_sha',
+                                                                          'reviewer_source',
+                                                                          'rescue_findings_json',
+                                                                          'analyst_annotations_json'],
+                                                             'additionalProperties': False}},
                    'x-cli-emits-json': True},
   'output_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                     'title': 'plan_ops__build_agent_dispatch_prompt output',

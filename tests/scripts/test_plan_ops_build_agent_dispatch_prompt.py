@@ -126,7 +126,8 @@ def test_schema_exposes_all_agent_dispatch_template_ids() -> None:
         "plan-remediator-narrow",
         "plan-remediator-rescue",
     ]
-    assert len(schema["oneOf"]) == 9
+    assert "oneOf" not in schema
+    assert len(schema["properties"]["context"]["oneOf"]) == 9
 
 
 def test_new_agent_dispatch_variants_render_to_golden() -> None:

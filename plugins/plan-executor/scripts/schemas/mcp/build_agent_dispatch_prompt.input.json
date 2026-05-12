@@ -19,104 +19,40 @@
       ]
     },
     "context": {
-      "type": "object"
+      "oneOf": [
+        {
+          "$ref": "#/$defs/codeReviewerDClaudeContext"
+        },
+        {
+          "$ref": "#/$defs/codeReviewerD5Context"
+        },
+        {
+          "$ref": "#/$defs/planReviewerContext"
+        },
+        {
+          "$ref": "#/$defs/planAuthorTaskTargetedContext"
+        },
+        {
+          "$ref": "#/$defs/planAuthorScheduleLevelContext"
+        },
+        {
+          "$ref": "#/$defs/planAuthorLegacyWholePlanContext"
+        },
+        {
+          "$ref": "#/$defs/planReviewTriageContext"
+        },
+        {
+          "$ref": "#/$defs/planRemediatorNarrowContext"
+        },
+        {
+          "$ref": "#/$defs/planRemediatorRescueContext"
+        }
+      ]
     }
   },
   "required": [
     "template_id",
     "context"
-  ],
-  "oneOf": [
-    {
-      "properties": {
-        "template_id": {
-          "const": "code-reviewer-d-claude"
-        },
-        "context": {
-          "$ref": "#/$defs/codeReviewerDClaudeContext"
-        }
-      }
-    },
-    {
-      "properties": {
-        "template_id": {
-          "const": "code-reviewer-d5"
-        },
-        "context": {
-          "$ref": "#/$defs/codeReviewerD5Context"
-        }
-      }
-    },
-    {
-      "properties": {
-        "template_id": {
-          "const": "plan-reviewer"
-        },
-        "context": {
-          "$ref": "#/$defs/planReviewerContext"
-        }
-      }
-    },
-    {
-      "properties": {
-        "template_id": {
-          "const": "plan-author-task-targeted"
-        },
-        "context": {
-          "$ref": "#/$defs/planAuthorTaskTargetedContext"
-        }
-      }
-    },
-    {
-      "properties": {
-        "template_id": {
-          "const": "plan-author-schedule-level"
-        },
-        "context": {
-          "$ref": "#/$defs/planAuthorScheduleLevelContext"
-        }
-      }
-    },
-    {
-      "properties": {
-        "template_id": {
-          "const": "plan-author-legacy-whole-plan"
-        },
-        "context": {
-          "$ref": "#/$defs/planAuthorLegacyWholePlanContext"
-        }
-      }
-    },
-    {
-      "properties": {
-        "template_id": {
-          "const": "plan-review-triage"
-        },
-        "context": {
-          "$ref": "#/$defs/planReviewTriageContext"
-        }
-      }
-    },
-    {
-      "properties": {
-        "template_id": {
-          "const": "plan-remediator-narrow"
-        },
-        "context": {
-          "$ref": "#/$defs/planRemediatorNarrowContext"
-        }
-      }
-    },
-    {
-      "properties": {
-        "template_id": {
-          "const": "plan-remediator-rescue"
-        },
-        "context": {
-          "$ref": "#/$defs/planRemediatorRescueContext"
-        }
-      }
-    }
   ],
   "additionalProperties": false,
   "$defs": {
