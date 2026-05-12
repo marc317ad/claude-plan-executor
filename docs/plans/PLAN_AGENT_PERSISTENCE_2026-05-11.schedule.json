@@ -1,0 +1,83 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Add `mutate_task_agent` pure helper + `plan_ops__set_task_agent` MCP tool",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`plugins/plan-executor/scripts/plan_ops_mcp_server.py`",
+        "`tests/scripts/test_plan_ops.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops.py -k \"mutate_task_agent or set_task_agent\"",
+      "priority": "high",
+      "plan_file": "TASK-001_add_mutate_task_agent.md",
+      "agent": "claude",
+      "classification_reason": "registers new MCP tool in plan_ops protocol surface",
+      "description": "Add `mutate_task_agent` pure helper + `plan_ops__set_task_agent` MCP tool. (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-001. See the parent plan's `## Context` and `## Verification` sections for the full intent.)",
+      "acceptance_criteria": [
+        "In `plan_ops.py`, define `ALLOWED_AGENTS = (\"claude\", \"codex\")` near the existing `ALLOWED_TASK_STATUSES` constant.",
+        "In `plan_ops.py`, add `mutate_task_agent(plan_text: str, task_id: str, new_agent: str) -> tuple[str, str]` modeled byte-for-byte on `mutate_task_status` (`plan_ops.py:4173`). Returns `(updated_plan_text, prior_agent)` \u2014 `prior_agent` is empty string when no `**Agent:**` bullet existed.",
+        "Idempotent replace when `**Agent:**` is present; insert at the canonical slot (between `**Priority:**` and `**Files:**`, matching `_emit_child`'s order at `plan_ops.py:3187-3197`) when absent. If `**Priority:**` is absent, insert before `**Files:**`; if `**Files:**` is also absent, insert at the end of the metadata-bullet run (before the first non-bullet line).",
+        "Raises `ValueError` on: unknown `new_agent`, task block not found, malformed task block (no metadata bullets at all).",
+        "Add `cmd_set_task_agent`, `_run_set_task_agent`, `_args_to_payload_set_task_agent` mirroring the `update-plan-header` trio (`plan_ops.py:7997-8024`). Subcommand name: `set-task-agent`. Required args: `--plan-file`, `--task-id`, `--agent`.",
+        "Register `plan_ops__set_task_agent` in `plan_ops_mcp_server.py` mirroring the `plan_ops__update_plan_header` block at line 1958. Input schema: `{plan_file: string, task_id: string, agent: enum[\"claude\",\"codex\"]}`, all required, `additionalProperties: false`. Output schema: same envelope shape as `update_plan_header.output` plus an optional `prior_agent: string` field.",
+        "Unit tests in `tests/scripts/test_plan_ops.py` (place next to existing `test_mutate_task_status_*` block if present; otherwise immediately after the `mutate_task_status` test block \u2014 locate via `grep -n \"mutate_task_status\" tests/scripts/test_plan_ops.py` before implementing)."
+      ]
+    },
+    {
+      "id": "002",
+      "title": "Wire orchestrator Phase 1 Step 2 to persist `**Agent:**`; document policy",
+      "files": [
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`CLAUDE.md`",
+        "`tests/scripts/test_implement_plan_mcp_e2e.py`"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_implement_plan_mcp_e2e.py -k \"phase1_step2 and (agent or skip_classifier or dry_run)\"",
+      "priority": "high",
+      "plan_file": "TASK-002_wire_orchestrator_phase_1.md",
+      "agent": "claude",
+      "classification_reason": "mutates SKILL.md Phase 1 dispatch protocol shape",
+      "description": "Wire orchestrator Phase 1 Step 2 to persist `**Agent:**`; document policy. (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-002. See the parent plan's `## Context` and `## Verification` sections for the full intent.)",
+      "acceptance_criteria": [
+        "In `SKILL.md` \u00a7Step 2 (around line 286-321), add a new sub-step **after** the per-child classifier extraction and **before** the merged-tasks shape-shift in Step 3. Exact text (copy verbatim; this is the contract): > After every per-child classifier dispatch returns `status==ok` with `result.agent \u2208 {claude, codex}`, dispatch `Tool: plan_ops__set_task_agent with input {\"plan_file\": \"<absolute child path>\", \"task_id\": \"<canonical NNN>\", \"agent\": \"<result.agent>\"}` to persist `**Agent:**` into the child plan file. This is fan-out: one call per classified child, in parallel with sibling sets. On `status!=ok` for the underlying classifier dispatch, DO NOT call `set_task_agent` for that child \u2014 let Phase 1 fail through the existing analyst-invalid path.",
+        "In `SKILL.md` \u00a7Dry-run mode (the recently-amended section around line 402+), add a third numbered exemption immediately after the Phase 1.5 plan-revision cycle entry: > 3. **Phase 1 Step 2 `**Agent:**` persistence** \u2014 `plan_ops__set_task_agent` fires under `--dry-run` so the classifier output reaches disk. Without this, dry-run leaves the plan amnesic and the next real run re-classifies from scratch, defeating the rehearsal value.",
+        "In `SKILL.md` \u00a7Command idioms table (around line 119), add `set-task-agent` to the list of commands that take `--plan-file` (it mutates plan markdown, same family as `commit-task` / `update-plan-header`).",
+        "In `CLAUDE.md` line 50, extend the \"Allowed plan-file mutations\" enumeration. Current text: ``Allowed plan-file mutations: `**Status:**` flips, append-only execution-log tail, ...``. New text: ``Allowed plan-file mutations: `**Status:**` flips, `**Agent:**` flips (post-classifier persistence; idempotent, enum-valued), append-only execution-log tail, ...``.",
+        "Add `test_phase1_step2_persists_agent_to_child_file` in `tests/scripts/test_implement_plan_mcp_e2e.py`:",
+        "Add `test_phase1_step2_skips_classifier_on_second_invocation`:",
+        "Add `test_phase1_step2_persists_under_dry_run`:"
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/plan_ops_mcp_server.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "CLAUDE.md",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "tests/scripts/test_implement_plan_mcp_e2e.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}
