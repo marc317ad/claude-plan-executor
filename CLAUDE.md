@@ -47,7 +47,7 @@ When the working tree carries a non-empty diff against `starting_sha` and a down
 
 ## Plan-file edit scope (orchestrator side)
 
-Allowed plan-file mutations: `**Status:**` flips, append-only execution-log tail, pre-dispatch format-only corrections needed to satisfy schema gates, and surgical hand-fixes per Forward bias above. Never alter task semantics — prose, acceptance criteria, Files, Test command, Implementation notes, Reversion guidance, Dependencies — outside a documented hand-fix or a `plan-author` dispatch.
+Allowed plan-file mutations: `**Status:**` flips, `**Agent:**` flips (post-classifier persistence; idempotent, enum-valued), append-only execution-log tail, pre-dispatch format-only corrections needed to satisfy schema gates, and surgical hand-fixes per Forward bias above. Never alter task semantics — prose, acceptance criteria, Files, Test command, Implementation notes, Reversion guidance, Dependencies — outside a documented hand-fix or a `plan-author` dispatch.
 
 ## Subagent dispatch contract
 

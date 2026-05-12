@@ -116,7 +116,7 @@ All plan operations are reachable as MCP tools `plan_ops__<subcommand-with-under
 
 ## Per-task `<plan-file>` resolution (TASK-004 write sites)
 
-Five commands mutate plan markdown and therefore take `--plan-file`: `commit-task` (Phase D.3), `fail-task` (Phase C + D.4), `block-dependents` (Phase C + D.4), `update-plan-header` (End-of-run), and the `plan-author` auto-revise dispatch (Phase 1.5a). One read-only command also honours directory-mode `<plan-file>` resolution: `gates --certify` (End-of-run). For mutators, each call passes the current task's child file; for `gates --certify`, a directory `--plan-file` aggregates `schema-valid` per chunk (over `00_INDEX.json`) and re-checks `commit-safe` per `commit_done` event using each event's recorded `plan_file` field. Resolution rule:
+Six commands mutate plan markdown and therefore take `--plan-file`: `commit-task` (Phase D.3), `fail-task` (Phase C + D.4), `block-dependents` (Phase C + D.4), `update-plan-header` (End-of-run), `set-task-agent` (Phase 1 Step 2 post-classifier persistence; idempotent, enum-valued), and the `plan-author` auto-revise dispatch (Phase 1.5a). One read-only command also honours directory-mode `<plan-file>` resolution: `gates --certify` (End-of-run). For mutators, each call passes the current task's child file; for `gates --certify`, a directory `--plan-file` aggregates `schema-valid` per chunk (over `00_INDEX.json`) and re-checks `commit-safe` per `commit_done` event using each event's recorded `plan_file` field. Resolution rule:
 
 ```
 child_basename = task.plan_file
@@ -316,6 +316,8 @@ Malformed reply handling — a wrapper envelope whose `.status != "ok"`, OR whos
 
 Apply the `codex_available=false` preflight override here too — if the preflight flag was false, rewrite every `tasks[i].agent` to `"claude"` in the merged manifest before step 3 (consistent with the retired whole-plan analyst override, which the orchestrator used to apply after parsing the whole-plan JSON).
 
+**Persist `**Agent:**` to child plan files.** After every per-child classifier dispatch returns `status==ok` with `result.agent ∈ {claude, codex}`, dispatch `Tool: plan_ops__set_task_agent with input {"plan_file": "<absolute child path>", "task_id": "<canonical NNN>", "agent": "<result.agent>"}` to persist `**Agent:**` into the child plan file. This is fan-out: one call per classified child, in parallel with sibling sets. On `status!=ok` for the underlying classifier dispatch, DO NOT call `set_task_agent` for that child — let Phase 1 fail through the existing analyst-invalid path.
+
 ### Step 3 — Apply filters and per-task overrides
 
 After the merged `tasks[]` has an `agent` field on every entry (either declared in source or filled by step 2), the orchestrator synthesizes the canonical schedule shape in memory and applies any filter / agent-override flags. **No re-batch happens here**: `build-tasks` already emitted topo + file-lock-correct `batches[]` in step 1 using the same canonical batcher the standalone batch-recompute helper would call. The merged schedule flows directly from this step into step 4's `write-schedule` without any further batching call.
@@ -403,10 +405,11 @@ Canonical event order: `run_start` → optional analyst triage/author retry → 
 
 If `--dry-run`: print the (post-revision, if applicable) schedule + intended Phase B/D dispatches. Release lock. Exit. Dry-run scope is sticky — a follow-up "actually run it" message requires a fresh invocation without `--dry-run`, or explicit user instruction.
 
-Two dispatch/edit sites are exempt from dry-run gating:
+Three dispatch/edit sites are exempt from dry-run gating:
 
 1. **Phase 0 auto-promote commit** — sole commit exempt; without it preflight halts on `source_blocking`.
 2. **Phase 1.5 plan-revision cycle** — when `plan-review-route` returns `dispatch_plan_author_per_finding` (Phase 1.5.5) or `partial-agreement` / `needs-rework` from analyst triage (Phase 1-triage), the orchestrator dispatches `plan-author` per finding, re-runs Phase 1 end-to-end, and (on the Codex source) re-dispatches plan-review with `attempt=2`. The binding-second-verdict rule still applies; a second `needs-replan` halts per the normal `reason_detail:"second_needs_replan"` path. Author edits target only the resolved `child_plan_file` (or `00_INDEX.json` for schedule-level findings) — other task files are not touched. Phase B (implement) and Phase D (review/commit) dispatches remain gated.
+3. **Phase 1 Step 2 `**Agent:**` persistence** — `plan_ops__set_task_agent` fires under `--dry-run` so the classifier output reaches disk. Without this, dry-run leaves the plan amnesic and the next real run re-classifies from scratch, defeating the rehearsal value.
 
 Rationale: dry-run is meant to surface the schedule the user would actually execute. A `needs-replan` that's never authored leaves the dry-run output showing a plan the executor would have rejected — failing the "useful preview" purpose.
 

@@ -22,7 +22,7 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 
 ### TASK-002: Wire orchestrator Phase 1 Step 2 to persist `**Agent:**`; document policy
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
