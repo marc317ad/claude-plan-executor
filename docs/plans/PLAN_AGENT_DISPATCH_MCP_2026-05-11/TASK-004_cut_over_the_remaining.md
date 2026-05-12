@@ -43,3 +43,11 @@ Final cutover. Each of the seven non-D-Claude in-process Agent dispatch sites in
 
 **Description:**
 Final cutover. Each of the seven non-D-Claude in-process Agent dispatch sites in SKILL.md is rewritten to invoke `plan_ops__build_agent_dispatch_prompt` via the §Canonical Agent dispatch recipe. Each of the seven `dispatch-templates.md` section bodies gains the same header note pattern TASK-002 added to Phase D-Claude. The CLAUDE.md `Subagent dispatch contract` line is refreshed to point at both MCP builder families. The smoke test assertion is widened to cover all eight phases. After this task lands, the orchestrator never reads `dispatch-templates.md` at dispatch time on any path.
+
+## Execution log — 20260512T130136 (success)
+
+Starting SHA: `5c7444eb6433edbfdd9121b0eabce633c48c231b`  → Ending SHA: `690e52f63edbd1182d375f12202c6ff6bded7a13`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 004 | claude | claude | ship-with-fixes [narrow-remediation] [disagreement: 0] | 690e52f6 | Codex r1: needs-rework (2 findings). D.5: partial-agreement (load-bearing[1]=narrow-remediation header/body contradiction; dismissed[0]=SKILL D.2a.6 routing change as spec-deference per AC[1]). D.2a.6 narrow remediation: success (rewrote meta-doc above TRANSPORT BOUNDARY consistent with header note). Codex r2: needs-rework (test pin missed plan-author-legacy-whole-plan); hand-fix added L102 header note + smoke-test entries (3 lines). Codex r3: needs-rework (flagged meta-doc rewrite as AC[3] body-byte-identical violation — substantive disagreement with D.5 r1 interpretation). User endorsed D.5 reading per option 1 (TRANSPORT BOUNDARY marker is the editable/frozen split; prompt body below boundary is byte-identical) → commit with [narrow-remediation] [disagreement: 0]. |
