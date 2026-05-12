@@ -1,0 +1,11 @@
+{
+  "template_id": "code-reviewer-d-claude",
+  "context": {
+    "plan_file": "__PLAN_FILE__",
+    "task_id": "001",
+    "files_changed": [
+      "plugins/plan-executor/scripts/plan_ops.py",
+      "tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py"
+    ]
+  }
+}

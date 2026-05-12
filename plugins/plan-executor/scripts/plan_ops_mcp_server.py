@@ -368,6 +368,91 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
   'args_to_payload_callable_name': '_args_to_payload_block_dependents',
   'description_help': 'Cascade `blocked` status onto dependents of a failed task. Mutates the plan '
                       'markdown (single read, single write) and appends `blocked` run-log events.'},
+ {'tool_key': 'plan_ops__build_agent_dispatch_prompt',
+  'input_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+                   'title': 'plan_ops__build_agent_dispatch_prompt input',
+                   'description': 'Render an Agent dispatch prompt from dispatch-templates.md for '
+                                  'a supported template_id.',
+                   'type': 'object',
+                   'properties': {'template_id': {'type': 'string',
+                                                  'enum': ['code-reviewer-d-claude']},
+                                  'context': {'type': 'object'}},
+                   'required': ['template_id', 'context'],
+                   'oneOf': [{'properties': {'template_id': {'const': 'code-reviewer-d-claude'},
+                                             'context': {'type': 'object',
+                                                         'properties': {'plan_file': {'description': 'Absolute '
+                                                                                                     'path '
+                                                                                                     'to '
+                                                                                                     'the '
+                                                                                                     'resolved '
+                                                                                                     'child '
+                                                                                                     'plan '
+                                                                                                     'file',
+                                                                                      'type': 'string'},
+                                                                        'task_id': {'description': 'TASK-NNN '
+                                                                                                   'id, '
+                                                                                                   'or '
+                                                                                                   'NNN '
+                                                                                                   '/ '
+                                                                                                   'N, '
+                                                                                                   'the '
+                                                                                                   'review '
+                                                                                                   'targets',
+                                                                                    'type': 'string',
+                                                                                    'pattern': '^(?:TASK-)?\\d{1,3}[A-Z]?$'},
+                                                                        'target_task_id': {'description': 'Optional '
+                                                                                                          'disambiguator '
+                                                                                                          'required '
+                                                                                                          'at '
+                                                                                                          'render '
+                                                                                                          'time '
+                                                                                                          'when '
+                                                                                                          'the '
+                                                                                                          'child '
+                                                                                                          'plan '
+                                                                                                          'carries '
+                                                                                                          '>1 '
+                                                                                                          'H3 '
+                                                                                                          'task '
+                                                                                                          'heading',
+                                                                                           'type': 'string',
+                                                                                           'pattern': '^(?:TASK-)?\\d{1,3}[A-Z]?$'},
+                                                                        'files_changed': {'description': 'The '
+                                                                                                         "wrapper's "
+                                                                                                         'files_changed '
+                                                                                                         'list',
+                                                                                          'type': 'array',
+                                                                                          'items': {'type': 'string'}}},
+                                                         'required': ['plan_file',
+                                                                      'task_id',
+                                                                      'files_changed'],
+                                                         'additionalProperties': False}}}],
+                   'additionalProperties': False,
+                   'x-cli-emits-json': True},
+  'output_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+                    'title': 'plan_ops__build_agent_dispatch_prompt output',
+                    'description': 'Success returns {ok:true, agent, model, prompt}. Validation or '
+                                   'render failures return {ok:false, errors:[...], warnings:[]}. '
+                                   'Tool-specific fields are permitted for forward compatibility.',
+                    'type': 'object',
+                    'properties': {'ok': {'type': 'boolean'},
+                                   'agent': {'type': 'string'},
+                                   'model': {'type': 'string'},
+                                   'prompt': {'type': 'string'},
+                                   'errors': {'type': 'array',
+                                              'items': {'type': ['object', 'string']}},
+                                   'warnings': {'type': 'array',
+                                                'items': {'type': ['object', 'string']}}},
+                    'oneOf': [{'required': ['ok', 'agent', 'model', 'prompt'],
+                               'properties': {'ok': {'const': True}}},
+                              {'required': ['ok', 'errors'],
+                               'properties': {'ok': {'const': False}}}],
+                    'additionalProperties': True},
+  'subcommand': 'build-agent-dispatch-prompt',
+  'run_callable_name': '_run_build_agent_dispatch_prompt',
+  'args_to_payload_callable_name': '_args_to_payload_build_agent_dispatch_prompt',
+  'description_help': 'Render an Agent dispatch prompt from dispatch-templates.md for a supported '
+                      'template_id.'},
  {'tool_key': 'plan_ops__build_claude_dispatch_input',
   'input_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                    'title': 'plan_ops__build_claude_dispatch_input input',
@@ -1989,45 +2074,6 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
   'run_callable_name': '_run_update_plan_header',
   'args_to_payload_callable_name': '_args_to_payload_update_plan_header',
   'description_help': 'Mutate **Status:** in plan header block'},
- {'tool_key': 'plan_ops__set_task_agent',
-  'input_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
-                   'title': 'plan_ops__set_task_agent input',
-                   'description': "Set TASK-NNN's **Agent:** bullet (insert or replace)",
-                   'type': 'object',
-                   'properties': {'plan_file': {'type': 'string'},
-                                  'task_id': {'type': 'string'},
-                                  'agent': {'type': 'string',
-                                            'enum': ['claude', 'codex']}},
-                   'additionalProperties': False,
-                   'required': ['plan_file', 'task_id', 'agent'],
-                   'x-cli-emits-json': True},
-  'output_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
-                    'title': 'plan_ops__set_task_agent output',
-                    'description': 'JSON envelope emitted by `set-task-agent --json`. Mirrors '
-                                   'the bash CLI envelope verbatim; tool-specific fields are '
-                                   'permitted via additionalProperties.',
-                    'type': 'object',
-                    'properties': {'errors': {'type': 'array',
-                                              'items': {'type': ['object', 'string']},
-                                              'description': 'Structured error records; empty on '
-                                                             'success.'},
-                                   'warnings': {'type': 'array',
-                                                'items': {'type': ['object', 'string']},
-                                                'description': 'Non-fatal warnings; empty when '
-                                                               'none.'},
-                                   'outcome': {'type': 'string',
-                                               'description': 'Subcommand-specific outcome label '
-                                                              'when the envelope carries one (e.g. '
-                                                              "'valid', 'needs-enrichment')."},
-                                   'prior_agent': {'type': 'string',
-                                                   'description': "Previous **Agent:** bullet "
-                                                                  'value; empty string when the '
-                                                                  'bullet was newly inserted.'}},
-                    'additionalProperties': True},
-  'subcommand': 'set-task-agent',
-  'run_callable_name': '_run_set_task_agent',
-  'args_to_payload_callable_name': '_args_to_payload_set_task_agent',
-  'description_help': "Set TASK-NNN's **Agent:** bullet (insert or replace)"},
  {'tool_key': 'plan_ops__write_schedule',
   'input_schema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                    'title': 'plan_ops__write_schedule input',

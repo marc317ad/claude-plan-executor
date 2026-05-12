@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__build_agent_dispatch_prompt input",
+  "description": "Render an Agent dispatch prompt from dispatch-templates.md for a supported template_id.",
+  "type": "object",
+  "properties": {
+    "template_id": {
+      "type": "string",
+      "enum": [
+        "code-reviewer-d-claude"
+      ]
+    },
+    "context": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "template_id",
+    "context"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "template_id": {
+          "const": "code-reviewer-d-claude"
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "plan_file": {
+              "description": "Absolute path to the resolved child plan file",
+              "type": "string"
+            },
+            "task_id": {
+              "description": "TASK-NNN id, or NNN / N, the review targets",
+              "type": "string",
+              "pattern": "^(?:TASK-)?\\d{1,3}[A-Z]?$"
+            },
+            "target_task_id": {
+              "description": "Optional disambiguator required at render time when the child plan carries >1 H3 task heading",
+              "type": "string",
+              "pattern": "^(?:TASK-)?\\d{1,3}[A-Z]?$"
+            },
+            "files_changed": {
+              "description": "The wrapper's files_changed list",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "plan_file",
+            "task_id",
+            "files_changed"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "x-cli-emits-json": true
+}

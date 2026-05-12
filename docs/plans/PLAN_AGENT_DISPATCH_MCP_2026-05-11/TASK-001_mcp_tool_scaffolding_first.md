@@ -25,10 +25,11 @@ Add a new MCP tool `plan_ops__build_agent_dispatch_prompt` that accepts `{templa
 
 ### TASK-001: MCP tool scaffolding + first variant (code-reviewer-d-claude)
 
-- **Status:** pending
+- **Status:** done
 - **Priority:** high
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` (edit — add `cmd_build_agent_dispatch_prompt`, helpers, MCP wiring)
+  - `plugins/plan-executor/scripts/plan_ops_mcp_server.py` (regenerate via `plugins/plan-executor/scripts/_codegen/mcp_tool_registrations.py`)
   - `plugins/plan-executor/scripts/schemas/mcp/build_agent_dispatch_prompt.input.json` (create)
   - `plugins/plan-executor/scripts/schemas/mcp/build_agent_dispatch_prompt.output.json` (create)
   - `plugins/plan-executor/scripts/schemas/mcp/_index.json` (edit — register the new tool)

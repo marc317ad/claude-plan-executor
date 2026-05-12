@@ -9202,6 +9202,38 @@ def _extract_task_files_from_plan(plan_text: str, task_id: str) -> list[str] | N
     return None
 
 
+def _parse_h3_task_from_plan(plan_text: str, task_id: str) -> dict | None:
+    normalized = _normalize_task_id(task_id)
+    if normalized is None:
+        return None
+    _, blocks = _split_task_blocks_at_level(plan_text, 3)
+    for raw_id, title, block, source_line in blocks:
+        if _normalize_task_id(raw_id) == normalized:
+            return _parse_task_block(
+                block,
+                3,
+                raw_id=raw_id,
+                title=title,
+                source_line=source_line,
+            )
+    return None
+
+
+def _extract_task_description(plan_text: str, task_id: str) -> str | None:
+    task = _parse_h3_task_from_plan(plan_text, task_id)
+    if task is None:
+        return None
+    return task.get("description") or ""
+
+
+def _extract_task_acceptance_criteria(plan_text: str, task_id: str) -> str | None:
+    task = _parse_h3_task_from_plan(plan_text, task_id)
+    if task is None:
+        return None
+    items = task.get("acceptance_criteria") or []
+    return "\n".join(f"- {item}" for item in items)
+
+
 def _gate_commit_safe(
     commit_sha: str | None,
     task_id: str | None,
@@ -12125,6 +12157,269 @@ def cmd_resolve_read_targets(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# build-agent-dispatch-prompt — render Agent prompt text from templates
+# ---------------------------------------------------------------------------
+
+_AGENT_DISPATCH_TEMPLATE_AGENT = {
+    "code-reviewer-d-claude": "code-reviewer",
+}
+
+_AGENT_DISPATCH_TEMPLATE_MODEL = {
+    "code-reviewer-d-claude": "sonnet",
+}
+
+_AGENT_DISPATCH_TEMPLATE_HEADING = {
+    "code-reviewer-d-claude": "## Phase D-Claude — code-reviewer on Codex work",
+}
+
+
+def _agent_dispatch_error(
+    code: str,
+    message: str,
+    *,
+    path: str | None = None,
+) -> dict:
+    record = {"code": code, "message": message}
+    if path is not None:
+        record["path"] = path
+    return _result({"ok": False, "errors": [record], "warnings": []}, exit_code=1)
+
+
+def _agent_dispatch_schema_path() -> Path:
+    return (
+        Path(__file__).resolve().parent
+        / "schemas"
+        / "mcp"
+        / "build_agent_dispatch_prompt.input.json"
+    )
+
+
+def _validate_build_agent_dispatch_prompt_input(payload: object) -> list[dict]:
+    schema_path = _agent_dispatch_schema_path()
+    try:
+        schema = json.loads(_load_text(schema_path))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [{"path": "$", "message": f"input schema unavailable: {exc}"}]
+    try:
+        import jsonschema
+    except ImportError:
+        jsonschema = None
+    if jsonschema is None:
+        if not isinstance(payload, dict):
+            return [{"path": "$", "message": "input must be a JSON object"}]
+        errors: list[dict] = []
+        for key in ("template_id", "context"):
+            if key not in payload:
+                errors.append({"path": f"$.{key}", "message": "required field missing"})
+        context = payload.get("context") if isinstance(payload, dict) else None
+        if not isinstance(context, dict):
+            errors.append({"path": "$.context", "message": "must be an object"})
+        elif "files_changed" not in context:
+            errors.append({"path": "$.context.files_changed", "message": "required field missing"})
+        return errors
+    validator = jsonschema.Draft202012Validator(schema)
+    return [
+        {
+            "path": "$" + "".join(f".{part}" for part in error.path),
+            "message": error.message,
+        }
+        for error in sorted(validator.iter_errors(payload), key=lambda item: list(item.path))
+    ]
+
+
+def _agent_dispatch_template_path() -> Path:
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    plugin_root = Path(root) if root else Path(__file__).resolve().parents[1]
+    return plugin_root / "skills" / "implement-plan" / "dispatch-templates.md"
+
+
+def _extract_dispatch_template_section(template_text: str, heading: str) -> str | None:
+    start = template_text.find(heading)
+    if start == -1:
+        return None
+    tail = template_text[start:]
+    next_heading = re.search(r"^## Phase ", tail[len(heading):], re.MULTILINE)
+    if next_heading:
+        return tail[: len(heading) + next_heading.start()]
+    return tail
+
+
+def _extract_agent_blockquote(section: str) -> str:
+    lines = section.splitlines()
+    out: list[str] = []
+    in_quote = False
+    for line in lines:
+        if line.startswith(">"):
+            in_quote = True
+            unquoted = line[1:]
+            if unquoted.startswith(" "):
+                unquoted = unquoted[1:]
+            out.append(unquoted)
+            continue
+        if in_quote:
+            if line.strip():
+                break
+            out.append("")
+    return "\n".join(out).strip() + "\n"
+
+
+def _render_review_target_task_id_injection(
+    plan_text: str,
+    target_task_id: str | None,
+    *,
+    plan_file: str,
+) -> str | dict:
+    heading_count = count_task_headings(plan_text)
+    if target_task_id is None:
+        if heading_count > 1:
+            return _agent_dispatch_error(
+                "target-task-id-required",
+                (
+                    f"target_task_id is required: {plan_file} declares "
+                    f"{heading_count} `### TASK-NNN:` H3 headings"
+                ),
+                path="$.context.target_task_id",
+            )
+        return ""
+    if heading_count <= 1:
+        return ""
+    normalized = _normalize_task_id(target_task_id)
+    if normalized is None:
+        return _agent_dispatch_error(
+            "target-task-id-invalid",
+            f"target_task_id is not parseable: {target_task_id!r}",
+            path="$.context.target_task_id",
+        )
+    return (
+        f"Reviewing specifically `### TASK-{normalized}:` (this child "
+        f"plan file declares {heading_count} `### TASK-NNN:` H3 headings; "
+        "read only the matching block).\n\n"
+    )
+
+
+def _args_to_payload_build_agent_dispatch_prompt(args: argparse.Namespace) -> dict:
+    if getattr(args, "stdin", False):
+        try:
+            payload = json.loads(_read_stdin_text())
+        except json.JSONDecodeError as exc:
+            return {"__invalid_json_error__": str(exc)}
+        return payload
+    context = getattr(args, "context", None)
+    if isinstance(context, str):
+        context_text = context
+        context_path = Path(context)
+        if context_path.is_file():
+            context_text = _load_text(context_path)
+        try:
+            context = json.loads(context_text)
+        except json.JSONDecodeError:
+            context = context_text
+    return {
+        "template_id": getattr(args, "template_id", None),
+        "context": context,
+    }
+
+
+def _run_build_agent_dispatch_prompt(payload: dict) -> dict:
+    if "__invalid_json_error__" in payload:
+        return _agent_dispatch_error(
+            "invalid-json",
+            f"invalid JSON on stdin: {payload['__invalid_json_error__']}",
+            path="$",
+        )
+    errors = _validate_build_agent_dispatch_prompt_input(payload)
+    if errors:
+        return _result(
+            {"ok": False, "errors": errors, "warnings": []},
+            exit_code=1,
+        )
+
+    template_id = payload["template_id"]
+    context = payload["context"]
+    plan_file = Path(context["plan_file"])
+    if not plan_file.is_absolute():
+        return _agent_dispatch_error(
+            "plan-file-not-absolute",
+            f"plan_file must be absolute: {plan_file}",
+            path="$.context.plan_file",
+        )
+    if not plan_file.is_file():
+        return _agent_dispatch_error(
+            "plan-file-not-found",
+            f"plan file not found: {plan_file}",
+            path="$.context.plan_file",
+        )
+    plan_text = _load_text(plan_file)
+    task_id = _normalize_task_id(context["task_id"])
+    if task_id is None:
+        return _agent_dispatch_error(
+            "task-id-invalid",
+            f"task_id is not parseable: {context['task_id']!r}",
+            path="$.context.task_id",
+        )
+
+    description = _extract_task_description(plan_text, task_id)
+    acceptance_criteria = _extract_task_acceptance_criteria(plan_text, task_id)
+    if description is None or acceptance_criteria is None:
+        return _agent_dispatch_error(
+            "task-not-found",
+            f"task {task_id} not present in plan {plan_file}",
+            path="$.context.task_id",
+        )
+
+    injection = _render_review_target_task_id_injection(
+        plan_text,
+        context.get("target_task_id"),
+        plan_file=str(plan_file),
+    )
+    if isinstance(injection, dict):
+        return injection
+
+    template_path = _agent_dispatch_template_path()
+    if not template_path.is_file():
+        return _agent_dispatch_error(
+            "template-file-not-found",
+            f"dispatch template file not found: {template_path}",
+        )
+    section = _extract_dispatch_template_section(
+        _load_text(template_path),
+        _AGENT_DISPATCH_TEMPLATE_HEADING[template_id],
+    )
+    if section is None:
+        return _agent_dispatch_error(
+            "template-section-not-found",
+            f"template section not found: {_AGENT_DISPATCH_TEMPLATE_HEADING[template_id]}",
+        )
+    prompt = _extract_agent_blockquote(section)
+    prompt = prompt.replace(
+        "<comma-separated files from Codex wrapper's files_changed>",
+        ", ".join(context["files_changed"]),
+    )
+    prompt = prompt.replace("<verbatim from TASK-NNN Description>", description)
+    prompt = prompt.replace(
+        "<verbatim from TASK-NNN Acceptance criteria>",
+        acceptance_criteria,
+    )
+    prompt = injection + prompt
+    return _result(
+        {
+            "ok": True,
+            "agent": _AGENT_DISPATCH_TEMPLATE_AGENT[template_id],
+            "model": _AGENT_DISPATCH_TEMPLATE_MODEL[template_id],
+            "prompt": prompt,
+        },
+        exit_code=0,
+    )
+
+
+def cmd_build_agent_dispatch_prompt(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_build_agent_dispatch_prompt(args)
+    result = _run_build_agent_dispatch_prompt(payload)
+    args.json = True
+    _emit_or_die(args, result)
+
+
+# ---------------------------------------------------------------------------
 # build-claude-dispatch-input — canonical wrapper-input builder
 # ---------------------------------------------------------------------------
 #
@@ -13373,6 +13668,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_rrt.set_defaults(func=cmd_resolve_read_targets)
+
+    p_badp = sub.add_parser(
+        "build-agent-dispatch-prompt",
+        help=(
+            "Render an Agent dispatch prompt from dispatch-templates.md "
+            "for a supported template_id."
+        ),
+    )
+    p_badp.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read {template_id, context} JSON from stdin",
+    )
+    p_badp.add_argument(
+        "--template-id",
+        default=None,
+        choices=["code-reviewer-d-claude"],
+        help="Dispatch prompt template id",
+    )
+    p_badp.add_argument(
+        "--context",
+        default=None,
+        help="JSON object or path to JSON context for the selected template",
+    )
+    p_badp.add_argument(
+        "--json",
+        action="store_true",
+        help="Reserved for parity; this subcommand always emits JSON.",
+    )
+    p_badp.set_defaults(func=cmd_build_agent_dispatch_prompt)
 
     # TASK-001 (wrapper_autoclean_authorization): canonical wrapper-input
     # builder. Emits the JSON object accepted by ``plan_claude_dispatch.py
@@ -15196,6 +15521,7 @@ def main(argv: list[str] | None = None) -> None:
         "gates": cmd_gates,
         "audit": cmd_audit,
         "resolve-read-targets": cmd_resolve_read_targets,
+        "build-agent-dispatch-prompt": cmd_build_agent_dispatch_prompt,
         "build-claude-dispatch-input": cmd_build_claude_dispatch_input,
         "build-codex-dispatch-input": cmd_build_codex_dispatch_input,
         "build-gemini-dispatch-input": cmd_build_gemini_dispatch_input,
