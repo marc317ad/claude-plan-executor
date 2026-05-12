@@ -146,7 +146,7 @@ Add a new MCP tool `plan_ops__build_agent_dispatch_prompt` that accepts `{templa
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (edit — Phase D.1 sections, plus add `## Canonical Agent dispatch recipe` near line 101)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit — add header note to Phase D-Claude section)
   - `tests/scripts/test_implement_plan_directory_smoke.py` (edit — add assertion that no `awk` against `dispatch-templates.md` runs in the dry-run trace)
-- **Dependencies:** ["001"]
+- **Dependencies:** [001]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_implement_plan_directory_smoke.py tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`
 - **Read targets:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` — lines 95-115 (existing `## Claude wrapper dispatch recipe (canonical)` section, the structural twin)
@@ -191,7 +191,7 @@ Cut over the Phase D-Claude dispatch site from the markdown-read pattern to the 
   - `tests/fixtures/agent_dispatch_prompt/plan-review-triage/` (create — with `source: analyst` and `source: codex` sub-fixtures)
   - `tests/fixtures/agent_dispatch_prompt/plan-remediator-narrow/` (create)
   - `tests/fixtures/agent_dispatch_prompt/plan-remediator-rescue/` (create)
-- **Dependencies:** ["001"]
+- **Dependencies:** [001]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`
 - **Read targets:**
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` — line 158 (Phase 1.5-Claude), line 219 (Phase 1.5a outer + Variant A line 248 + Variant B line 275), line 305 (Phase 1-triage / 1.5.5), line 637 (Phase D.5), line 791 (Phase B-narrow-remediation cluster — confirm where the D.2a.6 template body actually lives), line 857 (Phase D.4-rescue)
@@ -227,7 +227,7 @@ Extend the MCP tool added in TASK-001 with the remaining eight `template_id` val
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (edit — Phase 1.5-Claude, Phase 1.5a, Phase 1-triage, Phase 1.5.5, Phase D.5, Phase D.2a.6, Phase D.4-rescue sections)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (edit — add header notes to the seven section bodies)
   - `tests/scripts/test_implement_plan_directory_smoke.py` (edit — extend the no-awk-against-dispatch-templates assertion to cover all eight phases)
-- **Dependencies:** ["002", "003"]
+- **Dependencies:** [002, 003]
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_implement_plan_directory_smoke.py tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`
 - **Read targets:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` — full file (the cutover touches eight separate phase sections; the implementer needs full-file context to avoid missing one)

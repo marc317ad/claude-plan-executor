@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "PLAN AGENT DISPATCH MCP \u2014 Render in-process Agent dispatch prompts via plan_ops MCP",
+  "source_plan_file": "PLAN_AGENT_DISPATCH_MCP_2026-05-11.md",
+  "created": "2026-05-12",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_mcp_tool_scaffolding_first.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_cut_over_phase_d.md",
+      "priority": "high",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_port_the_remaining_six.md",
+      "priority": "medium",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_cut_over_the_remaining.md",
+      "priority": "medium",
+      "depends_on": [
+        "002",
+        "003"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
