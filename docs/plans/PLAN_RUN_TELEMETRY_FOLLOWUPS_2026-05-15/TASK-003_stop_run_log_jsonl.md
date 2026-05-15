@@ -40,3 +40,11 @@ Auto-decomposed child for TASK-003. See the source plan for broader context.
 
 **Description:**
 Stop `_run_log.jsonl` from accruing CRLF churn. (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-003. See the parent plan's `## Context` and `## Verification` sections for the full intent.)
+
+## Execution log — 20260515T142051 (success)
+
+Starting SHA: `c2a6ea543b720cab3c26dfe9466517fd1786ce7b`  → Ending SHA: `f62836519ab0d1c992e13390d3e11dedef27d421`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | codex | claude | ship-with-fixes | f628365 | Hand-fix: orchestrator ran git add --renormalize *.jsonl (Codex sandbox blocked from writing .git/index.lock). 3 minor non-blocking findings: read-path newline= semantics, no-op renormalize staging gap, .gitattributes comment polish. |

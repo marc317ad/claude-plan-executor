@@ -43,3 +43,11 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
 
 **Description:**
 Narrow wrapper `observed_delta_*` to intersection of whole-tree diff and (declared ∪ agent-reported writes). (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-001. See the parent plan's `## Context` and `## Verification` sections for the full intent.)
+
+## Execution log — 20260515T142051 (success)
+
+Starting SHA: `c2a6ea543b720cab3c26dfe9466517fd1786ce7b`  → Ending SHA: `f62836519ab0d1c992e13390d3e11dedef27d421`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 001 | claude | codex→claude (D.5) | ship [disagreement] | 4e1e6c6 | Hand-fix: Files widened to include test_plan_claude_dispatch_cli.py (sibling assertion flip). D.5 dismissed Codex needs-rework on AC #7 (named file is BUG-145 timeout-only; no pre-existing scope-flag fixtures to byte-pin). |
