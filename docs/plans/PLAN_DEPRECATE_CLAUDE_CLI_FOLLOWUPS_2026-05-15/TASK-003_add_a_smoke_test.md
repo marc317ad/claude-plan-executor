@@ -39,3 +39,11 @@ Auto-decomposed child for TASK-003. See the source plan for broader context.
 
 **Description:**
 Add a smoke test pinning the JSON-schema template_id enum to the Python-side renderer maps. (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-003. See the parent plan's `## Context` and `## Verification` sections for the full intent.)
+
+## Execution log — 20260515T122941 (success)
+
+Starting SHA: `f5c44fde8d1ec5c6118b8644915972e5bc31bf11`  → Ending SHA: `3f03af0878eb84a89469b850c3849845ee85555e`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 003 | claude | codex | clean [narrow-remediation] [disagreement: 0] | 3f03af0 | Codex sandbox fallback to Claude; D.5 partial-agreement; hand-fix removed alias double-collection |

@@ -1,0 +1,99 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Extend `plan-implementer-default` renderer + schema to carry optional D.2a.5 rework context, and re-wire SKILL.md's D.2a.5 routing",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`plugins/plan-executor/scripts/schemas/mcp/build_agent_dispatch_prompt.input.json`",
+        "`plugins/plan-executor/skills/implement-plan/dispatch-templates.md`",
+        "`plugins/plan-executor/skills/implement-plan/SKILL.md`",
+        "`tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py -k \"implementer_default or rework\"",
+      "priority": "high",
+      "plan_file": "TASK-001_extend_plan_implementer_default.md",
+      "agent": "claude",
+      "description": "D.2a.5 bounded remediation dispatches `plan-implementer` (full rework), not `plan-remediator`. Today the `plan-implementer-default` Agent template has no rework-context payload \u2014 there is no template_id for the D.2a.5 site to use in-process. Rather than register a second `plan-implementer-rework` template (which would duplicate ~95% of the prompt body), extend the existing `plan-implementer-default` renderer + JSON schema with three optional fields (`prior_findings`, `prior_summary`, `attempt_count`). When all three are absent, the rendered prompt is byte-identical to today's fresh-implement output; when present, the renderer prepends a clearly delimited `Prior attempt \u2014 D.2a.5 bounded remediation context` block above the fresh-implement body. Then re-wire SKILL.md:557 (`dispatch_bounded_remediation`) and SKILL.md:575 to dispatch the extended template via \u00a7Canonical Agent dispatch recipe with the rework-context payload populated. This closes the AC contradiction surfaced in run 20260515T020053's disagreement event without inventing a second template_id.",
+      "acceptance_criteria": [
+        "Extend the `planImplementerDefaultContext` $def in `schemas/mcp/build_agent_dispatch_prompt.input.json` with three optional fields: `prior_findings` (array of `{severity, file, line, issue, suggested_fix}` objects, matching the reviewer-finding shape already used by `plan_ops__parse_reviewer_envelope`), `prior_summary` (string), and `attempt_count` (integer, >=1). All three are optional; absence means \"fresh implement\" and the renderer's output is byte-identical to today.",
+        "Extend the `plan-implementer-default` renderer branch in `plan_ops.py:12747` (`if template_id == \"plan-implementer-default\":`) to read the optional fields from the context dict. When `prior_findings` is non-empty OR `prior_summary` is non-empty, inline a clearly delimited `Prior attempt \u2014 D.2a.5 bounded remediation context` section above the existing fresh-implement instructions. The section enumerates each finding (severity, file:line, issue, suggested_fix) and emits the summary verbatim. When all three are absent, the rendered prompt is byte-identical to the pre-change output (regression-pinned in tests).",
+        "Add a conditional block to the Phase B template body in `dispatch-templates.md` (the same heading anchor used by `_AGENT_DISPATCH_TEMPLATE_HEADING[\"plan-implementer-default\"]` at `plan_ops.py:12201`) for the rework-context section. Use the renderer's existing context-substitution machinery \u2014 do not duplicate finding-formatting logic in the markdown.",
+        "Rewrite SKILL.md:557 (`dispatch_bounded_remediation`) and SKILL.md:575 (`### Phase D.2a.5 \u2014 bounded remediation`) so they explicitly state: D.2a.5 dispatches `plan-implementer-default` via \u00a7Canonical Agent dispatch recipe with `prior_findings`, `prior_summary`, and `attempt_count` populated in the `planImplementerDefaultContext` payload. Cross-link the \u00a7Cleanup-around-Agent-dispatch sub-recipe \u2014 D.2a.5 is file-editing, so the cleanup wrap applies with `authorization_source=\"orchestrator-declared-scope\"`.",
+        "Add two test cases in `tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`: (a) `test_plan_implementer_default_fresh_implement_byte_stable`: render with no rework context; assert prompt is byte-identical to a stored fixture (regression pin against drift). (b) `test_plan_implementer_default_emits_prior_findings_block`: render with a non-empty `prior_findings` + `prior_summary` + `attempt_count=2`; assert the rendered prompt contains the `Prior attempt \u2014 D.2a.5 bounded remediation context` heading, each finding's `severity`/`file:line`/`issue`, and the summary string verbatim.",
+        "Schema validation: validate a sample context with rework fields against the updated JSON schema and confirm it passes; validate the same context against the OLD schema (pre-change) and confirm it would have failed \u2014 sanity check that the optional fields are actually added."
+      ]
+    },
+    {
+      "id": "002",
+      "title": "Create the missing `docs/plans/SKILL_bash_dispatch_migration/probe_results.md` to unblock the canary test",
+      "files": [
+        "`docs/plans/SKILL_bash_dispatch_migration/probe_results.md`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_claude_dispatch_canary.py::test_canary_probe_results_md_present_and_records_v3_keys",
+      "priority": "high",
+      "plan_file": "TASK-002_create_the_missing_docs.md",
+      "agent": "claude",
+      "description": "The test `test_canary_probe_results_md_present_and_records_v3_keys` in `tests/scripts/test_claude_dispatch_canary.py:589` asserts the file `docs/plans/SKILL_bash_dispatch_migration/probe_results.md` exists and contains every key from `V3_REQUIRED_TOP_LEVEL_KEYS` as plain text. The file was never created \u2014 the SKILL_bash_dispatch_migration plan documented an intent to ship the doc but the doc itself never landed. The test has been failing pre-existing through TASK-002 and TASK-005 of the parent plan; both implementers flagged it as out-of-scope. Ship the doc now: a short reference tying each v3 envelope key to its emission site in `plan_claude_dispatch.py`, with the canonical key set included as plain text so the canary passes.",
+      "acceptance_criteria": [
+        "The file `docs/plans/SKILL_bash_dispatch_migration/probe_results.md` exists.",
+        "The file contains every string in `tests/scripts/test_claude_dispatch_canary.py:V3_REQUIRED_TOP_LEVEL_KEYS` (the canonical v3 wrapper envelope key set: `schema_version`, `status`, `status_reason`, `agent`, `model`, `session_id`, `duration_ms`, `cost_usd`, `tokens`, `result`, `result_raw_truncated`, `stderr_tail`, `permission_denials`, `scope`, and any other entries in the constant at test-time \u2014 read the source of truth, do not transcribe from memory). Each key appears at least once as plain text in the markdown body.",
+        "The doc is a short reference (<=2 pages) tying each v3 envelope key to its wrapper-side emission site in `plan_claude_dispatch.py`. Format: a markdown table or definition list with columns/labels `Key`, `Type`, `Emission site`, `Notes`. The notes column documents protocol invariants (e.g., `status` is the universal commit-forbidding sentinel when not `ok`; `cost_usd` may be `null` on dry-run; `result` carries the inlined-schema-validated agent output).",
+        "The doc's title line is `# v3 Claude wrapper envelope \u2014 key reference` (matches the SKILL bash-dispatch migration's vocabulary).",
+        "The canary test (named in the test command) passes."
+      ]
+    },
+    {
+      "id": "003",
+      "title": "Add a smoke test pinning the JSON-schema template_id enum to the Python-side renderer maps",
+      "files": [
+        "`tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py -k \"template_id_registry_invariant\"",
+      "priority": "medium",
+      "plan_file": "TASK-003_add_a_smoke_test.md",
+      "agent": "codex",
+      "description": "Codex's TASK-002 needs-rework finding documented a false-positive about schema-vs-MCP-tool-surface session staleness: the JSON enum in `schemas/mcp/build_agent_dispatch_prompt.input.json` IS the canonical registry today, so the divergence Codex worried about doesn't actually exist now. But the JSON file is human-edited and the Python renderer maps (`_AGENT_DISPATCH_TEMPLATE_HEADING`, `_AGENT_DISPATCH_TEMPLATE_MODEL`, `_AGENT_DISPATCH_TEMPLATE_CONTEXT_KEY`) are also human-edited; a future refactor could split them. Add a defensive invariant smoke test that asserts the JSON enum set equals the keys of all three Python maps. The test catches future drift before it bites a real dispatch.",
+      "acceptance_criteria": [
+        "Add a new test `test_template_id_enum_matches_renderer_registry` to `tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`.",
+        "The test loads `plugins/plan-executor/scripts/schemas/mcp/build_agent_dispatch_prompt.input.json` and extracts the `template_id` field's enum (the JSON path is `properties.template_id.enum` \u2014 verify the exact path by reading the schema file before writing the test).",
+        "The test imports `_AGENT_DISPATCH_TEMPLATE_HEADING`, `_AGENT_DISPATCH_TEMPLATE_MODEL`, and `_AGENT_DISPATCH_TEMPLATE_CONTEXT_KEY` from the `plan_ops` module (adjust import path to match existing test imports in the same file).",
+        "The test asserts that the JSON enum, the keys of `_AGENT_DISPATCH_TEMPLATE_HEADING`, the keys of `_AGENT_DISPATCH_TEMPLATE_MODEL`, and the keys of `_AGENT_DISPATCH_TEMPLATE_CONTEXT_KEY` are all the same set (use `set(...) == set(...)` four-way equality with a clear assertion message that names the diff on failure).",
+        "The test passes against `main` as of TASK-001 merge (the rework-context extension does not add new template_ids, so the invariant holds).",
+        "Per-template renderer branches: optionally extend the test to assert that every template_id in the JSON enum has a corresponding `if template_id == \"...\":` branch in `plan_ops.py`'s render function. If detection is fragile (regex over Python source), the four-way set equality is sufficient \u2014 the per-branch assertion is a stretch goal."
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001",
+        "002"
+      ],
+      "file_locks": [
+        "docs/plans/SKILL_bash_dispatch_migration/probe_results.md",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/scripts/schemas/mcp/build_agent_dispatch_prompt.input.json",
+        "plugins/plan-executor/skills/implement-plan/SKILL.md",
+        "plugins/plan-executor/skills/implement-plan/dispatch-templates.md",
+        "tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

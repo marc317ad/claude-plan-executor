@@ -37,3 +37,11 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 
 **Description:**
 Create the missing `docs/plans/SKILL_bash_dispatch_migration/probe_results.md` to unblock the canary test. (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-002. See the parent plan's `## Context` and `## Verification` sections for the full intent.)
+
+## Execution log — 20260515T122941 (success)
+
+Starting SHA: `f5c44fde8d1ec5c6118b8644915972e5bc31bf11`  → Ending SHA: `3f03af0878eb84a89469b850c3849845ee85555e`
+
+| Task | Agent | Reviewer | Verdict | Commit | Notes |
+|---|---|---|---|---|---|
+| 002 | claude | codex | clean | acb7a93 |  |
