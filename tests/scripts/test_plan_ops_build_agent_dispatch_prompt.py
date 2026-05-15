@@ -598,3 +598,35 @@ def test_plan_analyst_per_child_registered_in_dispatch_maps() -> None:
     assert plan_ops._AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE[
         "plan-analyst-per-child"
     ] == "planAnalystPerChildContext"
+
+
+def test_template_id_registry_invariant_enum_matches_renderer_maps() -> None:
+    """Smoke test: JSON-schema ``template_id`` enum == renderer-registry map keys."""
+    schema_path = (
+        SCRIPTS_DIR
+        / "schemas"
+        / "mcp"
+        / "build_agent_dispatch_prompt.input.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    enum_ids = set(schema["properties"]["template_id"]["enum"])
+
+    heading_keys = set(plan_ops._AGENT_DISPATCH_TEMPLATE_HEADING.keys())
+    model_keys = set(plan_ops._AGENT_DISPATCH_TEMPLATE_MODEL.keys())
+    # NOTE: TASK-003 AC names this map ``_AGENT_DISPATCH_TEMPLATE_CONTEXT_KEY``,
+    # but the live renderer registry exposes per-template context-$def under
+    # ``_AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE``. Same role, different name.
+    context_keys = set(plan_ops._AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE.keys())
+
+    def _diff(label: str, other: set[str]) -> str:
+        missing = enum_ids - other
+        extra = other - enum_ids
+        return (
+            f"{label} mismatch vs JSON enum: "
+            f"missing_from_{label}={sorted(missing)} "
+            f"extra_in_{label}={sorted(extra)}"
+        )
+
+    assert enum_ids == heading_keys, _diff("HEADING", heading_keys)
+    assert enum_ids == model_keys, _diff("MODEL", model_keys)
+    assert enum_ids == context_keys, _diff("CONTEXT_DEF_BY_TEMPLATE", context_keys)

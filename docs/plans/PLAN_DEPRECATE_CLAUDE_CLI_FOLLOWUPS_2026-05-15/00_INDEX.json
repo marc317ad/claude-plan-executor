@@ -29,7 +29,7 @@
       "file": "TASK-003_add_a_smoke_test.md",
       "priority": "medium",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     }
   ]

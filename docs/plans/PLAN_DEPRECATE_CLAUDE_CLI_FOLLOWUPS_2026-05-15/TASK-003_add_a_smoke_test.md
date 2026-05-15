@@ -21,7 +21,7 @@ Auto-decomposed child for TASK-003. See the source plan for broader context.
 
 ### TASK-003: Add a smoke test pinning the JSON-schema template_id enum to the Python-side renderer maps
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** codex
 - **Files:**
