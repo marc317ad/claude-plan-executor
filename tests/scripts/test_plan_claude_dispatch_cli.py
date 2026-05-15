@@ -952,7 +952,14 @@ def test_run_overwrite_outside_declared_set_is_reverted(
     assert envelope["scope"]["scope_violation_detected"] is True
     # Cleanup was passed the trusted ['a.py'].
     assert seen == [["a.py"]]
-    assert "b.py" in envelope["scope"]["observed_delta_untracked"]
+    # PLAN_RUN_TELEMETRY_FOLLOWUPS_2026-05-15 TASK-001: the published
+    # ``observed_delta_*`` lists are now narrowed to (declared ∪
+    # agent-reported). ``b.py`` is neither declared nor self-reported
+    # by the agent (``_ok_envelope`` returns ``files_changed=[]``), so
+    # the path is dropped from the published telemetry. The scope
+    # violation still surfaces via ``scope_violation_detected``.
+    assert "b.py" not in envelope["scope"]["observed_delta_untracked"]
+    assert envelope["scope"]["scope_violation_detected"] is True
 
 
 def test_run_omitted_declared_files_changed_fails_validation(

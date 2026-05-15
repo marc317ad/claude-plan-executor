@@ -22,12 +22,13 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
 
 ### TASK-001: Narrow wrapper `observed_delta_*` to intersection of whole-tree diff and (declared ∪ agent-reported writes)
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
   - `plugins/plan-executor/scripts/plan_claude_dispatch.py`
   - `tests/scripts/test_plan_claude_dispatch.py`
+  - `tests/scripts/test_plan_claude_dispatch_cli.py`
 - **Dependencies:** []
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_claude_dispatch.py -k "scope or observed_delta or intersection"`
 - **Acceptance criteria:**
