@@ -7,6 +7,7 @@
 # the kernel exec()s — CRLF here breaks `/usr/bin/env`.
 *.py   text eol=lf
 *.sh   text eol=lf
+*.jsonl text eol=lf
 
 # Treat known binary blobs as binary (no normalization).
 *.png  binary

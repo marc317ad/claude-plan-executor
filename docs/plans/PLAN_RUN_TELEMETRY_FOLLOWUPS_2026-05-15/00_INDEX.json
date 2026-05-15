@@ -29,7 +29,7 @@
       "file": "TASK-003_stop_run_log_jsonl.md",
       "priority": "medium",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     }
   ]

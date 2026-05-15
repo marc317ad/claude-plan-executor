@@ -4541,15 +4541,15 @@ def _append_run_log(event: str, fields: dict) -> str:
     rec = {"ts": _now(), "event": event, **fields}
     line = json.dumps(rec, sort_keys=False)
     RUN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with RUN_LOG_PATH.open("a", encoding="utf-8") as fh:
+    with RUN_LOG_PATH.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(line + "\n")
     try:
-        with RUN_LOG_PATH.open("r", encoding="utf-8") as fh:
+        with RUN_LOG_PATH.open("r", encoding="utf-8", newline="\n") as fh:
             last = ""
             for last in fh:
                 pass
         if last.rstrip("\n") != line:
-            with RUN_LOG_PATH.open("a", encoding="utf-8") as fh:
+            with RUN_LOG_PATH.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(line + "\n")
     except OSError as e:
         raise RuntimeError(f"run-log append verification failed: {e}")
