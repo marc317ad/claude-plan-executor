@@ -20,7 +20,7 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 
 ### TASK-002: Create the missing `docs/plans/SKILL_bash_dispatch_migration/probe_results.md` to unblock the canary test
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
