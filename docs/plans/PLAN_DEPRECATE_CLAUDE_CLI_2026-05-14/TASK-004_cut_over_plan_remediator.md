@@ -23,6 +23,7 @@ Auto-decomposed child for TASK-004. See the source plan for broader context.
 
 - **Status:** Pending
 - **Priority:** medium
+- **Agent:** claude
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (lines 97 — drop `plan-remediator` from the wrapper-recipe enumeration; lines 559, 579, 595 — verify already-Agent prose is accurate)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (Phase B-rework lines 778–836, Phase B-narrow-remediation lines 838–905, Phase D.4-rescue lines 906+ — verify each template body is Agent-path-clean)

@@ -23,6 +23,7 @@ Auto-decomposed child for TASK-005. See the source plan for broader context.
 
 - **Status:** Pending
 - **Priority:** medium
+- **Agent:** codex
 - **Files:**
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (delete §Claude wrapper dispatch recipe (canonical) section entirely; cross-references already removed by TASK-002/003/004)
   - `plugins/plan-executor/scripts/README_claude_dispatch.md` (add a deprecation/scope banner at the top)

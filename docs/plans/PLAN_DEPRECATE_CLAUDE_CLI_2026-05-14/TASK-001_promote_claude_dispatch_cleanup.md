@@ -25,6 +25,7 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
 
 - **Status:** Pending
 - **Priority:** high
+- **Agent:** codex
 - **Files:**
   - `plugins/plan-executor/scripts/_claude_dispatch_cleanup.py` → `plugins/plan-executor/scripts/_dispatch_cleanup.py` (rename)
   - `plugins/plan-executor/scripts/plan_claude_dispatch.py` (update import)

@@ -26,6 +26,7 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 
 - **Status:** Pending
 - **Priority:** high
+- **Agent:** claude
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` — register `plan-implementer-default` in `_AGENT_DISPATCH_TEMPLATE_HEADING` and `_AGENT_DISPATCH_TEMPLATE_MODEL` (~line 12175–12197); factor `_inline_implementer_result_schema(prompt) -> tuple[str, dict]` out of `build_claude_dispatch_input` (~line 13055–13164) and call it from both renderers.
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` — Phase B template body (lines 423–533): replace illustrative `output_instructions.format` prose with a clear "the orchestrator's renderer inlines the implementer result schema below; emit one JSON object matching it" instruction. Do NOT duplicate the schema text in the template body — the inliner injects it at render time so the wire-format remains single-sourced from `tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json`.

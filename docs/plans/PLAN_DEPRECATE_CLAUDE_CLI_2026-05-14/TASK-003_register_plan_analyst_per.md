@@ -23,6 +23,7 @@ Auto-decomposed child for TASK-003. See the source plan for broader context.
 
 - **Status:** Pending
 - **Priority:** high
+- **Agent:** claude
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` — register `plan-analyst-per-child` in `_AGENT_DISPATCH_TEMPLATE_HEADING` and `_AGENT_DISPATCH_TEMPLATE_MODEL` at lines 12175–12197.
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (Phase 1 Step 2 section, lines 304–316)
