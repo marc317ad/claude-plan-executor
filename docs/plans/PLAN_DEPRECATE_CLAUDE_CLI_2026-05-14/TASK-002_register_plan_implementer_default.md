@@ -24,18 +24,19 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 
 ### TASK-002: Register `plan-implementer-default` Agent template, factor shared schema inliner, cut over Phase B to in-process Agent dispatch
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` — register `plan-implementer-default` in `_AGENT_DISPATCH_TEMPLATE_HEADING` and `_AGENT_DISPATCH_TEMPLATE_MODEL` (~line 12175–12197); factor `_inline_implementer_result_schema(prompt) -> tuple[str, dict]` out of `build_claude_dispatch_input` (~line 13055–13164) and call it from both renderers.
+  - `plugins/plan-executor/scripts/schemas/mcp/build_agent_dispatch_prompt.input.json` — add `plan-implementer-default` to the template_id enum and add `planImplementerDefaultContext` $def (mechanically required by the new template registration).
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` — Phase B template body (lines 423–533): replace illustrative `output_instructions.format` prose with a clear "the orchestrator's renderer inlines the implementer result schema below; emit one JSON object matching it" instruction. Do NOT duplicate the schema text in the template body — the inliner injects it at render time so the wire-format remains single-sourced from `tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json`.
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` — Phase B section (~line 447); add §Cleanup-around-Agent-dispatch sub-recipe.
   - `plugins/plan-executor/agents/plan-implementer.md` — BUG-146 paragraph at line ~105.
-  - `tests/scripts/test_plan_ops_build_agent_dispatch_prompt*.py` — add coverage for the new template_id and the shared inliner.
+  - `tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py` — add coverage for the new template_id and the shared inliner.
   - `tests/scripts/test_plan_ops.py` (or wherever `build_claude_dispatch_input` is tested) — pin that the shared inliner produces byte-equivalent output to the pre-refactor wrapper path (regression guard for the script-runner Claude path).
 - **Dependencies:** [001]
-- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops_build_agent_dispatch_prompt tests/scripts/test_dispatch_cleanup tests/scripts/test_plan_ops.py -k "claude_dispatch or build_agent or inline_implementer"`
+- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops_build_agent_dispatch_prompt*.py tests/scripts/test_dispatch_cleanup*.py tests/scripts/test_plan_ops.py -k "claude_dispatch or build_agent or inline_implementer"`
 - **Acceptance criteria:**
   - Register `plan-implementer-default` template_id in `_AGENT_DISPATCH_TEMPLATE_HEADING` (heading anchor in `dispatch-templates.md`) and `_AGENT_DISPATCH_TEMPLATE_MODEL` (`"opus"`). Mirror the `plan-remediator-narrow` registration shape at `plan_ops.py:12175–12197`.
   - Factor `_inline_implementer_result_schema(prompt: str) -> tuple[str, dict]` in `plan_ops.py`. Move the schema-loading + prompt-injection logic from `build_claude_dispatch_input` (~`plan_ops.py:13055–13153`) into the helper. Both `build_claude_dispatch_input` AND the new `plan-implementer-default` Agent renderer call the helper. The schema dict the helper returns continues to be copied into the wrapper envelope at the existing site (`plan_ops.py:13155–13164`); the Agent renderer does NOT need the dict (the Agent path's caller validates via `claude_envelope_extract` which can parse the result without the envelope-side schema copy).

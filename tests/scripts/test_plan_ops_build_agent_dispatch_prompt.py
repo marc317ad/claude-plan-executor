@@ -125,9 +125,10 @@ def test_schema_exposes_all_agent_dispatch_template_ids() -> None:
         "plan-review-triage",
         "plan-remediator-narrow",
         "plan-remediator-rescue",
+        "plan-implementer-default",
     ]
     assert "oneOf" not in schema
-    assert len(schema["properties"]["context"]["oneOf"]) == 9
+    assert len(schema["properties"]["context"]["oneOf"]) == 10
 
 
 def test_new_agent_dispatch_variants_render_to_golden() -> None:
@@ -256,3 +257,140 @@ Second description.
 
     assert result["ok"] is False
     assert result["errors"][0]["code"] == "target-task-id-required"
+
+
+# ---------------------------------------------------------------------------
+# TASK-002 (PLAN_DEPRECATE_CLAUDE_CLI) — plan-implementer-default template
+# ---------------------------------------------------------------------------
+
+
+_IMPLEMENTER_PLAN_TEMPLATE = """# TASK-001 — stub
+
+## Goal
+
+Stub fixture for plan-implementer-default Agent renderer tests.
+
+## Context
+
+Stub context paragraph.
+
+## Tasks
+
+### TASK-001: stub
+
+- **Status:** pending
+- **Priority:** high
+- **Agent:** claude
+- **Files:**
+  - plugins/foo.py
+- **Dependencies:** []
+- **Test command:** `python3 -m pytest tests/foo`
+- **Acceptance criteria:**
+  - stub criterion
+"""
+
+
+def _write_implementer_plan(tmp_path: Path) -> Path:
+    p = tmp_path / "TASK-001_stub.md"
+    p.write_text(_IMPLEMENTER_PLAN_TEMPLATE, encoding="utf-8")
+    return p
+
+
+def test_plan_implementer_default_renders_with_schema_block(tmp_path: Path) -> None:
+    plan_file = _write_implementer_plan(tmp_path)
+    payload = {
+        "template_id": "plan-implementer-default",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "task_id": "001",
+            "starting_sha": "abc123",
+            "analyst_annotations_json": None,
+        },
+    }
+
+    result = plan_ops._run_build_agent_dispatch_prompt(payload)
+
+    assert result["ok"] is True, result
+    assert result["agent"] == "plan-implementer"
+    assert result["model"] == "opus"
+    prompt = result["prompt"]
+    # The canonical envelope-shape block must be appended via the shared
+    # helper.
+    assert "## Result envelope (MANDATORY shape" in prompt
+    assert "claude_dispatch_implementer_result" in prompt
+    assert '"outcome"' in prompt
+    assert '"files_changed"' in prompt
+    assert '"report"' in prompt
+    # Template substitutions:
+    assert "abc123" in prompt
+    assert "### TASK-001: stub" in prompt
+
+
+def test_inline_implementer_result_schema_byte_stable_vs_wrapper_path(
+    tmp_path: Path,
+) -> None:
+    """TASK-002 (PLAN_DEPRECATE_CLAUDE_CLI): guard against drift between
+    the script-runner Claude wrapper path and the in-process Agent
+    renderer. Both paths inline the same canonical implementer result
+    schema via ``_inline_implementer_result_schema``; the inlined block
+    MUST be byte-identical."""
+    # Anchor: pass the empty string through the helper; the returned
+    # prompt IS the canonical inlined block (no opener / no trailer).
+    helper_prompt, helper_schema = plan_ops._inline_implementer_result_schema("")
+    # Schema dict matches the on-disk canonical schema.
+    schema_abs = (
+        plan_ops._REPO_ROOT
+        / "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json"
+    )
+    on_disk = json.loads(schema_abs.read_text(encoding="utf-8"))
+    assert helper_schema == on_disk
+
+    # Wrapper path (build-claude-dispatch-input) — its prompt MUST contain
+    # the helper's inlined block as a contiguous substring.
+    plan_file = _write_implementer_plan(tmp_path)
+    wrapper_payload = {
+        "plan_file": str(plan_file),
+        "task_id": "001",
+        "variant": "default",
+        "repo_root": str(plan_ops._REPO_ROOT),
+        "analyst_annotations": None,
+        "target_task_id": None,
+        "starting_sha": "abc123",
+        "dispatch_context": None,
+        "run_id": "test-run",
+        "output": "-",
+        "unattended_revert_policy_env": None,
+    }
+    wrapper_result = plan_ops._run_build_claude_dispatch_input(wrapper_payload)
+    wrapper_envelope = {k: v for k, v in wrapper_result.items() if not k.startswith("__")}
+    wrapper_prompt = wrapper_envelope["payload"]["prompt"]
+    # Drop the leading empty-newline (helper appends to ""); the
+    # helper-returned block begins with "\n## Result envelope...". The
+    # wrapper opener ends right before the same "\n## Result envelope".
+    assert helper_prompt in wrapper_prompt, (
+        "implementer schema block drift between wrapper and Agent paths"
+    )
+
+    # Agent path (build-agent-dispatch-prompt) — same substring property.
+    agent_payload = {
+        "template_id": "plan-implementer-default",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "task_id": "001",
+            "starting_sha": "abc123",
+            "analyst_annotations_json": None,
+        },
+    }
+    agent_result = plan_ops._run_build_agent_dispatch_prompt(agent_payload)
+    assert agent_result["ok"] is True
+    agent_prompt = agent_result["prompt"]
+    assert helper_prompt in agent_prompt, (
+        "implementer schema block drift between Agent renderer and helper"
+    )
+
+    # Cross-path byte stability: the helper-emitted inlined block portion
+    # is byte-identical in both prompts.
+    w_offset = wrapper_prompt.index(helper_prompt.strip() or helper_prompt)
+    a_offset = agent_prompt.index(helper_prompt.strip() or helper_prompt)
+    assert wrapper_prompt[w_offset:w_offset + len(helper_prompt.strip())] == \
+        agent_prompt[a_offset:a_offset + len(helper_prompt.strip())]

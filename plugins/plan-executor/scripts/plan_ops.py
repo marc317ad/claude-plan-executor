@@ -12170,6 +12170,7 @@ _AGENT_DISPATCH_TEMPLATE_AGENT = {
     "plan-review-triage": "plan-review-triage",
     "plan-remediator-narrow": "plan-remediator",
     "plan-remediator-rescue": "plan-remediator",
+    "plan-implementer-default": "plan-implementer",
 }
 
 _AGENT_DISPATCH_TEMPLATE_MODEL = {
@@ -12182,6 +12183,7 @@ _AGENT_DISPATCH_TEMPLATE_MODEL = {
     "plan-review-triage": "sonnet",
     "plan-remediator-narrow": "opus",
     "plan-remediator-rescue": "opus",
+    "plan-implementer-default": "opus",
 }
 
 _AGENT_DISPATCH_TEMPLATE_HEADING = {
@@ -12194,6 +12196,7 @@ _AGENT_DISPATCH_TEMPLATE_HEADING = {
     "plan-review-triage": "## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)",
     "plan-remediator-narrow": "## Phase B-narrow-remediation — Narrow-remediation retry (D.2a.6)",
     "plan-remediator-rescue": "## Phase D.4-rescue — plan-remediator dispatch (single-shot rescue)",
+    "plan-implementer-default": "## Phase B — plan-implementer dispatch (Claude tier)",
 }
 
 _AGENT_DISPATCH_TARGET_INJECTION_VERBS = {
@@ -12236,6 +12239,7 @@ _AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE = {
     "plan-review-triage": "planReviewTriageContext",
     "plan-remediator-narrow": "planRemediatorNarrowContext",
     "plan-remediator-rescue": "planRemediatorRescueContext",
+    "plan-implementer-default": "planImplementerDefaultContext",
 }
 
 
@@ -12736,6 +12740,42 @@ def _render_agent_dispatch_prompt_body(
         prompt = prompt.replace("<analyst_annotations_json>", _json_for_prompt(context["analyst_annotations_json"]))
         return injection + prompt
 
+    if template_id == "plan-implementer-default":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        task_block = _extract_task_block_for_prompt(plan_text, normalized_task_id)
+        if task_block is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        pre_read = context.get("pre_read_excerpts") or ""
+        analyst_annotations = context.get("analyst_annotations_json")
+        if analyst_annotations is None:
+            analyst_annotations_rendered = "null"
+        else:
+            analyst_annotations_rendered = _json_for_prompt(analyst_annotations)
+        prompt = prompt.replace("{{pre_read_excerpts}}", pre_read)
+        prompt = prompt.replace("{{python_path}}", context.get("python_path", "$PYTHON"))
+        prompt = prompt.replace("<absolute plan path>", str(plan_file))
+        prompt = prompt.replace("<## Context section verbatim>", _context_section_for_prompt(plan_text))
+        prompt = prompt.replace("<entire TASK-NNN block>", task_block)
+        prompt = prompt.replace("<starting_sha>", context.get("starting_sha", ""))
+        prompt = prompt.replace("<analyst_annotations_json>", analyst_annotations_rendered)
+        # BUG-146 / TASK-002: inline the canonical implementer result schema
+        # so the in-process Agent path renders the same envelope-shape
+        # teaching block as the script-runner wrapper path. The schema dict
+        # is discarded here — the Agent path's caller validates via
+        # ``claude_envelope_extract`` which can parse the result without an
+        # envelope-side schema copy.
+        prompt, _schema_obj = _inline_implementer_result_schema(prompt)
+        return prompt
+
     if template_id == "plan-remediator-rescue":
         if normalized_task_id is None:
             return _agent_dispatch_error(
@@ -12856,6 +12896,85 @@ _BCDI_VARIANT_SCHEMA_PATH = {
     "narrow-remediation": "tests/scripts/fixtures/claude_dispatch/schemas/remediator_result.json",
     "analyst": "plugins/plan-executor/scripts/schemas/claude_dispatch_output.json",
 }
+
+
+_IMPLEMENTER_RESULT_SCHEMA_REL = (
+    "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json"
+)
+
+
+def _inline_implementer_result_schema(prompt: str) -> tuple[str, dict]:
+    """Append the canonical implementer result-envelope teaching block
+    (worked example + verbatim schema JSON) to ``prompt`` and return
+    ``(new_prompt, schema_dict)``.
+
+    TASK-002 (PLAN_DEPRECATE_CLAUDE_CLI): both the script-runner Claude
+    wrapper path (``build_claude_dispatch_input``) and the in-process
+    ``plan-implementer-default`` Agent renderer call this helper so the
+    inlined schema block is byte-identical across paths. Single-sourcing
+    guards against drift between the two dispatch surfaces (BUG-146).
+
+    The schema is loaded from
+    ``tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json``
+    via the repo-root anchor (``_REPO_ROOT``). Schema-load errors raise
+    rather than returning an error dict — both callers handle the missing
+    fixture via earlier validation in their own paths.
+    """
+    schema_abs = _REPO_ROOT / _IMPLEMENTER_RESULT_SCHEMA_REL
+    schema_obj = json.loads(_load_text(schema_abs))
+    block_lines = [
+        "",
+        (
+            "## Result envelope (MANDATORY shape — do NOT emit a "
+            "legacy `{status, task_id, summary, ...}` shape)"
+        ),
+        "",
+        (
+            "Your final message MUST be a single JSON object "
+            "conforming to the canonical schema below. The wrapper "
+            "parses this with `claude-envelope-extract`; any "
+            "deviation classifies the run as `malformed` and pauses "
+            "the orchestrator. Top-level keys MUST be exactly "
+            "`outcome`, `files_changed`, and `report`."
+        ),
+        "",
+        "Worked example (canonical shape):",
+        "```json",
+        json.dumps(
+            {
+                "outcome": "success",
+                "files_changed": ["path/to/file.py"],
+                "report": {
+                    "summary": "<2-5 bullets describing what changed>",
+                    "test_command": "<verbatim test command or 'none'>",
+                    "test_outcome": "passed",
+                    "test_output_tail": "<last 30 lines or 'n/a'>",
+                    "acceptance_criteria_check": [
+                        {"status": "x", "criterion": "<text>",
+                         "evidence": "<file:line or assertion>"},
+                    ],
+                    "plan_adaptations": [],
+                    "concerns_for_reviewer": [],
+                },
+            },
+            indent=2,
+        ),
+        "```",
+        "",
+        (
+            "`outcome` MUST be one of: `success`, `partial`, "
+            "`failed`, `plan-incorrect`, `blocked`, `malformed`. "
+            "`files_changed` MUST be an array of repo-relative "
+            "paths. `report` MUST be an object (free-form keys "
+            "describing the implementation report)."
+        ),
+        "",
+        f"Result schema (verbatim, from `{_IMPLEMENTER_RESULT_SCHEMA_REL}`):",
+        "```json",
+        json.dumps(schema_obj, indent=2),
+        "```",
+    ]
+    return prompt + "\n".join(block_lines), schema_obj
 
 
 def _bcdi_to_error_result(code: str, message: str) -> dict:
@@ -13063,94 +13182,131 @@ def _run_build_claude_dispatch_input(payload: dict) -> dict:
     # write-authorized variants so the structured-fallback rendering path
     # in ``_claude_backend._resolve_prompt`` surfaces it directly to the
     # nested agent (which never reads the wrapper envelope).
+    #
+    # TASK-002 (PLAN_DEPRECATE_CLAUDE_CLI): for implementer variants the
+    # envelope+schema teaching block of the prompt is rendered by
+    # ``_inline_implementer_result_schema`` so the in-process
+    # ``plan-implementer-default`` Agent renderer emits a byte-identical
+    # block (single-source against drift).
     schema_inline_obj: dict | None = None
-    schema_abs = (Path(repo_root) / schema_path).resolve()
-    if schema_abs.is_file():
-        try:
-            schema_inline_obj = json.loads(_load_text(schema_abs))
-        except json.JSONDecodeError as e:
-            return _bcdi_to_error_result(
-                "schema-inline-invalid-json",
-                f"result schema file is not valid JSON ({schema_abs}): {e}",
-            )
-    else:
-        return _bcdi_to_error_result(
-            "schema-inline-not-found",
-            f"result schema file not found at {schema_abs}",
-        )
-
-    if variant != "analyst":
-        prompt_lines = [
+    if agent == "plan-implementer":
+        # implementer variants (default / rework / role-swap) — single-source
+        # via the shared helper so the script-runner Claude path and the
+        # in-process Agent renderer agree byte-for-byte.
+        opener = (
             f"Implement TASK-{normalized_task_id} from the plan at "
             f"`{plan_file.resolve()}` per your "
-            f"{agent} agent specification.",
-            "",
-            (
-                "Read the plan to find the `## Context` section and the "
-                "verbatim `### TASK-NNN: <title>` block (with Status / "
-                "Priority / Files / Test command / Acceptance criteria / "
-                "Description / Reversion guidance). Apply the minimum "
-                "change satisfying the AC, run the test command, and "
-                "return your structured JSON report. Do not commit, do "
-                "not modify the plan file, do not use `git stash`."
-            ),
-            "",
-            (
-                "## Result envelope (MANDATORY shape — do NOT emit a "
-                "legacy `{status, task_id, summary, ...}` shape)"
-            ),
-            "",
-            (
-                "Your final message MUST be a single JSON object "
-                "conforming to the canonical schema below. The wrapper "
-                "parses this with `claude-envelope-extract`; any "
-                "deviation classifies the run as `malformed` and pauses "
-                "the orchestrator. Top-level keys MUST be exactly "
-                "`outcome`, `files_changed`, and `report`."
-            ),
-            "",
-            "Worked example (canonical shape):",
-            "```json",
-            json.dumps(
-                {
-                    "outcome": "success",
-                    "files_changed": ["path/to/file.py"],
-                    "report": {
-                        "summary": "<2-5 bullets describing what changed>",
-                        "test_command": "<verbatim test command or 'none'>",
-                        "test_outcome": "passed",
-                        "test_output_tail": "<last 30 lines or 'n/a'>",
-                        "acceptance_criteria_check": [
-                            {"status": "x", "criterion": "<text>",
-                             "evidence": "<file:line or assertion>"},
-                        ],
-                        "plan_adaptations": [],
-                        "concerns_for_reviewer": [],
+            f"{agent} agent specification.\n\n"
+            "Read the plan to find the `## Context` section and the "
+            "verbatim `### TASK-NNN: <title>` block (with Status / "
+            "Priority / Files / Test command / Acceptance criteria / "
+            "Description / Reversion guidance). Apply the minimum "
+            "change satisfying the AC, run the test command, and "
+            "return your structured JSON report. Do not commit, do "
+            "not modify the plan file, do not use `git stash`."
+        )
+        try:
+            inlined_prompt, schema_inline_obj = _inline_implementer_result_schema(opener)
+        except (OSError, json.JSONDecodeError) as e:
+            return _bcdi_to_error_result(
+                "schema-inline-not-found",
+                f"result schema file not loadable: {e}",
+            )
+        trailer = (
+            "\n\nStructured dispatch payload (verbatim, for reference):\n"
+            "```json\n"
+            + json.dumps(inner_payload, indent=2, default=str)
+            + "\n```"
+        )
+        inner_payload["prompt"] = inlined_prompt + trailer
+    else:
+        schema_abs = (Path(repo_root) / schema_path).resolve()
+        if schema_abs.is_file():
+            try:
+                schema_inline_obj = json.loads(_load_text(schema_abs))
+            except json.JSONDecodeError as e:
+                return _bcdi_to_error_result(
+                    "schema-inline-invalid-json",
+                    f"result schema file is not valid JSON ({schema_abs}): {e}",
+                )
+        else:
+            return _bcdi_to_error_result(
+                "schema-inline-not-found",
+                f"result schema file not found at {schema_abs}",
+            )
+
+        if variant != "analyst":
+            prompt_lines = [
+                f"Implement TASK-{normalized_task_id} from the plan at "
+                f"`{plan_file.resolve()}` per your "
+                f"{agent} agent specification.",
+                "",
+                (
+                    "Read the plan to find the `## Context` section and the "
+                    "verbatim `### TASK-NNN: <title>` block (with Status / "
+                    "Priority / Files / Test command / Acceptance criteria / "
+                    "Description / Reversion guidance). Apply the minimum "
+                    "change satisfying the AC, run the test command, and "
+                    "return your structured JSON report. Do not commit, do "
+                    "not modify the plan file, do not use `git stash`."
+                ),
+                "",
+                (
+                    "## Result envelope (MANDATORY shape — do NOT emit a "
+                    "legacy `{status, task_id, summary, ...}` shape)"
+                ),
+                "",
+                (
+                    "Your final message MUST be a single JSON object "
+                    "conforming to the canonical schema below. The wrapper "
+                    "parses this with `claude-envelope-extract`; any "
+                    "deviation classifies the run as `malformed` and pauses "
+                    "the orchestrator. Top-level keys MUST be exactly "
+                    "`outcome`, `files_changed`, and `report`."
+                ),
+                "",
+                "Worked example (canonical shape):",
+                "```json",
+                json.dumps(
+                    {
+                        "outcome": "success",
+                        "files_changed": ["path/to/file.py"],
+                        "report": {
+                            "summary": "<2-5 bullets describing what changed>",
+                            "test_command": "<verbatim test command or 'none'>",
+                            "test_outcome": "passed",
+                            "test_output_tail": "<last 30 lines or 'n/a'>",
+                            "acceptance_criteria_check": [
+                                {"status": "x", "criterion": "<text>",
+                                 "evidence": "<file:line or assertion>"},
+                            ],
+                            "plan_adaptations": [],
+                            "concerns_for_reviewer": [],
+                        },
                     },
-                },
-                indent=2,
-            ),
-            "```",
-            "",
-            (
-                "`outcome` MUST be one of: `success`, `partial`, "
-                "`failed`, `plan-incorrect`, `blocked`, `malformed`. "
-                "`files_changed` MUST be an array of repo-relative "
-                "paths. `report` MUST be an object (free-form keys "
-                "describing the implementation report)."
-            ),
-            "",
-            f"Result schema (verbatim, from `{schema_path}`):",
-            "```json",
-            json.dumps(schema_inline_obj, indent=2),
-            "```",
-            "",
-            "Structured dispatch payload (verbatim, for reference):",
-            "```json",
-            json.dumps(inner_payload, indent=2, default=str),
-            "```",
-        ]
-        inner_payload["prompt"] = "\n".join(prompt_lines)
+                    indent=2,
+                ),
+                "```",
+                "",
+                (
+                    "`outcome` MUST be one of: `success`, `partial`, "
+                    "`failed`, `plan-incorrect`, `blocked`, `malformed`. "
+                    "`files_changed` MUST be an array of repo-relative "
+                    "paths. `report` MUST be an object (free-form keys "
+                    "describing the implementation report)."
+                ),
+                "",
+                f"Result schema (verbatim, from `{schema_path}`):",
+                "```json",
+                json.dumps(schema_inline_obj, indent=2),
+                "```",
+                "",
+                "Structured dispatch payload (verbatim, for reference):",
+                "```json",
+                json.dumps(inner_payload, indent=2, default=str),
+                "```",
+            ]
+            inner_payload["prompt"] = "\n".join(prompt_lines)
 
     envelope = {
         "schema_version": 1,

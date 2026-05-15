@@ -15,7 +15,8 @@
         "plan-author-legacy-whole-plan",
         "plan-review-triage",
         "plan-remediator-narrow",
-        "plan-remediator-rescue"
+        "plan-remediator-rescue",
+        "plan-implementer-default"
       ]
     },
     "context": {
@@ -46,6 +47,9 @@
         },
         {
           "$ref": "#/$defs/planRemediatorRescueContext"
+        },
+        {
+          "$ref": "#/$defs/planImplementerDefaultContext"
         }
       ]
     }
@@ -276,6 +280,39 @@
         "findings_for_retry",
         "dismissed_for_context",
         "d5_summary",
+        "analyst_annotations_json"
+      ],
+      "additionalProperties": false
+    },
+    "planImplementerDefaultContext": {
+      "type": "object",
+      "properties": {
+        "plan_file": {
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/taskId"
+        },
+        "target_task_id": {
+          "$ref": "#/$defs/taskId"
+        },
+        "starting_sha": {
+          "type": "string"
+        },
+        "analyst_annotations_json": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "pre_read_excerpts": {
+          "type": "string"
+        },
+        "python_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_file",
+        "task_id",
+        "starting_sha",
         "analyst_annotations_json"
       ],
       "additionalProperties": false

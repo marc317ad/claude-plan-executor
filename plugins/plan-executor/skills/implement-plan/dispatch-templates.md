@@ -454,9 +454,8 @@ Payload skeleton (emitted by `build-claude-dispatch-input --variant default`, co
     "analyst_annotations": "<analyst_annotations_json-or-null>"
   },
   "output_instructions": {
-    "format": "json",
     "schema_path": "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json",
-    "schema_inline": null,
+    "schema_inline": "<populated by _inline_implementer_result_schema at render time; the subagent's prompt body carries the inlined schema verbatim>",
     "max_bytes": 65536
   },
   "overrides": {
@@ -520,7 +519,7 @@ emits `{reads, symbols, errors}`. The orchestrator either renders the structured
 > <analyst_annotations_json>
 > ```
 >
-> You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec. Do not commit. Do not use `git stash`.
+> You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured JSON envelope shape `{outcome, files_changed, report}` matching the inlined `implementer_result.json` schema that appears in the `## Result envelope` section appended to this prompt by `_inline_implementer_result_schema` (byte-identical between the in-process `plan-implementer-default` Agent path and the `plan_claude_dispatch.py run` wrapper path). Do not commit. Do not use `git stash`.
 >
 > The `## Pre-read excerpts` block above (when present) is a seed, not a gag — you MAY issue additional `Read` calls with different offsets when the excerpts are insufficient.
 >

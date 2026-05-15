@@ -124,6 +124,18 @@ Do NOT read `dispatch-templates.md` from Bash or `Read` at dispatch time. The MC
 
 **CLI fallback (`PLAN_OPS_TRANSPORT=cli-fallback`).** Substitute `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" build-agent-dispatch-prompt --template-id <id> --context-file <path> --json` for step 1 and the matching `plan_ops.py parse-*` CLI for step 5; the in-process `Agent` invocation in step 4 is unchanged.
 
+## Cleanup-around-Agent-dispatch
+
+Write-authorized in-process Agent dispatches (Phase B `plan-implementer-default`; future write sites) MUST wrap the `Agent` call with the cleanup recipe so the orchestrator-declared `Files:` scope is enforced symmetrically with the script-runner wrapper path. Canonical pattern:
+
+1. Extract `declared_files_changed` from the task's `Files:` block via `_extract_task_files_from_plan` (same helper `_gate_commit_safe` and `build-claude-dispatch-input` use).
+2. `baseline = cleanup.snapshot_baseline(repo_root)` immediately BEFORE the Agent dispatch.
+3. Run the Agent dispatch (steps 1–5 of §Canonical Agent dispatch recipe).
+4. `result = cleanup.apply_cleanup(baseline, declared_files_changed, repo_root, authorization_source="orchestrator-declared-scope", unattended_revert_policy="preserve-only")` immediately AFTER.
+5. Route the cleanup `result` dict through the existing scope-violation handling (the same routing the wrapper path uses for its `scope_violation_detected` / `scope_misreport_detected` fields).
+
+Authorization-source vocabulary: `"orchestrator-declared-scope"` for write-authorized sites; `"orchestrator-empty-scope-readonly"` for read-only sites that nevertheless want a cleanup wrap (the analyst skips the wrap entirely per Decision 7). The `unattended_revert_policy="preserve-only"` value matches Phase C's preserve-only behavior for non-empty diffs.
+
 ## plan_ops MCP reference
 
 All plan operations are reachable as MCP tools `plan_ops__<subcommand-with-underscores>` when `PLAN_OPS_TRANSPORT=mcp`. Tool input/output schemas are the source of truth; consult ToolSearch / `tools/list` after a context compaction. When `PLAN_OPS_TRANSPORT=cli-fallback`, use the matching `plan_ops.py` subcommand without changing the state-machine semantics.
@@ -444,7 +456,7 @@ Empty batch + non-empty ready → halt "scheduler stuck". Empty batch + empty re
 Dispatch all batch tasks in a **single message** — Claude via Agent, Codex via Bash:
 
 - Log `implement_start {task_id, agent, model?, batch_index}` per task (chain into the dispatch via `&&` when convenient). Include `plan_file: "<child-basename>"` for the task so the run-log records which child file the implementer's commit will land in.
-- **Claude tasks** → follow the canonical recipe at §Claude wrapper dispatch recipe (canonical) with `variant: "default"` and the task's `task_id` / `target_task_id` / `analyst_annotations` / `starting_sha`. The recipe writes `claude_dispatch_input.json` to a tmp path via `plan_ops__build_claude_dispatch_input` (`output:"<tmp dispatch input>"`), invokes `plan_claude_dispatch.py run --input <tmp dispatch input>` from Bash, and feeds the wrapper envelope through `plan_ops__claude_envelope_extract` with native `payload`. The wrapper input shape is `agent: "plan-implementer"`, `overrides.model: "opus"`, `payload: {plan_path, repo_root, task_id, target_task_id?, analyst_annotations, starting_sha}`, plus the required top-level `declared_files_changed` derived from the task's `Files:` list via `_extract_task_files_from_plan` (the same canonical helper `_gate_commit_safe` uses). See §dispatch-templates §Phase B for the full skeleton; the wrapper renders the **Phase B** template from `dispatch-templates.md` and returns the v3 envelope (see §Dispatch error handling (Claude wrapper) for shape). Migrated from `Agent(subagent_type: "plan-implementer", ...)` per TASK-004.
+- **Claude tasks** → follow §Canonical Agent dispatch recipe with `template_id:"plan-implementer-default"` and `model:"opus"` (the `/implement-plan` orchestration default). The orchestrator MUST wrap the Agent dispatch with the cleanup recipe documented in §Cleanup-around-Agent-dispatch below: call `cleanup.snapshot_baseline(repo_root)` immediately BEFORE the Agent dispatch and `cleanup.apply_cleanup(baseline, declared_files_changed, repo_root, authorization_source="orchestrator-declared-scope", unattended_revert_policy="preserve-only")` immediately AFTER. The cleanup result dict feeds the existing scope-violation routing unchanged. The legacy script-runner Claude path (`plan_claude_dispatch.py run --input <tmp>` via `plan_ops__build_claude_dispatch_input`) remains available for direct CLI callers of `implement_plan.py` — both paths share the implementer result-schema teaching block via `_inline_implementer_result_schema` so the prompt is byte-identical across surfaces.
 - **Codex tasks** → Wrapper computes the timeout default from `len(task["files"])` per the formula in §Bash-call idioms; pass `--timeout N` to override.
   `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement --plan-file <abs> --task-id NNN --repo-root <abs>`.
 
