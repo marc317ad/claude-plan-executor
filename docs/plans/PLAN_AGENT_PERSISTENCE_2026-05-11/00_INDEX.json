@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "PLAN - Persist `**Agent:**` to child plan files after classifier fan-out",
+  "source_plan_file": "PLAN_AGENT_PERSISTENCE_2026-05-11.md",
+  "created": "2026-05-12",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_add_mutate_task_agent.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_wire_orchestrator_phase_1.md",
+      "priority": "high",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    }
+  ]
+}

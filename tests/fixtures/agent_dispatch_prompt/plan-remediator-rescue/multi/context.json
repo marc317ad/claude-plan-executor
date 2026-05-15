@@ -1,0 +1,22 @@
+{
+  "context": {
+    "analyst_annotations_json": {
+      "analyst": "none"
+    },
+    "plan_file": "/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-remediator-rescue/multi/plan_file.md",
+    "rescue_findings_json": [
+      {
+        "file": "src/example.py",
+        "issue": "Rendered output omits the required field.",
+        "line": 12,
+        "severity": "major",
+        "suggested_fix": "Forward the placeholder."
+      }
+    ],
+    "reviewer_source": "claude",
+    "starting_sha": "abc1234",
+    "target_task_id": "002",
+    "task_id": "002"
+  },
+  "template_id": "plan-remediator-rescue"
+}

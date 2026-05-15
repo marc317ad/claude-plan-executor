@@ -1,0 +1,21 @@
+Review the persisted schedule for this plan. The plan was authored by a peer analyst and decomposed into a fat manifest by `plan_ops.py build-tasks`; you are an independent pre-dispatch reviewer working from the schedule JSON alone.
+
+Dispatch inputs (orchestrator-supplied; the `dispatch_claude_reviewer` action does not carry a `dispatch_context`):
+
+- `schedule_path`: `/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-reviewer/schedule.json` (your primary input — read this for the unified fat `tasks[]` array; never edit)
+- `plan_basename`: `PLAN_FIXTURE` (emit this verbatim in your output `plan_file` field)
+- `allow_gaps_demotion`: `true` (when `true`, apply the demotion clause from your agent spec)
+
+Cross-plan dependency resolution has already been verified by the orchestrator in Phase 0 preflight. Do not check or report on cross-plan dependencies. Focus only on schedule structure, task intent, and coordination risk expressed within the supplied schedule.
+
+Your job is to determine whether this plan is workable to execute, not whether it is perfect. Apply the review standard, output discipline, "Check specifically" rubric, and verdict vocabulary documented in your agent spec (`plan-reviewer.md`). Emit a markdown report whose body concludes with a single fenced ```json block conforming to `scripts/codex_plan_review_schema.json` (`{plan_file, verdict ∈ {approved, approved-with-notes, needs-replan}, findings[], notes[], schedule_ok, summary}`). Each finding MUST include `target_task_id: string | null` (task id or `null` for schedule-level findings) — the downstream triage + plan-author dispatchers route per-child based on this field.
+
+`plan_file` MUST equal the `plan_basename` value above; the parser pins it to that value.
+
+**Allow-gaps demotion clause (rendered ONLY when `allow_gaps_demotion: true`):**
+
+> Operator override (--allow-gaps): the user explicitly opted in to soft gaps. The persisted schedule's gaps[] contains only soft-severity entries and no structural violations. If `schedule_ok` would otherwise be false for this reason alone, demote the verdict from `needs-replan` to `approved-with-notes` and mention that demotion in the `summary`. Hard gaps or structural violations are not covered by this override.
+
+When `allow_gaps_demotion: false` the orchestrator omits this clause entirely; apply the standard verdict vocabulary unchanged.
+
+**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash. Do NOT edit the plan or the schedule. Do NOT run tests. Do NOT read source code. Do NOT mutate the git index (read-only git is fine).

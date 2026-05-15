@@ -124,6 +124,43 @@ def _fake_codex_returning(parsed_body: dict):
     return fake
 
 
+def test_invoke_codex_rejects_non_strict_output_schema_before_cli(
+    tmp_path, monkeypatch,
+):
+    schema = tmp_path / "bad_schema.json"
+    schema.write_text(
+        json.dumps({
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "optional_but_nullable": {"type": ["string", "null"]},
+            },
+            "required": ["ok"],
+            "additionalProperties": False,
+        }),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "codex_out.json"
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("Codex CLI should not run for an invalid schema")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+
+    result = wrapper.invoke_codex(
+        prompt="prompt",
+        workdir=str(tmp_path),
+        schema_path=str(schema),
+        output_path=str(output_path),
+        timeout_sec=30,
+    )
+
+    assert result["status"] == "output_schema_invalid"
+    assert result["exit_code"] == -1
+    assert "optional_but_nullable" in result["stderr"]
+    assert not output_path.exists()
+
+
 def _plan_review_args(
     schedule_file: Path,
     repo_root: Path,
@@ -415,6 +452,56 @@ def test_scope_check_rejects_unallowed_bare_path_under_backticked_declarations(
     assert scope["out_of_scope_tracked"] == [unallowed]
     assert scope["out_of_scope_untracked"] == []
     assert scope["changed_in_scope_new"] == allowed_observed
+
+
+def test_scope_check_accepts_new_files_under_declared_directory(monkeypatch):
+    declared = [
+        "`tests/scripts/fixtures/implement_plan_runner/` "
+        "(new fixture directory as needed)",
+    ]
+    observed = [
+        "tests/scripts/fixtures/implement_plan_runner/00_INDEX.json",
+        "tests/scripts/fixtures/implement_plan_runner/TASK-001_fixture.md",
+    ]
+    outside = "tests/scripts/fixtures/other_runner/TASK-001_fixture.md"
+
+    monkeypatch.setattr(
+        wrapper,
+        "git_changed_files",
+        lambda repo_root: {
+            "tracked": [],
+            "untracked": observed + [outside],
+        },
+    )
+
+    scope = wrapper.validate_scope(
+        "/unused",
+        [wrapper.normalize_file_path(path) for path in declared],
+        {"captured": True, "tracked": [], "untracked": []},
+    )
+
+    assert scope["out_of_scope_observed"] is True
+    assert scope["out_of_scope_tracked"] == []
+    assert scope["out_of_scope_untracked"] == [outside]
+    assert scope["changed_in_scope_new"] == observed
+
+
+def test_reported_scope_accepts_files_under_declared_directory():
+    declared = [
+        wrapper.normalize_file_path(
+            "`tests/scripts/fixtures/implement_plan_runner/` "
+            "(new fixture directory as needed)",
+        ),
+    ]
+
+    assert wrapper._path_in_allowed_scope(
+        "tests/scripts/fixtures/implement_plan_runner/00_INDEX.json",
+        declared,
+    )
+    assert not wrapper._path_in_allowed_scope(
+        "tests/scripts/fixtures/implement_plan_runner_extra/00_INDEX.json",
+        declared,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +810,7 @@ def test_render_plan_review_prompt_rejects_legacy_kwargs():
 
 
 # ---------------------------------------------------------------------------
-# TASK-004: file-count-aware timeout scaling helpers + envelope plumbing.
+# TASK-004/TASK-009: timeout scaling helpers + envelope plumbing.
 # ---------------------------------------------------------------------------
 
 
@@ -733,20 +820,48 @@ import pytest  # noqa: E402  (intentional late import — keeps top of module le
 @pytest.mark.parametrize(
     "num_files, expected",
     [
-        (0, 300),
-        (1, 300),
-        (2, 300),
-        (5, 300),
-        (6, 360),
-        (7, 420),
-        (10, 600),
+        (0, 600),
+        (1, 690),
+        (2, 780),
+        (5, 1050),
+        (6, 1140),
+        (7, 1230),
+        (10, 1500),
     ],
 )
-def test_compute_implement_timeout_floor(num_files, expected):
-    """``compute_implement_timeout(N)`` returns ``max(300, 60*N)``.
-    Floor pins single- and small-file tasks at 300 s; per-file growth
-    kicks in at N >= 6."""
+def test_compute_implement_timeout_baseline_weight(num_files, expected):
+    """The implement default grows from a 600 s base by declared file count."""
     assert wrapper.compute_implement_timeout(num_files) == expected
+
+
+def test_compute_implement_timeout_uses_task_shape_for_complex_test_work():
+    """TASK-009 regression: a multi-surface E2E/parser hardening task should
+    not be capped at the old 300 s floor just because it declares five file
+    entries."""
+    files = [
+        "tests/scripts/test_phase_1_5_e2e.py (edit)",
+        "tests/scripts/fixtures/phase_1_5_plan/ (edit)",
+        "tests/scripts/test_plan_review_state.py (edit)",
+        "tests/scripts/test_plan_ops_plan_review_route.py (edit)",
+        "tests/scripts/test_plan_ops.py (edit)",
+    ]
+    timeout = wrapper.compute_implement_timeout(
+        len(files),
+        acceptance_criteria_count=6,
+        test_command=(
+            'venv/bin/python -m pytest tests/scripts/test_phase_1_5_e2e.py '
+            'tests/scripts/test_plan_review_state.py && '
+            'venv/bin/python -m pytest tests/scripts/test_plan_ops.py '
+            '-k "parse_plan_review or plan_review_triage"'
+        ),
+        files=files,
+        description=(
+            "Tighten E2E assertion coverage for parser, route, fixture, "
+            "and plan_review_state round-trip behavior."
+        ),
+    )
+    assert timeout == wrapper.MAX_TIMEOUT_IMPLEMENT
+    assert timeout == 1800
 
 
 @pytest.mark.parametrize(
@@ -771,13 +886,13 @@ def test_compute_review_timeout_floor(num_files, expected):
 def test_compute_timeouts_clamp_negative_inputs():
     """Defensive: a negative/garbage ``num_files`` should clamp to 0
     and return the floor rather than yielding a sub-floor timeout."""
-    assert wrapper.compute_implement_timeout(-3) == 300
+    assert wrapper.compute_implement_timeout(-3) == 600
     assert wrapper.compute_review_timeout(-3) == 180
 
 
 def test_add_common_timeout_default_is_none():
     """``--timeout`` on implement/review parsers defaults to ``None``;
-    the cmd handler derives the effective default from the file count.
+    the cmd handler derives the effective default from the task shape.
     The plan-review subparser also defaults to ``None`` (resolved to the
     flat ``DEFAULT_TIMEOUT_PLAN_REVIEW`` inside ``cmd_plan_review``)."""
     parser = wrapper._build_parser()
@@ -790,7 +905,7 @@ def test_add_common_timeout_default_is_none():
     ])
     assert impl_args.timeout is None, (
         f"--timeout default must be None for cmd_implement to derive "
-        f"file-count-aware default; got {impl_args.timeout!r}"
+        f"task-shape-aware default; got {impl_args.timeout!r}"
     )
 
     rev_args = parser.parse_args([
@@ -877,13 +992,13 @@ def test_implement_envelope_carries_effective_timeout_and_baseline_error(
     tmp_path, monkeypatch, capsys,
 ):
     """On a Codex timeout, the implement envelope MUST carry both:
-      * ``effective_timeout`` — the file-count-aware cap actually used.
+      * ``effective_timeout`` — the task-shape-aware cap actually used.
       * ``baseline_error`` — the truncated ``_snapshot_baseline`` error
         message when baseline capture failed (synthetic git boom here).
     """
     repo = _impl_repo(tmp_path)
     plan = tmp_path / "plan.md"
-    # 7 files → compute_implement_timeout(7) == 420.
+    # 7 files → compute_implement_timeout(7) == 1230.
     seven_files = [f"file_{i}.py" for i in range(7)]
     _impl_plan(plan, "001", seven_files)
 
@@ -918,9 +1033,13 @@ def test_implement_envelope_carries_effective_timeout_and_baseline_error(
     assert envelope["outcome"] == "timeout", envelope
     # effective_timeout matches compute_implement_timeout(len(files)).
     assert envelope["effective_timeout"] == wrapper.compute_implement_timeout(
-        len(seven_files)
+        len(seven_files),
+        acceptance_criteria_count=1,
+        test_command="none",
+        files=seven_files,
+        description="Test fixture.",
     ), envelope
-    assert envelope["effective_timeout"] == 420, envelope
+    assert envelope["effective_timeout"] == 1575, envelope
     # baseline_error carries the truncated message; baseline_captured False.
     assert envelope["baseline_captured"] is False, envelope
     assert envelope["baseline_error"] == boom_msg, envelope
@@ -1009,7 +1128,7 @@ def test_explicit_timeout_override_skips_scaling(
     ``invoke_codex``."""
     repo = _impl_repo(tmp_path)
     plan = tmp_path / "plan.md"
-    # 10 files would scale to 600 s under the default formula; the
+    # 10 files would scale to 1500 s under the default formula; the
     # operator override of 100 s must win.
     ten_files = [f"file_{i}.py" for i in range(10)]
     _impl_plan(plan, "001", ten_files)
@@ -1036,20 +1155,19 @@ def test_explicit_timeout_override_skips_scaling(
     envelope = json.loads(capsys.readouterr().out)
     assert rc == 1, envelope
     assert envelope["effective_timeout"] == 100, envelope
-    # The wrapper-derived default for 10 files would be 600 — assert
+    # The wrapper-derived default for 10 files would be 1500 — assert
     # the override is genuinely shorter so we know scaling was skipped.
     assert envelope["effective_timeout"] != wrapper.compute_implement_timeout(10)
     # And the same value flowed into the subprocess timeout.
     assert seen["timeout_sec"] == 100
 
 
-def test_implement_default_timeout_derives_from_file_count(
+def test_implement_default_timeout_derives_from_task_shape(
     tmp_path, monkeypatch, capsys,
 ):
     """When ``--timeout`` is not passed (``args.timeout is None``),
-    ``cmd_implement`` resolves the effective timeout from
-    ``compute_implement_timeout(len(task['files']))`` and forwards that
-    same value into ``invoke_codex``."""
+    ``cmd_implement`` resolves the effective timeout from the parsed task
+    shape and forwards that same value into ``invoke_codex``."""
     repo = _impl_repo(tmp_path)
     plan = tmp_path / "plan.md"
     eight_files = [f"file_{i}.py" for i in range(8)]
@@ -1075,8 +1193,14 @@ def test_implement_default_timeout_derives_from_file_count(
     rc = wrapper.cmd_implement(_impl_args(plan, repo))
     envelope = json.loads(capsys.readouterr().out)
     assert rc == 1, envelope
-    expected = wrapper.compute_implement_timeout(8)
-    assert expected == 480, expected  # sanity: 60 * 8 = 480 > 300 floor.
+    expected = wrapper.compute_implement_timeout(
+        8,
+        acceptance_criteria_count=1,
+        test_command="none",
+        files=eight_files,
+        description="Test fixture.",
+    )
+    assert expected == 1665, expected
     assert envelope["effective_timeout"] == expected, envelope
     assert seen["timeout_sec"] == expected
 

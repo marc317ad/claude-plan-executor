@@ -11,8 +11,8 @@ Acceptance scenarios exercised here:
   3. Hard-gap schedule does NOT inject the demotion clause even with
      --allow-gaps. Same prompt-dump inspection.
   4. Schema-retry exhaustion → outcome=parse_error.
-  5. Missing API key short-circuits before subprocess spawn (shim is
-     never invoked).
+  5. API-key/ADC environment variables are optional; the wrapper still
+     invokes the CLI so local Gemini OAuth auth can work.
   6. Valid envelope + non-zero exit code → outcome=failure (the wrapper
      does NOT silently treat parseable JSON as success when the
      subprocess itself exited non-zero).
@@ -226,8 +226,9 @@ def _run_plan_review(
     # fake binary first.
     if shim_dir is not None:
         env["PATH"] = str(shim_dir) + os.pathsep + env.get("PATH", "")
-    # Default: provide an API key so the short-circuit doesn't fire.
-    env.setdefault("GEMINI_API_KEY", "test-key-not-real")
+    # Default: no API-key/ADC env is required; the real CLI can use its
+    # local OAuth session and the shim is hermetic.
+    env.pop("GEMINI_API_KEY", None)
     env.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
     if extra_env:
         for k, v in extra_env.items():
@@ -412,11 +413,11 @@ def test_plan_review_schema_retry_exhaustion(tmp_path, shim_path):
 
 
 # ---------------------------------------------------------------------------
-# 5. Missing API key short-circuits before subprocess spawn.
+# 5. CLI OAuth path does not require API-key env.
 # ---------------------------------------------------------------------------
 
 
-def test_plan_review_missing_api_key_short_circuits(tmp_path, shim_path):
+def test_plan_review_without_api_key_invokes_cli_oauth_path(tmp_path, shim_path):
     repo = _make_repo(tmp_path)
     schedule = _write_schedule(tmp_path)
 
@@ -433,19 +434,17 @@ def test_plan_review_missing_api_key_short_circuits(tmp_path, shim_path):
         },
     )
 
-    assert proc.returncode == 1, (proc.stdout, proc.stderr)
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
     envelope = json.loads(proc.stdout)
-    assert envelope["outcome"] == "failure", envelope
+    assert envelope["outcome"] == "success", envelope
     assert envelope["task_id"] == "plan", envelope
-    assert envelope["error"] == (
-        "missing GEMINI_API_KEY or GOOGLE_APPLICATION_CREDENTIALS"
-    ), envelope
-    # The shim must NEVER have been invoked — short-circuit fires
-    # BEFORE subprocess spawn (headless-OAuth contract).
-    assert not (log_dir / "calls.jsonl").exists(), (
-        "shim was invoked despite missing-API-key short-circuit; "
-        "this defeats the headless-OAuth contract"
-    )
+    calls_file = log_dir / "calls.jsonl"
+    assert calls_file.exists(), "shim should be invoked so CLI OAuth can work"
+    call = json.loads(calls_file.read_text(encoding="utf-8").splitlines()[0])
+    assert call["gemini_cli_home"] == ""
+    assert "--policy" in call["argv"]
+    assert "--policy-file" not in call["argv"]
+    assert "-p" in call["argv"]
 
 
 # ---------------------------------------------------------------------------

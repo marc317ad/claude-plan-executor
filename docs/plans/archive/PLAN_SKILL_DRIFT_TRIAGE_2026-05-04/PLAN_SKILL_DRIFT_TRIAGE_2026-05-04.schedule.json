@@ -1,0 +1,35 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "005",
+      "title": "Verify full regression suite green",
+      "files": [],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py tests/scripts/test_implement_plan_directory_smoke.py",
+      "priority": "high",
+      "plan_file": "TASK-005_verify_full_regression_suite.md",
+      "description": "End-to-end verification that TASK-001, TASK-002, and TASK-004 collectively\nrestored the green baseline without introducing new drift. The implementer\nshould run the full pytest commands listed and capture the output tail.",
+      "acceptance_criteria": [
+        "`tests/scripts/test_plan_ops.py` passes with zero failures EXCEPT any rows TASK-003 classified `genuine-loss`. Such rows remain failing by design and are enumerated in the implementer's report under `concerns_for_reviewer[]` with their still-active code paths, copied forward from TASK-004's report.",
+        "`tests/scripts/test_implement_plan_directory_smoke.py` passes with zero failures except `genuine-loss` carve-outs, same rule as above.",
+        "The implementer report includes a `genuine_loss_summary[]` listing each such row's `test_node_id`, `token_searched`, and `code_hits` so the user has the adjudication queue in one place.",
+        "`plan_ops.py audit --json` reports advisory-clean (no findings introduced by this plan; pre-existing audit findings, if any, must be the same set as before this plan started).",
+        "`plan_ops.py gates --check schema-valid,fixture-valid,execution-safe,review-safe --plan-file plugins/plan-executor/fixtures/sample_phase4.md --json` passes.",
+        "No new tests are added unless a concrete behavior gap surfaces during verification (in which case the implementer report MUST cite the gap)."
+      ],
+      "agent": "claude"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": []
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

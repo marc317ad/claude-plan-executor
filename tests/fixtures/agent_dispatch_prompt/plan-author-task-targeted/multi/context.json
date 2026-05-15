@@ -1,0 +1,16 @@
+{
+  "context": {
+    "child_plan_file": "/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-author-task-targeted/multi/plan_file.md",
+    "finding": {
+      "blocking": true,
+      "concern": "The task lacks a verification bullet.",
+      "section": "TASK-001 acceptance criteria",
+      "severity": "important",
+      "source_index": 0,
+      "suggested_change": "Add explicit verification criteria.",
+      "target_task_id": "002"
+    },
+    "target_task_id": "002"
+  },
+  "template_id": "plan-author-task-targeted"
+}

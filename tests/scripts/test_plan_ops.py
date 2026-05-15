@@ -61,6 +61,18 @@ def _ns(*, json_output: bool) -> object:
     return type("Args", (), {"json": json_output})()
 
 
+def test_mcp_input_schemas_do_not_use_top_level_combinators() -> None:
+    mcp_schema_dir = SCRIPTS_DIR / "schemas" / "mcp"
+    offenders: list[str] = []
+    for path in sorted(mcp_schema_dir.glob("*.input.json")):
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        keys = sorted({"oneOf", "anyOf", "allOf"} & schema.keys())
+        if keys:
+            offenders.append(f"{path.name}: {', '.join(keys)}")
+
+    assert offenders == []
+
+
 class TestEmitOrDieContract:
     """TASK-000A: marker-bearing terminator contract."""
 
@@ -404,6 +416,203 @@ class TestMutateTaskStatus:
         updated, _ = plan_ops.mutate_task_status(SAMPLE_PLAN_BODY, "001", "done")
         assert "### TASK-002: Second task with hyphen value\n\n- **Status:** in-progress" in updated
         assert "### TASK-003: Third task\n\n- **Status:** done" in updated
+
+
+# ---------------------------------------------------------------------------
+# mutate_task_agent + set-task-agent — replace and canonical-slot insertion
+# ---------------------------------------------------------------------------
+
+
+_PLAN_BODY_NO_AGENT_WITH_PRIORITY = """# Plan: agentless
+
+## Tasks
+
+### TASK-001: Agentless with priority
+
+- **Status:** pending
+- **Priority:** high
+- **Files:**
+  - src/foo.py
+- **Dependencies:** []
+
+Body prose.
+"""
+
+_PLAN_BODY_NO_AGENT_NO_PRIORITY = """# Plan: agentless no priority
+
+## Tasks
+
+### TASK-001: Agentless no priority
+
+- **Status:** pending
+- **Files:**
+  - src/foo.py
+- **Dependencies:** []
+
+Body prose.
+"""
+
+_PLAN_BODY_NO_AGENT_NO_FILES = """# Plan: agentless minimal
+
+## Tasks
+
+### TASK-001: Agentless minimal
+
+- **Status:** pending
+- **Priority:** high
+- **Dependencies:** []
+
+Body prose.
+"""
+
+_PLAN_BODY_BARE = """# Plan: bare
+
+## Tasks
+
+### TASK-001: Bare
+
+- **Status:** pending
+- **Dependencies:** []
+
+Body prose.
+"""
+
+_PLAN_BODY_NO_BULLETS = """# Plan: no bullets
+
+## Tasks
+
+### TASK-001: No bullets
+
+Just a body paragraph, no metadata bullets.
+"""
+
+
+class TestMutateTaskAgent:
+    def test_mutate_task_agent_replace_existing(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(SAMPLE_PLAN_BODY, "001", "codex")
+        assert prior == "claude"
+        assert "- **Status:** open\n- **Agent:** codex\n- **Files:**" in updated
+        # other tasks untouched
+        assert "### TASK-002: Second task with hyphen value\n\n- **Status:** in-progress\n- **Agent:** codex\n" in updated
+
+    def test_mutate_task_agent_idempotent_replace(self) -> None:
+        once, _ = plan_ops.mutate_task_agent(SAMPLE_PLAN_BODY, "001", "codex")
+        twice, prior2 = plan_ops.mutate_task_agent(once, "001", "codex")
+        assert twice == once
+        assert prior2 == "codex"
+
+    def test_mutate_task_agent_insert_after_priority_before_files(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(
+            _PLAN_BODY_NO_AGENT_WITH_PRIORITY, "001", "claude",
+        )
+        assert prior == ""
+        assert (
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+        ) in updated
+
+    def test_mutate_task_agent_insert_before_files_when_no_priority(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(
+            _PLAN_BODY_NO_AGENT_NO_PRIORITY, "001", "codex",
+        )
+        assert prior == ""
+        assert (
+            "- **Status:** pending\n"
+            "- **Agent:** codex\n"
+            "- **Files:**\n"
+        ) in updated
+
+    def test_mutate_task_agent_insert_after_priority_when_no_files(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(
+            _PLAN_BODY_NO_AGENT_NO_FILES, "001", "claude",
+        )
+        assert prior == ""
+        assert (
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Dependencies:** []\n"
+        ) in updated
+
+    def test_mutate_task_agent_insert_at_end_of_run_no_priority_no_files(self) -> None:
+        updated, prior = plan_ops.mutate_task_agent(
+            _PLAN_BODY_BARE, "001", "codex",
+        )
+        assert prior == ""
+        assert (
+            "- **Status:** pending\n"
+            "- **Dependencies:** []\n"
+            "- **Agent:** codex\n"
+        ) in updated
+
+    def test_mutate_task_agent_invalid_agent_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            plan_ops.mutate_task_agent(SAMPLE_PLAN_BODY, "001", "bogus")
+
+    def test_mutate_task_agent_missing_task_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            plan_ops.mutate_task_agent(SAMPLE_PLAN_BODY, "999", "claude")
+
+    def test_mutate_task_agent_malformed_block_no_metadata_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            plan_ops.mutate_task_agent(_PLAN_BODY_NO_BULLETS, "001", "claude")
+
+
+class TestSetTaskAgentCLI:
+    def _plan(self, tmp_path: Path, body: str) -> Path:
+        p = tmp_path / "plan.md"
+        p.write_text(body, encoding="utf-8")
+        return p
+
+    def test_set_task_agent_cli_replace(self, tmp_path: Path) -> None:
+        plan = self._plan(tmp_path, SAMPLE_PLAN_BODY)
+        cp = _run(
+            "set-task-agent",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--agent", "codex",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)
+        assert out.get("ok") is True
+        assert out.get("prior_agent") == "claude"
+        text = plan.read_text(encoding="utf-8")
+        assert "- **Status:** open\n- **Agent:** codex\n- **Files:**" in text
+
+    def test_set_task_agent_cli_insert(self, tmp_path: Path) -> None:
+        plan = self._plan(tmp_path, _PLAN_BODY_NO_AGENT_WITH_PRIORITY)
+        cp = _run(
+            "set-task-agent",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--agent", "claude",
+            "--json",
+        )
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)
+        assert out.get("ok") is True
+        assert out.get("prior_agent") == ""
+        text = plan.read_text(encoding="utf-8")
+        assert (
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+        ) in text
+
+    def test_set_task_agent_cli_rejects_bad_agent(self, tmp_path: Path) -> None:
+        plan = self._plan(tmp_path, SAMPLE_PLAN_BODY)
+        cp = _run(
+            "set-task-agent",
+            "--plan-file", str(plan),
+            "--task-id", "001",
+            "--agent", "bogus",
+            "--json",
+        )
+        assert cp.returncode != 0
 
 
 # ---------------------------------------------------------------------------
@@ -4119,6 +4328,7 @@ class TestFailTaskPartitionCleanup:
             ".claude",
             "_run_lock.json",
             "docs/plans/_run_log.jsonl",
+            "docs/plans/spans.jsonl",
             ".codex/session.json",
             ".claude/skills/plan.md",
             "docs/plans/anything.schedule.json",
@@ -10491,10 +10701,13 @@ class TestPlanReviewDocumentation:
         # V8 event order must be documented for the orchestrator to follow.
         assert "plan_review_start" in text
         assert "plan_review_done" in text
-        # V9 verdict routing.
-        assert "approved" in text
-        assert "approved-with-notes" in text
-        assert "needs-replan" in text
+        # V9 verdict routing — the verdict enum is now pinned in the
+        # canonical plan-review schema (TASK-015 SKILL.md → schema
+        # migration). Grep the schema to confirm the load-bearing values.
+        schema_text = _PLAN_REVIEW_SCHEMA.read_text(encoding="utf-8")
+        assert '"approved"' in schema_text
+        assert '"approved-with-notes"' in schema_text
+        assert '"needs-replan"' in schema_text
         # V10 degradation. The Codex-path wrapper-failure degrade clause
         # still maps to `plan_review_skipped {reason:"codex_unavailable"}`
         # for routing purposes; the legacy preflight skip clause was
@@ -10517,7 +10730,11 @@ class TestPlanReviewDocumentation:
         text = self.SKILL.read_text(encoding="utf-8")
         phase_1_5_idx = text.find("### Phase 1.5")
         dry_run_idx = text.find("### Dry-run mode")
-        write_schedule_idx = text.find("write-schedule --schedule-file")
+        # TASK-015 migrated SKILL.md from CLI-form invocations to MCP
+        # tool calls — anchor on the canonical `plan_ops__write_schedule`
+        # tool reference (which Phase 1 step 4 emits) instead of the
+        # retired `write-schedule --schedule-file` CLI form.
+        write_schedule_idx = text.find("plan_ops__write_schedule")
         assert phase_1_5_idx >= 0
         assert dry_run_idx >= 0
         assert write_schedule_idx >= 0
@@ -10566,11 +10783,11 @@ def _finding(
     return entry
 
 
-class TestTask007PlanReviewSchemaTargetTaskIdOptional:
+class TestTask007PlanReviewSchemaTargetTaskIdRequired:
     """TASK-007 — `codex_plan_review_schema.json` findings[*] gains an
-    optional `target_task_id: string | null` field. It is NOT in the
-    required list, and `additionalProperties: false` continues to apply
-    (the field is enumerated in `properties`).
+    explicit `target_task_id: string | null` field. Current structured
+    output validation requires every property to appear in `required`;
+    schedule-level findings use null.
     """
 
     SCHEMA = _PLAN_REVIEW_SCHEMA
@@ -10590,13 +10807,13 @@ class TestTask007PlanReviewSchemaTargetTaskIdOptional:
             types = [types]
         assert "string" in types and "null" in types, prop
 
-    def test_schema_target_task_id_not_in_required(self) -> None:
+    def test_schema_target_task_id_is_required_nullable(self) -> None:
         schema = json.loads(self.SCHEMA.read_text(encoding="utf-8"))
         finding = schema["properties"]["findings"]["items"]
         required = set(finding.get("required", []))
-        assert "target_task_id" not in required, (
-            "target_task_id must remain optional so pre-TASK-007 Codex "
-            "envelopes continue to validate"
+        assert "target_task_id" in required, (
+            "Codex structured output requires every property to be listed "
+            "in required; use null for schedule-level findings"
         )
 
     def test_schema_finding_additional_properties_stays_false(self) -> None:
@@ -12774,9 +12991,17 @@ class TestPhaseBNarrowRemediationTemplate:
 
     def test_template_embeds_the_three_json_slots(self) -> None:
         body = self._narrow_section()
-        assert "load_bearing_findings_json" in body
-        assert "dismissed_findings_json" in body
-        assert "d5_summary" in body
+        # Slot names migrated to the `dispatch_context` shape emitted by
+        # `review-route` (TASK-001 of `wrapper_autoclean_authorization`):
+        # `<findings_for_retry>` / `<dismissed_for_context>` / `<d5_summary>`
+        # replace the legacy `load_bearing_findings_json` /
+        # `dismissed_findings_json` placeholders. Anchor on the
+        # angle-bracketed placeholder form so the assertion matches the
+        # rendered slot block rather than incidental prose mentions of
+        # the same token elsewhere in the section.
+        assert "<findings_for_retry>" in body
+        assert "<dismissed_for_context>" in body
+        assert "<d5_summary>" in body
 
     def test_template_labels_dismissed_as_do_not_fix(self) -> None:
         body = self._narrow_section()
@@ -12838,9 +13063,16 @@ class TestD2a6SkillMdSection:
         assert "binding" in body.lower()
 
     def test_section_has_both_awaiting_user_stage_labels(self) -> None:
-        body = self._d2a6_section()
-        assert "post_narrow_remediation_review" in body
-        assert "post_narrow_remediation_implement" in body
+        # TASK-015 migration: the `post_narrow_remediation_*` stage enum
+        # is now pinned in the canonical review-route output schema
+        # rather than re-declared inside the §D.2a.6 SKILL prose. Grep
+        # the schema (its enum is the authoritative declaration).
+        schema = (
+            SCRIPTS_DIR / "review_route_output_schema.json"
+        )
+        schema_text = schema.read_text(encoding="utf-8")
+        assert "post_narrow_remediation_review" in schema_text
+        assert "post_narrow_remediation_implement" in schema_text
 
     def test_section_lists_narrow_remediation_events(self) -> None:
         body = self._d2a6_section()
@@ -12880,9 +13112,17 @@ class TestD2a6SkillMdSection:
         )
 
     def test_section_commit_uses_narrow_flags(self) -> None:
-        body = self._d2a6_section()
-        assert "--narrow-remediation-tag" in body
-        assert "--dismissed-finding-ids" in body
+        # TASK-015 migration: the `narrow_remediation_tag` /
+        # `dismissed_finding_ids` commit-task input fields are now
+        # canonically declared in the MCP tool input schema; the CLI
+        # `--narrow-remediation-tag` / `--dismissed-finding-ids` form
+        # was retired from SKILL.md prose. Grep the schema instead.
+        schema = (
+            SCRIPTS_DIR / "schemas" / "mcp" / "commit_task.input.json"
+        )
+        schema_text = schema.read_text(encoding="utf-8")
+        assert "narrow_remediation_tag" in schema_text
+        assert "dismissed_finding_ids" in schema_text
 
 
 class TestD2aBindingModeContract:
@@ -12922,16 +13162,25 @@ class TestD2aBindingModeContract:
 
     def test_d2a_routing_prose_uses_post_binding_block_stage(self) -> None:
         text = self._skill_text()
-        # The D.2a routing prose lives in §Phase D / D.2a.
-        assert "stage=post_binding_block" in text, (
-            "D.2a routing prose must name the new awaiting-user stage label"
+        # TASK-015 migration: the `post_binding_block` awaiting-user
+        # stage label is now pinned in the canonical review-route
+        # output schema rather than as a `stage=…` CLI/log syntax in
+        # SKILL.md prose. Grep the schema for the canonical token.
+        schema = (
+            SCRIPTS_DIR / "review_route_output_schema.json"
         )
+        schema_text = schema.read_text(encoding="utf-8")
+        assert "post_binding_block" in schema_text, (
+            "review_route_output_schema.json must enumerate "
+            "post_binding_block as a valid awaiting-user stage label"
+        )
+        # SKILL.md still names the awaiting-user pause subroutine in the
+        # D.2a binding-mode call-site table.
         assert "Awaiting-user pause" in text
-        # Fail-fast fall-through under unattended-revert-policy.
-        assert (
-            "unattended-fail-fast --stage review" in text
-            or "--authorization-source unattended-fail-fast" in text
-        ), "D.2a routing prose must spell the unattended-fail-fast fall-through"
+        assert "post_binding_block" in text, (
+            "SKILL.md must still name the post_binding_block stage in "
+            "the awaiting-user pause call-site table"
+        )
 
     def test_no_codex_review_binding_destructive_flag(self) -> None:
         text = self._skill_text()
@@ -13569,31 +13818,38 @@ class TestTask019SkillMdGrepRegressions:
     """V11. SKILL.md documents D.2a reviewer-flip and execution-log schema."""
 
     def test_skill_md_documents_d2a_reviewer_flip_and_row_schema(self) -> None:
-        # V11 — regression guard over SKILL.md text. Exact phrasing may drift,
-        # but the literal tokens the orchestrator needs to spot the pattern
-        # MUST remain greppable on a single line.
+        # V11 — regression guard over the canonical schemas. TASK-015
+        # migrated the load-bearing tokens out of SKILL.md prose into
+        # the MCP tool input schemas. Pin them at the schema home.
+        # Pattern A: commit-task inputs for the D.2a reviewer-flip
+        # commit (reviewer + reviewer_verdict + disagreement_tag).
+        commit_schema = (
+            SCRIPTS_DIR / "schemas" / "mcp" / "commit_task.input.json"
+        )
+        commit_text = commit_schema.read_text(encoding="utf-8")
+        assert '"reviewer"' in commit_text
+        assert '"reviewer_verdict"' in commit_text
+        assert '"disagreement_tag"' in commit_text
+        # Pattern B: the End-of-run rows_json input is canonically
+        # declared in finalize_execution_log.input.json. The per-row
+        # key schema (task/agent/reviewer/verdict/commit/notes) is
+        # narrative — pinned in SKILL.md End-of-run §2 — using the
+        # canonical underscore form `rows_json`.
+        finalize_schema = (
+            SCRIPTS_DIR / "schemas" / "mcp" / "finalize_execution_log.input.json"
+        )
+        finalize_text = finalize_schema.read_text(encoding="utf-8")
+        assert '"rows_json"' in finalize_text
         skill = (
             REPO_ROOT / "plugins" / "plan-executor" / "skills"
             / "implement-plan" / "SKILL.md"
         )
         text = skill.read_text(encoding="utf-8")
-        # Pattern A: the D.2a reviewer-flip guidance mentions --reviewer claude,
-        # ship-with-fixes, and --disagreement-tag on a single line.
-        flip_re = re.compile(
-            r"reviewer claude.*ship-with-fixes.*--disagreement-tag"
-        )
-        assert flip_re.search(text), (
-            "expected §D.3 reviewer-flip line mentioning "
-            "`--reviewer claude --reviewer-verdict ship-with-fixes "
-            "--disagreement-tag` on a single line"
-        )
-        # Pattern B: the End-of-run Step 2 row schema names all six keys on a
-        # single line in order.
         schema_re = re.compile(
-            r"rows-json.*task.*agent.*reviewer.*verdict.*commit.*notes"
+            r"rows_json.*task.*agent.*reviewer.*verdict.*commit.*notes"
         )
         assert schema_re.search(text), (
-            "expected End-of-run Step 2 to list the rows-json row schema "
+            "expected End-of-run Step 2 to list the rows_json row schema "
             "with keys task/agent/reviewer/verdict/commit/notes"
         )
 
@@ -16265,6 +16521,34 @@ class TestGateCommitSafeAlwaysIgnoreConsistency:
         )
         assert result["status"] == "pass", result
 
+    def test_spans_log_change_is_ignored(self, tmp_path: Path) -> None:
+        """`docs/plans/spans.jsonl` is a COMMIT_ALWAYS_IGNORE member;
+        a commit that touches it alongside a declared Files: entry passes.
+        Mirrors the `_run_log.jsonl` case so the wrapper's parallel
+        bookkeeping appends never trip commit-safe."""
+        repo, plans_dir, plan = self._make_repo(tmp_path)
+        (repo / "example" / "seed.py").write_text("# seed\n", encoding="utf-8")
+        (plans_dir / "spans.jsonl").write_text(
+            '{"agent":"plan-analyst","status":"ok"}\n', encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "add",
+             "example/seed.py",
+             "docs/plans/spans.jsonl"],
+            cwd=repo, check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "feat(TASK-001): seed + spans"],
+            cwd=repo, check=True,
+        )
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+        ).strip()
+        result = plan_ops._gate_commit_safe(
+            sha, "001", plan, repo_root=repo,
+        )
+        assert result["status"] == "pass", result
+
     def test_schedule_sidecar_for_current_plan_is_ignored(
         self, tmp_path: Path,
     ) -> None:
@@ -17671,7 +17955,10 @@ class TestAuditDocReferences:
             / "implement-plan" / "SKILL.md"
         )
         body = skill.read_text(encoding="utf-8")
-        assert "plan_ops.py audit" in body, (
+        # TASK-015 migrated the CLI invocation `plan_ops.py audit` to the
+        # canonical MCP tool form `plan_ops__audit`; either reference
+        # surface satisfies the operator-discoverability invariant.
+        assert "plan_ops__audit" in body or "plan_ops.py audit" in body, (
             "SKILL.md must reference the audit subcommand for operators"
         )
 
@@ -19771,7 +20058,15 @@ class TestDecomposePlan:
                 f"--force rerun produced non-identical content for {name}"
             )
 
-    def test_missing_metadata_structured_error(self, tmp_path: Path) -> None:
+    def test_missing_metadata_filled_with_defaults(self, tmp_path: Path) -> None:
+        """A plan missing `**Priority:**` no longer halts the decomposer.
+
+        The decomposer fills routine omissions with sensible defaults and
+        records each substitution in `defaults_applied`. The produced
+        child markdown must satisfy `_gate_schema_valid` so the run can
+        proceed past Phase 0 auto-promote without tripping the schema
+        gate on a content-level omission the renderer can patch in place.
+        """
         src = tmp_path / "missing_metadata.md"
         src.write_text(
             (DECOMPOSER_INPUTS_DIR / "missing_metadata.md").read_text(
@@ -19780,17 +20075,33 @@ class TestDecomposePlan:
             encoding="utf-8",
         )
         cp = _run("decompose-plan", "--plan-file", str(src), "--json")
-        assert cp.returncode == 1
-        err = _parse_json(cp)["errors"]
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)
+        assert out["errors"] == [], out
+        defaults = out.get("defaults_applied") or []
         assert any(
-            e["code"] == "missing-required-metadata"
-            and e["task_id"] == "001"
-            and e["field"] == "Priority"
-            for e in err
-        ), err
-        # Source-line pinning must name a real line in the fixture.
-        src_lines = src.read_text(encoding="utf-8").splitlines()
-        assert all(1 <= e["source_line"] <= len(src_lines) for e in err), err
+            d["task_id"] == "001"
+            and d["field"] == "Priority"
+            and d["default"] == "medium"
+            for d in defaults
+        ), defaults
+        # Produced child must pass the schema-valid gate end-to-end AND
+        # carry a non-empty `**Description:**` body so plan-review's
+        # Intent completeness check (`tasks[i].description` non-empty)
+        # does not halt the run downstream.
+        produced = Path(out["produced_dir"])
+        children = sorted(produced.glob("TASK-*.md"))
+        assert children, list(produced.iterdir())
+        gate = plan_ops._gate_schema_valid(children[0])
+        assert gate["status"] == "pass", gate
+        body = children[0].read_text(encoding="utf-8")
+        # Description header is followed by non-empty content (the renderer's
+        # title-plus-rationale fallback fires here because the fixture's
+        # task body for TASK-001 is non-empty, so the assertion is just a
+        # belt-and-braces guarantee that the header never precedes a blank).
+        assert re.search(
+            r"\*\*Description:\*\*\n\S", body, re.MULTILINE,
+        ), body
 
     def test_duplicate_ids_structured_error(self, tmp_path: Path) -> None:
         src = tmp_path / "duplicate_ids.md"
@@ -20271,6 +20582,141 @@ class TestDecomposePlan:
             task = plan_ops._parse_task_block(body, level=3)
             assert task["id"] == chunk["task_id"]
 
+    def test_decompose_fills_missing_required_fields_with_defaults(
+        self, tmp_path: Path,
+    ) -> None:
+        """Decomposing a plan that omits Priority AND Test command must
+        succeed end-to-end — the decomposer is a transformer, not a
+        content reviewer. Routine omissions get filled with sensible
+        defaults and surface in `defaults_applied`; the produced child
+        passes `_gate_schema_valid` so Phase 0 auto-promote flows
+        straight through preflight without halting on a content miss
+        the renderer can patch in place. This is the post-fix
+        contract: a decomposer that decomposes a plan is also
+        responsible for ensuring that plan satisfies the immediate
+        downstream gate (schema-valid).
+        """
+        src = tmp_path / "missing_both.md"
+        src.write_text(
+            (
+                "# Bare-bones plan\n"
+                "\n"
+                "## Goal\n"
+                "Stub goal.\n"
+                "\n"
+                "## Context\n"
+                "Stub context.\n"
+                "\n"
+                "## Verification\n"
+                "- The single task lands cleanly.\n"
+                "- `venv/bin/pytest tests/scripts/test_plan_ops.py -k stub` passes.\n"
+                "\n"
+                "## Tasks\n"
+                "\n"
+                "## TASK-001: Stub task with neither Priority nor Test command\n"
+                "\n"
+                "- **Status:** pending\n"
+                "- **Files:**\n"
+                "  - scratch/stub.txt (create)\n"
+                "- **Dependencies:** []\n"
+                "- **Acceptance criteria:**\n"
+                "  - `scratch/stub.txt` exists.\n"
+                "- **Reversion guidance:** `rm -f scratch/stub.txt`\n"
+                "\n"
+                "**Description:**\n"
+                "Source intentionally omits Priority and Test command.\n"
+            ),
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(src, tmp_path / "out", force=True)
+        assert res["ok"] is True, res
+        defaults = res.get("defaults_applied") or []
+        # Priority filled with the neutral default.
+        assert any(
+            d["task_id"] == "001"
+            and d["field"] == "Priority"
+            and d["default"] == "medium"
+            for d in defaults
+        ), defaults
+        # Test command inferred from the parent's `## Verification` runner
+        # fragment rather than collapsed to "none".
+        assert any(
+            d["task_id"] == "001"
+            and d["field"] == "Test command"
+            and "pytest" in d["default"]
+            for d in defaults
+        ), defaults
+        produced = Path(res["produced_dir"])
+        children = sorted(produced.glob("TASK-*.md"))
+        assert children, list(produced.iterdir())
+        body = children[0].read_text(encoding="utf-8")
+        # Required bullets all materialize on the rendered child.
+        for field in plan_ops._TASK_REQUIRED_BULLETS:
+            assert re.search(
+                rf"^\s*-\s*\*\*{re.escape(field)}:\*\*",
+                body,
+                re.MULTILINE,
+            ), (field, body)
+        # Schema-valid gate passes.
+        gate = plan_ops._gate_schema_valid(children[0])
+        assert gate["status"] == "pass", gate
+
+    def test_decompose_test_command_falls_back_to_none(
+        self, tmp_path: Path,
+    ) -> None:
+        """When neither the task block nor the parent `## Verification`
+        section names a runnable test command, Test command collapses
+        to the stable `none` sentinel rather than halting decomposition.
+        """
+        src = tmp_path / "no_runner.md"
+        src.write_text(
+            (
+                "# No-runner plan\n"
+                "\n"
+                "## Goal\n"
+                "Stub goal.\n"
+                "\n"
+                "## Context\n"
+                "Stub context.\n"
+                "\n"
+                "## Verification\n"
+                "- Manual smoke check; no automated runner.\n"
+                "\n"
+                "## Tasks\n"
+                "\n"
+                "## TASK-001: Stub task with no runner anywhere\n"
+                "\n"
+                "- **Status:** pending\n"
+                "- **Priority:** medium\n"
+                "- **Files:**\n"
+                "  - scratch/stub.txt (create)\n"
+                "- **Dependencies:** []\n"
+                "- **Acceptance criteria:**\n"
+                "  - `scratch/stub.txt` exists.\n"
+                "- **Reversion guidance:** `rm -f scratch/stub.txt`\n"
+                "\n"
+                "**Description:**\n"
+                "Source omits Test command; verification names no runner.\n"
+            ),
+            encoding="utf-8",
+        )
+        res = plan_ops._decompose_plan(src, tmp_path / "out", force=True)
+        assert res["ok"] is True, res
+        defaults = res.get("defaults_applied") or []
+        assert any(
+            d["task_id"] == "001"
+            and d["field"] == "Test command"
+            and d["default"] == "none"
+            and d["source"] == "decomposer-default"
+            for d in defaults
+        ), defaults
+        produced = Path(res["produced_dir"])
+        children = sorted(produced.glob("TASK-*.md"))
+        body = children[0].read_text(encoding="utf-8")
+        assert "**Test command:** none" in body, body
+        gate = plan_ops._gate_schema_valid(children[0])
+        assert gate["status"] == "pass", gate
+
     def test_decompose_force_rerun_is_cross_day_idempotent(
         self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch",
     ) -> None:
@@ -20426,6 +20872,99 @@ class TestDecomposePlan:
         task = plan_ops._parse_task_block(body, level=3)
         assert task["reversion_guidance"] == "none"
 
+    def test_render_child_task_file_byte_stable_canonical(
+        self, tmp_path: Path,
+    ) -> None:
+        """Pin the byte-exact output of `_render_child_task_file` for the
+        canonical decomposer fixture's first task. Wiring the renderer
+        through the plugin-local template constant
+        (`_DECOMPOSED_CHILD_SCAFFOLD`) MUST not perturb the rendered
+        bytes — downstream parsers (`_parse_task_block` at level=3,
+        `_gate_schema_valid`, `build-tasks`) depend on the exact shape.
+        """
+        src_text = (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+            encoding="utf-8",
+        )
+        plan_context = plan_ops._extract_plan_context_section(src_text)
+        # Parse the first H2 task block (`## TASK-001: Seed scratch directory`).
+        _, raw_blocks = plan_ops._split_task_blocks_at_level(src_text, level=2)
+        assert raw_blocks, "canonical fixture lost its H2 task headers"
+        raw_id, title, block_text, _src_line = raw_blocks[0]
+        task = plan_ops._parse_task_block(block_text, level=2)
+        task["id"] = raw_id
+        task["title"] = title
+        rendered = plan_ops._render_child_task_file(
+            task, plan_context=plan_context,
+        )
+        expected = (
+            "# TASK-001 — Seed scratch directory\n"
+            "\n"
+            "## Goal\n"
+            "\n"
+            "Seed scratch directory\n"
+            "\n"
+            "## Context\n"
+            "\n"
+            f"{plan_context}\n"
+            "\n"
+            "## Verification\n"
+            "\n"
+            "- `scratch/` exists at repo root.\n"
+            "- Directory is committed via `scratch/.gitkeep` so git tracks it.\n"
+            "\n"
+            "## Tasks\n"
+            "\n"
+            "### TASK-001: Seed scratch directory\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** claude\n"
+            "- **Files:**\n"
+            "  - scratch/.gitkeep (create)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `test -d scratch`\n"
+            "- **Acceptance criteria:**\n"
+            "  - `scratch/` exists at repo root.\n"
+            "  - Directory is committed via `scratch/.gitkeep` so git tracks it.\n"
+            "- **Reversion guidance:** `rm -rf scratch`\n"
+            "\n"
+            "**Description:**\n"
+            "Create the scratch parent directory that the sibling tasks write into.\n"
+            "Minimal seeder so TASK-002 and TASK-003 can share a common parent\n"
+            "without stepping on each other's file locks.\n"
+        )
+        assert rendered == expected, (
+            f"byte-stable rendering drift:\n--- expected ---\n{expected!r}\n"
+            f"--- got ---\n{rendered!r}"
+        )
+        # Empty-description fallback: when the source omits the description,
+        # the renderer auto-fills the body with `<title>. (Auto-filled by
+        # decompose-plan; ...)` so plan-review's Intent completeness check
+        # (`tasks[i].description` non-empty) does not route the run to
+        # `needs-replan`. Verify the header is followed by the title + the
+        # explanatory rationale, NOT a bare empty line.
+        empty_desc_task = dict(task)
+        empty_desc_task["description"] = ""
+        rendered_empty = plan_ops._render_child_task_file(
+            empty_desc_task, plan_context=plan_context,
+        )
+        assert "**Description:**\nSeed scratch directory." in rendered_empty, (
+            rendered_empty
+        )
+        assert "Auto-filled by decompose-plan" in rendered_empty, rendered_empty
+        # The header is NEVER followed immediately by a blank-only line —
+        # plan-review treats that as missing intent and halts the run.
+        assert "**Description:**\n\n" not in rendered_empty, rendered_empty
+        # Reversion-guidance sentinel still emits when source omits it.
+        no_rev_task = dict(task)
+        no_rev_task["reversion_guidance"] = None
+        rendered_no_rev = plan_ops._render_child_task_file(
+            no_rev_task, plan_context=plan_context,
+        )
+        assert "- **Reversion guidance:** none\n" in rendered_no_rev, (
+            rendered_no_rev
+        )
+
     def test_decompose_force_removes_stale_children(
         self, tmp_path: Path,
     ) -> None:
@@ -20518,57 +21057,13 @@ class TestDecomposePlan:
         assert user_note.read_text(encoding="utf-8") == "personal notes\n"
 
 
-class TestSkillAutoPromoteBootstrapInterpreter:
-    """SKILL.md Phase 0 auto-promote must use a bootstrap interpreter
-    (literal `python3`), not `$PYTHON`. Per Phase 0's own ordering,
-    `$PYTHON` is only pinned *after* `preflight --json` runs, so
-    invoking `$PYTHON` before preflight is a direct contradiction.
-    """
-
-    SKILL = (
-        REPO_ROOT / "plugins" / "plan-executor"
-        / "skills" / "implement-plan" / "SKILL.md"
-    )
-
-    def test_auto_promote_uses_python3_not_pinned(self) -> None:
-        text = self.SKILL.read_text(encoding="utf-8")
-        # Find the auto-promote block (bounded by the section header the
-        # task ships) and confirm the `decompose-plan` invocation inside
-        # it does NOT reference `$PYTHON`.
-        start_m = re.search(
-            r"\*\*Auto-promote single-file input to directory mode",
-            text,
-        )
-        assert start_m is not None, "auto-promote block missing from SKILL.md"
-        # Scope the search to the block: until the next `## ` heading or
-        # the next top-level `**`-bold paragraph marker.
-        tail = text[start_m.end():]
-        # Pick a generous bound — the `path-info` section, or the next
-        # H2 heading, whichever comes first.
-        end_m = re.search(
-            r"^(?:## |First, bind the path placeholders)",
-            tail,
-            re.MULTILINE,
-        )
-        block = tail[: end_m.start()] if end_m else tail
-        # The decompose-plan invocation inside this block uses python3.
-        decompose_cmds = re.findall(
-            r"^[^\n]*plan_ops\.py[^\n]*decompose-plan[^\n]*$",
-            block,
-            re.MULTILINE,
-        )
-        assert decompose_cmds, (
-            "no decompose-plan invocation found inside auto-promote block"
-        )
-        for cmd in decompose_cmds:
-            assert "$PYTHON" not in cmd, (
-                f"auto-promote decompose-plan invocation must NOT use "
-                f"$PYTHON (it is not bound until preflight): {cmd!r}"
-            )
-            assert "python3" in cmd, (
-                f"auto-promote decompose-plan invocation must use the "
-                f"literal `python3` bootstrap interpreter: {cmd!r}"
-            )
+# TASK-004 (PLAN_SKILL_DRIFT_TRIAGE_2026-05-04) deleted
+# `TestSkillAutoPromoteBootstrapInterpreter` per its `retired`
+# classification: TASK-015 (commit 4833242) migrated SKILL.md from a
+# CLI-form `plan_ops.py decompose-plan` invocation to the canonical
+# MCP tool form `Tool: plan_ops__decompose_plan`. The auto-promote
+# block no longer contains any shell invocation; the bootstrap-
+# interpreter pin is structurally moot under the MCP transport.
 
 
 # ---------------------------------------------------------------------------
@@ -23906,9 +24401,8 @@ class Test_implementer_schema_smoke_end_to_end:
 
 class TestResolveGeminiAvailable:
     """The helper is the SOLE source of truth for the orchestrator's
-    `gemini_available` preflight field and the wrapper's missing-API-key
-    short-circuit. The four-row truth table:
-      (binary_present, key_present) → expected
+    `gemini_available` preflight field. Availability is CLI-based so
+    local Gemini OAuth auth works without API-key/ADC env vars.
     """
 
     def test_env_var_constants_exposed(self):
@@ -23933,7 +24427,7 @@ class TestResolveGeminiAvailable:
         monkeypatch.setattr(plan_ops.shutil, "which", lambda name: "/usr/bin/gemini" if name == "gemini" else None)
         monkeypatch.delenv(plan_ops.GEMINI_API_KEY_ENV, raising=False)
         monkeypatch.delenv(plan_ops.GOOGLE_APP_CRED_ENV, raising=False)
-        assert plan_ops._resolve_gemini_available() is False
+        assert plan_ops._resolve_gemini_available() is True
 
     def test_binary_absent_key_present(self, monkeypatch):
         monkeypatch.setattr(plan_ops.shutil, "which", lambda name: None)
@@ -23947,11 +24441,12 @@ class TestResolveGeminiAvailable:
         assert plan_ops._resolve_gemini_available() is False
 
     def test_empty_string_key_treated_as_absent(self, monkeypatch):
-        # Wrapper contract: whitespace/empty value is "not set".
+        # Empty env vars do not matter when the CLI binary is present;
+        # Gemini may use its local OAuth session.
         monkeypatch.setattr(plan_ops.shutil, "which", lambda name: "/usr/bin/gemini" if name == "gemini" else None)
         monkeypatch.setenv(plan_ops.GEMINI_API_KEY_ENV, "   ")
         monkeypatch.setenv(plan_ops.GOOGLE_APP_CRED_ENV, "")
-        assert plan_ops._resolve_gemini_available() is False
+        assert plan_ops._resolve_gemini_available() is True
 
 
 class TestGeminiAvailableAuditCheck:
@@ -24642,3 +25137,142 @@ class Test_parse_plan_review_report_reviewer_field:
         assert body["findings_count"] == 1
         assert body["findings"][0]["target_task_id"] == "002"
         assert body["schedule_ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# TASK-002 — Decomposed-plan template drift tests against parser constants
+# ---------------------------------------------------------------------------
+#
+# These drift tests pin the decomposed-plan templates (the root directory
+# guide and the plugin-local child / index templates) to the runtime
+# authority in `plan_ops.py`. If `ALLOWED_TASK_STATUSES`,
+# `ALLOWED_INDEX_STATUSES`, `_TASK_REQUIRED_BULLETS`, or
+# `_TASK_REQUIRED_PROSE_HEADERS` change, the templates must change too;
+# otherwise authoring guidance silently diverges from what `_gate_schema_valid`
+# and `_parse_index_roster` accept.
+
+
+class TestDecomposedTemplateDrift:
+    """Drift guards: decomposed-plan templates must mention every member
+    of the parser constants that govern accepted statuses and required
+    task fields. Imports are taken from `plan_ops` directly so renaming
+    or extending those constants forces a corresponding template edit.
+    """
+
+    ROOT_TEMPLATE = (
+        REPO_ROOT / "templates" / "DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md"
+    )
+    CHILD_TEMPLATE = (
+        REPO_ROOT / "plugins" / "plan-executor" / "templates"
+        / "decomposed_child.md.template"
+    )
+    INDEX_TEMPLATE = (
+        REPO_ROOT / "plugins" / "plan-executor" / "templates"
+        / "00_INDEX.json.template"
+    )
+
+    def test_root_template_lists_every_allowed_task_status(self) -> None:
+        text = self.ROOT_TEMPLATE.read_text(encoding="utf-8")
+        for status in plan_ops.ALLOWED_TASK_STATUSES:
+            assert status in text, (
+                f"ALLOWED_TASK_STATUSES member {status!r} missing from "
+                f"{self.ROOT_TEMPLATE}"
+            )
+
+    def test_root_template_lists_every_allowed_index_status(self) -> None:
+        text = self.ROOT_TEMPLATE.read_text(encoding="utf-8")
+        for status in plan_ops.ALLOWED_INDEX_STATUSES:
+            assert status in text, (
+                f"ALLOWED_INDEX_STATUSES member {status!r} missing from "
+                f"{self.ROOT_TEMPLATE}"
+            )
+
+    def test_index_json_template_lists_every_allowed_index_status(
+        self,
+    ) -> None:
+        text = self.INDEX_TEMPLATE.read_text(encoding="utf-8")
+        for status in plan_ops.ALLOWED_INDEX_STATUSES:
+            assert status in text, (
+                f"ALLOWED_INDEX_STATUSES member {status!r} missing from "
+                f"{self.INDEX_TEMPLATE}"
+            )
+
+    def test_root_template_declares_every_required_task_bullet(self) -> None:
+        text = self.ROOT_TEMPLATE.read_text(encoding="utf-8")
+        for field in plan_ops._TASK_REQUIRED_BULLETS:
+            assert f"**{field}:**" in text, (
+                f"_TASK_REQUIRED_BULLETS member {field!r} missing from "
+                f"{self.ROOT_TEMPLATE}"
+            )
+
+    def test_child_template_declares_every_required_task_bullet(self) -> None:
+        text = self.CHILD_TEMPLATE.read_text(encoding="utf-8")
+        for field in plan_ops._TASK_REQUIRED_BULLETS:
+            assert f"**{field}:**" in text, (
+                f"_TASK_REQUIRED_BULLETS member {field!r} missing from "
+                f"{self.CHILD_TEMPLATE}"
+            )
+
+    def test_root_template_declares_every_required_prose_header(self) -> None:
+        text = self.ROOT_TEMPLATE.read_text(encoding="utf-8")
+        for field in plan_ops._TASK_REQUIRED_PROSE_HEADERS:
+            assert f"**{field}:**" in text, (
+                f"_TASK_REQUIRED_PROSE_HEADERS member {field!r} missing "
+                f"from {self.ROOT_TEMPLATE}"
+            )
+
+    def test_child_template_declares_every_required_prose_header(self) -> None:
+        text = self.CHILD_TEMPLATE.read_text(encoding="utf-8")
+        for field in plan_ops._TASK_REQUIRED_PROSE_HEADERS:
+            assert f"**{field}:**" in text, (
+                f"_TASK_REQUIRED_PROSE_HEADERS member {field!r} missing "
+                f"from {self.CHILD_TEMPLATE}"
+            )
+
+    def test_child_template_has_top_level_section_contract(self) -> None:
+        """Mirror `_gate_schema_valid`'s top-level section contract:
+        `## Goal`, either `## Context` or `## Scoped Context`, and
+        `## Verification` must appear as top-level (`^## `) headings.
+        """
+        text = self.CHILD_TEMPLATE.read_text(encoding="utf-8")
+        assert re.search(r"^## Goal\b", text, re.MULTILINE), (
+            f"child template missing `## Goal`: {self.CHILD_TEMPLATE}"
+        )
+        has_context = re.search(r"^## Context\b", text, re.MULTILINE)
+        has_scoped = re.search(r"^## Scoped Context\b", text, re.MULTILINE)
+        assert has_context or has_scoped, (
+            f"child template missing `## Context` or `## Scoped Context`: "
+            f"{self.CHILD_TEMPLATE}"
+        )
+        assert re.search(r"^## Verification\b", text, re.MULTILINE), (
+            f"child template missing `## Verification`: {self.CHILD_TEMPLATE}"
+        )
+
+    def test_index_json_template_parses_as_json(self) -> None:
+        """`00_INDEX.json.template` MUST parse as JSON as-is, with
+        placeholder tokens (`<...>`, `YYYY-MM-DD`) appearing only inside
+        JSON string values. If the template ever needs free-form
+        placeholders that break JSON parseability, the contract has
+        changed and `_parse_index_roster` consumers will need updating
+        too."""
+        raw = self.INDEX_TEMPLATE.read_text(encoding="utf-8")
+        # Parses as-is — no preprocessing of placeholder tokens.
+        parsed = json.loads(raw)
+        assert parsed["schema_version"] == 1
+        assert isinstance(parsed["chunks"], list)
+        # Ensure each `<...>` placeholder occurs only inside a JSON
+        # string. We walk per-line and require an odd number of unescaped
+        # `"` characters before the placeholder column (i.e., currently
+        # inside a string literal).
+        for match in re.finditer(r"<[^<>\n]+>", raw):
+            line_start = raw.rfind("\n", 0, match.start()) + 1
+            line_end = raw.find("\n", match.end())
+            if line_end < 0:
+                line_end = len(raw)
+            line = raw[line_start:line_end]
+            col = match.start() - line_start
+            quote_count = line[:col].count('"')
+            assert quote_count % 2 == 1, (
+                f"placeholder {match.group()!r} appears outside a JSON "
+                f"string in {self.INDEX_TEMPLATE}"
+            )

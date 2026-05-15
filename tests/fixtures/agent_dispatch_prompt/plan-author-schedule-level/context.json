@@ -1,0 +1,15 @@
+{
+  "context": {
+    "finding": {
+      "blocking": true,
+      "concern": "The task lacks a verification bullet.",
+      "section": "TASK-001 acceptance criteria",
+      "severity": "important",
+      "source_index": 0,
+      "suggested_change": "Add explicit verification criteria.",
+      "target_task_id": null
+    },
+    "roster_file": "/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-author-schedule-level/roster.json"
+  },
+  "template_id": "plan-author-schedule-level"
+}

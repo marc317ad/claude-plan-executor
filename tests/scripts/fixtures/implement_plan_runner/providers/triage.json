@@ -1,0 +1,10 @@
+{
+  "provider": "stub",
+  "role": "triage",
+  "status": "ok",
+  "task_id": "001",
+  "parsed": {
+    "verdict": "approved",
+    "summary": "stub triage"
+  }
+}

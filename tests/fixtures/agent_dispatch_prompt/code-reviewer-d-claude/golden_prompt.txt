@@ -1,0 +1,49 @@
+Scope: `plugins/plan-executor/scripts/plan_ops.py, tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`
+
+Intent — the task's Description and Acceptance criteria (verbatim from the plan):
+
+**Description:**
+Implement the first Agent prompt renderer variant for Phase D-Claude review.
+Keep the output stable so the orchestrator cutover can compare exact bytes.
+
+**Acceptance criteria:**
+- The renderer returns the code-reviewer Agent prompt.
+- The Scope line lists the changed files from the wrapper context.
+- Description and acceptance criteria are copied from the selected task block.
+
+Verify this change addresses the task without regressions or scope creep. Focus on correctness and domain-specific patterns from the project. Flag pre-existing issues in Minor/nits only.
+
+**Acceptance-criterion completeness gate (required before `ship` or `ship-with-fixes`).** Enumerate each acceptance-criteria bullet from the task block above and, for each one, cite the file + symbol (or test name) in the diff that satisfies it. An acceptance criterion you cannot cite is presumed unmet — that is a `needs-rework`, never `ship-with-fixes`. "Looks roughly done" without per-AC citation is a protocol violation: complex plans omit things by accident, and `ship-with-fixes` is not a soft-pass channel.
+
+**Verdict decision ladder — pick the verdict that matches the work, not a stronger or weaker one:**
+
+1. `ship` — every acceptance criterion is met and cited above; no issues, or only forward-looking suggestions a human reviewer would file as follow-ups without asking for revision.
+2. `ship-with-fixes` — every acceptance criterion is met and cited above; residual concerns exist but are non-blocking nits (style drift, naming, a clearer log message, an undersold docstring) that a human reviewer would merge with a follow-up note. **NEVER use this verdict for missing implementation, an unmet acceptance criterion, an absent declared test, a semantic bug, or scope inflation.** Every entry in `findings[]` under this verdict MUST carry `blocking: false`. A `blocking: true` finding under `ship-with-fixes` is a self-contradiction — the router treats it as a structural violation and routes to remediation.
+3. `needs-rework` — any acceptance criterion is unmet or unverifiable, any declared behavior is missing, any required test for a declared verification criterion is absent, there is a semantic bug, or scope inflated past the task's file allow-list. This verdict triggers a remediation pass (under `claude_only=true` it routes to D.4 rescue; on Codex-implemented work it triggers D.2b role-swap). Use it whenever a human reviewer would block merge on the finding alone. Bundling several nits into a `needs-rework` is wrong — list each as a non-blocking finding under `ship-with-fixes` instead.
+
+Heuristic when unsure: ask "would a human reviewer block merge on this finding alone?" If yes → `blocking: true`; if no → `blocking: false`. Then pick the verdict that fits the set: any `blocking: true` → `needs-rework`; no blocking issues but non-trivial findings → `ship-with-fixes`; no findings at all → `ship`.
+
+**Output (required fenced `json` block, no prose outside it):**
+
+```json
+{
+  "verdict": "ship | ship-with-fixes | needs-rework",
+  "summary": "<one-paragraph justification; for `ship` / `ship-with-fixes` it MUST enumerate per-AC citations>",
+  "findings": [
+    {
+      "blocking": true,
+      "severity": "major | minor | nit",
+      "file": "<path or null>",
+      "line": 0,
+      "issue": "<what is wrong>",
+      "suggested_fix": "<concrete remediation>"
+    }
+  ]
+}
+```
+
+`findings[]` MUST be present (may be empty array for `ship`). Every entry MUST carry `blocking: bool` and `severity ∈ {major, minor, nit}`. `file` / `line` are optional only when the finding has no specific anchor (e.g., a global concern about test coverage); prefer concrete anchors. Findings are forwarded verbatim into the remediator's dispatch context when the router escalates a contradictory `ship-with-fixes`.
+
+**Parallel-tree caveat:** other batch-mates' unstaged changes to disjoint files may be in the working tree — focus strictly on the scope files listed above.
+
+**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Bash.

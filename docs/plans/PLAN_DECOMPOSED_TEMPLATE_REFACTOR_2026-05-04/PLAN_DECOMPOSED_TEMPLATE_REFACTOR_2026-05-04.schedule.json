@@ -1,0 +1,187 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Add canonical decomposed-plan template assets",
+      "files": [
+        "plugins/plan-executor/templates/decomposed_child.md.template",
+        "plugins/plan-executor/templates/00_INDEX.json.template",
+        "plugins/plan-executor/templates/README.md"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py -k template",
+      "priority": "high",
+      "plan_file": "TASK-001_add_canonical_decomposed_plan.md",
+      "agent": "claude",
+      "classification_reason": "Template/README authoring; small scope.",
+      "description": "Create plugin-local template assets that mirror the root directory guide without\nmoving runtime behavior yet. This gives decomposer agents and future code a\nstable place to find child-plan and roster scaffolds while keeping\n`plan_ops.py` as the source of truth.",
+      "acceptance_criteria": [
+        "`decomposed_child.md.template` includes `## Goal`, `## Context`, `## Verification`, `## Tasks`, one `### TASK-001:` block, all required task bullets, `Dependencies`, and `Reversion guidance`.",
+        "`00_INDEX.json.template` includes `schema_version`, `chunks`, and per-chunk `task_id`, `file`, `depends_on`, `status`, and `superseded_by`.",
+        "`plugins/plan-executor/templates/README.md` explicitly points decomposer agents to `templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md` for the full human guide and to plugin-local templates for reusable assets.",
+        "Existing `TASK.md.template` remains the H3-block-only authoring scaffold for hand-authored plans; new `decomposed_child.md.template` is the full child-file scaffold intended to mirror `_render_child_task_file`. README distinguishes those audiences.",
+        "No runtime behavior changes in this task."
+      ]
+    },
+    {
+      "id": "002",
+      "title": "Add template drift tests against parser constants",
+      "files": [
+        "tests/scripts/test_plan_ops.py",
+        "templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md",
+        "plugins/plan-executor/templates/decomposed_child.md.template",
+        "plugins/plan-executor/templates/00_INDEX.json.template"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py -k template",
+      "priority": "high",
+      "plan_file": "TASK-002_add_template_drift_tests.md",
+      "agent": "claude",
+      "classification_reason": "Pytest authoring against parser constants.",
+      "description": "Pin the newly documented contract to the parser constants so future status,\nfield, or schema changes fail loudly. This is the main accuracy guard for the\nrefactor.",
+      "acceptance_criteria": [
+        "Tests assert every member of `ALLOWED_TASK_STATUSES` appears in `templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md`.",
+        "Tests assert every member of `ALLOWED_INDEX_STATUSES` appears in `templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md` and the plugin-local `00_INDEX.json.template`.",
+        "Tests assert every member of `_TASK_REQUIRED_BULLETS` and `_TASK_REQUIRED_PROSE_HEADERS` appears in both the root guide and `decomposed_child.md.template`.",
+        "Tests assert `decomposed_child.md.template` contains the same top-level section contract as `_gate_schema_valid`: `## Goal`, either `## Context` or `## Scoped Context`, and `## Verification`.",
+        "Drift tests import status and required-field constants from `plan_ops` rather than redeclaring them.",
+        "Tests assert `00_INDEX.json.template` parses as JSON as-is, with placeholders appearing only inside JSON string values."
+      ]
+    },
+    {
+      "id": "003",
+      "title": "Wire child rendering through the plugin-local template",
+      "files": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/templates/decomposed_child.md.template",
+        "tests/scripts/test_plan_ops.py"
+      ],
+      "dependencies": [
+        "002"
+      ],
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py -k \"decompose or template\"",
+      "priority": "medium",
+      "plan_file": "TASK-003_wire_child_rendering_through.md",
+      "agent": "claude",
+      "classification_reason": "Renderer-helper refactor with byte-stable output preservation.",
+      "description": "Move the child markdown scaffold out of ad hoc string assembly while preserving\nthe decomposer's current output contract. This should make future template\nchanges visible and reviewable without burying the entire child-plan shape in\nPython append calls.",
+      "acceptance_criteria": [
+        "`_render_child_task_file` produces byte-identical output for the existing canonical decomposer fixture, except for deliberate placeholder-format changes approved in this task.",
+        "Auto-decomposed children still pass `_gate_schema_valid`.",
+        "`plan_ops.py decompose-plan --force` remains idempotent for unchanged input.",
+        "Missing source `Reversion guidance` still renders the `none` sentinel.",
+        "Runtime failures to read an external template cannot break installed plugin execution; prefer a module-level constant generated from the asset, with filesystem-relative loading only if the implementation proves runtime file edits are required."
+      ]
+    },
+    {
+      "id": "004",
+      "title": "Document validation workflow and refactor boundary",
+      "files": [
+        "templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md",
+        "plugins/plan-executor/templates/README.md",
+        "README.md"
+      ],
+      "dependencies": [
+        "003"
+      ],
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py -k template",
+      "priority": "medium",
+      "plan_file": "TASK-004_document_validation_workflow_and.md",
+      "agent": "claude",
+      "classification_reason": "Documentation-only edits.",
+      "description": "Close the loop by documenting the new ownership model. The docs should make it\nclear that runtime behavior is parser-owned, human guidance is template-owned,\nand drift tests enforce the contract between them.",
+      "acceptance_criteria": [
+        "The root guide states that `plan_ops.py` remains the runtime authority.",
+        "Plugin template README states which files are human authoring aids and which file is consumed by `_render_child_task_file`.",
+        "Top-level README points users to the decomposed-plan template guide when authoring plans for `implement_plan.py`.",
+        "Documentation does not imply the historical `plugins/plan-decomposer` plugin is present or required in this checkout."
+      ]
+    },
+    {
+      "id": "005",
+      "title": "Run end-to-end decomposer and directory-mode regression checks",
+      "files": [
+        "tests/scripts/test_plan_ops.py",
+        "tests/scripts/test_implement_plan_directory_smoke.py"
+      ],
+      "dependencies": [
+        "004"
+      ],
+      "test_command": "venv/bin/pytest tests/scripts/test_plan_ops.py tests/scripts/test_implement_plan_directory_smoke.py",
+      "priority": "high",
+      "plan_file": "TASK-005_run_end_to_end.md",
+      "agent": "claude",
+      "classification_reason": "Regression test verification.",
+      "description": "Verify that the template refactor did not change the decomposer contract,\ndirectory-mode schedule synthesis, or child-plan schema gates.",
+      "acceptance_criteria": [
+        "Existing decomposer fixture tests pass.",
+        "Existing directory-mode smoke tests pass.",
+        "`build-tasks` still emits a valid fat manifest for `tests/fixtures/directory_mode_plan`.",
+        "Per-child `schema-valid` checks still pass for `tests/fixtures/directory_mode_plan/TASK-*.md`.",
+        "No new tests are added unless they protect a concrete behavior gap found while running the regression suite."
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/templates/00_INDEX.json.template",
+        "plugins/plan-executor/templates/README.md",
+        "plugins/plan-executor/templates/decomposed_child.md.template"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/templates/00_INDEX.json.template",
+        "plugins/plan-executor/templates/decomposed_child.md.template",
+        "templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 3,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "plugins/plan-executor/templates/decomposed_child.md.template",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    },
+    {
+      "index": 4,
+      "task_ids": [
+        "004"
+      ],
+      "file_locks": [
+        "README.md",
+        "plugins/plan-executor/templates/README.md",
+        "templates/DECOMPOSED_PLAN_DIRECTORY_TEMPLATE.md"
+      ]
+    },
+    {
+      "index": 5,
+      "task_ids": [
+        "005"
+      ],
+      "file_locks": [
+        "tests/scripts/test_implement_plan_directory_smoke.py",
+        "tests/scripts/test_plan_ops.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

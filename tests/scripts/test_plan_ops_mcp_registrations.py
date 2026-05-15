@@ -47,7 +47,7 @@ def index() -> dict:
 def test_registry_matches_index_order_and_shape(server_mod, index: dict) -> None:
     expected_keys = [f"plan_ops__{name}" for name in index["tool_names_ordered"]]
     assert [entry["tool_key"] for entry in server_mod.TOOL_REGISTRY] == expected_keys
-    assert len(server_mod.TOOL_REGISTRY) == 38
+    assert len(server_mod.TOOL_REGISTRY) == len(expected_keys)
 
     for entry in server_mod.TOOL_REGISTRY:
         indexed = index["tools"][entry["tool_key"]]
@@ -88,10 +88,14 @@ def test_review_route_registration_is_orchestrator_contract(server_mod, index: d
 
 def test_codegen_block_is_byte_stable(server_mod) -> None:
     codegen = _import_module(CODEGEN_PATH, "mcp_tool_registrations_task014")
-    text = SERVER_PATH.read_text(encoding="utf-8")
-    start = text.index(codegen.BEGIN)
-    end = text.index(codegen.END, start) + len(codegen.END) + 1
-    assert text[start:end] == codegen.render_block()
+    server_bytes = SERVER_PATH.read_bytes()
+    begin = codegen.BEGIN.encode("utf-8")
+    end_marker = codegen.END.encode("utf-8")
+    start = server_bytes.index(begin)
+    end = server_bytes.index(end_marker, start) + len(end_marker) + 1
+
+    rendered_bytes = codegen.render_block().encode("utf-8")
+    assert server_bytes[start:end] == rendered_bytes
 
 
 @requires_mcp

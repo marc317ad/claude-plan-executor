@@ -1,0 +1,30 @@
+Apply the plan-review finding specifically `### TASK-002:` (this child plan file declares 2 `### TASK-NNN:` H3 headings; read only the matching block).
+
+Apply a plan-review finding to the child plan at `/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-author-task-targeted/multi/plan_file.md`. The first plan-review pass returned `needs-replan`; your job is to revise THIS child plan file so a second review can proceed. Your edit target is exactly one `### TASK-NNN:` sub-heading block in this file.
+
+Dispatch inputs from `dispatch_context.per_finding_dispatches[i]`:
+
+- `child_plan_file`: `/mnt/d/claude-plan-executor/tests/fixtures/agent_dispatch_prompt/plan-author-task-targeted/multi/plan_file.md` (edit this file in place)
+- `target_task_id`: `002`
+
+Plan-review finding (single router-provided entry):
+
+```json
+{
+  "blocking": true,
+  "concern": "The task lacks a verification bullet.",
+  "section": "TASK-001 acceptance criteria",
+  "severity": "important",
+  "source_index": 0,
+  "suggested_change": "Add explicit verification criteria.",
+  "target_task_id": "002"
+}
+```
+
+Apply a minimum-change edit to resolve the finding. Preserve untouched sections verbatim — do not re-flow or re-format text the finding does not reference. If the finding is vague, contradictory, or contradicts the child's existing acceptance criteria, skip it with a written rationale in your report rather than invent intent. Your write scope is **exactly the child plan path above** — do NOT edit any other file, including other child plans under the same directory, the schedule roster at `00_INDEX.json`, source code, tests, or configuration.
+
+Emit a markdown report with three sections: `**Findings actioned:**` (one bullet per finding applied, with the file:line anchor), `**Findings skipped:**` (one bullet per finding not applied, with rationale), `**Files edited:**` (the list of paths you touched — typically just the one input child plan).
+
+The `--no-auto-revise` orchestrator flag exists for users who prefer to apply revisions by hand; if you are seeing this prompt, auto-revise is on and you are expected to revise.
+
+**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.

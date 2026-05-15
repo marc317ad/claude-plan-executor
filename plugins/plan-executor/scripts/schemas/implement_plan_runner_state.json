@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "implement-plan runner state",
+  "description": "Serializable runner-only checkpoint state for /implement-plan pause/resume.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "plan_path",
+    "schedule_file",
+    "phase",
+    "status",
+    "assignments",
+    "active_task_id",
+    "active_batch",
+    "pause_reason",
+    "pause_payload",
+    "resume_options"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "enum": [1]},
+    "run_id": {"type": "string", "minLength": 1},
+    "plan_path": {"type": "string", "minLength": 1},
+    "schedule_file": {"type": "string", "minLength": 1},
+    "phase": {"type": "string", "minLength": 1},
+    "status": {
+      "type": "string",
+      "enum": ["pending", "running", "paused", "completed", "complete", "partial", "failed", "aborted"]
+    },
+    "assignments": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "active_task_id": {"type": ["string", "null"]},
+    "active_batch": {"type": ["object", "null"], "additionalProperties": true},
+    "pause_reason": {"type": ["string", "null"]},
+    "pause_payload": {"type": ["object", "null"], "additionalProperties": true},
+    "resume_options": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["retry", "fail-fast", "preserve-only", "revert", "keep-and-commit", "abort"]
+      }
+    }
+  }
+}

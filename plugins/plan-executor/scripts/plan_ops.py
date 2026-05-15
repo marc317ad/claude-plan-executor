@@ -32,6 +32,7 @@ import json
 import os
 import re
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
@@ -116,6 +117,10 @@ DEPENDENCIES_BULLET_RE = re.compile(
 #                   failure, so its dependents must wait for human disposition
 #                   rather than being preemptively blocked.
 ALLOWED_TASK_STATUSES = {"pending", "in-progress", "done", "failed", "blocked", "skipped", "paused"}
+# Per-task agent vocabulary — mirrors the `**Agent:**` bullet emitted by
+# `_emit_child` (`plan_ops.py:3193-3195`). Ordered tuple so MCP enum
+# registrations and unit-test parametrizations track the canonical order.
+ALLOWED_AGENTS = ("claude", "codex")
 ALLOWED_INDEX_STATUSES = {"Done", "Pending", "Superseded"}
 _INDEX_SUPERSEDED_BY: dict[str, list[str]] = {}
 # TASK-008 (per_task_dispatch_refactor_v2): file-mode deprecation aliases were
@@ -236,6 +241,13 @@ ALLOWED_REVIEWER_FINDING_DISPOSITIONS = {
 }
 OPTIONAL_REVIEWER_FINDING_FIELDS = {"disposition", "disposition_reason"}
 ALLOWED_ROW_FIELDS = {"task", "agent", "reviewer", "verdict", "commit", "notes"}
+# Transport-surface exceptions for public plan_ops commands. Keep all
+# CLI-only / MCP-only deviations here so conformance tests and registry
+# generation consume the same allowlist instead of growing local skips.
+PUBLIC_SUBCOMMAND_TRANSPORT_EXCEPTIONS = {
+    "cli_only": set(),
+    "mcp_only": set(),
+}
 # Known run-log event types. The orchestrator owns the vocabulary; this set
 # acts as a tripwire so typo'd events surface immediately rather than drifting
 # silently into the log. `awaiting_user` is added per TASK-014A D.2a.5 to
@@ -1599,6 +1611,9 @@ def _validate_review_success_payload(
     if reviewer == "codex":
         allowed_verdicts = ALLOWED_CODEX_REVIEW_VERDICTS
         commit_allowed = {"clean", "minor-findings"}
+    elif reviewer == "gemini":
+        allowed_verdicts = ALLOWED_CODEX_REVIEW_VERDICTS
+        commit_allowed = {"clean", "minor-findings"}
     elif reviewer == "claude":
         allowed_verdicts = ALLOWED_CLAUDE_REVIEW_VERDICTS
         commit_allowed = {"ship", "ship-with-fixes"}
@@ -1609,7 +1624,7 @@ def _validate_review_success_payload(
         return [{
             "path": "$.reviewer",
             "code": "invalid-reviewer",
-            "message": f"reviewer must be one of ['claude', 'codex', 'none'], got {reviewer!r}",
+            "message": f"reviewer must be one of ['claude', 'codex', 'gemini', 'none'], got {reviewer!r}",
         }]
 
     if reviewer_verdict not in allowed_verdicts:
@@ -2164,20 +2179,15 @@ GOOGLE_APP_CRED_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
 
 
 def _resolve_gemini_available() -> bool:
-    """Return True iff the `gemini` CLI is on `$PATH` AND at least one of
-    `GEMINI_API_KEY` / `GOOGLE_APPLICATION_CREDENTIALS` is set to a
-    non-empty value (TASK-005).
+    """Return True iff the `gemini` CLI is on `$PATH`.
 
     Sole source of truth for the orchestrator preflight `gemini_available`
-    field and the wrapper's missing-API-key short-circuit. Returns False
-    whenever the binary is absent OR when both env vars are unset/empty,
-    matching the wrapper contract in `plan_gemini_dispatch._check_api_key_env`.
+    field. The Gemini CLI may authenticate through its local OAuth session
+    (for example ``~/.gemini``), ``GEMINI_API_KEY``, or
+    ``GOOGLE_APPLICATION_CREDENTIALS``; preflight should not mark Gemini
+    unavailable just because API-key/ADC environment variables are absent.
     """
-    if shutil.which("gemini") is None:
-        return False
-    api_key = os.environ.get(GEMINI_API_KEY_ENV, "").strip()
-    creds = os.environ.get(GOOGLE_APP_CRED_ENV, "").strip()
-    return bool(api_key or creds)
+    return shutil.which("gemini") is not None
 
 
 def _resolve_python() -> str:
@@ -2253,6 +2263,10 @@ def _emit_or_die(args, result: dict) -> None:
     exit_marker = result.pop("__plan_ops_exit_code__", None)
     text_output = result.pop("__plan_ops_text_output__", None)
     stdout_suppressed = bool(result.pop("__plan_ops_stdout_suppressed__", False))
+    # The MCP-only acknowledgement marker is consumed by the MCP server
+    # path; the CLI path (this function) drops it so the on-wire byte
+    # image stays envelope-shaped.
+    result.pop("__plan_ops_mcp_acknowledgement__", None)
 
     if exit_marker is None:
         exit_code = 1 if result.get("errors") or result.get("error") else 0
@@ -2265,6 +2279,29 @@ def _emit_or_die(args, result: dict) -> None:
         sys.stdout.write(text_output)
         sys.exit(exit_code)
     _emit(args, result, exit_code=exit_code)
+
+
+def _normalize_csv_or_list(value: object) -> list[str]:
+    """Accept either CLI-shape CSV string or MCP-shape list of strings.
+
+    The MCP server delivers oneOf-string|array params as their native
+    JSON shape; the CLI delivers a single argparse string. Shared
+    `_run_*` payload normalizers must accept both.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [s.strip() for s in value if isinstance(s, str) and s.strip()]
+    return [s.strip() for s in str(value).split(",") if s.strip()]
+
+
+def _normalize_json_or_list(value: object) -> list:
+    """Accept either CLI-shape JSON string or MCP-shape list payload."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return list(value)
+    return json.loads(value)
 
 
 def _normalize_task_id(raw: str) -> str | None:
@@ -3004,6 +3041,111 @@ def _extract_plan_context_section(plan_text: str) -> str | None:
     return body or None
 
 
+def _extract_plan_verification_bullets(plan_text: str) -> list[str]:
+    """Return the bullet items under the whole-plan `## Verification` section.
+
+    Used by the decomposer to backfill empty per-task `**Acceptance criteria:**`
+    bullets: if a task block omits AC entirely, the parent plan's verification
+    bullets are a near-perfect substitute (the verification section IS the
+    plan's success criteria). Returns `[]` if the section is missing or has
+    no top-level bullets.
+    """
+    m = re.search(r"^## Verification\s*$", plan_text, re.MULTILINE)
+    if not m:
+        return []
+    tail = plan_text[m.end():]
+    end_m = re.search(r"^## ", tail, re.MULTILINE)
+    if end_m:
+        tail = tail[: end_m.start()]
+    bullets: list[str] = []
+    for line in tail.splitlines():
+        stripped = line.lstrip()
+        # Top-level bullets only — nested sub-bullets are skipped to keep the
+        # backfill list short and aligned with the parent's headline asserts.
+        indent = len(line) - len(stripped)
+        if indent == 0 and stripped.startswith("- ") and len(stripped) > 2:
+            bullets.append(stripped[2:].strip())
+    return bullets
+
+
+def _infer_test_command_from_plan(plan_text: str) -> str | None:
+    """Best-effort inference of a `**Test command:**` from plan prose.
+
+    Scans the whole-plan `## Verification` section for an inline-code
+    fragment whose payload looks like a runnable test invocation (`pytest …`,
+    `venv/bin/pytest …`, `npm test …`, `cargo test …`, `go test …`). Returns
+    the bare command (sans backticks) on the first hit, or None if nothing
+    matches. The decomposer only consults this when a task block omits
+    `**Test command:**` entirely — it is a courtesy fallback, not a primary
+    parse path.
+    """
+    m = re.search(r"^## Verification\s*$", plan_text, re.MULTILINE)
+    if not m:
+        return None
+    tail = plan_text[m.end():]
+    end_m = re.search(r"^## ", tail, re.MULTILINE)
+    if end_m:
+        tail = tail[: end_m.start()]
+    # Inline-code payload that starts with a recognized test runner.
+    runner_re = re.compile(
+        r"`((?:venv/bin/)?(?:pytest|python\s+-m\s+pytest|npm\s+test|"
+        r"cargo\s+test|go\s+test)\b[^`]*)`"
+    )
+    hit = runner_re.search(tail)
+    return hit.group(1).strip() if hit else None
+
+
+# ---------------------------------------------------------------------------
+# Child-plan rendering scaffold
+# ---------------------------------------------------------------------------
+#
+# `_DECOMPOSED_CHILD_SCAFFOLD` is the runtime authority for child-plan
+# markdown shape. It is a module-level constant so a missing or unreadable
+# `templates/decomposed_child.md.template` file in an installed plugin
+# context cannot break execution. The sibling template file mirrors this
+# scaffold (with the same `${...}` placeholder grammar) for human
+# authoring + drift testing — see `TestDecomposedTemplateDrift` in
+# `tests/scripts/test_plan_ops.py`.
+#
+# Placeholder slots:
+#   ${TID}           Three-digit task id (e.g. `001`).
+#   ${TITLE}         Human-readable task title.
+#   ${CONTEXT}       Parent-plan `## Context` body, or task description
+#                    fallback, or stub line.
+#   ${VERIFICATION}  Multi-line bullet list (no trailing newline).
+#   ${METADATA}      Multi-line metadata bullets for the H3 block (no
+#                    trailing newline) — Status/Priority/Agent?/Files/
+#                    Dependencies/Test command/Acceptance criteria/
+#                    Reversion guidance, in that order.
+#   ${DESCRIPTION}   Either an empty string (when the source omitted the
+#                    description, so the rendered file ends at the
+#                    `**Description:**` header) or `\n` + the description
+#                    body (so the body sits on the line after the header).
+_DECOMPOSED_CHILD_SCAFFOLD = (
+    "# TASK-${TID} — ${TITLE}\n"
+    "\n"
+    "## Goal\n"
+    "\n"
+    "${TITLE}\n"
+    "\n"
+    "## Context\n"
+    "\n"
+    "${CONTEXT}\n"
+    "\n"
+    "## Verification\n"
+    "\n"
+    "${VERIFICATION}\n"
+    "\n"
+    "## Tasks\n"
+    "\n"
+    "### TASK-${TID}: ${TITLE}\n"
+    "\n"
+    "${METADATA}\n"
+    "\n"
+    "**Description:**${DESCRIPTION}\n"
+)
+
+
 def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> str:
     """Render a decomposed task dict as a child-plan markdown file.
 
@@ -3019,24 +3161,18 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
     section body; it is used to populate the child's `## Context`
     section verbatim so the child carries the same narrative context as
     the parent plan. If absent, the task's `description` is used.
+
+    The fixed-shape scaffolding is provided by the module-level
+    `_DECOMPOSED_CHILD_SCAFFOLD` constant; only the variable bits
+    (context body, verification bullets, metadata bullets, description)
+    are assembled here and substituted in.
     """
     tid = task["id"]
     title = task["title"]
-    parts: list[str] = []
-    # ---- Top-level sections required by `_gate_schema_valid` ------------
-    # Goal: derived from the task title (deterministic, 1:1 mapping).
-    parts.append(f"# TASK-{tid} — {title}")
-    parts.append("")
-    parts.append("## Goal")
-    parts.append("")
-    parts.append(title)
-    parts.append("")
-    # Context: prefer the parent plan's `## Context` block for parity
+    # ---- Context: prefer the parent plan's `## Context` block for parity
     # with hand-authored child plans (see the shipped
     # `tests/fixtures/directory_mode_plan/TASK-001_seed.md`); otherwise
     # fall back to the task's own description, otherwise a stub.
-    parts.append("## Context")
-    parts.append("")
     context_body = (plan_context or "").strip()
     if not context_body:
         context_body = (task.get("description") or "").strip()
@@ -3045,56 +3181,45 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
             f"Auto-decomposed child for TASK-{tid}. See the source plan for "
             "broader context."
         )
-    parts.append(context_body)
-    parts.append("")
-    # Verification: derived from the task's acceptance-criteria list.
-    parts.append("## Verification")
-    parts.append("")
+    # ---- Verification: derived from the task's acceptance-criteria list.
     ac_list = task.get("acceptance_criteria") or []
     if ac_list:
-        for ac in ac_list:
-            parts.append(f"- {ac}")
+        verification_lines = [f"- {ac}" for ac in ac_list]
     else:
-        parts.append("- See acceptance criteria under the task block below.")
-    parts.append("")
-    # Tasks section wraps the H3 task block.
-    parts.append("## Tasks")
-    parts.append("")
-    # ---- H3 task block (unchanged grammar, preserves byte-identical
-    # `build-tasks` input) -----------------------------------------------
-    parts.append(f"### TASK-{tid}: {title}")
-    parts.append("")
-    # Metadata bullets in canonical order.
-    parts.append(f"- **Status:** {task.get('status') or 'pending'}")
+        verification_lines = ["- See acceptance criteria under the task block below."]
+    verification = "\n".join(verification_lines)
+    # ---- Metadata: H3 task-block bullets in canonical order.
+    metadata_lines: list[str] = []
+    metadata_lines.append(f"- **Status:** {task.get('status') or 'pending'}")
     priority = task.get("priority")
     if priority:
-        parts.append(f"- **Priority:** {priority}")
+        metadata_lines.append(f"- **Priority:** {priority}")
     agent = task.get("agent")
     if agent:
-        parts.append(f"- **Agent:** {agent}")
+        metadata_lines.append(f"- **Agent:** {agent}")
     # Files: always emit the standalone marker form for predictability.
-    parts.append("- **Files:**")
+    metadata_lines.append("- **Files:**")
     if task.get("files"):
         for f in task["files"]:
-            parts.append(f"  - {f}")
+            metadata_lines.append(f"  - {f}")
     # Dependencies: inline list, `[]` if empty for parser unambiguity.
     deps = task.get("depends_on") or []
     if deps:
-        parts.append(f"- **Dependencies:** [{', '.join(deps)}]")
+        metadata_lines.append(f"- **Dependencies:** [{', '.join(deps)}]")
     else:
-        parts.append("- **Dependencies:** []")
+        metadata_lines.append("- **Dependencies:** []")
     test_cmd = task.get("test_command")
     if test_cmd is None or test_cmd == "":
-        parts.append("- **Test command:** none")
+        metadata_lines.append("- **Test command:** none")
     elif test_cmd.strip().lower() == "none":
         # Source wrote the literal sentinel; preserve it unwrapped so the
         # round-trip is byte-identical.
-        parts.append("- **Test command:** none")
+        metadata_lines.append("- **Test command:** none")
     else:
-        parts.append(f"- **Test command:** `{test_cmd}`")
-    parts.append("- **Acceptance criteria:**")
+        metadata_lines.append(f"- **Test command:** `{test_cmd}`")
+    metadata_lines.append("- **Acceptance criteria:**")
     for ac in task.get("acceptance_criteria") or []:
-        parts.append(f"  - {ac}")
+        metadata_lines.append(f"  - {ac}")
     # `**Reversion guidance:**` is emitted UNCONDITIONALLY so the child
     # grammar matches the pinned contract stated in the plan's task
     # description (child files always include the section). When the
@@ -3103,16 +3228,39 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
     # literal string "none" which downstream consumers treat as absent).
     reversion = task.get("reversion_guidance")
     if reversion:
-        parts.append(f"- **Reversion guidance:** {reversion}")
+        metadata_lines.append(f"- **Reversion guidance:** {reversion}")
     else:
-        parts.append("- **Reversion guidance:** none")
-    parts.append("")
-    description = task.get("description") or ""
-    parts.append("**Description:**")
-    if description:
-        parts.append(description)
-    parts.append("")
-    return "\n".join(parts)
+        metadata_lines.append("- **Reversion guidance:** none")
+    metadata = "\n".join(metadata_lines)
+    # ---- Description: ALWAYS non-empty. Plan-review (Phase 1.5) treats
+    # `tasks[i].description` empty/trivial as a likely-blocking gap and
+    # routes the run to `needs-replan` (see `plan-reviewer.md` Intent
+    # completeness check + `plan_codex_dispatch.py` / `plan_gemini_dispatch.py`
+    # prompt line 6). A bare `**Description:**` header would satisfy
+    # `_gate_schema_valid` but halt the run downstream. Fallback chain
+    # when the source task omits the body:
+    #   1. task title (always available, name-grounded)
+    #   2. plus a one-line rationale pointing back at the parent context
+    # so an implementer reading the child knows where to look. The
+    # placeholder is a single short sentence — terse but non-empty,
+    # which is the contract plan-review actually checks.
+    description = (task.get("description") or "").strip()
+    if not description:
+        description = (
+            f"{title}. (Auto-filled by decompose-plan; the source plan "
+            f"omitted a `**Description:**` body for TASK-{tid}. See the "
+            f"parent plan's `## Context` and `## Verification` sections "
+            f"for the full intent.)"
+        )
+    description_slot = f"\n{description}"
+    return string.Template(_DECOMPOSED_CHILD_SCAFFOLD).substitute(
+        TID=tid,
+        TITLE=title,
+        CONTEXT=context_body,
+        VERIFICATION=verification,
+        METADATA=metadata,
+        DESCRIPTION=description_slot,
+    )
 
 
 def _decompose_plan(
@@ -3214,29 +3362,84 @@ def _decompose_plan(
             continue
         seen_ids[tid] = source_line
         parsed.append(task)
-    # Validate required metadata per task.
+    # Backfill schema-required task fields with sensible defaults so a
+    # decomposed plan never fails the downstream `_gate_schema_valid`
+    # check on a missing `**Priority:**` / `**Test command:**` /
+    # `**Acceptance criteria:**` bullet. The decomposer is a transformer,
+    # not a content reviewer — surfacing structural errors for these
+    # routine omissions just halts a run on something the renderer can
+    # patch in place. Defaults applied here are reported back as
+    # `defaults_applied` (informational, non-fatal) so the operator can
+    # see what the decomposer filled in.
+    #
+    # Defaults:
+    #   - **Priority:**          → "medium" (neutral; PRIORITY_RANKS-valid)
+    #   - **Test command:**      → light inference from the parent plan's
+    #                              `## Verification` section, else "none"
+    #   - **Acceptance criteria:** → fall back to the parent plan's
+    #                                `## Verification` bullets if any,
+    #                                else leave empty (renderer still
+    #                                emits the bullet header so
+    #                                `_gate_schema_valid` is satisfied)
+    inferred_test_command = _infer_test_command_from_plan(plan_text)
+    parent_verification_bullets = _extract_plan_verification_bullets(plan_text)
+    defaults_applied: list[dict] = []
     for task in parsed:
         tid = task["id"]
         if not task.get("priority"):
-            errors.append(
+            task["priority"] = "medium"
+            defaults_applied.append(
                 {
-                    "code": "missing-required-metadata",
                     "task_id": tid,
                     "field": "Priority",
-                    "message": f"TASK-{tid} missing `**Priority:**` metadata",
-                    "source_line": task["source_line"],
+                    "default": "medium",
+                    "source": "decomposer-default",
                 }
             )
         if task.get("test_command") is None:
-            errors.append(
+            if inferred_test_command:
+                task["test_command"] = inferred_test_command
+                defaults_applied.append(
+                    {
+                        "task_id": tid,
+                        "field": "Test command",
+                        "default": inferred_test_command,
+                        "source": "plan-verification-inference",
+                    }
+                )
+            else:
+                task["test_command"] = "none"
+                defaults_applied.append(
+                    {
+                        "task_id": tid,
+                        "field": "Test command",
+                        "default": "none",
+                        "source": "decomposer-default",
+                    }
+                )
+        if not task.get("acceptance_criteria") and parent_verification_bullets:
+            task["acceptance_criteria"] = list(parent_verification_bullets)
+            defaults_applied.append(
                 {
-                    "code": "missing-required-metadata",
                     "task_id": tid,
-                    "field": "Test command",
-                    "message": (
-                        f"TASK-{tid} missing `**Test command:**` metadata"
-                    ),
-                    "source_line": task["source_line"],
+                    "field": "Acceptance criteria",
+                    "default": "(copied from parent `## Verification`)",
+                    "source": "plan-verification-inference",
+                }
+            )
+        # Description body MUST be non-empty so plan-review's Intent
+        # completeness check (`tasks[i].description` non-empty) does not
+        # route the run to `needs-replan`. The renderer applies a
+        # title-plus-rationale fallback inside `_render_child_task_file`
+        # when the source omits the body; we record the substitution
+        # here so operators can see the decomposer filled it in.
+        if not (task.get("description") or "").strip():
+            defaults_applied.append(
+                {
+                    "task_id": tid,
+                    "field": "Description",
+                    "default": "(auto-filled from task title + parent context pointer)",
+                    "source": "decomposer-default",
                 }
             )
     # Validate dependency ids exist in the plan.
@@ -3412,6 +3615,7 @@ def _decompose_plan(
         "produced_dir": str(target),
         "task_count": len(parsed),
         "children": [c["file"] for c in chunks],
+        "defaults_applied": defaults_applied,
 
     }
 
@@ -3999,6 +4203,117 @@ def mutate_task_status(plan_text: str, task_id: str, new_status: str) -> tuple[s
     if not matched:
         raise ValueError(f"TASK-{task_id} not found in plan")
     return preamble + "".join(updated), prior or ""
+
+
+_AGENT_BULLET_RE = re.compile(
+    r"^(\s*-\s*\*\*Agent:\*\*)\s*(.+?)\s*$", re.MULTILINE,
+)
+_PRIORITY_BULLET_RE = re.compile(
+    r"^(\s*-\s*\*\*Priority:\*\*)\s*(.+?)\s*$", re.MULTILINE,
+)
+_FILES_BULLET_RE = re.compile(
+    r"^(\s*)-\s*\*\*Files:\*\*", re.MULTILINE,
+)
+
+
+def mutate_task_agent(plan_text: str, task_id: str, new_agent: str) -> tuple[str, str]:
+    """Structurally mutate TASK-NNN's `**Agent:**` bullet to `new_agent`.
+
+    Returns ``(updated_plan_text, prior_agent)``. ``prior_agent`` is the
+    empty string when no ``**Agent:**`` bullet existed previously.
+
+    Insertion order (when the bullet is absent) matches ``_emit_child``'s
+    canonical metadata layout (`plan_ops.py:3187-3197`):
+
+    * Between ``**Priority:**`` and ``**Files:**`` when both exist.
+    * Immediately after ``**Priority:**`` if ``**Files:**`` is absent.
+    * Immediately before ``**Files:**`` if ``**Priority:**`` is absent.
+    * Otherwise at the end of the contiguous metadata-bullet run (before
+      the first non-bullet line after the task header).
+
+    Raises ``ValueError`` on: unknown ``new_agent``, task block not found,
+    or a task block carrying no metadata bullets at all.
+    """
+    if new_agent not in ALLOWED_AGENTS:
+        raise ValueError(
+            f"agent {new_agent!r} not in {sorted(ALLOWED_AGENTS)}"
+        )
+    preamble, blocks = _split_task_blocks(plan_text)
+    if not blocks:
+        raise ValueError("no task blocks found in plan")
+    updated: list[str] = []
+    prior: str | None = None
+    matched = False
+    for tid, body in blocks:
+        if tid == task_id and not matched:
+            m = _AGENT_BULLET_RE.search(body)
+            if m:
+                prior = m.group(2).strip()
+                new_line = f"{m.group(1)} {new_agent}"
+                new_body = body[: m.start()] + new_line + body[m.end():]
+            else:
+                prior = ""
+                new_body = _insert_agent_bullet(body, task_id, new_agent)
+            updated.append(new_body)
+            matched = True
+        else:
+            updated.append(body)
+    if not matched:
+        raise ValueError(f"TASK-{task_id} not found in plan")
+    return preamble + "".join(updated), prior or ""
+
+
+def _insert_agent_bullet(body: str, task_id: str, new_agent: str) -> str:
+    """Insert a new ``- **Agent:** <new_agent>`` bullet into ``body``.
+
+    See ``mutate_task_agent`` for the placement rules. Raises
+    ``ValueError`` when the task block carries no metadata bullets at all.
+    """
+    pm = _PRIORITY_BULLET_RE.search(body)
+    fm = _FILES_BULLET_RE.search(body)
+    if pm is not None:
+        line_end = body.find("\n", pm.end())
+        insert_at = len(body) if line_end == -1 else line_end + 1
+        indent = re.match(r"\s*", body[pm.start():]).group(0)
+        prefix = "" if (line_end != -1 or body.endswith("\n")) else "\n"
+        new_line = f"{prefix}{indent}- **Agent:** {new_agent}\n"
+        return body[:insert_at] + new_line + body[insert_at:]
+    if fm is not None:
+        indent = fm.group(1)
+        new_line = f"{indent}- **Agent:** {new_agent}\n"
+        return body[: fm.start()] + new_line + body[fm.start():]
+    # Neither Priority nor Files present — fall back to the end of the
+    # contiguous metadata-bullet run (before the first non-bullet line
+    # after the task header).
+    lines = body.splitlines(keepends=True)
+    header_idx: int | None = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("### TASK-"):
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError(f"TASK-{task_id} block missing header line")
+    last_bullet: int | None = None
+    started = False
+    for i in range(header_idx + 1, len(lines)):
+        line = lines[i]
+        if line.lstrip().startswith("- "):
+            last_bullet = i
+            started = True
+            continue
+        if line.strip() == "" and not started:
+            continue
+        break
+    if last_bullet is None:
+        raise ValueError(
+            f"TASK-{task_id} block has no metadata bullets to anchor Agent insertion"
+        )
+    insert_at = sum(len(lines[i]) for i in range(last_bullet + 1))
+    indent = re.match(r"\s*", lines[last_bullet]).group(0)
+    last_has_newline = lines[last_bullet].endswith("\n")
+    prefix = "" if last_has_newline else "\n"
+    new_line = f"{prefix}{indent}- **Agent:** {new_agent}\n"
+    return body[:insert_at] + new_line + body[insert_at:]
 
 
 def _parse_index_roster(path: Path) -> dict[str, dict]:
@@ -5547,11 +5862,13 @@ def _run_preflight(payload: dict) -> dict:
         return _result({'error': f'missing-roster-chunk: chunks[].file declared in {roster_path} but missing on disk: {missing_chunks}'}, exit_code=1)
     toplevel_cp = _git(['rev-parse', '--show-toplevel'])
     plan_dir_rel: str
+    repo_root: Path | None = None
     if toplevel_cp.returncode == 0 and toplevel_cp.stdout.strip():
         try:
             repo_root = Path(toplevel_cp.stdout.strip()).resolve()
             plan_dir_rel = plan.resolve().relative_to(repo_root).as_posix()
         except (OSError, ValueError):
+            repo_root = None
             plan_dir_rel = plan.as_posix()
     else:
         plan_dir_rel = plan.as_posix()
@@ -5571,22 +5888,50 @@ def _run_preflight(payload: dict) -> dict:
     dirty: dict[str, list] = {'plan_doc': [], 'orchestrator_state': [], 'plan_scope_dirty': [], 'source_blocking': []}
     warnings: list[str] = []
     status = _git(['status', '--porcelain'])
+    ignore_basename = plan.name
     for line in status.stdout.splitlines():
         if len(line) < 4:
             continue
         path = line[3:]
-        is_plan_doc = path in plan_doc_set
-        ignore_basename = plan.name
-        if is_plan_doc:
-            dirty['plan_doc'].append(path)
-        elif _is_preflight_always_ignored(path, _PLAN_DIR_POSIX, ignore_basename):
-            dirty['orchestrator_state'].append(path)
-        elif path in scope:
-            tid = scope[path]
-            dirty['plan_scope_dirty'].append({'path': path, 'task_id': tid})
-            warnings.append(f'{path} is dirty and TASK-{tid} will write to it')
-        else:
-            dirty['source_blocking'].append(path)
+        # `git status --porcelain` collapses fully-untracked directories
+        # to a single entry with a trailing slash. The Phase 0
+        # auto-promote step (decompose-plan) creates the plan directory
+        # fresh, so on a brand-new run the entire plan_dir is reported
+        # as one line `?? <plan_dir_rel>/`. Without expansion, that bare
+        # directory path matches no entry in plan_doc_set and falls
+        # through to source_blocking — halting preflight on the very
+        # files it just legitimately created. Expand directory entries
+        # at or under the plan_dir to their constituent files so the
+        # classifier below can recognize them as plan_doc /
+        # orchestrator_state. We deliberately do NOT expand directories
+        # outside plan_dir_rel: that preserves git's default `-unormal`
+        # collapse for unrelated untracked dirs (e.g. node_modules/),
+        # which the operator presumably wants to stay collapsed.
+        paths_to_classify: list[str] = [path]
+        if path.endswith('/') and repo_root is not None and plan_dir_rel:
+            dir_rel = path.rstrip('/')
+            if dir_rel == plan_dir_rel or dir_rel.startswith(plan_dir_rel + '/'):
+                try:
+                    expanded = [
+                        sub.relative_to(repo_root).as_posix()
+                        for sub in (repo_root / dir_rel).rglob('*')
+                        if sub.is_file()
+                    ]
+                except (OSError, ValueError):
+                    expanded = []
+                if expanded:
+                    paths_to_classify = sorted(expanded)
+        for p in paths_to_classify:
+            if p in plan_doc_set:
+                dirty['plan_doc'].append(p)
+            elif _is_preflight_always_ignored(p, _PLAN_DIR_POSIX, ignore_basename):
+                dirty['orchestrator_state'].append(p)
+            elif p in scope:
+                tid = scope[p]
+                dirty['plan_scope_dirty'].append({'path': p, 'task_id': tid})
+                warnings.append(f'{p} is dirty and TASK-{tid} will write to it')
+            else:
+                dirty['source_blocking'].append(p)
     codex_available = shutil.which('codex') is not None
     gemini_available = _resolve_gemini_available()
     sha_cp = _git(['rev-parse', 'HEAD'])
@@ -7003,7 +7348,7 @@ def _run_commit_task(payload: dict) -> dict:
             exit_code=1,
         )
 
-    files = [f.strip() for f in payload["files"].split(",") if f.strip()]
+    files = _normalize_csv_or_list(payload["files"])
     if not files:
         return _result(
             {"error": "--files must list at least one file"},
@@ -7015,10 +7360,7 @@ def _run_commit_task(payload: dict) -> dict:
         return _result({"error": f"plan file not found: {plan}"}, exit_code=1)
 
     try:
-        minor = (
-            json.loads(payload["reviewer_minor_findings"])
-            if payload["reviewer_minor_findings"] else []
-        )
+        minor = _normalize_json_or_list(payload["reviewer_minor_findings"])
     except json.JSONDecodeError as e:
         return _result(
             {"error": f"invalid --reviewer-minor-findings: {e}"},
@@ -7705,7 +8047,7 @@ def _run_fail_task(payload: dict) -> dict:
         event_fields["reversion_guidance"] = payload["reversion_guidance"]
     if payload.get("reviewer_findings"):
         try:
-            parsed_findings = json.loads(payload["reviewer_findings"])
+            parsed_findings = _normalize_json_or_list(payload["reviewer_findings"])
         except json.JSONDecodeError as e:
             return _result(
                 {"error": f"invalid --reviewer-findings: {e}"}, exit_code=1,
@@ -7797,6 +8139,38 @@ def _run_update_plan_header(payload: dict) -> dict:
 def cmd_update_plan_header(args: argparse.Namespace) -> None:
     payload = _args_to_payload_update_plan_header(args)
     result = _run_update_plan_header(payload)
+    _emit_or_die(args, result)
+
+
+def _args_to_payload_set_task_agent(args: argparse.Namespace) -> dict:
+    payload = {
+        "plan_file": pathlib.Path(args.plan_file) if args.plan_file else None,
+        "task_id": args.task_id,
+        "agent": args.agent,
+    }
+    return payload
+
+def _run_set_task_agent(payload: dict) -> dict:
+    plan = Path(payload['plan_file'])
+    if not plan.is_file():
+        return _result({'error': f'plan file not found: {plan}'}, exit_code=1)
+    tid = _normalize_task_id(payload['task_id'])
+    if tid is None:
+        return _result(
+            {'error': f"could not normalize task id {payload['task_id']!r}"},
+            exit_code=1,
+        )
+    text = _load_text(plan)
+    try:
+        mutated, prior = mutate_task_agent(text, tid, payload['agent'])
+    except ValueError as e:
+        return _result({'error': str(e)}, exit_code=1)
+    _write_text(plan, mutated)
+    return _result({'ok': True, 'prior_agent': prior}, exit_code=0)
+
+def cmd_set_task_agent(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_set_task_agent(args)
+    result = _run_set_task_agent(payload)
     _emit_or_die(args, result)
 
 
@@ -8826,6 +9200,38 @@ def _extract_task_files_from_plan(plan_text: str, task_id: str) -> list[str] | N
             ]
         return []
     return None
+
+
+def _parse_h3_task_from_plan(plan_text: str, task_id: str) -> dict | None:
+    normalized = _normalize_task_id(task_id)
+    if normalized is None:
+        return None
+    _, blocks = _split_task_blocks_at_level(plan_text, 3)
+    for raw_id, title, block, source_line in blocks:
+        if _normalize_task_id(raw_id) == normalized:
+            return _parse_task_block(
+                block,
+                3,
+                raw_id=raw_id,
+                title=title,
+                source_line=source_line,
+            )
+    return None
+
+
+def _extract_task_description(plan_text: str, task_id: str) -> str | None:
+    task = _parse_h3_task_from_plan(plan_text, task_id)
+    if task is None:
+        return None
+    return task.get("description") or ""
+
+
+def _extract_task_acceptance_criteria(plan_text: str, task_id: str) -> str | None:
+    task = _parse_h3_task_from_plan(plan_text, task_id)
+    if task is None:
+        return None
+    items = task.get("acceptance_criteria") or []
+    return "\n".join(f"- {item}" for item in items)
 
 
 def _gate_commit_safe(
@@ -10803,7 +11209,7 @@ def _check_gemini_available() -> dict:
     Reports the `_resolve_gemini_available()` truth-table view at audit
     time so executor self-checks see whether the orchestrator would
     advertise Gemini as available right now. Always passes (binary +
-    key state is operator-environment, not a contract drift); the
+    auth state is operator-environment, not a contract drift); the
     finding's `actual.value` carries the boolean and the structured
     breakdown (`binary_present`, `api_key_present`, `creds_present`).
     Tier=advisory: never flips default-tier verdicts.
@@ -10978,7 +11384,7 @@ def _run_audit(payload: dict) -> dict:
 
     requested: list[str] | None = None
     if payload["check"]:
-        requested = [s.strip() for s in payload["check"].split(",") if s.strip()]
+        requested = _normalize_csv_or_list(payload["check"])
         unknown = [name for name in requested if name not in AUDIT_CHECK_NAMES]
         if unknown:
             return _result(
@@ -11183,7 +11589,7 @@ def _run_gates(payload: dict) -> dict:
             exit_code=0 if certified else 1,
         )
 
-    requested = [s.strip() for s in str(payload.get("check", "")).split(",") if s.strip()]
+    requested = _normalize_csv_or_list(payload.get("check"))
     unknown = [g for g in requested if g not in GATE_NAMES]
     if unknown:
         return _result({"error": f"unknown gate name(s): {unknown}; known: {list(GATE_NAMES)}"}, exit_code=1)
@@ -11751,6 +12157,668 @@ def cmd_resolve_read_targets(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# build-agent-dispatch-prompt — render Agent prompt text from templates
+# ---------------------------------------------------------------------------
+
+_AGENT_DISPATCH_TEMPLATE_AGENT = {
+    "code-reviewer-d-claude": "code-reviewer",
+    "code-reviewer-d5": "code-reviewer",
+    "plan-reviewer": "plan-reviewer",
+    "plan-author-task-targeted": "plan-author",
+    "plan-author-schedule-level": "plan-author",
+    "plan-author-legacy-whole-plan": "plan-author",
+    "plan-review-triage": "plan-review-triage",
+    "plan-remediator-narrow": "plan-remediator",
+    "plan-remediator-rescue": "plan-remediator",
+}
+
+_AGENT_DISPATCH_TEMPLATE_MODEL = {
+    "code-reviewer-d-claude": "sonnet",
+    "code-reviewer-d5": "sonnet",
+    "plan-reviewer": "sonnet",
+    "plan-author-task-targeted": "opus",
+    "plan-author-schedule-level": "opus",
+    "plan-author-legacy-whole-plan": "opus",
+    "plan-review-triage": "sonnet",
+    "plan-remediator-narrow": "opus",
+    "plan-remediator-rescue": "opus",
+}
+
+_AGENT_DISPATCH_TEMPLATE_HEADING = {
+    "code-reviewer-d-claude": "## Phase D-Claude — code-reviewer on Codex work",
+    "code-reviewer-d5": "## Phase D.5 — code-reviewer third opinion (§8.4 escalation)",
+    "plan-reviewer": "## Phase 1.5-Claude — plan-reviewer dispatch (claude_only path)",
+    "plan-author-task-targeted": "### Variant A — Task-targeted dispatch (`variant == \"A\"`)",
+    "plan-author-schedule-level": "### Variant B — Schedule-level dispatch (`variant == \"B\"`)",
+    "plan-author-legacy-whole-plan": "## Phase A — plan-analyst whole-plan dispatch (LEGACY — retained for direct CLI callers)",
+    "plan-review-triage": "## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)",
+    "plan-remediator-narrow": "## Phase B-narrow-remediation — Narrow-remediation retry (D.2a.6)",
+    "plan-remediator-rescue": "## Phase D.4-rescue — plan-remediator dispatch (single-shot rescue)",
+}
+
+_AGENT_DISPATCH_TARGET_INJECTION_VERBS = {
+    "code-reviewer-d-claude": "Reviewing",
+    "code-reviewer-d5": "Adjudicate",
+    "plan-author-task-targeted": "Apply the plan-review finding",
+    "plan-remediator-narrow": "Apply the narrow-remediation patch",
+    "plan-remediator-rescue": "Apply the D.4 rescue",
+}
+
+
+def _agent_dispatch_error(
+    code: str,
+    message: str,
+    *,
+    path: str | None = None,
+) -> dict:
+    record = {"code": code, "message": message}
+    if path is not None:
+        record["path"] = path
+    return _result({"ok": False, "errors": [record], "warnings": []}, exit_code=1)
+
+
+def _agent_dispatch_schema_path() -> Path:
+    return (
+        Path(__file__).resolve().parent
+        / "schemas"
+        / "mcp"
+        / "build_agent_dispatch_prompt.input.json"
+    )
+
+
+_AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE = {
+    "code-reviewer-d-claude": "codeReviewerDClaudeContext",
+    "code-reviewer-d5": "codeReviewerD5Context",
+    "plan-reviewer": "planReviewerContext",
+    "plan-author-task-targeted": "planAuthorTaskTargetedContext",
+    "plan-author-schedule-level": "planAuthorScheduleLevelContext",
+    "plan-author-legacy-whole-plan": "planAuthorLegacyWholePlanContext",
+    "plan-review-triage": "planReviewTriageContext",
+    "plan-remediator-narrow": "planRemediatorNarrowContext",
+    "plan-remediator-rescue": "planRemediatorRescueContext",
+}
+
+
+def _validate_build_agent_dispatch_prompt_input(payload: object) -> list[dict]:
+    schema_path = _agent_dispatch_schema_path()
+    try:
+        schema = json.loads(_load_text(schema_path))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [{"path": "$", "message": f"input schema unavailable: {exc}"}]
+    try:
+        import jsonschema
+    except ImportError:
+        jsonschema = None
+    if jsonschema is None:
+        if not isinstance(payload, dict):
+            return [{"path": "$", "message": "input must be a JSON object"}]
+        errors: list[dict] = []
+        for key in ("template_id", "context"):
+            if key not in payload:
+                errors.append({"path": f"$.{key}", "message": "required field missing"})
+        context = payload.get("context") if isinstance(payload, dict) else None
+        if not isinstance(context, dict):
+            errors.append({"path": "$.context", "message": "must be an object"})
+        elif "files_changed" not in context:
+            errors.append({"path": "$.context.files_changed", "message": "required field missing"})
+        return errors
+    if isinstance(payload, dict) and isinstance(payload.get("template_id"), str):
+        branch_context = _agent_dispatch_context_schema_for_template(
+            schema,
+            payload.get("template_id"),
+        )
+        if branch_context is not None:
+            required_errors = []
+            for key in ("template_id", "context"):
+                if key not in payload:
+                    required_errors.append(
+                        {
+                            "path": f"/{key}",
+                            "code": "required-field-missing",
+                            "message": f"{key!r} is a required property",
+                        }
+                    )
+            if required_errors:
+                return required_errors
+            context_schema = dict(branch_context)
+            context_schema["$defs"] = schema.get("$defs", {})
+            context_validator = jsonschema.Draft202012Validator(context_schema)
+            context_errors = list(context_validator.iter_errors(payload.get("context")))
+            if context_errors:
+                return [
+                    {
+                        "path": "/context" + _jsonschema_error_path(error),
+                        "code": _jsonschema_error_code(error),
+                        "message": error.message,
+                    }
+                    for error in sorted(context_errors, key=lambda item: list(item.path))
+                ]
+    validator = jsonschema.Draft202012Validator(schema)
+    return [
+        {
+            "path": _jsonschema_error_path(error),
+            "code": _jsonschema_error_code(error),
+            "message": error.message,
+        }
+        for error in sorted(validator.iter_errors(payload), key=lambda item: list(item.path))
+    ]
+
+
+def _agent_dispatch_context_schema_for_template(
+    schema: dict,
+    template_id: str,
+) -> dict | None:
+    def_name = _AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE.get(template_id)
+    if def_name is not None:
+        return schema.get("$defs", {}).get(def_name)
+
+    # Legacy schema compatibility: older sidecars carried top-level oneOf
+    # branches that paired template_id with a context $ref.
+    for branch in schema.get("oneOf", []):
+        if branch.get("properties", {}).get("template_id", {}).get("const") != template_id:
+            continue
+        context_schema = branch.get("properties", {}).get("context")
+        if not isinstance(context_schema, dict):
+            return None
+        ref = context_schema.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            return schema.get("$defs", {}).get(ref.rsplit("/", 1)[-1])
+        return context_schema
+    return None
+
+
+def _jsonschema_error_path(error: object) -> str:
+    parts = list(getattr(error, "path", []))
+    if getattr(error, "validator", None) == "required":
+        missing = re.search(r"'([^']+)' is a required property", getattr(error, "message", ""))
+        if missing:
+            parts.append(missing.group(1))
+    pointer = "".join(
+        f"/{str(part).replace('~', '~0').replace('/', '~1')}" for part in parts
+    )
+    return pointer or "/"
+
+
+def _jsonschema_error_code(error: object) -> str:
+    validator = getattr(error, "validator", None)
+    if validator == "required":
+        return "required-field-missing"
+    if validator == "oneOf":
+        return "template-context-mismatch"
+    if validator == "enum":
+        return "invalid-enum"
+    if validator == "const":
+        return "invalid-const"
+    if validator == "additionalProperties":
+        return "additional-property"
+    if validator == "type":
+        return "invalid-type"
+    if validator == "pattern":
+        return "invalid-pattern"
+    return "schema-validation-error"
+
+
+def _agent_dispatch_template_path() -> Path:
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    plugin_root = Path(root) if root else Path(__file__).resolve().parents[1]
+    return plugin_root / "skills" / "implement-plan" / "dispatch-templates.md"
+
+
+def _extract_dispatch_template_section(template_text: str, heading: str) -> str | None:
+    start = template_text.find(heading)
+    if start == -1:
+        return None
+    tail = template_text[start:]
+    next_heading = re.search(r"^(## Phase |### Variant )", tail[len(heading):], re.MULTILINE)
+    if next_heading:
+        return tail[: len(heading) + next_heading.start()]
+    return tail
+
+
+def _extract_agent_blockquote(section: str) -> str:
+    # Collect every contiguous blockquote run in the section, then return
+    # the LAST one. Earlier runs are orientation notes (e.g., the
+    # `> Rendered by plan_ops__build_agent_dispatch_prompt(...)` header
+    # note that directs human readers at SKILL.md §Canonical Agent
+    # dispatch recipe); the real template body is the final run, which
+    # always extends to the section terminator.
+    lines = section.splitlines()
+    runs: list[list[str]] = []
+    current: list[str] = []
+    in_quote = False
+    for line in lines:
+        if line.startswith(">"):
+            in_quote = True
+            unquoted = line[1:]
+            if unquoted.startswith(" "):
+                unquoted = unquoted[1:]
+            current.append(unquoted)
+            continue
+        if in_quote:
+            if line.strip():
+                # Non-blank, non-quote line terminates the run.
+                runs.append(current)
+                current = []
+                in_quote = False
+            else:
+                # Blank line inside an ongoing blockquote run (matches the
+                # legacy extractor behaviour — a `>` followed by `>` with
+                # only a blank gap stays one run).
+                current.append("")
+    if current:
+        runs.append(current)
+    if not runs:
+        return "\n"
+    out = runs[-1]
+    return "\n".join(out).strip() + "\n"
+
+
+def _json_for_prompt(value: object) -> str:
+    if isinstance(value, str):
+        try:
+            return json.dumps(json.loads(value), indent=2, sort_keys=True)
+        except json.JSONDecodeError:
+            return value
+    return json.dumps(value, indent=2, sort_keys=True)
+
+
+def _extract_task_block_for_prompt(plan_text: str, task_id: str) -> str | None:
+    normalized = _normalize_task_id(task_id)
+    if normalized is None:
+        return None
+    _, blocks = _split_task_blocks(plan_text)
+    for raw_id, block in blocks:
+        if _normalize_task_id(raw_id) == normalized:
+            return block.strip()
+    return None
+
+
+def _context_section_for_prompt(plan_text: str) -> str:
+    context = _extract_plan_context_section(plan_text)
+    return context if context is not None else "(none)"
+
+
+def _render_review_target_task_id_injection(
+    plan_text: str,
+    target_task_id: str | None,
+    *,
+    plan_file: str,
+    template_id: str = "code-reviewer-d-claude",
+) -> str | dict:
+    heading_count = count_task_headings(plan_text)
+    if target_task_id is None:
+        if heading_count > 1:
+            return _agent_dispatch_error(
+                "target-task-id-required",
+                (
+                    f"target_task_id is required: {plan_file} declares "
+                    f"{heading_count} `### TASK-NNN:` H3 headings"
+                ),
+                path="$.context.target_task_id",
+            )
+        return ""
+    if heading_count <= 1:
+        return ""
+    normalized = _normalize_task_id(target_task_id)
+    if normalized is None:
+        return _agent_dispatch_error(
+            "target-task-id-invalid",
+            f"target_task_id is not parseable: {target_task_id!r}",
+            path="$.context.target_task_id",
+        )
+    verb = _AGENT_DISPATCH_TARGET_INJECTION_VERBS.get(template_id, "Implement")
+    return (
+        f"{verb} specifically `### TASK-{normalized}:` (this child "
+        f"plan file declares {heading_count} `### TASK-NNN:` H3 headings; "
+        "read only the matching block).\n\n"
+    )
+
+
+def _args_to_payload_build_agent_dispatch_prompt(args: argparse.Namespace) -> dict:
+    if getattr(args, "stdin", False):
+        try:
+            payload = json.loads(_read_stdin_text())
+        except json.JSONDecodeError as exc:
+            return {"__invalid_json_error__": str(exc)}
+        return payload
+    context = getattr(args, "context", None)
+    if isinstance(context, str):
+        context_text = context
+        context_path = Path(context)
+        if context_path.is_file():
+            context_text = _load_text(context_path)
+        try:
+            context = json.loads(context_text)
+        except json.JSONDecodeError:
+            context = context_text
+    return {
+        "template_id": getattr(args, "template_id", None),
+        "context": context,
+    }
+
+
+def _run_build_agent_dispatch_prompt(payload: dict) -> dict:
+    if "__invalid_json_error__" in payload:
+        return _agent_dispatch_error(
+            "invalid-json",
+            f"invalid JSON on stdin: {payload['__invalid_json_error__']}",
+            path="$",
+        )
+    errors = _validate_build_agent_dispatch_prompt_input(payload)
+    if errors:
+        return _result(
+            {"ok": False, "errors": errors, "warnings": []},
+            exit_code=1,
+        )
+
+    template_id = payload["template_id"]
+    context = payload["context"]
+    prompt_plan_key = {
+        "plan-reviewer": None,
+        "plan-author-task-targeted": "child_plan_file",
+        "plan-author-schedule-level": "roster_file",
+        "plan-author-legacy-whole-plan": "plan_path",
+        "plan-review-triage": None,
+    }.get(template_id, "plan_file")
+    plan_file = Path(".")
+    plan_text = ""
+    if prompt_plan_key is not None:
+        plan_file = Path(context[prompt_plan_key])
+        if not plan_file.is_absolute():
+            return _agent_dispatch_error(
+                "plan-file-not-absolute",
+                f"{prompt_plan_key} must be absolute: {plan_file}",
+                path=f"$.context.{prompt_plan_key}",
+            )
+        if not plan_file.is_file():
+            return _agent_dispatch_error(
+                "plan-file-not-found",
+                f"plan file not found: {plan_file}",
+                path=f"$.context.{prompt_plan_key}",
+            )
+        plan_text = _load_text(plan_file)
+    task_id = context.get("task_id") or context.get("target_task_id")
+    normalized_task_id = _normalize_task_id(task_id) if task_id is not None else None
+    if task_id is not None and normalized_task_id is None:
+        return _agent_dispatch_error(
+            "task-id-invalid",
+            f"task_id is not parseable: {task_id!r}",
+            path="$.context.task_id",
+        )
+
+    template_path = _agent_dispatch_template_path()
+    if not template_path.is_file():
+        return _agent_dispatch_error(
+            "template-file-not-found",
+            f"dispatch template file not found: {template_path}",
+        )
+    section = _extract_dispatch_template_section(
+        _load_text(template_path),
+        _AGENT_DISPATCH_TEMPLATE_HEADING[template_id],
+    )
+    if section is None:
+        return _agent_dispatch_error(
+            "template-section-not-found",
+            f"template section not found: {_AGENT_DISPATCH_TEMPLATE_HEADING[template_id]}",
+        )
+    prompt = _extract_agent_blockquote(section)
+    render_result = _render_agent_dispatch_prompt_body(
+        template_id,
+        context,
+        prompt,
+        plan_file=plan_file,
+        plan_text=plan_text,
+        normalized_task_id=normalized_task_id,
+    )
+    if isinstance(render_result, dict):
+        return render_result
+    prompt = render_result
+    return _result(
+        {
+            "ok": True,
+            "agent": _AGENT_DISPATCH_TEMPLATE_AGENT[template_id],
+            "model": _AGENT_DISPATCH_TEMPLATE_MODEL[template_id],
+            "prompt": prompt,
+        },
+        exit_code=0,
+    )
+
+
+def _render_agent_dispatch_prompt_body(
+    template_id: str,
+    context: dict,
+    prompt: str,
+    *,
+    plan_file: Path,
+    plan_text: str,
+    normalized_task_id: str | None,
+) -> str | dict:
+    injection = ""
+    if template_id in _AGENT_DISPATCH_TARGET_INJECTION_VERBS:
+        injection = _render_review_target_task_id_injection(
+            plan_text,
+            context.get("target_task_id"),
+            plan_file=str(plan_file),
+            template_id=template_id,
+        )
+        if isinstance(injection, dict):
+            return injection
+
+    if template_id == "code-reviewer-d-claude":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        description = _extract_task_description(plan_text, normalized_task_id)
+        acceptance_criteria = _extract_task_acceptance_criteria(plan_text, normalized_task_id)
+        if description is None or acceptance_criteria is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        prompt = prompt.replace(
+            "<comma-separated files from Codex wrapper's files_changed>",
+            ", ".join(context["files_changed"]),
+        )
+        prompt = prompt.replace("<verbatim from TASK-NNN Description>", description)
+        prompt = prompt.replace(
+            "<verbatim from TASK-NNN Acceptance criteria>",
+            acceptance_criteria,
+        )
+        return injection + prompt
+
+    if template_id == "code-reviewer-d5":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        task_block = _extract_task_block_for_prompt(plan_text, normalized_task_id)
+        if task_block is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        reviewer = context.get("reviewer", "Codex")
+        prompt = prompt.replace(
+            "<comma-separated files from Claude implementer's files_changed>",
+            ", ".join(context["files_changed"]),
+        )
+        prompt = prompt.replace("<reviewer>", reviewer)
+        prompt = prompt.replace("<entire TASK-NNN block>", task_block)
+        prompt = prompt.replace("<codex_findings_json>", _json_for_prompt(context["reviewer_findings"]))
+        prompt = prompt.replace("<wrapper_checks_json>", _json_for_prompt(context["wrapper_checks_json"]))
+        return injection + prompt
+
+    if template_id == "plan-reviewer":
+        prompt = prompt.replace("<absolute schedule path>", context["schedule_path"])
+        prompt = prompt.replace("<plan directory basename>", context["plan_basename"])
+        allow = "true" if context["allow_gaps_demotion"] else "false"
+        prompt = prompt.replace("<true|false>", allow)
+        if not context["allow_gaps_demotion"]:
+            prompt = re.sub(
+                r"\n\*\*Allow-gaps demotion clause.*?standard verdict vocabulary unchanged\.\n",
+                "\n",
+                prompt,
+                flags=re.DOTALL,
+            )
+        return prompt
+
+    if template_id == "plan-author-task-targeted":
+        prompt = prompt.replace(
+            "<per_finding_dispatches[i].child_plan_file>",
+            context["child_plan_file"],
+        )
+        prompt = prompt.replace(
+            "<per_finding_dispatches[i].target_task_id>",
+            context["target_task_id"],
+        )
+        prompt = prompt.replace(
+            "<per_finding_dispatches[i].finding>",
+            _json_for_prompt(context["finding"]),
+        )
+        return injection + prompt
+
+    if template_id == "plan-author-schedule-level":
+        prompt = prompt.replace(
+            "<orchestrator-resolved absolute path to 00_INDEX.json>",
+            context["roster_file"],
+        )
+        prompt = prompt.replace(
+            "<per_finding_dispatches[i].finding>",
+            _json_for_prompt(context["finding"]),
+        )
+        return prompt
+
+    if template_id == "plan-author-legacy-whole-plan":
+        return (
+            f"Apply a plan-review finding to the legacy whole-plan file at "
+            f"`{context['plan_path']}`. Your write scope is exactly that file.\n\n"
+            f"Target task id: `{context.get('target_task_id')}`\n\n"
+            "Plan-review finding (single router-provided entry):\n\n"
+            "```json\n"
+            f"{_json_for_prompt(context['finding'])}\n"
+            "```\n\n"
+            "Apply a minimum-change edit. Preserve untouched sections verbatim. "
+            "Do NOT edit child plan files, roster files, source code, tests, or configuration.\n\n"
+            "**You do NOT have the Agent tool.** Do all work directly with Read, Grep, Glob, Edit, Write, Bash.\n"
+        )
+
+    if template_id == "plan-review-triage":
+        return _render_plan_review_triage_prompt(context, prompt)
+
+    if template_id == "plan-remediator-narrow":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        task_block = _extract_task_block_for_prompt(plan_text, normalized_task_id)
+        if task_block is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        prompt = prompt.replace("<absolute plan path>", str(plan_file))
+        prompt = prompt.replace("<## Context section verbatim>", _context_section_for_prompt(plan_text))
+        prompt = prompt.replace("<entire TASK-NNN block>", task_block)
+        prompt = prompt.replace("<starting_sha>", context["starting_sha"])
+        prompt = prompt.replace("<findings_for_retry>", _json_for_prompt(context["findings_for_retry"]))
+        prompt = prompt.replace("<dismissed_for_context>", _json_for_prompt(context["dismissed_for_context"]))
+        prompt = prompt.replace("<d5_summary>", context["d5_summary"])
+        prompt = prompt.replace("<analyst_annotations_json>", _json_for_prompt(context["analyst_annotations_json"]))
+        return injection + prompt
+
+    if template_id == "plan-remediator-rescue":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        task_block = _extract_task_block_for_prompt(plan_text, normalized_task_id)
+        if task_block is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        prompt = prompt.replace("<absolute plan path>", str(plan_file))
+        prompt = prompt.replace("<reviewer_source>", context["reviewer_source"])
+        prompt = prompt.replace("<## Context section verbatim>", _context_section_for_prompt(plan_text))
+        prompt = prompt.replace("<entire TASK-NNN block>", task_block)
+        prompt = prompt.replace("<starting_sha>", context["starting_sha"])
+        prompt = prompt.replace("<rescue_findings_json>", _json_for_prompt(context["rescue_findings_json"]))
+        prompt = prompt.replace("<analyst_annotations_json>", _json_for_prompt(context["analyst_annotations_json"]))
+        return injection + prompt
+
+    return prompt
+
+
+def _render_plan_review_triage_prompt(context: dict, prompt: str) -> str:
+    source = context["source"]
+    rendered_source = "codex-plan-review" if source == "codex" else "plan-analyst"
+    evidence = context["findings"] if source == "codex" else context["gaps"]
+    findings_count = len(evidence)
+    schedule_text = ""
+    if context.get("schedule_path"):
+        schedule_text = f", `schedule_path={context['schedule_path']}`"
+    prompt = prompt.replace(
+        "Scope: `source=<source>`, `findings_count=<N>`; include `schedule_path=<absolute schedule path>` only when supplied.",
+        f"Scope: `source={rendered_source}`, `findings_count={findings_count}`{schedule_text}.",
+    )
+    prompt = prompt.replace("<source>", rendered_source)
+    prompt = prompt.replace("<findings_for_payload>", _json_for_prompt(evidence))
+    if source == "codex":
+        prompt = re.sub(
+            r"\n\*If `source == plan-analyst`:.*?(?=\nReturn your verdict)",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+        prompt = re.sub(
+            r"\n\*Source-specific verification moves — if `source == plan-analyst`:.*?(?=\n\*Same-family caveat)",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+        prompt = re.sub(
+            r"\n\*Same-family caveat.*?over silently dismissing it\.\n",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+    else:
+        prompt = re.sub(
+            r"\n\*If `source == codex-plan-review`:.*?(?=\n\*If `source == plan-analyst`)",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+        prompt = re.sub(
+            r"\n\*Source-specific verification moves — if `source == codex-plan-review`:.*?(?=\n\*Source-specific verification moves — if `source == plan-analyst`)",
+            "\n",
+            prompt,
+            flags=re.DOTALL,
+        )
+    return prompt
+
+
+def cmd_build_agent_dispatch_prompt(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_build_agent_dispatch_prompt(args)
+    result = _run_build_agent_dispatch_prompt(payload)
+    args.json = True
+    _emit_or_die(args, result)
+
+
+# ---------------------------------------------------------------------------
 # build-claude-dispatch-input — canonical wrapper-input builder
 # ---------------------------------------------------------------------------
 #
@@ -11809,13 +12877,22 @@ def _bcdi_to_envelope_result(envelope: dict, output: str) -> dict:
     returned for `_emit_or_die` to JSON-render. When ``output`` is a
     filesystem path, the envelope is written there and
     ``__plan_ops_stdout_suppressed__`` is set so the CLI exits 0 with
-    no stdout (preserving the pre-codemod byte image).
+    no stdout (preserving the pre-codemod byte image). MCP callers
+    get an ``__plan_ops_mcp_acknowledgement__`` marker carrying the
+    small ``{ok, output_written, output}`` shape so the MCP server
+    can return that acknowledgement instead of the full dispatch
+    envelope (which is what the file-output mode is for).
     """
     result = _result(envelope, exit_code=0)
     if output != "-":
         text = json.dumps(envelope, indent=2, sort_keys=False) + "\n"
         Path(output).write_text(text, encoding="utf-8")
         result["__plan_ops_stdout_suppressed__"] = True
+        result["__plan_ops_mcp_acknowledgement__"] = {
+            "ok": True,
+            "output_written": True,
+            "output": output,
+        }
     return result
 
 
@@ -12582,7 +13659,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_commit.add_argument("--files", required=True, help="Comma-separated files to commit")
     p_commit.add_argument("--title", required=True)
     p_commit.add_argument("--diff-summary", required=True)
-    p_commit.add_argument("--reviewer", choices=["codex", "claude", "none"], default="none")
+    p_commit.add_argument("--reviewer", choices=["codex", "gemini", "claude", "none"], default="none")
     p_commit.add_argument("--reviewer-verdict", default="")
     p_commit.add_argument("--reviewer-minor-findings", default="[]",
                           help="JSON array of minor findings")
@@ -12789,6 +13866,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_hdr.add_argument("--status", required=True, choices=sorted(ALLOWED_PLAN_STATUSES))
     _add_json(p_hdr)
 
+    p_sta = sub.add_parser(
+        "set-task-agent",
+        help="Set TASK-NNN's **Agent:** bullet (insert or replace)",
+    )
+    p_sta.add_argument("--plan-file", required=True)
+    p_sta.add_argument("--task-id", required=True)
+    p_sta.add_argument("--agent", required=True, choices=list(ALLOWED_AGENTS))
+    _add_json(p_sta)
+
     p_fin = sub.add_parser("finalize-execution-log",
                            help="Append §5 execution-log markdown table to plan file")
     p_fin.add_argument("--plan-file", required=True)
@@ -12981,6 +14067,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_rrt.set_defaults(func=cmd_resolve_read_targets)
+
+    p_badp = sub.add_parser(
+        "build-agent-dispatch-prompt",
+        help=(
+            "Render an Agent dispatch prompt from dispatch-templates.md "
+            "for a supported template_id."
+        ),
+    )
+    p_badp.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read {template_id, context} JSON from stdin",
+    )
+    p_badp.add_argument(
+        "--template-id",
+        default=None,
+        choices=sorted(_AGENT_DISPATCH_TEMPLATE_AGENT),
+        help="Dispatch prompt template id",
+    )
+    p_badp.add_argument(
+        "--context",
+        default=None,
+        help="JSON object or path to JSON context for the selected template",
+    )
+    p_badp.add_argument(
+        "--json",
+        action="store_true",
+        help="Reserved for parity; this subcommand always emits JSON.",
+    )
+    p_badp.set_defaults(func=cmd_build_agent_dispatch_prompt)
 
     # TASK-001 (wrapper_autoclean_authorization): canonical wrapper-input
     # builder. Emits the JSON object accepted by ``plan_claude_dispatch.py
@@ -13466,6 +14582,28 @@ _REVIEW_ROUTE_ACTIONS = {
 _CODEX_VERDICTS = {"clean", "minor-findings", "needs-rework"}
 # Claude reviewer verdict vocabulary (review of Codex work, or claude_only).
 _CLAUDE_VERDICTS = {"ship", "ship-with-fixes", "needs-rework"}
+
+
+def _blocking_findings(findings: object) -> list[dict]:
+    """Subset of reviewer findings flagged `blocking: true`.
+
+    The Phase D-Claude reviewer template (dispatch-templates.md §Phase
+    D-Claude) requires every entry of `findings[]` to carry a `blocking:
+    bool` discriminator and forbids `blocking: true` under
+    `ship-with-fixes`. A contradictory `ship-with-fixes` envelope
+    (verdict says soft-pass; a finding says ship-blocker) is treated by
+    the router as a structural escalation to remediation — incomplete
+    implementation must never reach commit through the soft-pass channel.
+    Legacy envelopes without the `blocking` field on every entry route
+    as-if no blocking findings were declared (backward-compat: prior
+    reviewers emitted only verdict + summary).
+    """
+    if not isinstance(findings, list):
+        return []
+    return [
+        f for f in findings
+        if isinstance(f, dict) and f.get("blocking") is True
+    ]
 # D.5 third-opinion verdict vocabulary.
 _D5_VERDICTS = {"ship", "ship-with-fixes", "partial-agreement", "needs-rework"}
 # Reviewer identity vocabulary (TASK-001 PHASE_D_STATE_MACHINE_COMPLETION).
@@ -13550,6 +14688,7 @@ _PLAN_REVIEW_ROUTE_ACTIONS = {
     "skip_plan_review",
     "dispatch_claude_reviewer",
     "dispatch_codex_reviewer",
+    "dispatch_gemini_reviewer",
     "proceed_to_phase_2",
     "dispatch_triage",
     "dispatch_plan_author_per_finding",
@@ -13611,11 +14750,11 @@ def _plan_review_route_reviewer(payload: dict) -> str | None:
     raw = payload.get("reviewer")
     if isinstance(raw, str):
         return raw
+    if payload.get("claude_only") is True:
+        return "claude"
     env = payload.get("plan_review_envelope")
     if isinstance(env, dict) and isinstance(env.get("reviewer"), str):
         return env["reviewer"]
-    if payload.get("claude_only") is True:
-        return "claude"
     return None
 
 
@@ -13688,6 +14827,19 @@ def _plan_review_route(payload: dict) -> dict:
         if payload.get("claude_only") is True:
             return {"action": "dispatch_claude_reviewer", "args": {}}
         if payload.get("claude_only") is False:
+            reviewer = _plan_review_route_reviewer(payload)
+            if reviewer == "gemini":
+                return {
+                    "action": "dispatch_gemini_reviewer",
+                    "args": {
+                        "dispatch_context": {
+                            "allow_gaps_demotion": bool(flags.get("allow_gaps", False)),
+                        },
+                    },
+                    "dispatch_context": {
+                        "allow_gaps_demotion": bool(flags.get("allow_gaps", False)),
+                    },
+                }
             return {
                 "action": "dispatch_codex_reviewer",
                 "args": {
@@ -13711,7 +14863,11 @@ def _plan_review_route(payload: dict) -> dict:
             reason = (
                 "claude_review_failure"
                 if outcome == "failure" and reviewer == "claude"
-                else "codex_unavailable"
+                else (
+                    "codex_unavailable"
+                    if env.get("envelope_error") == "codex binary not found on PATH"
+                    else f"codex_plan_review_{outcome}"
+                )
             )
             return _with_plan_review_state_transitions({
                 "action": "skip_plan_review",
@@ -14242,6 +15398,51 @@ def _route_review_route(payload: dict) -> dict:
                     f"expected one of {sorted(_CLAUDE_VERDICTS)!r}",
                     task_id=task_id,
                 )
+            blocking = _blocking_findings(rev_findings)
+            if rev_verdict == "ship-with-fixes" and blocking:
+                # Contradictory envelope: reviewer chose the soft-pass verdict
+                # but flagged ship-blocking findings. Per Phase D-Claude
+                # template, this is incomplete implementation — escalate to
+                # narrow-remediation (touch-only) instead of committing.
+                if narrow_used:
+                    return {
+                        "action": "pause_awaiting_user",
+                        "args": {
+                            "task_id": task_id,
+                            "pause_payload": {
+                                "stage": "post_narrow_remediation_review",
+                                "codex_findings": list(rev_findings),
+                                "d5_summary": (
+                                    "ship-with-fixes with blocking findings "
+                                    "after narrow-remediation already used"
+                                ),
+                                "dismissed_finding_indices": [],
+                            },
+                        },
+                    }
+                return {
+                    "action": "dispatch_narrow_remediation",
+                    "args": {
+                        "task_id": task_id,
+                        "dispatch_context": {
+                            "template": "PhaseB-narrow-remediation",
+                            "findings_for_retry": list(blocking),
+                            "dismissed_for_context": [
+                                f for f in rev_findings
+                                if f not in blocking
+                            ] if isinstance(rev_findings, list) else [],
+                            "d5_summary": (
+                                "ship-with-fixes verdict carried "
+                                f"{len(blocking)} blocking finding(s); "
+                                "Phase D-Claude reviewer template forbids "
+                                "blocking findings under ship-with-fixes "
+                                "(incomplete implementation must not "
+                                "soft-pass). Reviewer summary: "
+                                f"{rev_summary}"
+                            ),
+                        },
+                    },
+                }
             if rev_verdict in ("ship", "ship-with-fixes"):
                 return {
                     "action": "commit",
@@ -14276,12 +15477,54 @@ def _route_review_route(payload: dict) -> dict:
             task_id=task_id,
         )
 
-    # ---- Branch 2: Codex implementer, Claude reviewer (D.2 + D.2b). ----
+    # ---- Branch 2a: Codex implementer, Gemini reviewer (no-Claude path). ----
     assert implementer == "codex"
+    if reviewer == "gemini":
+        if claude_only:
+            return _unknown(
+                "reviewer='gemini' on Codex work is incompatible with "
+                "claude_only=true",
+                task_id=task_id,
+            )
+        if rev_verdict not in _CODEX_VERDICTS:
+            return _unknown(
+                f"unrecognized Gemini reviewer verdict {rev_verdict!r}; "
+                f"expected one of {sorted(_CODEX_VERDICTS)!r}",
+                task_id=task_id,
+            )
+        if rev_verdict in ("clean", "minor-findings"):
+            return {
+                "action": "commit",
+                "args": {
+                    "task_id": task_id,
+                    "commit_flags": {
+                        "disagreement_tag": False,
+                        "remediation_tag": False,
+                        "narrow_remediation_tag": False,
+                        "dismissed_finding_ids": [],
+                    },
+                },
+            }
+        return {
+            "action": "pause_awaiting_user",
+            "args": {
+                "task_id": task_id,
+                "pause_payload": {
+                    "stage": "post_gemini_review",
+                    "reviewer": reviewer,
+                    "reviewer_verdict": rev_verdict,
+                    "codex_findings": list(rev_findings),
+                    "summary": rev_summary,
+                },
+            },
+        }
+
+    # ---- Branch 2b: Codex implementer, Claude reviewer (D.2 + D.2b). ----
     if reviewer != "claude":
         return _unknown(
             f"unsupported reviewer {reviewer!r} for Codex implementer; "
-            "Codex-implemented work is reviewed by Claude in the current SKILL contract",
+            "Codex-implemented work is reviewed by Claude in the Claude path "
+            "or Gemini in the Codex+Gemini no-Claude path",
             task_id=task_id,
         )
     if rev_verdict not in _CLAUDE_VERDICTS:
@@ -14290,6 +15533,44 @@ def _route_review_route(payload: dict) -> dict:
             f"expected one of {sorted(_CLAUDE_VERDICTS)!r}",
             task_id=task_id,
         )
+
+    rev_blocking = _blocking_findings(rev_findings)
+    if rev_verdict == "ship-with-fixes" and rev_blocking:
+        # Contradictory envelope on Codex-implemented work: soft-pass verdict
+        # with ship-blocking findings. Per Phase D-Claude template this is
+        # incomplete implementation — escalate to the existing D.2b role-swap
+        # remediation lane rather than committing partial work.
+        if role_swap_used:
+            return {
+                "action": "fail",
+                "args": {
+                    "task_id": task_id,
+                    "fail_stage": "review",
+                    "policy_kind": "role_swap_exhausted",
+                    "authorization_source": "phase-d2b-role-swap-exhausted",
+                    "fail_reason": (
+                        "role-swap retry exhausted; Claude reviewer "
+                        "ship-with-fixes with blocking findings on Codex work "
+                        "after one role-swap attempt"
+                    ),
+                },
+            }
+        return {
+            "action": "dispatch_role_swap",
+            "args": {
+                "task_id": task_id,
+                "dispatch_context": {
+                    "template": "PhaseB-rework",
+                    "findings_for_retry": list(rev_blocking),
+                    "d5_summary": (
+                        "ship-with-fixes verdict carried "
+                        f"{len(rev_blocking)} blocking finding(s); "
+                        "incomplete implementation must not soft-pass. "
+                        f"Reviewer summary: {rev_summary}"
+                    ),
+                },
+            },
+        }
 
     if rev_verdict in ("ship", "ship-with-fixes"):
         return {
@@ -14499,8 +15780,14 @@ def _run_plan_review_route(payload: dict) -> dict:
             "errors": errors,
         }, exit_code=1)
     assert isinstance(route_payload, dict)
-    directive = route(route_payload)
     sched_for_state = payload.get("update_schedule_state")
+    if (
+        sched_for_state is not None
+        and not isinstance(route_payload.get("plan_review_state"), dict)
+    ):
+        route_payload = dict(route_payload)
+        route_payload["plan_review_state"] = read_plan_review_state(sched_for_state)
+    directive = route(route_payload)
     if sched_for_state is not None:
         written, warning = _write_plan_review_state_transition(
             sched_for_state,
@@ -14619,6 +15906,7 @@ def main(argv: list[str] | None = None) -> None:
         "fail-task": cmd_fail_task,
         "block-dependents": cmd_block_dependents,
         "update-plan-header": cmd_update_plan_header,
+        "set-task-agent": cmd_set_task_agent,
         "finalize-execution-log": cmd_finalize_execution_log,
         "log-event": cmd_log_event,
         "normalize-task-id": cmd_normalize_task_id,
@@ -14632,6 +15920,7 @@ def main(argv: list[str] | None = None) -> None:
         "gates": cmd_gates,
         "audit": cmd_audit,
         "resolve-read-targets": cmd_resolve_read_targets,
+        "build-agent-dispatch-prompt": cmd_build_agent_dispatch_prompt,
         "build-claude-dispatch-input": cmd_build_claude_dispatch_input,
         "build-codex-dispatch-input": cmd_build_codex_dispatch_input,
         "build-gemini-dispatch-input": cmd_build_gemini_dispatch_input,

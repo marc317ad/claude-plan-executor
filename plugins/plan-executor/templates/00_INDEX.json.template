@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "<Plan title>",
+  "source_plan_file": "<original-plan.md>",
+  "created": "YYYY-MM-DD",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_<short_slug>.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_<short_slug>.md",
+      "priority": "medium",
+      "depends_on": ["001"],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_<short_slug>.md",
+      "priority": "low",
+      "depends_on": ["002"],
+      "status": "Superseded",
+      "superseded_by": ["002"]
+    }
+  ]
+}

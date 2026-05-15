@@ -6,10 +6,11 @@ subcommands: implement (stub for TASK-007), review, and plan-review.
 The argspec, envelope shape, and wrapper-side scope/cleanup semantics
 mirror the Codex wrapper, with two non-trivial differences:
 
-(1) Headless OAuth contract — refuse to run when neither
-    ``GEMINI_API_KEY`` nor ``GOOGLE_APPLICATION_CREDENTIALS`` is set
-    in the environment, BEFORE subprocess spawn. This blocks the
-    Gemini binary from attempting an interactive browser launch.
+(1) Headless CLI contract — invoke the installed ``gemini`` binary in
+    non-interactive mode and let the CLI use whatever auth it already
+    has configured (OAuth in ``~/.gemini``, ``GEMINI_API_KEY``, or
+    ``GOOGLE_APPLICATION_CREDENTIALS``). The wrapper does not require
+    API-key/ADC environment variables.
 
 (2) Schema-validation retry loop — Gemini has no ``--output-schema``
     flag, so the wrapper embeds the JSON Schema in the prompt and
@@ -20,12 +21,12 @@ mirror the Codex wrapper, with two non-trivial differences:
     again." The previous response is intentionally NOT echoed back
     to Gemini (avoids self-reinforcement of malformed output).
 
-(3) Restrictive policy + isolation — ephemeral ``GEMINI_CLI_HOME`` per
-    invocation under ``tempfile.mkdtemp(prefix="gemini_dispatch_")``,
-    with ``<home>/.gemini/policies/restrictive.toml`` denying
+(3) Restrictive policy — ephemeral policy file per invocation under
+    ``tempfile.mkdtemp(prefix="gemini_dispatch_")`` denying
     ``run_shell_command`` / ``edit_file`` / ``write_file`` /
     ``replace`` / ``glob`` / ``shell`` at priority 999. Torn down in
-    ``finally``. Two concurrent invocations get distinct homes.
+    ``finally``. The wrapper does not override ``GEMINI_CLI_HOME`` by
+    default because that hides the operator's authenticated CLI session.
 
 Usage:
     $PYTHON scripts/plan_gemini_dispatch.py review \
@@ -151,37 +152,19 @@ decision = "deny"
 
 
 # ---------------------------------------------------------------------------
-# Headless OAuth contract — pre-spawn API-key short-circuit
-# ---------------------------------------------------------------------------
-
-
-def _check_api_key_env() -> str | None:
-    """Return None when at least one of GEMINI_API_KEY /
-    GOOGLE_APPLICATION_CREDENTIALS is set in the environment with a
-    non-empty value, else return the canonical error string used in
-    the envelope's ``error`` field. Called BEFORE any subprocess spawn
-    or ``tempfile.mkdtemp`` so a misconfigured invocation does not
-    litter ``/tmp``."""
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if not api_key and not creds:
-        return "missing GEMINI_API_KEY or GOOGLE_APPLICATION_CREDENTIALS"
-    return None
-
-
-# ---------------------------------------------------------------------------
-# GEMINI_CLI_HOME isolation
+# Headless CLI contract
 # ---------------------------------------------------------------------------
 
 
 def _make_ephemeral_gemini_home() -> str:
-    """Create a per-invocation GEMINI_CLI_HOME under tempfile.mkdtemp.
+    """Create a per-invocation directory for the restrictive policy.
 
     Writes the restrictive policy TOML at
-    ``<home>/.gemini/policies/restrictive.toml`` so the launched
-    Gemini process refuses tool execution. Returns the absolute path
-    of the newly created home directory; caller MUST tear it down in
-    ``finally``.
+    ``<tmp>/.gemini/policies/restrictive.toml`` so the launched Gemini
+    process refuses tool execution. This directory is passed via
+    ``--policy`` only; it is not assigned to ``GEMINI_CLI_HOME``.
+    Returns the absolute path of the newly created directory; caller
+    MUST tear it down in ``finally``.
     """
     home = tempfile.mkdtemp(prefix="gemini_dispatch_")
     policies_dir = Path(home) / ".gemini" / "policies"
@@ -193,7 +176,7 @@ def _make_ephemeral_gemini_home() -> str:
 
 
 def _teardown_gemini_home(home: str) -> None:
-    """Remove the ephemeral GEMINI_CLI_HOME tree. Idempotent — missing
+    """Remove the ephemeral policy directory. Idempotent — missing
     or partially deleted trees are silently swallowed because the
     invocation was already on its way out."""
     try:
@@ -474,12 +457,13 @@ def invoke_gemini(
         "gemini",
         "-o", "json",
         "--approval-mode", "plan",
-        "--policy-file", str(
+        "--skip-trust",
+        "--policy", str(
             Path(gemini_home) / ".gemini" / "policies" / "restrictive.toml"
         ),
+        "-p", "",
     ]
     env = os.environ.copy()
-    env["GEMINI_CLI_HOME"] = gemini_home
 
     start = time.monotonic()
     try:
@@ -854,16 +838,6 @@ def cmd_plan_review(args) -> int:
         })
         return 0
 
-    # Pre-spawn API-key short-circuit. Runs BEFORE tempfile.mkdtemp so a
-    # misconfigured invocation does not litter /tmp.
-    api_key_err = _check_api_key_env()
-    if api_key_err is not None:
-        emit(make_envelope(
-            "plan", "plan-review", "failure",
-            error=api_key_err,
-        ))
-        return 1
-
     gemini_home = _make_ephemeral_gemini_home()
     baseline = _snapshot_baseline(repo_root)
     try:
@@ -1042,16 +1016,6 @@ def cmd_review(args) -> int:
         review_files = [normalize_file_path(f) for f in task["files"]]
 
     diff = git_diff_for_files(repo_root, review_files)
-
-    # Pre-spawn API-key short-circuit. Runs BEFORE tempfile.mkdtemp so a
-    # misconfigured invocation does not litter /tmp.
-    api_key_err = _check_api_key_env()
-    if api_key_err is not None:
-        emit(make_envelope(
-            task["task_id"], "review", "failure",
-            error=api_key_err,
-        ))
-        return 1
 
     if not REVIEW_SCHEMA.exists():
         emit(make_envelope(

@@ -5,6 +5,7 @@
     "auto_validate_divergence",
     "batch_next",
     "block_dependents",
+    "build_agent_dispatch_prompt",
     "build_claude_dispatch_input",
     "build_codex_dispatch_input",
     "build_gemini_dispatch_input",
@@ -65,6 +66,11 @@
       "input_schema": "block_dependents.input.json",
       "output_schema": "block_dependents.output.json",
       "subcommand": "block-dependents"
+    },
+    "plan_ops__build_agent_dispatch_prompt": {
+      "input_schema": "build_agent_dispatch_prompt.input.json",
+      "output_schema": "build_agent_dispatch_prompt.output.json",
+      "subcommand": "build-agent-dispatch-prompt"
     },
     "plan_ops__build_claude_dispatch_input": {
       "input_schema": "build_claude_dispatch_input.input.json",

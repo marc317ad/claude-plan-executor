@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "SKILL Drift Triage And Repair Plan",
+  "source_plan_file": "PLAN_SKILL_DRIFT_TRIAGE_2026-05-04.md",
+  "created": "2026-05-04",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_fix_preflight_smoke_test.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_reconcile_dispatch_templates_md.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_triage_skill_md_drift.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_apply_skill_md_drift.md",
+      "priority": "high",
+      "depends_on": [
+        "003"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_verify_full_regression_suite.md",
+      "priority": "high",
+      "depends_on": [
+        "001",
+        "002",
+        "004"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    }
+  ]
+}

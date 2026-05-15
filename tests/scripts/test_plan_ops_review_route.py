@@ -562,6 +562,33 @@ def test_codex_impl_claude_reviewer_role_swap_unchanged() -> None:
     assert out["action"] == "dispatch_role_swap"
 
 
+@pytest.mark.parametrize("verdict", ["clean", "minor-findings"])
+def test_codex_impl_gemini_reviewer_clean_or_minor_commits(verdict: str) -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="gemini", claude_only=False,
+        verdict=verdict,
+    ))
+    assert out["action"] == "commit"
+    assert out["args"]["commit_flags"] == {
+        "disagreement_tag": False,
+        "remediation_tag": False,
+        "narrow_remediation_tag": False,
+        "dismissed_finding_ids": [],
+    }
+
+
+def test_codex_impl_gemini_reviewer_needs_rework_pauses_without_claude() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="gemini", claude_only=False,
+        verdict="needs-rework", findings=[{"i": 0}],
+    ))
+    assert out["action"] == "pause_awaiting_user"
+    assert out["action"] != "dispatch_role_swap"
+    assert "dispatch_context" not in out["args"]
+    assert out["args"]["pause_payload"]["stage"] == "post_gemini_review"
+    assert out["args"]["pause_payload"]["codex_findings"] == [{"i": 0}]
+
+
 # --- Skip-review path (AC line 5) -----------------------------------------
 
 
@@ -638,3 +665,85 @@ def test_cli_reviewer_none_skip_review_path() -> None:
     out = json.loads(cp.stdout)
     assert out["action"] == "commit"
     assert out["args"]["reviewer"] == "none"
+
+
+# --- ship-with-fixes contradictory-envelope escalation --------------------
+#
+# The Phase D-Claude reviewer template (dispatch-templates.md §Phase D-Claude)
+# requires `findings[]` and forbids `blocking: true` under `ship-with-fixes`.
+# A contradictory envelope (soft-pass verdict + ship-blocker finding) is the
+# documented "incomplete implementation slipped through review" failure mode;
+# `_route_review_route` MUST escalate to remediation rather than commit.
+
+
+def test_claude_only_ship_with_fixes_blocking_finding_dispatches_narrow_remediation() -> None:
+    findings = [
+        {"blocking": True, "severity": "major", "file": "a.py", "line": 10,
+         "issue": "AC2 not implemented", "suggested_fix": "add handler"},
+        {"blocking": False, "severity": "nit", "issue": "typo", "suggested_fix": "fix"},
+    ]
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="claude", claude_only=True,
+        verdict="ship-with-fixes", findings=findings,
+    ))
+    assert out["action"] == "dispatch_narrow_remediation"
+    ctx = out["args"]["dispatch_context"]
+    assert ctx["template"] == "PhaseB-narrow-remediation"
+    assert ctx["findings_for_retry"] == [findings[0]]
+    assert ctx["dismissed_for_context"] == [findings[1]]
+    assert "blocking finding" in ctx["d5_summary"]
+
+
+def test_claude_only_ship_with_fixes_blocking_after_narrow_pauses() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="claude", claude_only=True,
+        verdict="ship-with-fixes",
+        findings=[{"blocking": True, "severity": "major", "issue": "x",
+                   "suggested_fix": "y"}],
+        retries=_retries(narrow_remediation=True),
+    ))
+    assert out["action"] == "pause_awaiting_user"
+    assert out["args"]["pause_payload"]["stage"] == "post_narrow_remediation_review"
+
+
+def test_claude_only_ship_with_fixes_no_blocking_still_commits() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="claude", reviewer="claude", claude_only=True,
+        verdict="ship-with-fixes",
+        findings=[{"blocking": False, "severity": "nit", "issue": "typo",
+                   "suggested_fix": "fix"}],
+    ))
+    assert out["action"] == "commit"
+
+
+def test_codex_impl_claude_review_ship_with_fixes_blocking_dispatches_role_swap() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="claude", claude_only=False,
+        verdict="ship-with-fixes",
+        findings=[{"blocking": True, "severity": "major", "issue": "AC1 missing",
+                   "suggested_fix": "implement"}],
+    ))
+    assert out["action"] == "dispatch_role_swap"
+    assert out["args"]["dispatch_context"]["template"] == "PhaseB-rework"
+
+
+def test_codex_impl_claude_review_ship_with_fixes_blocking_after_role_swap_fails() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="claude", claude_only=False,
+        verdict="ship-with-fixes",
+        findings=[{"blocking": True, "severity": "major", "issue": "x",
+                   "suggested_fix": "y"}],
+        retries=_retries(role_swap=True),
+    ))
+    assert out["action"] == "fail"
+    assert out["args"]["policy_kind"] == "role_swap_exhausted"
+
+
+def test_codex_impl_claude_review_ship_with_fixes_no_blocking_commits() -> None:
+    out = plan_ops.route(_payload_v2(
+        implementer="codex", reviewer="claude", claude_only=False,
+        verdict="ship-with-fixes",
+        findings=[{"blocking": False, "severity": "nit", "issue": "naming",
+                   "suggested_fix": "rename"}],
+    ))
+    assert out["action"] == "commit"

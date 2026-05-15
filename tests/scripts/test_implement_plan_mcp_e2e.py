@@ -605,6 +605,65 @@ def test_mcp_e2e_skill_contract_rejects_inline_python_envelope_parsing() -> None
         assert fragment not in skill_text
 
 
+def test_mcp_e2e_skill_claude_envelope_extract_recipe_uses_build_claude_dispatch_input_output_path() -> None:
+    """SKILL.md must document the MCP-mode wrapper recipe: build to file, run,
+    then route through plan_ops__claude_envelope_extract with native payload.
+    Drift here re-introduces ad hoc `--input -` shell pipes that break MCP mode.
+    """
+
+    skill_text = (REPO_ROOT / "plugins" / "plan-executor" / "skills" / "implement-plan" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Claude wrapper dispatch recipe (canonical)" in skill_text
+    # The MCP-mode recipe writes the envelope to disk via `output: "..."` and
+    # then invokes plan_claude_dispatch.py with that on-disk path.
+    assert '"output": "<tmp dispatch input path>"' in skill_text
+    assert "--input <tmp dispatch input path>" in skill_text
+    # And every wrapper-envelope routing point is normalized through MCP.
+    assert (
+        'Tool: plan_ops__claude_envelope_extract with input {"agent":'
+        in skill_text
+    )
+    # The legacy unqualified pipe form must not appear outside CLI-fallback context.
+    legacy = "Pipe stdout into `plan_claude_dispatch.py run --input -`"
+    if legacy in skill_text:
+        idx = skill_text.find(legacy)
+        window = skill_text[max(0, idx - 200) : idx]
+        assert (
+            "CLI fallback" in window
+            or "CLI-fallback" in window
+            or "cli-fallback" in window
+        ), (
+            "SKILL.md still recommends piping the MCP builder response into Bash "
+            "without a CLI-fallback qualifier."
+        )
+
+
+def test_canonical_build_claude_dispatch_input_acknowledgement_not_mistaken_for_wrapper_envelope_via_claude_envelope_extract() -> None:
+    """TASK-004: when `plan_ops__build_claude_dispatch_input` is called with an
+    `output` path under MCP, it returns a slim acknowledgement (`ok`,
+    `output_written`, `output`) — NOT a wrapper envelope. Feeding that
+    acknowledgement into `claude_envelope_extract` must surface
+    `outcome="malformed"` so the runner cannot mistake the build-side ack for
+    a wrapper envelope at any dispatch site.
+    """
+    ack = {"ok": True, "output_written": True, "output": "/tmp/dispatch.json"}
+    extracted = plan_ops._run_claude_envelope_extract(
+        {"stdin_text": json.dumps(ack), "agent": "plan-implementer"}
+    )
+    public = {
+        key: value for key, value in extracted.items() if not key.startswith("__plan_ops_")
+    }
+    # Slim ack carries no `status` / `result` — extractor MUST classify it as
+    # non-`ok` and refuse to surface a routable success outcome.
+    assert public["status"] is None
+    assert public["outcome"] == "malformed"
+    assert public["result"] is None
+    assert public["scope_violation"] is False
+    assert isinstance(public["error"], str) and public["error"]
+
+
 @requires_mcp
 @pytest.mark.parametrize("tool_name", _index()["tool_names_ordered"])
 def test_inner_loop_index_tools_have_mcp_event_sequence(tool_name: str, tmp_path: Path) -> None:
@@ -757,3 +816,155 @@ def test_mcp_crash_pauses_without_half_commit(tmp_path: Path) -> None:
     assert subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=paths["repo"], capture_output=True, text=True).stdout.strip() == "1"
     awaiting = [event for event in _events(paths["run_log"]) if event["event"] == "awaiting_user"]
     assert awaiting[-1]["pause_payload"]["stage"] == "mcp_transport_error"
+
+
+# ---------------------------------------------------------------------------
+# TASK-002 — Phase 1 Step 2 `**Agent:**` persistence
+# ---------------------------------------------------------------------------
+
+_FIXTURE_PLAN_NO_AGENT = """# TASK-001 - Phase 1 Step 2 fixture without **Agent:**
+
+**Created:** 2026-05-11
+**Status:** pending
+**Base branch:** main
+
+## Goal
+
+Single-task fixture for the Phase 1 Step 2 classifier-persistence path. The
+child intentionally OMITS `**Agent:**` so `build-tasks` returns a task without
+the `agent` key, exercising the orchestrator's `missing_agent_children`
+fan-out branch.
+
+## Tasks
+
+### TASK-001: Phase 1 Step 2 fixture (no Agent bullet)
+
+- **Status:** pending
+- **Priority:** high
+- **Files:**
+  - src/foo.py
+- **Dependencies:** none
+- **Test command:** none
+- **Acceptance criteria:**
+  - Classifier persistence reaches disk via `plan_ops__set_task_agent`.
+- **Reversion guidance:** restore single line in `src/foo.py`.
+
+**Description:**
+Phase 1 Step 2 fixture child intentionally lacks the `**Agent:**` bullet so
+the orchestrator's classifier fan-out + `set_task_agent` persistence step is
+exercised end-to-end.
+"""
+
+
+def _seed_repo_no_agent(root: Path) -> dict[str, Path]:
+    """Seed a repo whose single child plan does NOT declare `**Agent:**`."""
+    paths = _seed_repo(root)
+    paths["plan_child"].write_text(_FIXTURE_PLAN_NO_AGENT, encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=paths["repo"], check=True)
+    subprocess.run(["git", "commit", "-qm", "drop-agent"], cwd=paths["repo"], check=True)
+    return paths
+
+
+@requires_mcp
+def test_phase1_step2_persists_agent_to_child_file(tmp_path: Path) -> None:
+    """Phase 1 Step 2 contract: after the per-child classifier dispatch
+    returns ``status==ok`` with ``result.agent ∈ {claude, codex}``, the
+    orchestrator calls ``plan_ops__set_task_agent`` to persist ``**Agent:**``
+    into the child plan file. This test stands in for the dispatch by calling
+    the persistence tool directly and verifying disk-side persistence.
+    """
+    paths = _seed_repo_no_agent(tmp_path)
+    with _McpOps(paths) as ops:
+        before = ops.call("build_tasks", {"plans_dir": str(paths["plan_dir"])})
+        assert before["tasks"], before
+        assert "agent" not in before["tasks"][0], before["tasks"][0]
+
+        result = ops.call(
+            "set_task_agent",
+            {
+                "plan_file": str(paths["plan_child"]),
+                "task_id": "001",
+                "agent": "codex",
+            },
+        )
+        assert result["ok"] is True
+        assert result["prior_agent"] == ""
+
+        after = ops.call("build_tasks", {"plans_dir": str(paths["plan_dir"])})
+        assert after["tasks"][0].get("agent") == "codex"
+
+    text = paths["plan_child"].read_text(encoding="utf-8")
+    assert "**Agent:** codex" in text
+
+
+@requires_mcp
+def test_phase1_step2_skip_classifier_on_second_invocation(tmp_path: Path) -> None:
+    """Skip-classifier semantics: once the classifier output has been
+    persisted into the child via ``set_task_agent``, a subsequent Phase 1
+    invocation observes ``missing_agent_children == []`` from
+    ``build-tasks`` and skips the classifier dispatch entirely.
+    """
+    paths = _seed_repo_no_agent(tmp_path)
+    with _McpOps(paths) as ops:
+        # First invocation: classifier needed.
+        first = ops.call("build_tasks", {"plans_dir": str(paths["plan_dir"])})
+        missing_first = [t for t in first["tasks"] if "agent" not in t]
+        assert missing_first, "first invocation should require classifier fan-out"
+
+        # Persist the classifier output (simulating the Step 2 sub-step).
+        persisted = ops.call(
+            "set_task_agent",
+            {
+                "plan_file": str(paths["plan_child"]),
+                "task_id": "001",
+                "agent": "claude",
+            },
+        )
+        assert persisted["ok"] is True
+
+        # Second invocation: classifier dispatch must be skippable.
+        second = ops.call("build_tasks", {"plans_dir": str(paths["plan_dir"])})
+        missing_second = [t for t in second["tasks"] if "agent" not in t]
+        assert missing_second == [], (
+            f"second invocation should skip classifier; missing={missing_second!r}"
+        )
+        assert second["tasks"][0].get("agent") == "claude"
+
+
+@requires_mcp
+def test_phase1_step2_persists_under_dry_run(tmp_path: Path) -> None:
+    """Dry-run exemption #3: ``plan_ops__set_task_agent`` is unconditional —
+    the persistence tool fires under ``--dry-run`` so the classifier output
+    reaches disk. Without this, dry-run would leave the plan amnesic and the
+    next real run would re-classify from scratch. The persistence tool itself
+    carries no dry-run gate; this test pins that contract.
+    """
+    paths = _seed_repo_no_agent(tmp_path)
+    with _McpOps(paths) as ops:
+        # The tool has no dry-run flag: a call mutates the file regardless
+        # of the orchestrator's dry-run mode.
+        result = ops.call(
+            "set_task_agent",
+            {
+                "plan_file": str(paths["plan_child"]),
+                "task_id": "001",
+                "agent": "codex",
+            },
+        )
+        assert result["ok"] is True
+        text = paths["plan_child"].read_text(encoding="utf-8")
+        assert "**Agent:** codex" in text
+
+        # Idempotent re-application (same value) is also a no-op-shaped
+        # success — exercises the "next dry-run rehearsal does not re-run
+        # the classifier" guarantee.
+        again = ops.call(
+            "set_task_agent",
+            {
+                "plan_file": str(paths["plan_child"]),
+                "task_id": "001",
+                "agent": "codex",
+            },
+        )
+        assert again["ok"] is True
+        assert again["prior_agent"] == "codex"

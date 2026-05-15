@@ -96,6 +96,13 @@ HARNESS_ONLY_KEYS = {
     "_git_initial_files",
 }
 
+FIXTURELESS_CONFORMANCE_SUBCOMMANDS = {
+    # Covered by test_plan_ops_mcp_registrations.py because this transport
+    # surface exposes a direct MCP envelope plus optional schedule-state
+    # mutation rather than the generic CLI stdin wrapper fixture path.
+    "plan-review-route",
+}
+
 
 def _load_index() -> dict[str, Any]:
     return json.loads(MCP_INDEX_PATH.read_text(encoding="utf-8"))
@@ -155,6 +162,8 @@ def _all_fixture_params() -> list[tuple[str, str, Path]]:
         subcommand = _tool_name_to_subcommand(tool_name)
         docs = _fixture_docs_for(subcommand)
         if not docs:
+            if subcommand in FIXTURELESS_CONFORMANCE_SUBCOMMANDS:
+                continue
             missing.append(subcommand)
             continue
         params.extend((subcommand, group, path) for group, path in docs)
@@ -345,6 +354,18 @@ def _public_result(envelope: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in envelope.items() if not k.startswith("__plan_ops_")}
 
 
+def _raw_public_mcp_payload(result: Any) -> dict[str, Any]:
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        return structured
+    if isinstance(result, dict):
+        return result
+    content = getattr(result, "content", None) or []
+    if content and hasattr(content[0], "text"):
+        return json.loads(content[0].text)
+    raise AssertionError(f"cannot extract raw MCP payload from {result!r}")
+
+
 def _canon_text(text: str | None, prefixes: tuple[str, ...]) -> str | None:
     if text is None:
         return None
@@ -456,6 +477,69 @@ def test_mcp_cli_conformance_for_indexed_fixtures(
         )
         for relpath in ("docs/plans/_run_log.jsonl", "docs/plans/_run_lock.json"):
             assert cli_snapshot.get(relpath) == mcp_snapshot.get(relpath)
+
+
+@requires_mcp
+def test_build_claude_dispatch_input_file_output_acknowledged_under_mcp_and_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UNATTENDED_REVERT_POLICY", raising=False)
+    fixture_path = (
+        PURE_FIXTURE_ROOT
+        / "tier_b"
+        / "build-claude-dispatch-input__happy_file_mode.payload.json"
+    )
+    expected_path = fixture_path.with_name(
+        "build-claude-dispatch-input__happy_file_mode.expected.json"
+    )
+    doc = json.loads(fixture_path.read_text(encoding="utf-8"))
+    expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    raw_payload = doc["payload"]
+
+    cli_root = tmp_path / "cli"
+    _prepare_root(cli_root, raw_payload)
+    cli_output = cli_root / "dispatch.json"
+    cli_payload = _payload_for_root(raw_payload, cli_root, tier="tier_b")
+    cli_payload["output"] = str(cli_output)
+    cli_proc = _run_cli(
+        "build-claude-dispatch-input",
+        cli_payload,
+        tier="tier_b",
+        expected=expected,
+        cwd=cli_root,
+        env_extra={"PLAN_OPS_FIXED_NOW": expected["fixed_now"]},
+    )
+
+    assert cli_proc.returncode == 0
+    assert cli_proc.stderr == ""
+    assert cli_proc.stdout == ""
+    assert cli_output.is_file()
+    assert json.loads(cli_output.read_text(encoding="utf-8"))["trace"]["run_id"] == (
+        "PINNED-RUN-ID"
+    )
+
+    mcp_root = tmp_path / "mcp"
+    _prepare_root(mcp_root, raw_payload)
+    mcp_output = mcp_root / "dispatch.json"
+    mcp_payload = _payload_for_root(raw_payload, mcp_root, tier="tier_b")
+    mcp_payload["output"] = str(mcp_output)
+    mcp_result = _run_mcp(
+        "build-claude-dispatch-input",
+        _mcp_arguments("build-claude-dispatch-input", mcp_payload),
+        cwd=mcp_root,
+        env_extra={"PLAN_OPS_FIXED_NOW": expected["fixed_now"]},
+    )
+    raw_mcp_public = _raw_public_mcp_payload(mcp_result)
+    mcp_public = _structured_from_call_result(mcp_result)
+
+    assert mcp_output.is_file()
+    assert json.loads(mcp_output.read_text(encoding="utf-8"))["trace"]["run_id"] == (
+        "PINNED-RUN-ID"
+    )
+    assert not any(key.startswith("__plan_ops_") for key in raw_mcp_public)
+    assert mcp_public["output_written"] is True
+    assert mcp_public["output"] == str(mcp_output)
 
 
 @requires_mcp

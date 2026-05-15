@@ -38,6 +38,7 @@
       "type": "string",
       "enum": [
         "codex",
+        "gemini",
         "claude",
         "none"
       ]

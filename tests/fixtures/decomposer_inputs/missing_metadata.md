@@ -6,20 +6,26 @@
 
 ## Goal
 
-Exercise the `decompose-plan` subcommand's loud-error path when a task
-block is missing the required `**Priority:**` metadata field.
+Exercise the `decompose-plan` subcommand's default-filling path when a
+task block is missing the routinely-omitted `**Priority:**` metadata
+field.
 
 ## Context
 
 TASK-001 is intentionally missing its `**Priority:**` bullet so the
-decomposer emits a structured error naming the offending task and the
-source line number of its heading.
+decomposer can demonstrate its default-fill behavior: rather than halting
+the run on a routine omission, it backfills the field with a sensible
+default (`medium`) and surfaces the substitution in the result's
+`defaults_applied` list. Downstream `_gate_schema_valid` against the
+produced child file should still pass, since the renderer always emits
+every required bullet.
 
 ## Verification
 
-`decompose-plan` returns a non-zero exit code and a structured error
-list containing at least one entry with `code:
-"missing-required-metadata"` (or equivalent) and `task_id: "001"`.
+`decompose-plan` returns exit code 0 and a `defaults_applied` list
+containing at least one entry with `field: "Priority"` and
+`task_id: "001"`. The produced child markdown must satisfy
+`_gate_schema_valid` (every required bullet/header present).
 
 ## Tasks
 

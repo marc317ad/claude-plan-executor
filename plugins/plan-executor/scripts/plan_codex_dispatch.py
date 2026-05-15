@@ -82,34 +82,81 @@ import plan_ops  # noqa: E402
 _is_protected = is_protected_path
 
 RAW_TRUNCATE_CHARS = 2000
-# TASK-004: file-count-aware timeout floors. The named constants are kept
-# as the operator-readable floor so the per-file scaling formulas in
-# ``compute_implement_timeout`` / ``compute_review_timeout`` carry no magic
-# numbers. The plan-review default stays a flat ceiling — the schedule is
-# bounded so per-task scaling does not apply.
-DEFAULT_TIMEOUT_IMPLEMENT = 300
+# TASK-004 introduced file-count-aware timeout floors. TASK-009 makes the
+# implement-side default task-shape-aware: file count alone was too blunt for
+# test-hardening / router / parser work where the reading and verification
+# cost dominates the number of declared file entries.
+DEFAULT_TIMEOUT_IMPLEMENT = 600
 DEFAULT_TIMEOUT_REVIEW = 180
 DEFAULT_TIMEOUT_PLAN_REVIEW = 180
-# Per-file growth in seconds (added to the floor when len(files) is large
-# enough to push past it).
-IMPLEMENT_TIMEOUT_PER_FILE = 60
+MAX_TIMEOUT_IMPLEMENT = 1800
+# Weighted growth in seconds for the implement default. Explicit --timeout
+# still bypasses every derived value.
+IMPLEMENT_TIMEOUT_PER_FILE = 90
+IMPLEMENT_TIMEOUT_PER_ACCEPTANCE = 45
+IMPLEMENT_TIMEOUT_TEST_COMMAND_BONUS = 180
+IMPLEMENT_TIMEOUT_DIRECTORY_BONUS = 180
+IMPLEMENT_TIMEOUT_COMPLEXITY_BONUS = 300
 REVIEW_TIMEOUT_PER_FILE = 30
 GIT_TIMEOUT = 30
 TEST_TIMEOUT = 300
 
 
-def compute_implement_timeout(num_files: int) -> int:
-    """File-count-aware default for the ``implement`` subcommand timeout.
+def _contains_complexity_marker(text: str) -> bool:
+    markers = (
+        "e2e",
+        "end-to-end",
+        "fixture",
+        "parser",
+        "route",
+        "router",
+        "state",
+        "round-trip",
+        "test-hardening",
+        "assertion",
+        "behavioral",
+    )
+    haystack = text.lower()
+    return any(marker in haystack for marker in markers)
 
-    ``max(DEFAULT_TIMEOUT_IMPLEMENT, IMPLEMENT_TIMEOUT_PER_FILE * num_files)``
-    — a 1- to 5-file task gets the 300 s floor; a 6-file task gets 360 s,
-    a 10-file task 600 s. Matches the empirical observation that Codex's
-    planning loop scales roughly linearly with the number of declared
-    files. Operators override via the wrapper's ``--timeout N`` flag.
+
+def compute_implement_timeout(
+    num_files: int,
+    *,
+    acceptance_criteria_count: int = 0,
+    test_command: str = "",
+    files: list[str] | None = None,
+    description: str = "",
+) -> int:
+    """Task-shape-aware default for the ``implement`` timeout.
+
+    The old ``max(300, 60 * len(files))`` rule under-budgeted tasks whose
+    complexity lives in E2E assertions, parser/router semantics, fixtures, or
+    verification. This weighted default keeps small mechanical edits bounded,
+    gives multi-surface test work enough time to finish, and caps at the
+    Claude wrapper's 1800 s default. Operators override via ``--timeout N``.
     """
     if num_files < 0:
         num_files = 0
-    return max(DEFAULT_TIMEOUT_IMPLEMENT, IMPLEMENT_TIMEOUT_PER_FILE * num_files)
+    if acceptance_criteria_count < 0:
+        acceptance_criteria_count = 0
+    files = files or []
+    directory_entries = sum(
+        1 for f in files
+        if f.rstrip().endswith("/") or "/ (" in f or "(create)" in f
+    )
+    score = (
+        DEFAULT_TIMEOUT_IMPLEMENT
+        + IMPLEMENT_TIMEOUT_PER_FILE * num_files
+        + IMPLEMENT_TIMEOUT_PER_ACCEPTANCE * acceptance_criteria_count
+        + IMPLEMENT_TIMEOUT_DIRECTORY_BONUS * directory_entries
+    )
+    if test_command and test_command.strip().lower() not in {"none", "n/a"}:
+        score += IMPLEMENT_TIMEOUT_TEST_COMMAND_BONUS
+    complexity_text = " ".join([description, test_command, " ".join(files)])
+    if _contains_complexity_marker(complexity_text):
+        score += IMPLEMENT_TIMEOUT_COMPLEXITY_BONUS
+    return min(MAX_TIMEOUT_IMPLEMENT, max(DEFAULT_TIMEOUT_IMPLEMENT, score))
 
 
 def compute_review_timeout(num_files: int) -> int:
@@ -800,6 +847,56 @@ def _snapshot_baseline(repo_root: str) -> dict:
     }
 
 
+def _walk_schema_nodes(node: object, pointer: str = "$"):
+    if isinstance(node, dict):
+        yield pointer, node
+        for key, child in node.items():
+            if isinstance(child, (dict, list)):
+                yield from _walk_schema_nodes(child, f"{pointer}.{key}")
+    elif isinstance(node, list):
+        for index, child in enumerate(node):
+            if isinstance(child, (dict, list)):
+                yield from _walk_schema_nodes(child, f"{pointer}[{index}]")
+
+
+def validate_openai_strict_output_schema(schema_path: str | Path) -> list[str]:
+    """Return OpenAI/Codex structured-output schema compatibility errors."""
+    path = Path(schema_path)
+    try:
+        schema = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return [f"{path}: cannot read schema: {exc}"]
+    except json.JSONDecodeError as exc:
+        return [f"{path}: schema is not valid JSON: {exc}"]
+
+    errors: list[str] = []
+    for pointer, node in _walk_schema_nodes(schema):
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") != "object" or node.get("additionalProperties") is not False:
+            continue
+        properties = node.get("properties")
+        required = node.get("required")
+        if not isinstance(properties, dict):
+            errors.append(f"{pointer}: object schema must define properties")
+            continue
+        if not isinstance(required, list):
+            errors.append(f"{pointer}: object schema must define required as a list")
+            continue
+        property_keys = set(properties.keys())
+        required_keys = set(required)
+        missing = sorted(property_keys - required_keys)
+        extra = sorted(required_keys - property_keys)
+        if missing or extra:
+            detail = []
+            if missing:
+                detail.append(f"missing required entries for properties: {missing}")
+            if extra:
+                detail.append(f"required entries without properties: {extra}")
+            errors.append(f"{pointer}: " + "; ".join(detail))
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Codex invocation
 # ---------------------------------------------------------------------------
@@ -816,13 +913,28 @@ def invoke_codex(
     """Invoke Codex CLI with structured output + JSONL monitoring.
 
     Returns dict:
-        status: 'ok' | 'timeout' | 'codex_not_found'
+        status: 'ok' | 'timeout' | 'codex_not_found' | 'output_schema_invalid'
         exit_code: int (-1 for timeout/not_found)
         stdout: str (JSONL event stream)
         stderr: str
         file_changes: list[str] (parsed from JSONL file_change events)
         wall_seconds: float
     """
+    schema_errors = validate_openai_strict_output_schema(schema_path)
+    if schema_errors:
+        return {
+            "status": "output_schema_invalid",
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": (
+                "Output schema is not compatible with Codex structured output:\n"
+                + "\n".join(f"- {error}" for error in schema_errors)
+            ),
+            "file_changes": [],
+            "wall_seconds": 0.0,
+            "dropped_bytes": 0,
+        }
+
     cmd = [
         "codex", "exec",
         "--full-auto",
@@ -912,6 +1024,21 @@ def invoke_codex(
 # ---------------------------------------------------------------------------
 
 
+def _path_in_allowed_scope(path: str, allowed_files: list[str]) -> bool:
+    """Return true when path is exactly allowed or below a declared dir."""
+    rel = path.strip().strip("/")
+    if not rel:
+        return False
+    allowed_set = set(allowed_files)
+    if rel in allowed_set:
+        return True
+    for entry in allowed_files:
+        base = entry.strip().strip("/")
+        if entry.endswith("/") and base and rel.startswith(f"{base}/"):
+            return True
+    return False
+
+
 def _restore_in_scope(
     tracked: list[str],
     untracked: list[str],
@@ -973,7 +1100,6 @@ def validate_scope(
     `.codex/`, `*.schedule.json`, etc.) are classified under
     `protected_skipped_*` and treated as never-touched by design.
     """
-    allowed_set = set(allowed_files)
     post = git_changed_files(repo_root)
     post_tracked = set(post["tracked"])
     post_untracked = set(post["untracked"])
@@ -987,7 +1113,8 @@ def validate_scope(
             "out_of_scope_untracked": [],
             "out_of_scope_observed": False,
             "changed_in_scope": sorted(
-                (post_tracked | post_untracked) & allowed_set,
+                p for p in (post_tracked | post_untracked)
+                if _path_in_allowed_scope(p, allowed_files)
             ),
             "changed_in_scope_new": [],
             "protected_skipped_tracked": [],
@@ -1002,8 +1129,14 @@ def validate_scope(
     new_tracked = post_tracked - baseline_tracked
     new_untracked = post_untracked - baseline_untracked
 
-    out_of_scope_tracked_raw = new_tracked - allowed_set
-    out_of_scope_untracked_raw = new_untracked - allowed_set
+    out_of_scope_tracked_raw = {
+        p for p in new_tracked
+        if not _path_in_allowed_scope(p, allowed_files)
+    }
+    out_of_scope_untracked_raw = {
+        p for p in new_untracked
+        if not _path_in_allowed_scope(p, allowed_files)
+    }
 
     protected_skipped_tracked = sorted(
         p for p in out_of_scope_tracked_raw if _is_protected(p)
@@ -1021,10 +1154,12 @@ def validate_scope(
     out_of_scope_observed = bool(out_of_scope_tracked or out_of_scope_untracked)
 
     changed_in_scope_new = sorted(
-        (new_tracked | new_untracked) & allowed_set,
+        p for p in (new_tracked | new_untracked)
+        if _path_in_allowed_scope(p, allowed_files)
     )
     changed_in_scope = sorted(
-        (post_tracked | post_untracked) & allowed_set,
+        p for p in (post_tracked | post_untracked)
+        if _path_in_allowed_scope(p, allowed_files)
     )
 
     return {
@@ -1087,7 +1222,6 @@ def _handle_timeout_cleanup(
             "protected_skipped_untracked": [],
         }
 
-    allowed_set = set(allowed_files)
     baseline_tracked = set(baseline["tracked"])
     baseline_untracked = set(baseline["untracked"])
     try:
@@ -1110,12 +1244,24 @@ def _handle_timeout_cleanup(
     new_untracked = post_untracked - baseline_untracked
 
     # In-scope: safe to restore/delete because they are the task's own files
-    tracked_candidates_raw = (post_tracked & allowed_set) - baseline_tracked
-    delete_candidates_raw = new_untracked & allowed_set
+    tracked_candidates_raw = {
+        p for p in (post_tracked - baseline_tracked)
+        if _path_in_allowed_scope(p, allowed_files)
+    }
+    delete_candidates_raw = {
+        p for p in new_untracked
+        if _path_in_allowed_scope(p, allowed_files)
+    }
 
     # Out-of-scope: observed only, never mutated
-    out_of_scope_tracked_raw = new_tracked - allowed_set
-    out_of_scope_untracked_raw = new_untracked - allowed_set
+    out_of_scope_tracked_raw = {
+        p for p in new_tracked
+        if not _path_in_allowed_scope(p, allowed_files)
+    }
+    out_of_scope_untracked_raw = {
+        p for p in new_untracked
+        if not _path_in_allowed_scope(p, allowed_files)
+    }
 
     protected_skipped_tracked = sorted(
         {p for p in tracked_candidates_raw if _is_protected(p)}
@@ -1596,14 +1742,18 @@ def cmd_implement(args) -> int:
     tmp_out.close()
     output_path = tmp_out.name
 
-    # TASK-004: file-count-aware default. Operator override via --timeout
-    # short-circuits the scaling — None means "use the wrapper-derived
-    # default for len(allowed_files)". The resolved value flows into both
-    # the subprocess timeout and the envelope's ``effective_timeout``
-    # field (informational; orchestrator does NOT route on it in this
-    # task — TASK-006 wires the timeout-routing rule for review).
+    # TASK-009: task-shape-aware default. Operator override via --timeout
+    # short-circuits the derivation — None means "use the wrapper-derived
+    # default for this task's declared shape". The resolved value flows into
+    # both the subprocess timeout and the envelope's ``effective_timeout``.
     if args.timeout is None:
-        effective_timeout = compute_implement_timeout(len(task["files"]))
+        effective_timeout = compute_implement_timeout(
+            len(task["files"]),
+            acceptance_criteria_count=len(task.get("acceptance_criteria", [])),
+            test_command=task.get("test_command", ""),
+            files=task.get("files", []),
+            description=task.get("description", ""),
+        )
     else:
         effective_timeout = args.timeout
 
@@ -1668,6 +1818,16 @@ def cmd_implement(args) -> int:
             ))
             return 1
 
+        if codex["status"] == "output_schema_invalid":
+            emit(make_envelope(
+                task["task_id"], "implement", "failure",
+                exit_code=-1,
+                raw=codex["stderr"],
+                error=codex["stderr"],
+                extra={"effective_timeout": effective_timeout},
+            ))
+            return 1
+
         # Missing output file (Appendix D A2: exit code unreliable)
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
             emit(make_envelope(
@@ -1718,8 +1878,10 @@ def cmd_implement(args) -> int:
         reported = {
             normalize_file_path(f) for f in parsed.get("files_changed", [])
         }
-        allowed_set = set(allowed_files)
-        reported_out_of_scope = sorted(reported - allowed_set)
+        reported_out_of_scope = sorted(
+            f for f in reported
+            if not _path_in_allowed_scope(f, allowed_files)
+        )
         if reported_out_of_scope:
             emit(make_envelope(
                 task["task_id"], "implement", "scope_violation",
@@ -2019,6 +2181,16 @@ def cmd_review(args) -> int:
             ))
             return 1
 
+        if codex["status"] == "output_schema_invalid":
+            emit(make_envelope(
+                task["task_id"], "review", "failure",
+                exit_code=-1,
+                raw=codex["stderr"],
+                error=codex["stderr"],
+                extra={"effective_timeout": effective_timeout},
+            ))
+            return 1
+
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
             emit(make_envelope(
                 task["task_id"], "review", "failure",
@@ -2272,11 +2444,26 @@ def cmd_plan_review(args) -> int:
             ))
             return 1
 
+        if codex["status"] == "output_schema_invalid":
+            emit(make_envelope(
+                "plan", "plan-review", "failure",
+                exit_code=-1,
+                raw=codex["stderr"],
+                error=codex["stderr"],
+                extra={"effective_timeout": effective_timeout},
+            ))
+            return 1
+
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raw_parts = []
+            if codex["stdout"]:
+                raw_parts.append(f"[stdout]\n{codex['stdout']}")
+            if codex["stderr"]:
+                raw_parts.append(f"[stderr]\n{codex['stderr']}")
             emit(make_envelope(
                 "plan", "plan-review", "failure",
                 exit_code=codex["exit_code"],
-                raw=codex["stderr"] or codex["stdout"],
+                raw="\n".join(raw_parts),
                 error="Codex produced no output file",
                 extra={
                     "wall_seconds": codex["wall_seconds"],
@@ -2369,13 +2556,12 @@ def _build_parser() -> argparse.ArgumentParser:
                              "no-op reserved for future-compat)"))
         p.add_argument("--dry-run", action="store_true",
                        help="Render prompt and metadata; do not invoke Codex")
-        # TASK-004: ``--timeout`` defaults to ``None`` so the cmd handler
-        # can derive a file-count-aware default from the task's declared
-        # files when the operator does not override.
+        # ``--timeout`` defaults to ``None`` so the cmd handler can derive
+        # a wrapper default from the parsed task/review shape when the
+        # operator does not override.
         p.add_argument("--timeout", type=int, default=None,
                        help=("Codex execution timeout in seconds "
-                             "(default: file-count-aware — "
-                             "max(300, 60 * len(files)) for implement, "
+                             "(default: task-shape-aware for implement; "
                              "max(180, 30 * len(files)) for review). "
                              "Pass an explicit value to override the "
                              "wrapper-derived default."))

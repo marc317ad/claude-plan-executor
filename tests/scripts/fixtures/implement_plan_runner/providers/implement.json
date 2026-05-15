@@ -1,0 +1,11 @@
+{
+  "provider": "stub",
+  "role": "implement",
+  "status": "ok",
+  "task_id": "001",
+  "parsed": {
+    "status": "completed",
+    "files_changed": ["src/example.py"],
+    "summary": "stub implement"
+  }
+}

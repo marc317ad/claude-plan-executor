@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan_ops__build_agent_dispatch_prompt output",
+  "description": "Success returns {ok:true, agent, model, prompt}. Validation or render failures return {ok:false, errors:[...], warnings:[]}. Tool-specific fields are permitted for forward compatibility.",
+  "type": "object",
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "agent": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "prompt": {
+      "type": "string"
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ]
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ]
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "ok",
+        "agent",
+        "model",
+        "prompt"
+      ],
+      "properties": {
+        "ok": {
+          "const": true
+        }
+      }
+    },
+    {
+      "required": [
+        "ok",
+        "errors"
+      ],
+      "properties": {
+        "ok": {
+          "const": false
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "source": "manual-sidecar",
+  "plan_title": "Phase 1.5 State Machine + Sanitizer Extension",
+  "created": "2026-04-28",
+  "base_branch": "main",
+  "depends_on_plans": [
+    "docs/plans/PHASE_D_STATE_MACHINE/PLAN_PHASE_D_STATE_MACHINE.md"
+  ],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [
+        "001",
+        "002"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "medium",
+      "implementer": "codex",
+      "depends_on": [
+        "004"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "006",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "medium",
+      "implementer": "codex",
+      "depends_on": [
+        "001",
+        "004"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "007",
+      "file": "PLAN_PHASE_1_5_STATE_MACHINE.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [
+        "001",
+        "002",
+        "004",
+        "006"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "008",
+      "file": "TASK-008_WRAPPER_RECONCILE_EDGES.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [
+        "004",
+        "006",
+        "007"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "009",
+      "file": "TASK-009_PHASE_1_5_E2E_ASSERTION_TIGHTENING.md",
+      "priority": "high",
+      "implementer": "codex",
+      "depends_on": [
+        "007",
+        "008"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "010",
+      "file": "TASK-010_PROCESS_DRIFT_GUARD_POLISH.md",
+      "priority": "medium",
+      "implementer": "codex",
+      "depends_on": [
+        "005",
+        "008",
+        "009"
+      ],
+      "status": "Done",
+      "superseded_by": []
+    }
+  ]
+}

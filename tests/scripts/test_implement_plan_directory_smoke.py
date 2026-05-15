@@ -184,6 +184,7 @@ class TestPreflight:
 
         cp = _run_plan_ops(
             "preflight", "--plan-file", str(plan_dir), "--json",
+            "--unattended-revert-policy", "fail-fast",
             cwd=repo,
         )
         assert cp.returncode == 0, (cp.stdout, cp.stderr)
@@ -196,6 +197,66 @@ class TestPreflight:
         # run; it must round-trip as an absolute path.
         assert body["python_path"], body
         assert Path(body["python_path"]).is_absolute(), body
+
+    def test_preflight_passes_when_decompose_just_created_dir(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression: Phase 0 auto-promote runs `decompose-plan` against a
+        single-file plan, producing a sibling directory whose contents are
+        all brand-new untracked. `git status --porcelain` collapses such a
+        directory to a single entry `?? <plan_dir_rel>/`. Preflight must
+        recognize that bare directory entry as the just-created plan dir
+        and classify its contents as `plan_doc`, not `source_blocking` —
+        otherwise the orchestrator halts on its own decompose output.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # Commit only the single-file plan; the produced directory will be
+        # untracked at preflight time, just like the live auto-promote path.
+        single_file = repo / "test_plan.md"
+        single_file.write_text(
+            (DECOMPOSER_INPUTS / "canonical.md").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        _git_init(repo)
+
+        cp_d = _run_plan_ops(
+            "decompose-plan", "--plan-file", str(single_file), "--json",
+            cwd=repo,
+        )
+        assert cp_d.returncode == 0, (cp_d.stdout, cp_d.stderr)
+        produced = Path(json.loads(cp_d.stdout)["produced_dir"])
+        assert produced.is_dir(), produced
+
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout
+        # Sanity: git really does collapse the fresh dir to a single entry.
+        # If git's defaults change and individual files start showing up
+        # without `-uall`, the bug also goes away — but the assertion below
+        # still validates the classifier; this just documents the trigger.
+        assert any(
+            line.endswith("test_plan/") for line in porcelain.splitlines()
+        ), porcelain
+
+        cp = _run_plan_ops(
+            "preflight", "--plan-file", str(produced), "--json",
+            "--unattended-revert-policy", "fail-fast",
+            cwd=repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = json.loads(cp.stdout)
+        assert body["pass"] is True, body
+        assert body["dirty_files"]["source_blocking"] == [], body
+        # The collapsed `test_plan/` entry must have been expanded into
+        # individual files, all classified as plan_doc.
+        plan_doc = set(body["dirty_files"]["plan_doc"])
+        assert "test_plan/00_INDEX.json" in plan_doc, body
+        assert any(
+            p.startswith("test_plan/TASK-") and p.endswith(".md")
+            for p in plan_doc
+        ), body
 
 
 # ---------------------------------------------------------------------------
@@ -806,6 +867,207 @@ class TestSingleFileAutoPromote:
         assert "Auto-promote single-file input to directory mode" in skill_text, (
             "SKILL.md Phase 0 auto-promote step heading drifted"
         )
-        assert "decompose-plan --plan-file" in skill_text, (
-            "SKILL.md Phase 0 invocation example drifted"
+        # TASK-015 migrated SKILL.md's Phase 0 invocation from the CLI
+        # form `plan_ops.py decompose-plan --plan-file <abs>` to the
+        # canonical MCP tool form `plan_ops__decompose_plan` with input
+        # `{"plan_file": "<abs>"}`. The `plan_file` input is pinned in
+        # the tool's input schema; grep there for the canonical shape.
+        from pathlib import Path
+        repo_root = Path(__file__).resolve().parents[2]
+        decompose_schema = (
+            repo_root / "plugins" / "plan-executor" / "scripts"
+            / "schemas" / "mcp" / "decompose_plan.input.json"
+        )
+        decompose_schema_text = decompose_schema.read_text(encoding="utf-8")
+        assert '"plan_file"' in decompose_schema_text, (
+            "decompose_plan.input.json must pin the `plan_file` input "
+            "(the MCP-tool form replaces the legacy "
+            "`decompose-plan --plan-file` CLI invocation example)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase D-Claude MCP render-path prose-pin (PLAN_AGENT_DISPATCH_MCP TASK-002)
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseDClaudeUsesMcpRenderPath:
+    """Phase D-Claude dispatch must go through
+    `plan_ops__build_agent_dispatch_prompt` with
+    `template_id="code-reviewer-d-claude"`, NOT through an
+    `awk`/`Read` against `dispatch-templates.md`.
+
+    The orchestrator is prose-driven (SKILL.md), so this is enforced
+    as a prose-pin pair on SKILL.md + dispatch-templates.md plus a
+    schema/registry check that the named `template_id` is honored by
+    the MCP tool. A live `/implement-plan` dry-run trace is not
+    available in this harness (Step (c) above documents the same
+    prose-driven nature); the prose pin is the load-bearing
+    regression backstop.
+    """
+
+    def test_skill_md_pins_canonical_agent_dispatch_recipe(self) -> None:
+        skill_text = SKILL_PATH.read_text(encoding="utf-8")
+        # New recipe section exists.
+        assert "## Canonical Agent dispatch recipe" in skill_text, (
+            "SKILL.md must declare the canonical Agent dispatch recipe"
+        )
+        # The MCP tool name is pinned in the recipe.
+        assert "plan_ops__build_agent_dispatch_prompt" in skill_text, (
+            "SKILL.md recipe must invoke plan_ops__build_agent_dispatch_prompt"
+        )
+        # The explicit "do NOT read dispatch-templates.md at dispatch time"
+        # rule is pinned (this is the structural protection against the
+        # legacy markdown-read path sneaking back in).
+        assert "Do NOT read `dispatch-templates.md`" in skill_text, (
+            "SKILL.md recipe must forbid reading dispatch-templates.md "
+            "at dispatch time"
+        )
+
+    def test_skill_md_phase_d1_routes_via_agent_dispatch_recipe(
+        self,
+    ) -> None:
+        skill_text = SKILL_PATH.read_text(encoding="utf-8")
+        # Both Phase D.1 rows that dispatch the `code-reviewer` Agent
+        # MUST reference the canonical recipe + the named template_id.
+        assert "code-reviewer-d-claude" in skill_text, (
+            "SKILL.md Phase D.1 must name template_id "
+            "`code-reviewer-d-claude` so the MCP tool can render the "
+            "Phase D-Claude template"
+        )
+        assert "§Canonical Agent dispatch recipe" in skill_text, (
+            "SKILL.md Phase D.1 must reference §Canonical Agent "
+            "dispatch recipe (the runtime render path)"
+        )
+
+    def test_skill_md_all_eight_phases_use_canonical_agent_recipe(
+        self,
+    ) -> None:
+        """TASK-004 cutover assertion: across the eight in-process Agent
+        dispatch phases — Phase 1.5-Claude, Phase 1.5a (three variants),
+        Phase 1-triage, Phase 1.5.5, Phase D-Claude, Phase D.5,
+        Phase D.2a.6, and Phase D.4-rescue — SKILL.md names the
+        corresponding template_id and there are zero `awk` / `Read`
+        invocations against `dispatch-templates.md` outside the
+        §Canonical Agent dispatch recipe documentation block.
+        """
+        import re
+
+        skill_text = SKILL_PATH.read_text(encoding="utf-8")
+        required_template_ids = [
+            "code-reviewer-d-claude",   # Phase D-Claude (TASK-002)
+            "code-reviewer-d5",          # Phase D.5
+            "plan-reviewer",             # Phase 1.5-Claude
+            "plan-author-task-targeted", # Phase 1.5a variant A
+            "plan-author-schedule-level",# Phase 1.5a variant B
+            "plan-author-legacy-whole-plan", # Phase 1.5a legacy variant C
+            "plan-review-triage",        # Phase 1-triage + Phase 1.5.5
+            "plan-remediator-narrow",    # Phase D.2a.6
+            "plan-remediator-rescue",    # Phase D.4-rescue
+        ]
+        for tid in required_template_ids:
+            assert tid in skill_text, (
+                f"SKILL.md must name template_id `{tid}` so the "
+                "MCP tool can render the corresponding template at "
+                "dispatch time"
+            )
+
+        # Zero `awk`/`Read` invocations against `dispatch-templates.md`
+        # outside the §Canonical Agent dispatch recipe documentation
+        # block. The recipe section itself names the file in a "do NOT
+        # read" rule; everything else must avoid it entirely.
+        offenders: list[str] = []
+        for match in re.finditer(
+            r"(awk[^\n]*dispatch-templates|Read[^\n]*dispatch-templates\.md)",
+            skill_text,
+        ):
+            # Skip matches inside the canonical recipe block (the only
+            # site that names `dispatch-templates.md` legitimately).
+            start = match.start()
+            preceding = skill_text[:start]
+            heading = preceding.rfind("## ")
+            if heading != -1:
+                next_nl = skill_text.find("\n", heading)
+                section_heading = skill_text[heading:next_nl]
+                if "Canonical Agent dispatch recipe" in section_heading:
+                    continue
+            offenders.append(match.group(0))
+        assert offenders == [], (
+            "SKILL.md must not contain `awk`/`Read` invocations "
+            "against dispatch-templates.md outside the §Canonical "
+            f"Agent dispatch recipe block — found: {offenders!r}"
+        )
+
+    def test_dispatch_templates_md_seven_sections_carry_header_note(
+        self,
+    ) -> None:
+        """TASK-004 cutover assertion: each of the seven non-D-Claude
+        dispatch-template sections gains the same header-note pattern
+        TASK-002 added to Phase D-Claude.
+        """
+        templates_path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "dispatch-templates.md"
+        )
+        text = templates_path.read_text(encoding="utf-8")
+        for tid in [
+            "plan-reviewer",
+            "plan-author-task-targeted",
+            "plan-author-schedule-level",
+            "plan-author-legacy-whole-plan",
+            "plan-review-triage",
+            "code-reviewer-d5",
+            "plan-remediator-narrow",
+            "plan-remediator-rescue",
+        ]:
+            needle = (
+                "Rendered by plan_ops__build_agent_dispatch_prompt("
+                f'template_id="{tid}"'
+            )
+            assert needle in text, (
+                "dispatch-templates.md section for template_id "
+                f"`{tid}` must carry the MCP-render header note"
+            )
+
+    def test_dispatch_templates_md_carries_header_note(self) -> None:
+        templates_path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "skills"
+            / "implement-plan" / "dispatch-templates.md"
+        )
+        text = templates_path.read_text(encoding="utf-8")
+        # The Phase D-Claude section gains a header note pointing
+        # readers at the SKILL recipe and disclaiming runtime read.
+        assert (
+            "Rendered by plan_ops__build_agent_dispatch_prompt(template_id="
+            "\"code-reviewer-d-claude\""
+        ) in text, (
+            "dispatch-templates.md Phase D-Claude section must carry "
+            "the MCP-render header note"
+        )
+        assert (
+            "The orchestrator does not read this section at runtime"
+            in text
+        ), (
+            "dispatch-templates.md Phase D-Claude header note must "
+            "disclaim runtime read"
+        )
+
+    def test_mcp_tool_registers_code_reviewer_d_claude_template(
+        self,
+    ) -> None:
+        """Registry-level assertion (in lieu of a live tool-use trace):
+        the `plan_ops__build_agent_dispatch_prompt` tool's input schema
+        + implementation honor `template_id="code-reviewer-d-claude"`.
+        """
+        schema_path = (
+            REPO_ROOT / "plugins" / "plan-executor" / "scripts"
+            / "schemas" / "mcp"
+            / "build_agent_dispatch_prompt.input.json"
+        )
+        assert schema_path.is_file(), schema_path
+        schema_text = schema_path.read_text(encoding="utf-8")
+        # The named template_id is enumerated as a valid input.
+        assert "code-reviewer-d-claude" in schema_text, (
+            "build_agent_dispatch_prompt input schema must enumerate "
+            "template_id `code-reviewer-d-claude`"
         )

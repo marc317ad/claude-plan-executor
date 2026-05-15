@@ -1,0 +1,10 @@
+{
+  "provider": "stub",
+  "role": "classify",
+  "status": "ok",
+  "task_id": "001",
+  "parsed": {
+    "route": "stub",
+    "summary": "stub classify"
+  }
+}
