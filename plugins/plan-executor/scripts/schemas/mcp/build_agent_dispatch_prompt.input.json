@@ -16,7 +16,8 @@
         "plan-review-triage",
         "plan-remediator-narrow",
         "plan-remediator-rescue",
-        "plan-implementer-default"
+        "plan-implementer-default",
+        "plan-analyst-per-child"
       ]
     },
     "context": {
@@ -50,6 +51,9 @@
         },
         {
           "$ref": "#/$defs/planImplementerDefaultContext"
+        },
+        {
+          "$ref": "#/$defs/planAnalystPerChildContext"
         }
       ]
     }
@@ -314,6 +318,25 @@
         "task_id",
         "starting_sha",
         "analyst_annotations_json"
+      ],
+      "additionalProperties": false
+    },
+    "planAnalystPerChildContext": {
+      "type": "object",
+      "description": "Phase 1 Step 2 per-child classifier dispatch (in-process Agent path). Read-only by contract — analyst classifies a single child plan file and emits {agent, classification_reason}. No cleanup wrap is applied (see SKILL.md §Cleanup-around-Agent-dispatch).",
+      "properties": {
+        "plan_file": {
+          "description": "Absolute path to the resolved child plan file",
+          "type": "string"
+        },
+        "repo_root": {
+          "description": "Absolute path to the repository root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_file",
+        "repo_root"
       ],
       "additionalProperties": false
     },

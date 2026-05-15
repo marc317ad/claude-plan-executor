@@ -12171,6 +12171,7 @@ _AGENT_DISPATCH_TEMPLATE_AGENT = {
     "plan-remediator-narrow": "plan-remediator",
     "plan-remediator-rescue": "plan-remediator",
     "plan-implementer-default": "plan-implementer",
+    "plan-analyst-per-child": "plan-analyst",
 }
 
 _AGENT_DISPATCH_TEMPLATE_MODEL = {
@@ -12184,6 +12185,7 @@ _AGENT_DISPATCH_TEMPLATE_MODEL = {
     "plan-remediator-narrow": "opus",
     "plan-remediator-rescue": "opus",
     "plan-implementer-default": "opus",
+    "plan-analyst-per-child": "sonnet",
 }
 
 _AGENT_DISPATCH_TEMPLATE_HEADING = {
@@ -12197,6 +12199,7 @@ _AGENT_DISPATCH_TEMPLATE_HEADING = {
     "plan-remediator-narrow": "## Phase B-narrow-remediation — Narrow-remediation retry (D.2a.6)",
     "plan-remediator-rescue": "## Phase D.4-rescue — plan-remediator dispatch (single-shot rescue)",
     "plan-implementer-default": "## Phase B — plan-implementer dispatch (Claude tier)",
+    "plan-analyst-per-child": "## Phase A-single — plan-analyst per-child classifier (default)",
 }
 
 _AGENT_DISPATCH_TARGET_INJECTION_VERBS = {
@@ -12240,6 +12243,7 @@ _AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE = {
     "plan-remediator-narrow": "planRemediatorNarrowContext",
     "plan-remediator-rescue": "planRemediatorRescueContext",
     "plan-implementer-default": "planImplementerDefaultContext",
+    "plan-analyst-per-child": "planAnalystPerChildContext",
 }
 
 
@@ -12774,6 +12778,15 @@ def _render_agent_dispatch_prompt_body(
         # ``claude_envelope_extract`` which can parse the result without an
         # envelope-side schema copy.
         prompt, _schema_obj = _inline_implementer_result_schema(prompt)
+        return prompt
+
+    if template_id == "plan-analyst-per-child":
+        # Phase 1 Step 2 per-child classifier (default fan-out, in-process
+        # Agent dispatch). The rendered body is the Phase A-single
+        # blockquote; substitute the two text-level placeholders the
+        # template carries (`<absolute child plan path>`, `<repo_root>`).
+        prompt = prompt.replace("<absolute child plan path>", str(plan_file))
+        prompt = prompt.replace("<repo_root>", context.get("repo_root", ""))
         return prompt
 
     if template_id == "plan-remediator-rescue":

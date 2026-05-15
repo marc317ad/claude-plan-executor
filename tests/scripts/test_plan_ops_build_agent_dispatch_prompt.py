@@ -126,9 +126,10 @@ def test_schema_exposes_all_agent_dispatch_template_ids() -> None:
         "plan-remediator-narrow",
         "plan-remediator-rescue",
         "plan-implementer-default",
+        "plan-analyst-per-child",
     ]
     assert "oneOf" not in schema
-    assert len(schema["properties"]["context"]["oneOf"]) == 10
+    assert len(schema["properties"]["context"]["oneOf"]) == 11
 
 
 def test_new_agent_dispatch_variants_render_to_golden() -> None:
@@ -394,3 +395,100 @@ def test_inline_implementer_result_schema_byte_stable_vs_wrapper_path(
     a_offset = agent_prompt.index(helper_prompt.strip() or helper_prompt)
     assert wrapper_prompt[w_offset:w_offset + len(helper_prompt.strip())] == \
         agent_prompt[a_offset:a_offset + len(helper_prompt.strip())]
+
+
+# ---------------------------------------------------------------------------
+# TASK-003 (PLAN_DEPRECATE_CLAUDE_CLI) — plan-analyst-per-child template
+# ---------------------------------------------------------------------------
+
+
+_ANALYST_CHILD_PLAN = """# TASK-001 — stub
+
+## Goal
+Stub child plan for plan-analyst-per-child renderer test.
+
+## Tasks
+
+### TASK-001: stub
+
+- **Status:** pending
+- **Priority:** medium
+- **Files:**
+  - plugins/foo.py
+- **Dependencies:** []
+- **Test command:** none
+- **Acceptance criteria:**
+  - stub criterion
+
+**Description:**
+stub description.
+"""
+
+
+def test_plan_analyst_per_child_renders_with_substitutions(tmp_path: Path) -> None:
+    plan_file = tmp_path / "TASK-001_stub.md"
+    plan_file.write_text(_ANALYST_CHILD_PLAN, encoding="utf-8")
+    payload = {
+        "template_id": "plan-analyst-per-child",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "repo_root": "/abs/repo/root",
+        },
+    }
+
+    result = plan_ops._run_build_agent_dispatch_prompt(payload)
+
+    assert result["ok"] is True, result
+    assert result["agent"] == "plan-analyst"
+    assert result["model"] == "sonnet"
+    prompt = result["prompt"]
+    # Placeholders in the Phase A-single body are substituted.
+    assert str(plan_file.resolve()) in prompt
+    assert "/abs/repo/root" in prompt
+    assert "<absolute child plan path>" not in prompt
+    assert "<repo_root>" not in prompt
+    # Body is the classifier prompt (no wrapper-only knobs leaked in).
+    assert "Classify exactly one task" in prompt
+    assert "output_instructions" not in prompt
+    assert "declared_files_changed" not in prompt
+    # Required closing constraint from the agent body.
+    assert "You do NOT have the Agent tool." in prompt
+
+
+def test_plan_analyst_per_child_missing_required_fields_schema_errors(
+    tmp_path: Path,
+) -> None:
+    plan_file = tmp_path / "TASK-001_stub.md"
+    plan_file.write_text(_ANALYST_CHILD_PLAN, encoding="utf-8")
+    base_context = {
+        "plan_file": str(plan_file.resolve()),
+        "repo_root": "/abs/repo/root",
+    }
+    for missing in ("plan_file", "repo_root"):
+        ctx = dict(base_context)
+        del ctx[missing]
+        result = plan_ops._run_build_agent_dispatch_prompt(
+            {"template_id": "plan-analyst-per-child", "context": ctx}
+        )
+        assert result["ok"] is False, missing
+        assert {
+            "code": "required-field-missing",
+            "path": f"/context/{missing}",
+        }.items() <= result["errors"][0].items()
+
+
+def test_plan_analyst_per_child_registered_in_dispatch_maps() -> None:
+    """TASK-003 (PLAN_DEPRECATE_CLAUDE_CLI): the per-child classifier
+    template_id must be wired through every Agent-dispatch registry."""
+    assert plan_ops._AGENT_DISPATCH_TEMPLATE_AGENT["plan-analyst-per-child"] == (
+        "plan-analyst"
+    )
+    assert plan_ops._AGENT_DISPATCH_TEMPLATE_MODEL["plan-analyst-per-child"] == (
+        "sonnet"
+    )
+    assert plan_ops._AGENT_DISPATCH_TEMPLATE_HEADING["plan-analyst-per-child"] == (
+        "## Phase A-single — plan-analyst per-child classifier (default)"
+    )
+    assert plan_ops._AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE[
+        "plan-analyst-per-child"
+    ] == "planAnalystPerChildContext"

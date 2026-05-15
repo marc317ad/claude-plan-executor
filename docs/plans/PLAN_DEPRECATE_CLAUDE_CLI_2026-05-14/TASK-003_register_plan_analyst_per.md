@@ -21,17 +21,18 @@ Auto-decomposed child for TASK-003. See the source plan for broader context.
 
 ### TASK-003: Register `plan-analyst-per-child` Agent template and cut over Phase 1 Step 2 fan-out to in-process Agent dispatch
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
   - `plugins/plan-executor/scripts/plan_ops.py` — register `plan-analyst-per-child` in `_AGENT_DISPATCH_TEMPLATE_HEADING` and `_AGENT_DISPATCH_TEMPLATE_MODEL` at lines 12175–12197.
+  - `plugins/plan-executor/scripts/schemas/mcp/build_agent_dispatch_prompt.input.json` — add `plan-analyst-per-child` to the template_id enum and add `planAnalystPerChildContext` $def (mechanically required by the new template registration).
   - `plugins/plan-executor/skills/implement-plan/SKILL.md` (Phase 1 Step 2 section, lines 304–316)
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md` (Phase A-single template, lines 23–99 — verify it already targets the Agent path; if it references the wrapper's output-format flag, drop that. The classifier-result schema is already inlined in the template body — Codex Finding 5 confirms — so no shared-inliner work needed for analyst.)
   - `plugins/plan-executor/agents/plan-analyst.md` (verify the JSON-output instruction is wrapper-agnostic; revise if it references `plan_claude_dispatch.py`)
-  - `tests/scripts/test_plan_ops_build_agent_dispatch_prompt*.py` (add coverage for the new template_id)
+  - `tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py` (add coverage for the new template_id)
 - **Dependencies:** [002]
-- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops_build_agent_dispatch_prompt`
+- **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops_build_agent_dispatch_prompt*.py`
 - **Acceptance criteria:**
   - SKILL.md:308–316 (the Phase 1 Step 2 pseudo-syntax block) is rewritten to dispatch each child via `Agent(subagent_type:"plan-analyst", prompt:<rendered>)` rather than per-child `Bash(plan_claude_dispatch.py run --input <payload_i>)`. Parallelism is achieved by emitting N `Agent` tool calls in a single message — document this explicitly in the §Phase 1 Step 2 prose.
   - Register `plan-analyst-per-child` template_id in `_AGENT_DISPATCH_TEMPLATE_HEADING` and `_AGENT_DISPATCH_TEMPLATE_MODEL` at `plan_ops.py:12175–12197`. Model: `"sonnet"` (matches the existing analyst classifier model tier). Heading anchor: the Phase A-single template at `dispatch-templates.md:23–99`.
