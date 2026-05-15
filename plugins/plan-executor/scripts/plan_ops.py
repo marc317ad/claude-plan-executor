@@ -12421,6 +12421,51 @@ def _extract_agent_blockquote(section: str) -> str:
     return "\n".join(out).strip() + "\n"
 
 
+def _render_prior_attempt_context(
+    prior_findings: object,
+    prior_summary: object,
+    attempt_count: object,
+) -> str:
+    """TASK-001 (PLAN_DEPRECATE_CLAUDE_CLI_FOLLOWUPS): render the optional
+    "Prior attempt — D.2a.5 bounded remediation context" block for the
+    plan-implementer-default renderer. Returns empty string when neither
+    ``prior_findings`` nor ``prior_summary`` carries content; that path
+    preserves byte-identity with the pre-change renderer output."""
+    findings = prior_findings if isinstance(prior_findings, list) else []
+    summary = prior_summary if isinstance(prior_summary, str) else ""
+    has_findings = len(findings) > 0
+    has_summary = bool(summary.strip())
+    if not (has_findings or has_summary):
+        return ""
+    lines: list[str] = ["## Prior attempt — D.2a.5 bounded remediation context", ""]
+    if isinstance(attempt_count, int) and attempt_count >= 1:
+        lines.append(f"Attempt count: {attempt_count}")
+        lines.append("")
+    if has_summary:
+        lines.append("Prior reviewer summary:")
+        lines.append("")
+        lines.append(summary)
+        lines.append("")
+    if has_findings:
+        lines.append("Prior reviewer findings:")
+        lines.append("")
+        for idx, finding in enumerate(findings, start=1):
+            if not isinstance(finding, dict):
+                lines.append(f"{idx}. {finding!r}")
+                continue
+            severity = finding.get("severity", "?")
+            file_ = finding.get("file", "?")
+            line_no = finding.get("line", "?")
+            issue = finding.get("issue", "")
+            suggested_fix = finding.get("suggested_fix", "")
+            lines.append(f"{idx}. [{severity}] {file_}:{line_no} — {issue}")
+            if suggested_fix:
+                lines.append(f"   Suggested fix: {suggested_fix}")
+        lines.append("")
+    lines.append("---")
+    return "\n".join(lines)
+
+
 def _json_for_prompt(value: object) -> str:
     if isinstance(value, str):
         try:
@@ -12764,6 +12809,23 @@ def _render_agent_dispatch_prompt_body(
             analyst_annotations_rendered = "null"
         else:
             analyst_annotations_rendered = _json_for_prompt(analyst_annotations)
+        # TASK-001 (PLAN_DEPRECATE_CLAUDE_CLI_FOLLOWUPS): optional D.2a.5
+        # bounded-remediation rework context. When all three fields are
+        # absent (or `prior_findings` is empty AND `prior_summary` is
+        # empty), the placeholder is stripped entirely so the rendered
+        # prompt is byte-identical to a no-rework dispatch.
+        prior_attempt_block = _render_prior_attempt_context(
+            context.get("prior_findings"),
+            context.get("prior_summary"),
+            context.get("attempt_count"),
+        )
+        if prior_attempt_block:
+            prompt = prompt.replace(
+                "{{prior_attempt_context}}\n",
+                prior_attempt_block + "\n",
+            )
+        else:
+            prompt = prompt.replace("{{prior_attempt_context}}\n", "")
         prompt = prompt.replace("{{pre_read_excerpts}}", pre_read)
         prompt = prompt.replace("{{python_path}}", context.get("python_path", "$PYTHON"))
         prompt = prompt.replace("<absolute plan path>", str(plan_file))

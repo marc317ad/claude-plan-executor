@@ -499,6 +499,9 @@ The variant selector lives in the builder's `--variant` flag (was `payload.varia
 
 emits `{reads, symbols, errors}`. The orchestrator either renders the structured output via `plan_ops.render_pre_read_excerpts(resolved)` (canonical formatter) or substitutes the rendered string at the `{{pre_read_excerpts}}` interpolation point below. When the task carries no targets the field is empty and the section is omitted entirely (no empty heading).
 
+**Prior-attempt context (TASK-001 of PLAN_DEPRECATE_CLAUDE_CLI_FOLLOWUPS).** When `dispatch_bounded_remediation` (D.2a.5) re-dispatches `plan-implementer-default`, the orchestrator forwards `prior_findings[]`, `prior_summary`, and `attempt_count` in the `planImplementerDefaultContext` payload. The renderer formats those into a `## Prior attempt — D.2a.5 bounded remediation context` section and substitutes it at the `{{prior_attempt_context}}` interpolation point below. When the three fields are absent (or both `prior_findings` and `prior_summary` are empty), the renderer strips the placeholder line entirely so the rendered prompt is byte-identical to a fresh-implement dispatch. The finding-formatting logic lives in the renderer (`_render_prior_attempt_context`) — the markdown only carries the interpolation point.
+
+> {{prior_attempt_context}}
 > {{pre_read_excerpts}}
 >
 > Implement this task from the plan at `<absolute plan path>`.

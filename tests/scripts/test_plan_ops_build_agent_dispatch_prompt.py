@@ -398,6 +398,112 @@ def test_inline_implementer_result_schema_byte_stable_vs_wrapper_path(
 
 
 # ---------------------------------------------------------------------------
+# TASK-001 (PLAN_DEPRECATE_CLAUDE_CLI_FOLLOWUPS) — optional D.2a.5 rework
+# context on `plan-implementer-default`
+# ---------------------------------------------------------------------------
+
+
+_REWORK_FIXTURE_PATH = (
+    REPO_ROOT
+    / "tests"
+    / "scripts"
+    / "fixtures"
+    / "build_agent_dispatch_prompt"
+    / "implementer_default_with_rework_context.json"
+)
+
+
+def test_plan_implementer_default_rework_context_inlines_prior_attempt_block(
+    tmp_path: Path,
+) -> None:
+    """When `prior_findings`/`prior_summary`/`attempt_count` are populated,
+    the renderer inlines the `## Prior attempt — D.2a.5 bounded
+    remediation context` section above the fresh-implement instructions."""
+    plan_file = _write_implementer_plan(tmp_path)
+    raw = json.loads(_REWORK_FIXTURE_PATH.read_text(encoding="utf-8"))
+    raw["context"]["plan_file"] = str(plan_file.resolve())
+    result = plan_ops._run_build_agent_dispatch_prompt(raw)
+
+    assert result["ok"] is True, result
+    prompt = result["prompt"]
+    assert "## Prior attempt — D.2a.5 bounded remediation context" in prompt
+    assert "Attempt count: 2" in prompt
+    assert "Prior reviewer summary:" in prompt
+    assert (
+        "Prior attempt missed the nil-guard in foo.py and shipped a thin "
+        "docstring in baz.py."
+    ) in prompt
+    assert "Prior reviewer findings:" in prompt
+    assert "1. [important] plugins/foo.py:42 — Missing nil-guard" in prompt
+    assert "Suggested fix: Wrap the dereference in `if bar is not None`." in prompt
+    assert "2. [minor] plugins/baz.py:13 — Docstring undersells" in prompt
+    # The prior-attempt block precedes the fresh-implement instructions.
+    prior_idx = prompt.index("## Prior attempt — D.2a.5 bounded remediation context")
+    implement_idx = prompt.index("Implement this task from the plan at")
+    assert prior_idx < implement_idx
+
+
+def test_plan_implementer_default_without_rework_context_is_byte_identical(
+    tmp_path: Path,
+) -> None:
+    """When `prior_findings`/`prior_summary`/`attempt_count` are absent,
+    the rendered prompt is byte-identical to a no-rework dispatch and
+    carries no prior-attempt section."""
+    plan_file = _write_implementer_plan(tmp_path)
+    baseline_payload = {
+        "template_id": "plan-implementer-default",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "task_id": "001",
+            "starting_sha": "abc123",
+            "analyst_annotations_json": None,
+        },
+    }
+    baseline = plan_ops._run_build_agent_dispatch_prompt(baseline_payload)
+    assert baseline["ok"] is True
+    assert "Prior attempt — D.2a.5 bounded remediation context" not in (
+        baseline["prompt"]
+    )
+
+    # All-empty rework context: still byte-identical to baseline.
+    empty_payload = {
+        "template_id": "plan-implementer-default",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "task_id": "001",
+            "starting_sha": "abc123",
+            "analyst_annotations_json": None,
+            "prior_findings": [],
+            "prior_summary": "",
+        },
+    }
+    empty = plan_ops._run_build_agent_dispatch_prompt(empty_payload)
+    assert empty["ok"] is True
+    assert empty["prompt"] == baseline["prompt"]
+
+
+def test_plan_implementer_default_rework_context_schema_validates() -> None:
+    """The fixture file conforms to the
+    build_agent_dispatch_prompt.input.json schema (the new optional
+    fields are accepted by the $def)."""
+    try:
+        import jsonschema  # noqa: F401
+    except ImportError:  # pragma: no cover - jsonschema is a dev dep
+        import pytest
+
+        pytest.skip("jsonschema not installed")
+    schema_path = (
+        SCRIPTS_DIR / "schemas" / "mcp" / "build_agent_dispatch_prompt.input.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    payload = json.loads(_REWORK_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+    import jsonschema as _js
+
+    _js.validate(instance=payload, schema=schema)
+
+
+# ---------------------------------------------------------------------------
 # TASK-003 (PLAN_DEPRECATE_CLAUDE_CLI) — plan-analyst-per-child template
 # ---------------------------------------------------------------------------
 

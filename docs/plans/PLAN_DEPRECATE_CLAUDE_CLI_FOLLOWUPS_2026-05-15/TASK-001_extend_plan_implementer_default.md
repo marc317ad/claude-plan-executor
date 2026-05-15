@@ -21,7 +21,7 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
 
 ### TASK-001: Extend `plan-implementer-default` renderer + schema to carry optional D.2a.5 rework context, and re-wire SKILL.md's D.2a.5 routing
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** high
 - **Agent:** claude
 - **Files:**
@@ -30,6 +30,7 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
   - `plugins/plan-executor/skills/implement-plan/dispatch-templates.md`
   - `plugins/plan-executor/skills/implement-plan/SKILL.md`
   - `tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py`
+  - `tests/scripts/fixtures/build_agent_dispatch_prompt/implementer_default_with_rework_context.json`
 - **Dependencies:** []
 - **Test command:** `venv/bin/pytest -q tests/scripts/test_plan_ops_build_agent_dispatch_prompt.py -k "implementer_default or rework"`
 - **Acceptance criteria:**

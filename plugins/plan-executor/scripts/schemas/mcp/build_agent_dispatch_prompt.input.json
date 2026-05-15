@@ -311,6 +311,47 @@
         },
         "python_path": {
           "type": "string"
+        },
+        "prior_findings": {
+          "description": "Optional D.2a.5 bounded-remediation rework context: reviewer findings from the prior attempt. Each entry matches the reviewer-finding shape used by plan_ops__parse_reviewer_envelope. Absent or empty means \"fresh implement\" and the renderer's output is byte-identical to a no-rework dispatch.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "severity": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer"
+              },
+              "issue": {
+                "type": "string"
+              },
+              "suggested_fix": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "severity",
+              "file",
+              "line",
+              "issue",
+              "suggested_fix"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "prior_summary": {
+          "description": "Optional D.2a.5 bounded-remediation rework context: prior reviewer summary, emitted verbatim above the fresh-implement instructions when populated.",
+          "type": "string"
+        },
+        "attempt_count": {
+          "description": "Optional D.2a.5 bounded-remediation rework context: 1-based attempt count (>=1). Absent means \"fresh implement\".",
+          "type": "integer",
+          "minimum": 1
         }
       },
       "required": [
