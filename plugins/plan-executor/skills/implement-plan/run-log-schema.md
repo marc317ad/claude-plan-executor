@@ -6,7 +6,7 @@ All events carry `ts` (ISO-8601 UTC, e.g. `2026-04-13T17:02:04Z`) and `run_id`.
 
 | `event` | Required fields |
 |---|---|
-| `run_start` | `ts, run_id, plan_file, mode, flags, starting_sha, candidate_count` |
+| `run_start` | `ts, run_id, plan_file, mode, flags, starting_sha, candidate_count` + optional `claude_only?, task_ids?` (`task_ids?` is a list of canonicalized ids when `--task-ids` was passed; never a scalar; never named `task_ids_filter`) |
 | `run_end` | `ts, run_id, ending_sha, done_count, failed_count, disagreement_count, minor_findings_total` |
 | `batch_start` | `ts, run_id, batch_index, task_ids, file_locks` |
 | `implement_start` | `ts, run_id, task_id, agent, model?, batch_index` |
