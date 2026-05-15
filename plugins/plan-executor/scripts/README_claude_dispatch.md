@@ -1,3 +1,12 @@
+> **Scope banner (2026-05-14):** The `/implement-plan` SKILL/MCP
+> orchestration no longer calls this wrapper. That path was cut over to
+> in-process Agent dispatch under `PLAN_DEPRECATE_CLAUDE_CLI_2026-05-14`.
+> `plan_claude_dispatch.py` itself is **not deprecated**: it remains in
+> active use by the standalone `implement_plan.py` script runner's
+> `ClaudeProvider`. After Anthropic's `claude -p` subscription deprecation,
+> the script-runner Claude path becomes paid usage; operators concerned about
+> cost should run the script runner with `--implementer codex`.
+
 # `plan_claude_dispatch.py` — nested Claude CLI dispatch wrapper
 
 Operator-and-caller orientation for the wrapper that lets a subagent shell out

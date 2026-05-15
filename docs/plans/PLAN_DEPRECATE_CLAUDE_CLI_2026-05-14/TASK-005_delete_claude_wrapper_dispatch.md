@@ -21,7 +21,7 @@ Auto-decomposed child for TASK-005. See the source plan for broader context.
 
 ### TASK-005: Delete §Claude wrapper dispatch recipe SKILL section, banner the README, document script-runner-only residency
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** codex
 - **Files:**
@@ -30,7 +30,7 @@ Auto-decomposed child for TASK-005. See the source plan for broader context.
   - `plugins/plan-executor/scripts/plan_claude_dispatch.py` (NO behavior change to `run` — it stays functional for the script runner; optionally add a `--called-from` audit field if cheap)
   - `tests/scripts/test_claude_dispatch*.py` (NO skip — the wrapper still serves the script-runner caller; tests stay live)
 - **Dependencies:** [002, 003, 004]
-- **Test command:** `venv/bin/pytest -q tests/scripts/test_claude_dispatch tests/scripts/test_plan_ops_build_agent_dispatch_prompt tests/scripts/test_dispatch_cleanup`
+- **Test command:** `venv/bin/pytest -q tests/scripts/test_claude_dispatch*.py tests/scripts/test_plan_ops_build_agent_dispatch_prompt*.py tests/scripts/test_dispatch_cleanup*.py`
 - **Acceptance criteria:**
   - SKILL.md's §Claude wrapper dispatch recipe (canonical) section (currently around lines 97–112) is deleted in full. The orchestrator no longer references it (verified by TASK-002/003/004). Confirm with `grep -n "Claude wrapper dispatch recipe" plugins/plan-executor/skills/implement-plan/SKILL.md` returning empty.
   - `README_claude_dispatch.md` gains a top-of-file scope banner explaining (a) the `/implement-plan` SKILL/MCP orchestration NO LONGER calls this wrapper as of 2026-05-14 (in-process Agent dispatch via PLAN_DEPRECATE_CLAUDE_CLI_2026-05-14), (b) the wrapper REMAINS in active use by the standalone `implement_plan.py` script runner's `ClaudeProvider`, and (c) post-Anthropic-`claude -p` subscription deprecation, the script-runner Claude path becomes paid usage — operators are advised to switch to `--implementer codex` if cost is a concern. The banner explicitly does NOT mark the script as deprecated; only the SKILL/MCP usage is deprecated.
