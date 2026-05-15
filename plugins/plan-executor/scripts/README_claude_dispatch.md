@@ -188,7 +188,7 @@ What that means for the safety story:
    *always* in `--disallowedTools` (depth-limit invariant: the nested
    session must not spawn a further `Agent` hop and bypass the depth
    counter).
-3. **Delta-bounded cleanup (`_claude_dispatch_cleanup`) is the secondary
+3. **Delta-bounded cleanup (`_dispatch_cleanup`) is the secondary
    defense**, not the primary one. It runs after every dispatch and reverts
    writes outside `result.files_changed`; the wrapper demotes a backend
    `ok` to `scope_violation` if cleanup detects a breach.
@@ -234,5 +234,5 @@ runs against).
 - `_claude_agent_manifest.py` — `DISPATCHABLE_AGENTS`, manifest loader.
 - `_claude_guardrails.py` — refusal matrix, `scrub_env`, killswitch constant.
 - `_claude_backend.py` — argv, timeout/malformed mappings.
-- `_claude_dispatch_cleanup.py` — baseline snapshot + delta-bounded revert.
+- `_dispatch_cleanup.py` — baseline snapshot + delta-bounded revert.
 - `_claude_span_log.py` — `spans.jsonl` shape and atomic append.

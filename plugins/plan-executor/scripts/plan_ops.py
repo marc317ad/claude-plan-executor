@@ -10987,7 +10987,7 @@ def _check_wrapper_restore_authorization_source() -> dict:
     targets = {
         "plan_claude_dispatch.py": _SCRIPT_DIR / "plan_claude_dispatch.py",
         "plan_codex_dispatch.py": _SCRIPT_DIR / "plan_codex_dispatch.py",
-        "_claude_dispatch_cleanup.py": _SCRIPT_DIR / "_claude_dispatch_cleanup.py",
+        "_dispatch_cleanup.py": _SCRIPT_DIR / "_dispatch_cleanup.py",
     }
     canonical_payload = {
         "source": (
@@ -11017,7 +11017,7 @@ def _check_wrapper_restore_authorization_source() -> dict:
         actual_values[name] = sorted({v.strip("'\"") for v in found_auths})
 
         # Verify definitions are gated.
-        if name == "_claude_dispatch_cleanup.py":
+        if name == "_dispatch_cleanup.py":
             if "def _restore_path" in text and "authorization_source" not in text.split("def _restore_path")[1].split(") ->")[0]:
                 problems.append(f"{name}: _restore_path definition is missing authorization_source gate")
         if name == "plan_codex_dispatch.py":

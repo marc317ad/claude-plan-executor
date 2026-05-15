@@ -28,7 +28,7 @@ PROTECTED_EXACT_PATHS = frozenset({
     ".claude",
     ".codex",
 })
-# Note: plan_claude_dispatch.py and _claude_dispatch_cleanup.py are intentionally NOT in this prefix list — they are the wrapper layer itself, not consumers. Wrapper-self-protection is provided by the authorization-source gate in apply_cleanup, not by this allowlist.
+# Note: plan_claude_dispatch.py and _dispatch_cleanup.py are intentionally NOT in this prefix list — they are the wrapper layer itself, not consumers. Wrapper-self-protection is provided by the authorization-source gate in apply_cleanup, not by this allowlist.
 PROTECTED_PATH_PREFIXES = (
     "docs/plans/_run_log.jsonl",
     "docs/plans/_run_lock.json",

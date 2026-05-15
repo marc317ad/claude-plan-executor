@@ -1,4 +1,4 @@
-"""Delta-bounded cleanup for the nested ``claude`` dispatch wrapper
+"""Delta-bounded cleanup for dispatch wrappers and orchestrator cleanup
 (PLAN_NESTED_DISPATCH §8.1, TASK-004).
 
 Mirrors the proven baseline-snapshot + delta-cleanup pattern in
@@ -33,11 +33,12 @@ Authorization gate
 ------------------
 
 :func:`apply_cleanup` requires a keyword-only ``authorization_source``
-argument anchored in the dispatch payload's top-level ``agent`` field.
-Omission raises :class:`TypeError`; an unknown value raises
-:class:`ValueError`. Both checks fire before any working-tree
-inspection so a missing/bad value cannot silently revert anything. The
-closed enum is intentionally minimal at v1:
+argument anchored either in the dispatch payload's top-level ``agent``
+field or in an orchestrator-direct cleanup decision. Omission raises
+:class:`TypeError`; an unknown value raises :class:`ValueError`. Both
+checks fire before any working-tree inspection so a missing/bad value
+cannot silently revert anything. The closed enum is intentionally
+minimal:
 
   * ``"wrapper-declared-scope"`` — write-authorized agents
     (``plan-implementer`` / ``plan-remediator``). The wrapper reverts
@@ -46,6 +47,12 @@ closed enum is intentionally minimal at v1:
   * ``"wrapper-empty-scope-readonly"`` — read-only agents
     (``plan-analyst``). Any observed delta is a contract violation;
     the wrapper reverts it.
+  * ``"orchestrator-declared-scope"`` — orchestrator-direct cleanup
+    for a task with an explicit declared write scope. Reverts every
+    observed delta outside ``declared_files_changed`` ∪ protected paths.
+  * ``"orchestrator-empty-scope-readonly"`` — orchestrator-direct
+    cleanup for a read-only task with an empty declared write scope.
+    Any observed delta is a contract violation; cleanup reverts it.
 
 The discriminator anchors authorization in the agent identity rather
 than letting any caller opt out by passing the readonly value
@@ -119,8 +126,8 @@ MAX_BASELINE_BLOB_BYTES = 10 * 1024 * 1024  # 10 MiB
 # ---------------------------------------------------------------------------
 #
 # ``apply_cleanup`` requires a keyword-only ``authorization_source`` that
-# names which dispatch-payload-anchored permission the caller is acting
-# under. The closed enum at v1:
+# names which dispatch-payload-anchored or orchestrator-direct permission
+# the caller is acting under. The closed enum:
 #
 #   * ``"wrapper-declared-scope"`` — write-authorized agents
 #     (``plan-implementer`` / ``plan-remediator``). Reverts the observed
@@ -128,6 +135,12 @@ MAX_BASELINE_BLOB_BYTES = 10 * 1024 * 1024  # 10 MiB
 #   * ``"wrapper-empty-scope-readonly"`` — read-only agents
 #     (``plan-analyst``). Any observed delta is treated as a contract
 #     violation and reverted.
+#   * ``"orchestrator-declared-scope"`` — orchestrator-direct cleanup
+#     with a non-empty declared write scope. Mirrors
+#     ``wrapper-declared-scope`` semantics.
+#   * ``"orchestrator-empty-scope-readonly"`` — orchestrator-direct
+#     cleanup for a read-only/empty-scope task. Mirrors
+#     ``wrapper-empty-scope-readonly`` semantics.
 #
 # A sentinel default makes omission fail at call time with a TypeError
 # whose message names the expected enum values; a bogus value raises
@@ -141,6 +154,8 @@ _MISSING_AUTHORIZATION_SOURCE = object()
 ALLOWED_CLEANUP_AUTHORIZATION_SOURCES: frozenset[str] = frozenset({
     "wrapper-declared-scope",
     "wrapper-empty-scope-readonly",
+    "orchestrator-declared-scope",
+    "orchestrator-empty-scope-readonly",
 })
 
 # Closed enum for ``unattended_revert_policy`` (PLAN_WRAPPER_REVERT_POLICY_GATE
@@ -161,6 +176,8 @@ ALLOWED_UNATTENDED_REVERT_POLICIES: frozenset[str] = frozenset({
 _RESTORE_GATE_TRANSLATION = {
     "wrapper-declared-scope": "wrapper_internal_cleanup_explicit_declaration",
     "wrapper-empty-scope-readonly": "wrapper_internal_cleanup_explicit_declaration",
+    "orchestrator-declared-scope": "wrapper_internal_cleanup_explicit_declaration",
+    "orchestrator-empty-scope-readonly": "wrapper_internal_cleanup_explicit_declaration",
 }
 
 # ---------------------------------------------------------------------------

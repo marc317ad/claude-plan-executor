@@ -82,7 +82,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import _claude_agent_manifest as agent_manifest  # noqa: E402
 import _claude_backend as backend  # noqa: E402
-import _claude_dispatch_cleanup as cleanup  # noqa: E402
+import _dispatch_cleanup as cleanup  # noqa: E402
 import _claude_dispatch_envelope as env_mod  # noqa: E402
 import _claude_guardrails as guardrails  # noqa: E402
 import _claude_span_log as span_log  # noqa: E402

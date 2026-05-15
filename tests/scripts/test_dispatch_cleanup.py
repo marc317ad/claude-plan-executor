@@ -1,4 +1,4 @@
-"""Unit + integration tests for ``_claude_dispatch_cleanup`` (TASK-004).
+"""Unit + integration tests for ``_dispatch_cleanup``.
 
 Exercises the public API:
 
@@ -34,13 +34,13 @@ MODULE_PATH = (
     / "plugins"
     / "plan-executor"
     / "scripts"
-    / "_claude_dispatch_cleanup.py"
+    / "_dispatch_cleanup.py"
 )
 
 
 def _load_cleanup():
     spec = importlib.util.spec_from_file_location(
-        "_claude_dispatch_cleanup", MODULE_PATH,
+        "_dispatch_cleanup", MODULE_PATH,
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -394,10 +394,15 @@ class TestAuthorizationGate:
             cleanup.apply_cleanup({}, [], str(repo))
         msg = str(excinfo.value)
         assert "expected one of" in msg
-        for v in sorted(["wrapper-declared-scope", "wrapper-empty-scope-readonly"]):
+        for v in sorted([
+            "wrapper-declared-scope",
+            "wrapper-empty-scope-readonly",
+            "orchestrator-declared-scope",
+            "orchestrator-empty-scope-readonly",
+        ]):
             assert v in msg
 
-    def test_apply_cleanup_raises_valueerror_on_unknown_authorization_source(
+    def test_apply_cleanup_rejects_unknown_authorization_source(
         self, tmp_path,
     ):
         repo = _make_repo(tmp_path)
@@ -405,9 +410,9 @@ class TestAuthorizationGate:
         with pytest.raises(ValueError) as excinfo:
             cleanup.apply_cleanup(
                 baseline, [], str(repo),
-                authorization_source="bogus",
+                authorization_source="rogue",
             )
-        assert "unknown authorization_source 'bogus'" in str(excinfo.value)
+        assert "unknown authorization_source 'rogue'" in str(excinfo.value)
 
     def test_apply_cleanup_wrapper_declared_scope_with_empty_declared_reverts_all(
         self, tmp_path,
@@ -460,6 +465,40 @@ class TestAuthorizationGate:
         assert (repo / "x.py").read_text() == "declared\n"
         assert "y.py" in result["deleted"]
         assert not (repo / "y.py").exists()
+
+    def test_apply_cleanup_accepts_orchestrator_declared_scope(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "declared.txt").write_text("in scope\n")
+        (repo / "rogue.txt").write_text("out of scope\n")
+        result = cleanup.apply_cleanup(
+            baseline, ["declared.txt"], str(repo),
+            authorization_source="orchestrator-declared-scope",
+            unattended_revert_policy="preserve-only",
+        )
+        assert result["cleanup_strategy"] == "delta_bounded"
+        assert result["scope_violation_detected"] is True
+        assert "rogue.txt" in result["out_of_scope_paths"]
+        assert "rogue.txt" in result["deleted"]
+        assert not (repo / "rogue.txt").exists()
+        assert (repo / "declared.txt").read_text() == "in scope\n"
+
+    def test_apply_cleanup_accepts_orchestrator_empty_scope_readonly(
+        self, tmp_path,
+    ):
+        repo = _make_repo(tmp_path)
+        baseline = cleanup.snapshot_baseline(str(repo))
+        (repo / "leaked.txt").write_text("read-only violation\n")
+        result = cleanup.apply_cleanup(
+            baseline, [], str(repo),
+            authorization_source="orchestrator-empty-scope-readonly",
+            unattended_revert_policy="preserve-only",
+        )
+        assert result["cleanup_strategy"] == "delta_bounded"
+        assert result["scope_violation_detected"] is True
+        assert "leaked.txt" in result["out_of_scope_paths"]
+        assert "leaked.txt" in result["deleted"]
+        assert not (repo / "leaked.txt").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -578,7 +617,7 @@ def _worker(repo_str: str, declared: list, my_files: dict, result_q):
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location(
-        "_claude_dispatch_cleanup", MODULE_PATH,
+        "_dispatch_cleanup", MODULE_PATH,
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -615,7 +654,7 @@ def _snap_only_worker(repo_str: str, ready_evt, q):
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location(
-        "_claude_dispatch_cleanup", MODULE_PATH,
+        "_dispatch_cleanup", MODULE_PATH,
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

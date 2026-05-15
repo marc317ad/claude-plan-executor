@@ -13,7 +13,7 @@
       "file": "TASK-001_promote_claude_dispatch_cleanup.md",
       "priority": "high",
       "depends_on": [],
-      "status": "Pending",
+      "status": "Done",
       "superseded_by": []
     },
     {

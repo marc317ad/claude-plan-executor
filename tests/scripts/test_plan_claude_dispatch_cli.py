@@ -40,7 +40,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import _claude_agent_manifest as agent_manifest  # noqa: E402
 import _claude_backend as backend_mod  # noqa: E402
-import _claude_dispatch_cleanup as cleanup_mod  # noqa: E402
+import _dispatch_cleanup as cleanup_mod  # noqa: E402
 import _claude_dispatch_envelope as env_mod  # noqa: E402
 import _claude_guardrails as guardrails  # noqa: E402
 
