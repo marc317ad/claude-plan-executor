@@ -5710,6 +5710,65 @@ def _load_feat_commit_ids(git_dir: Path) -> set[str]:
     return ids
 
 
+# TASK-002 (PLAN_RUN_TELEMETRY_FOLLOWUPS_2026-05-15): ac_symbol_groundedness.
+# A warning-severity check that flags acceptance criteria that name a code
+# symbol (backticked identifier with structural cues — underscore, CamelCase,
+# or ALL_CAPS) which does not literally appear in any of the task's declared
+# Files. Catches AC drift at plan-author time rather than at Phase D
+# cross-review. Findings carry `severity: "warning"` and do not change the
+# lint exit code.
+_AC_HEADER_RE = re.compile(
+    r"^-\s*\*\*Acceptance criteria:\*\*\s*$", re.MULTILINE
+)
+_AC_NEXT_FIELD_RE = re.compile(r"^-\s*\*\*[^*]+:\*\*", re.MULTILINE)
+_AC_SYMBOL_TOKEN_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]+)`")
+
+
+def _is_code_symbol_token(tok: str) -> bool:
+    """Return True when ``tok`` looks like a code identifier worth grounding.
+
+    Heuristic: contains an underscore, OR is all-caps (constant), OR is a
+    CamelCase identifier (leading uppercase with at least one lowercase).
+    Pure-lowercase single words like ``done`` or ``paused`` are intentionally
+    excluded as too noisy.
+    """
+    if len(tok) < 2:
+        return False
+    if "_" in tok:
+        return True
+    if tok.isupper():
+        return True
+    if tok[0].isupper() and any(c.islower() for c in tok):
+        return True
+    return False
+
+
+def _extract_ac_symbols(block: str) -> list[str]:
+    """Return de-duplicated code-symbol tokens cited under Acceptance criteria.
+
+    Reads the section starting at ``- **Acceptance criteria:**`` and stopping
+    at the next top-level ``- **Xxx:**`` field bullet (or end-of-block).
+    Within that range, collects backticked identifiers that pass
+    ``_is_code_symbol_token``.
+    """
+    m = _AC_HEADER_RE.search(block)
+    if not m:
+        return []
+    rest = block[m.end():]
+    nm = _AC_NEXT_FIELD_RE.search(rest)
+    section = rest if nm is None else rest[: nm.start()]
+    seen: set[str] = set()
+    out: list[str] = []
+    for tok in _AC_SYMBOL_TOKEN_RE.findall(section):
+        if not _is_code_symbol_token(tok):
+            continue
+        if tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+    return out
+
+
 def _args_to_payload_lint_plans(args: argparse.Namespace) -> dict:
     payload = {
         "plans_dir": pathlib.Path(args.plans_dir) if args.plans_dir else None,
@@ -5740,11 +5799,6 @@ def _run_lint_plans(payload: dict) -> dict:
             continue
         for raw_id, block in blocks_for_check:
             status_m = _find_status_bullet(block)
-            if not status_m:
-                continue
-            status = status_m.group(2).strip().lower()
-            if status not in {'done', 'partial', 'paused'}:
-                continue
             tid = _normalize_task_id(raw_id)
             if tid is None:
                 continue
@@ -5752,6 +5806,39 @@ def _run_lint_plans(payload: dict) -> dict:
                 rel_path = str(md.relative_to(anchor))
             except ValueError:
                 rel_path = str(md)
+            # ac_symbol_groundedness (warning severity) runs on every task
+            # block regardless of status — its purpose is to catch AC drift
+            # at plan-author time, before the task is dispatched.
+            ac_symbols = _extract_ac_symbols(block)
+            if ac_symbols:
+                declared_files = _extract_task_files_from_plan(text, raw_id) or []
+                file_blobs: list[str] = []
+                for relpath in declared_files:
+                    if not relpath:
+                        continue
+                    fp = git_dir / relpath
+                    try:
+                        file_blobs.append(fp.read_text(encoding='utf-8'))
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                for sym in ac_symbols:
+                    if any(sym in blob for blob in file_blobs):
+                        continue
+                    findings.append({
+                        'plan_file': rel_path,
+                        'task_id': tid,
+                        'code': 'ac_symbol_groundedness',
+                        'message': (
+                            f"acceptance criteria reference symbol `{sym}` "
+                            f"but it does not appear in any declared file"
+                        ),
+                        'severity': 'warning',
+                    })
+            if not status_m:
+                continue
+            status = status_m.group(2).strip().lower()
+            if status not in {'done', 'partial', 'paused'}:
+                continue
             if status == 'paused':
                 if tid not in awaiting_user_ids:
                     findings.append({'plan_file': rel_path, 'task_id': tid, 'code': 'paused_without_awaiting_user_event', 'message': f"plan marks TASK-{tid} as 'paused' but no awaiting_user event found in run log"})
@@ -5762,7 +5849,10 @@ def _run_lint_plans(payload: dict) -> dict:
             if tid not in feat_commit_ids:
                 findings.append({'plan_file': rel_path, 'task_id': tid, 'code': 'missing-feat-commit', 'message': f"plan marks TASK-{tid} as {status!r} but no 'feat(TASK-{tid}):' commit found"})
     result = {'scanned': scanned, 'done_tasks': done_tasks, 'findings': findings}
-    return _result(result, exit_code=1 if findings else 0)
+    # Warning-severity findings (ac_symbol_groundedness) must not change the
+    # lint exit code; only blocking findings raise it.
+    blocking = [f for f in findings if f.get('severity') != 'warning']
+    return _result(result, exit_code=1 if blocking else 0)
 
 def cmd_lint_plans(args: argparse.Namespace) -> None:
     "Flag `**Status:** done`/`partial` tasks without matching commit pairings.\n\n    Read-only. Scans every `*.md` file under --plans-dir, enumerates tasks\n    via `_split_task_blocks`, and for each task whose Status bullet reads\n    `done` or `partial` asserts both (a) a `commit_done` event exists in the\n    run log with a matching task_id and (b) a `feat(TASK-NNN):` commit exists\n    in the repo's git log (across all refs).\n\n    Parent plans whose top-level Status is `superseded` are skipped per the\n    §D.3 guidance: their decomposition is tracked by the superseding children.\n\n    TASK-002 (prohibit_silent_revert): `paused` is a recognized task status\n    and is NOT flagged as drift. Each `**Status:** paused` task must be\n    paired with an `awaiting_user` run-log event for the same task; an\n    unpaired paused task surfaces as `paused_without_awaiting_user_event`.\n    "

@@ -21,7 +21,7 @@ Auto-decomposed child for TASK-002. See the source plan for broader context.
 
 ### TASK-002: Add `ac_symbol_groundedness` check to `lint_plans`
 
-- **Status:** Pending
+- **Status:** done
 - **Priority:** medium
 - **Agent:** claude
 - **Files:**
