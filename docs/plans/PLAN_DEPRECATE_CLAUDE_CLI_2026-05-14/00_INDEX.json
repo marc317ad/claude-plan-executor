@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "PLAN \u2014 Deprecate `claude -p` nested-dispatch wrapper for in-process Agent dispatch",
+  "source_plan_file": "PLAN_DEPRECATE_CLAUDE_CLI_2026-05-14.md",
+  "created": "2026-05-15",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_promote_claude_dispatch_cleanup.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_register_plan_implementer_default.md",
+      "priority": "high",
+      "depends_on": [
+        "001"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_register_plan_analyst_per.md",
+      "priority": "high",
+      "depends_on": [
+        "002"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "004",
+      "file": "TASK-004_cut_over_plan_remediator.md",
+      "priority": "medium",
+      "depends_on": [
+        "002",
+        "003"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    },
+    {
+      "task_id": "005",
+      "file": "TASK-005_delete_claude_wrapper_dispatch.md",
+      "priority": "medium",
+      "depends_on": [
+        "002",
+        "003",
+        "004"
+      ],
+      "status": "Pending",
+      "superseded_by": []
+    }
+  ]
+}
