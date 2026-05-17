@@ -100,3 +100,84 @@ def test_build_effective_input_override_wins_over_cli_timeout():
         cli_repo_root=None,
     )
     assert effective.get("timeout_sec") == 750
+
+
+# ---------------------------------------------------------------------------
+# TASK-001 (PLAN_RUN_TELEMETRY_FOLLOWUPS_2026-05-15): narrow the wrapper's
+# published observed-delta lists to the intersection of the whole-tree diff
+# and (declared ∪ agent-reported writes). Cross-batch leakage from sibling
+# tasks in parallel batches must not pollute the envelope telemetry.
+# ---------------------------------------------------------------------------
+
+
+def _make_envelope_with_scope(
+    declared: list, result_files_changed: list | None = None,
+) -> Dict[str, Any]:
+    scope: Dict[str, Any] = {"declared_files_changed": list(declared)}
+    env: Dict[str, Any] = {"scope": scope}
+    if result_files_changed is not None:
+        env["result"] = {"files_changed": list(result_files_changed)}
+    return env
+
+
+def test_observed_delta_excludes_cross_batch_leakage():
+    """Sibling-task writes (cross-batch leakage) are dropped from the
+    published ``observed_delta_*`` while the underlying ``cleanup_result``
+    is untouched."""
+    declared = ["src/task_a.py"]
+    cleanup_result = {
+        # cleanup observed restoration of both the task-declared file
+        # and a sibling-task file (the cross-batch leak from a parallel
+        # batch peer).
+        "restored": ["src/task_a.py", "src/sibling_task.py"],
+        "deleted": [],
+        "failed_paths": [],
+        "out_of_scope_paths": [],
+        "scope_violation_detected": False,
+        "scope_misreport_detected": False,
+    }
+    envelope = _make_envelope_with_scope(declared, result_files_changed=[])
+
+    merged = cli._merge_scope_with_cleanup(
+        envelope, cleanup_result, agent_reported_files_changed=[]
+    )
+    scope = merged["scope"]
+
+    # Published envelope drops the sibling file.
+    assert scope["observed_delta_tracked"] == ["src/task_a.py"]
+    assert scope["observed_delta_untracked"] == []
+    # Underlying cleanup_result is unchanged (verify same test).
+    assert cleanup_result["restored"] == ["src/task_a.py", "src/sibling_task.py"]
+
+
+def test_observed_delta_includes_agent_self_reported_writes():
+    """Agent self-reports of files outside ``declared_files_changed``
+    (scope misreports) are retained in the published ``observed_delta_*``
+    so misreports still surface in telemetry."""
+    declared = ["src/task_a.py"]
+    # Agent self-reported an undeclared path (scope misreport).
+    agent_reported = ["src/undeclared_write.py"]
+    cleanup_result = {
+        "restored": ["src/task_a.py"],
+        "deleted": ["src/undeclared_write.py"],
+        "failed_paths": [],
+        "out_of_scope_paths": ["src/undeclared_write.py"],
+        "scope_violation_detected": False,
+        "scope_misreport_detected": True,
+    }
+    envelope = _make_envelope_with_scope(
+        declared, result_files_changed=agent_reported
+    )
+
+    merged = cli._merge_scope_with_cleanup(
+        envelope, cleanup_result,
+        agent_reported_files_changed=agent_reported,
+    )
+    scope = merged["scope"]
+
+    # Both the declared restore and the agent-self-reported delete
+    # remain visible in the published envelope.
+    assert "src/task_a.py" in scope["observed_delta_tracked"]
+    assert "src/undeclared_write.py" in scope["observed_delta_untracked"]
+    # Misreport flag is preserved (computed off unfiltered cleanup_result).
+    assert scope["scope_misreport_detected"] is True

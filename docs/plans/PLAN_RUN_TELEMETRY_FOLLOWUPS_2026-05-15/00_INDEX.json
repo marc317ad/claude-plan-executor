@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "source": "decompose-plan",
+  "plan_title": "PLAN \u2014 Follow-ups surfaced by PLAN_DEPRECATE_CLAUDE_CLI_FOLLOWUPS_2026-05-15 (run 20260515T122941)",
+  "source_plan_file": "PLAN_RUN_TELEMETRY_FOLLOWUPS_2026-05-15.md",
+  "created": "2026-05-15",
+  "base_branch": "main",
+  "depends_on_plans": [],
+  "supersedes": [],
+  "chunks": [
+    {
+      "task_id": "001",
+      "file": "TASK-001_narrow_wrapper_observed_delta.md",
+      "priority": "high",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "002",
+      "file": "TASK-002_add_ac_symbol_groundedness.md",
+      "priority": "medium",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    },
+    {
+      "task_id": "003",
+      "file": "TASK-003_stop_run_log_jsonl.md",
+      "priority": "medium",
+      "depends_on": [],
+      "status": "Done",
+      "superseded_by": []
+    }
+  ]
+}

@@ -82,7 +82,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import _claude_agent_manifest as agent_manifest  # noqa: E402
 import _claude_backend as backend  # noqa: E402
-import _claude_dispatch_cleanup as cleanup  # noqa: E402
+import _dispatch_cleanup as cleanup  # noqa: E402
 import _claude_dispatch_envelope as env_mod  # noqa: E402
 import _claude_guardrails as guardrails  # noqa: E402
 import _claude_span_log as span_log  # noqa: E402
@@ -335,8 +335,20 @@ def _build_effective(
 def _merge_scope_with_cleanup(
     envelope: Dict[str, Any],
     cleanup_result: Mapping[str, Any],
+    *,
+    agent_reported_files_changed: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Fold cleanup flags / observed-delta into the envelope's ``scope`` block."""
+    """Fold cleanup flags / observed-delta into the envelope's ``scope`` block.
+
+    The published ``observed_delta_tracked`` / ``observed_delta_untracked``
+    lists are narrowed to the intersection of the cleanup-observed
+    whole-tree delta and ``task_in_scope_paths = declared ∪ agent-reported``
+    so cross-batch leakage from sibling tasks running in parallel does
+    not pollute the envelope's telemetry. ``scope_violation_detected`` /
+    ``scope_misreport_detected`` / ``failed_paths`` continue to be
+    computed on the unfiltered cleanup result so real violations still
+    warn loudly (see TASK-001 of PLAN_RUN_TELEMETRY_FOLLOWUPS_2026-05-15).
+    """
     scope = dict(envelope.get("scope") or env_mod._empty_scope())  # type: ignore[attr-defined]
 
     declared = scope.get("declared_files_changed") or []
@@ -380,6 +392,22 @@ def _merge_scope_with_cleanup(
     scope["declared_files_changed"] = sorted(
         {str(s) for s in declared if isinstance(s, str)}
     )
+
+    # TASK-001 (PLAN_RUN_TELEMETRY_FOLLOWUPS_2026-05-15): narrow the
+    # published observed-delta lists to the intersection of the
+    # cleanup-observed delta and (declared ∪ agent-reported writes) so
+    # cross-batch leakage from sibling tasks running in parallel does
+    # not pollute the envelope's telemetry. The cleanup_result itself
+    # is untouched — only the *published envelope view* is narrowed.
+    agent_reported = [
+        s for s in (agent_reported_files_changed or []) if isinstance(s, str)
+    ]
+    task_in_scope_paths = {
+        str(s) for s in declared if isinstance(s, str)
+    } | set(agent_reported)
+    observed_tracked = [p for p in observed_tracked if p in task_in_scope_paths]
+    observed_untracked = [p for p in observed_untracked if p in task_in_scope_paths]
+
     scope["observed_delta_tracked"] = observed_tracked
     scope["observed_delta_untracked"] = observed_untracked
     scope["scope_violation_detected"] = scope_violation_detected
@@ -717,7 +745,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # Agent's self-reported files_changed is parsed for informational /
     # diff-metadata purposes only; never used as cleanup authority.
-    _observed = _extract_observed_files_changed(envelope)  # noqa: F841
+    # TASK-001 (PLAN_RUN_TELEMETRY_FOLLOWUPS_2026-05-15): also forwarded
+    # to ``_merge_scope_with_cleanup`` so the published observed-delta
+    # lists retain agent self-reported writes that fall outside the
+    # declared set (scope misreports still surface).
+    _observed = _extract_observed_files_changed(envelope)
 
     # TASK-002 anti-aliasing guard: a write-authorized agent with empty
     # ``declared_files_changed`` MUST NOT take the readonly path —
@@ -758,7 +790,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
 
     # fold cleanup flags into the envelope's scope.
-    envelope = _merge_scope_with_cleanup(envelope, cleanup_result)
+    envelope = _merge_scope_with_cleanup(
+        envelope, cleanup_result, agent_reported_files_changed=_observed
+    )
 
     # TASK-004 (prohibit_silent_revert) / TASK-002 (this plan): emit
     # wrapper-level autoclean events for the run log. These land in the

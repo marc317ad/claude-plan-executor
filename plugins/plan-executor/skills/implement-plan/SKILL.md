@@ -12,7 +12,7 @@ user_invocable: true
 
 **Orchestrator path: active plan-ops transport.** Plan operations run through the active plan-ops transport selected by the bootstrap below. MCP tools `plan_ops__<subcommand-with-underscores>` are preferred and are the schema source of truth; the canonical `plan_ops.py` CLI is a narrow fallback only when Claude Code reports the plugin MCP server connected but does not expose those tools to the current model session.
 
-**Wrapper-internal path: Bash.** `plan_codex_dispatch.py`, `plan_claude_dispatch.py`, `plan_gemini_dispatch.py`, and dispatch-template subprocess walkthroughs remain Bash because they execute inside wrapper subprocesses that the orchestrator never observes mid-stream. Ordinary shell probes (`git diff`, `git log`, `date`) also remain Bash.
+**Wrapper-internal path: Bash.** `plan_codex_dispatch.py`, `plan_gemini_dispatch.py`, and dispatch-template subprocess walkthroughs remain Bash because they execute inside wrapper subprocesses that the orchestrator never observes mid-stream. `plan_claude_dispatch.py` is no longer used by this `/implement-plan` MCP orchestration; it remains active only for the standalone script runner's `ClaudeProvider`. Ordinary shell probes (`git diff`, `git log`, `date`) also remain Bash.
 
 ## Script runner bridge
 
@@ -46,8 +46,8 @@ The CLI fallback is allowed only for `plan_ops.py` subcommands and only after th
 1. **Parallel dispatch per batch.** Up to `--parallel N` dispatches in a SINGLE message inside Phase B. Claude-tier via Agent, Codex-tier via Bash — both kick off in the same message when a batch contains both.
 2. **Trust the analyst's schedule.** Batches with disjoint `file_locks` are parallel-safe. Do not add extra safety reasoning.
 3. **Your job is routing only.** Pick tasks from the analyst's schedule, dispatch, interpret reports, commit/revert. No code reading, no diff judgment, no scope inflation.
-4. **Dispatch prompts must be self-contained.** The `dispatch-templates.md` file is the canonical authoring location and may be inspected by humans, but at runtime the orchestrator does NOT read it directly. The asymmetry is resolved as follows: **wrapper dispatches** (Claude/Codex/Gemini wrapper subprocess sites) use the wrapper-input builders (`plan_ops__build_claude_dispatch_input`, etc.) which render the templates internally; **in-process Agent dispatches** use the agent-prompt builder `plan_ops__build_agent_dispatch_prompt` (see §Canonical Agent dispatch recipe). Legacy markdown-read instructions are explicitly NOT the runtime path on either family. Every Agent prompt includes the full task block verbatim + "You do NOT have the Agent tool."
-5. **Timeouts on Bash calls.** 5000ms for idioms (printf, git status). Bash-call outer timeout MUST cover the wrapper's effective internal timeout plus a small buffer. Implement: task-shape-aware wrapper default, derived from declared file count, acceptance criteria count, non-trivial test command, directory-scoped file entries, and complex test/router/parser/state markers; capped at 1800s. Review: `max(180_000ms, 30_000 * len(files))`. Plan-review: `180_000ms` (flat). The wrapper enforces its own internal timeout; pass `--timeout N` only to override. **Claude wrapper default dispatch timeout: 1800s (30 min)** — applied by `plan_claude_dispatch.py` (`DEFAULT_DISPATCH_TIMEOUT_SEC`, BUG-145) when neither `input.overrides.timeout_sec` nor `--timeout` is supplied.
+4. **Dispatch prompts must be self-contained.** The `dispatch-templates.md` file is the canonical authoring location and may be inspected by humans, but at runtime the orchestrator does NOT read it directly. The asymmetry is resolved as follows: **wrapper dispatches** (Codex/Gemini wrapper subprocess sites, plus the standalone script runner's ClaudeProvider) use the wrapper-input builders (`plan_ops__build_claude_dispatch_input`, etc.) which render the templates internally; **in-process Agent dispatches** use the agent-prompt builder `plan_ops__build_agent_dispatch_prompt` (see §Canonical Agent dispatch recipe). Legacy markdown-read instructions are explicitly NOT the runtime path on either family. Every Agent prompt includes the full task block verbatim + "You do NOT have the Agent tool."
+5. **Timeouts on Bash calls.** 5000ms for idioms (printf, git status). Bash-call outer timeout MUST cover the wrapper's effective internal timeout plus a small buffer. Implement: task-shape-aware wrapper default, derived from declared file count, acceptance criteria count, non-trivial test command, directory-scoped file entries, and complex test/router/parser/state markers; capped at 1800s. Review: `max(180_000ms, 30_000 * len(files))`. Plan-review: `180_000ms` (flat). The wrapper enforces its own internal timeout; pass `--timeout N` only to override. The standalone script runner's ClaudeProvider still uses `plan_claude_dispatch.py`, whose default dispatch timeout is 1800s when neither `input.overrides.timeout_sec` nor `--timeout` is supplied.
 6. **Subagent errors.** If a dispatch returns `[Tool result missing due to internal error]` or no parseable report, treat as failure. Log it, restore partial changes, do NOT retry silently. Claude-implementer `malformed` outcome goes to `fail-task stage=implement reason=malformed_report`.
 7. **Cross-review asymmetry.** Claude implements → Codex reviews; Codex implements → Claude reviews. Escalation path differs by direction — see Phase D.2.
 
@@ -90,25 +90,7 @@ Standard commands used by this skill:
 
 Never write inline Python for plan operations. Use the active plan-ops transport selected by the bootstrap. Never `git stash` inside this skill — the wrapper restores Codex-side independently; the orchestrator restores Claude-side via `plan_ops__fail_task` / `plan_ops.py fail-task` (which uses `git restore`).
 
-Never write inline Python for envelope parsing. Wrapper envelopes must be normalized with `plan_ops__claude_envelope_extract` over MCP, or the exact `plan_ops.py claude-envelope-extract` CLI fallback for that call.
-
-## Dispatch error handling (Claude wrapper)
-
-Every Claude-wrapper dispatch (`plan_claude_dispatch.py run` for `plan-analyst` / `plan-implementer` / `plan-remediator`) is invoke → extract → route. Wrap with `claude_dispatch_start` before, `claude_dispatch_done` on `status==ok`, `claude_dispatch_failed` on any non-`ok` status. Normalize the wrapper envelope with `Tool: plan_ops__claude_envelope_extract with input {"payload": <envelope>, "agent": "<plan-analyst|plan-implementer|plan-remediator>"}` to obtain `{status, outcome, result, scope_violation, scope_misreport, error}`. **Universal invariant:** `status != ok` ⟹ `commit-task` is forbidden for this task. Status routing: `scope_violation` (with `wrapper_autoclean_blocked: true`) → Awaiting-user pause (`stage:"post_<site>_implement_wrapper_blocked"`); `scope_violation` (autoclean executed) → Awaiting-user pause (`stage:"post_<site>_implement"`); `cleanup_failure` → halt `run_end reason=wrapper_cleanup_failed`; every other non-`ok` value (`schema_invalid | timeout | denied | backend_error | budget_exhausted | depth_exceeded | manifest_invalid | input_invalid`) collapses to `outcome="malformed"` (analyst → halt `analyst_invalid`; implementer/remediator → Phase C). Full status mapping + per-site stage labels in `docs/plans/SKILL_bash_dispatch_migration/run-log-events.md`.
-
-## Claude wrapper dispatch recipe (canonical)
-
-Every Claude-wrapper dispatch — Phase B implementer, Phase 1 Step 2 per-child analyst classifier, Phase D bounded remediation, Phase D narrow remediation, Phase D.2b role-swap — uses the same five-step recipe. Apply it verbatim at every Claude wrapper site; do not invent ad hoc `--input -` shell pipelines outside the explicit CLI-fallback branch below.
-
-**MCP mode (`PLAN_OPS_TRANSPORT=mcp`).**
-
-1. **Build the dispatch input on disk.** Call `Tool: plan_ops__build_claude_dispatch_input with input {"plan_file": "<abs>", "task_id": "NNN", "variant": "<default|rework|narrow-remediation|role-swap|analyst>", "target_task_id": "NNN", "analyst_annotations": "<path>", "starting_sha": "$STARTING_SHA", "run_id": "<run-id>", "output": "<tmp dispatch input path>"}`. The MCP transport writes the canonical `claude_dispatch_input.json` envelope to `output` and returns a `{ok, output_written, output}` acknowledgement — not the envelope itself. **Conditional `dispatch_context` requirement:** when `variant` is `rework` (Phase D.2a.5 bounded remediation) or `narrow-remediation` (Phase D.2a.6), the call MUST also pass `"dispatch_context": "<path to dispatch context JSON file>"` carrying the prior-attempt findings + summary; `plan_ops.py build-claude-dispatch-input` hard-fails with `dispatch-context-required` for these variants when the field is absent. The `default`, `role-swap`, and `analyst` variants do NOT take `dispatch_context`.
-2. **Verify the acknowledgement.** Confirm the response carries `output_written: true` and `output: "<tmp dispatch input path>"`. Anything else is a build failure — halt the dispatch site (per §Dispatch error handling) without invoking the wrapper.
-3. **Invoke the wrapper from Bash with the on-disk path.** `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <tmp dispatch input path>`. Never pipe MCP tool output directly into Bash stdin — the MCP response is a JSON-RPC acknowledgement frame, not the dispatch envelope. The wrapper reads the file and emits the v3 envelope on stdout.
-4. **Normalize the wrapper envelope through MCP.** Hand the wrapper's stdout JSON to `Tool: plan_ops__claude_envelope_extract with input {"agent": "<plan-analyst|plan-implementer|plan-remediator>", "payload": <wrapper envelope>}`. The native `payload` argument carries the parsed JSON object directly; never round-trip through a `--stdin` argument or shell pipe in MCP mode.
-5. **Route only the normalized extractor output.** Use `{status, outcome, result, scope_violation, scope_misreport, error}` from step 4 to drive the §Dispatch error handling routing table. Do not parse the raw wrapper envelope inline.
-
-**CLI fallback (`PLAN_OPS_TRANSPORT=cli-fallback`).** Only when the bootstrap selected the CLI fallback, the steps collapse onto stdin/stdout shell pipes: pipe `plan_ops.py build-claude-dispatch-input ... --output -` stdout into `plan_claude_dispatch.py run --input -`, then pipe the wrapper stdout into `plan_ops.py claude-envelope-extract --agent <...> --stdin`. The `--input -` and `--stdin` shell pipes are CLI-fallback only; they are a protocol violation under MCP mode.
+Never write inline Python for envelope parsing. Wrapper envelopes from Codex/Gemini subprocesses and standalone script-runner Claude calls must be normalized with the matching `plan_ops__*` parser/extractor over MCP, or the exact `plan_ops.py` CLI fallback for that call.
 
 ## Canonical Agent dispatch recipe
 
@@ -117,12 +99,26 @@ Every in-process `Agent` dispatch — Phase D-Claude `code-reviewer` (both `clau
 Do NOT read `dispatch-templates.md` from Bash or `Read` at dispatch time. The MCP tool reads it on the orchestrator's behalf and returns the rendered string. The template file remains the canonical authoring location.
 
 1. **Build the rendered prompt.** Call `Tool: plan_ops__build_agent_dispatch_prompt with input {"template_id": "<id>", "context": {...}}`. The MCP transport reads `dispatch-templates.md`, substitutes the `context` placeholders, and returns the rendered envelope.
-2. **Assert `ok == true`.** Any other response is a build failure — halt the dispatch site (per §Dispatch error handling) without invoking `Agent`.
+2. **Assert `ok == true`.** Any other response is a build failure — halt the dispatch site through the current phase's failure branch without invoking `Agent`.
 3. **Extract `agent`, `model`, `prompt`** from the response.
 4. **Dispatch the in-process subagent.** `Agent(subagent_type=agent, model=model, prompt=prompt)`. Do not splice in additional context out-of-band; the rendered `prompt` is self-contained by contract.
 5. **Parse the result.** Hand the Agent's reply to the appropriate `plan_ops__parse_*` tool (`plan_ops__parse_reviewer_envelope`, `plan_ops__parse_implementer_report`, etc.) — never parse the reply inline.
 
 **CLI fallback (`PLAN_OPS_TRANSPORT=cli-fallback`).** Substitute `$PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops.py" build-agent-dispatch-prompt --template-id <id> --context-file <path> --json` for step 1 and the matching `plan_ops.py parse-*` CLI for step 5; the in-process `Agent` invocation in step 4 is unchanged.
+
+## Cleanup-around-Agent-dispatch
+
+Write-authorized in-process Agent dispatches (Phase B `plan-implementer-default`; future write sites) MUST wrap the `Agent` call with the cleanup recipe so the orchestrator-declared `Files:` scope is enforced symmetrically with the script-runner wrapper path. Canonical pattern:
+
+1. Extract `declared_files_changed` from the task's `Files:` block via `_extract_task_files_from_plan` (same helper `_gate_commit_safe` and `build-claude-dispatch-input` use).
+2. `baseline = cleanup.snapshot_baseline(repo_root)` immediately BEFORE the Agent dispatch.
+3. Run the Agent dispatch (steps 1–5 of §Canonical Agent dispatch recipe).
+4. `result = cleanup.apply_cleanup(baseline, declared_files_changed, repo_root, authorization_source="orchestrator-declared-scope", unattended_revert_policy="preserve-only")` immediately AFTER.
+5. Route the cleanup `result` dict through the existing scope-violation handling (the same routing the wrapper path uses for its `scope_violation_detected` / `scope_misreport_detected` fields).
+
+Authorization-source vocabulary: `"orchestrator-declared-scope"` for write-authorized sites; `"orchestrator-empty-scope-readonly"` for read-only sites that nevertheless want a cleanup wrap (the analyst skips the wrap entirely per Decision 7). The `unattended_revert_policy="preserve-only"` value matches Phase C's preserve-only behavior for non-empty diffs.
+
+**Carve-out — classifier-shaped dispatches skip the cleanup wrap entirely.** The Phase 1 Step 2 per-child classifier (`template_id: "plan-analyst-per-child"`, agent `plan-analyst`) is the single in-process Agent dispatch site that does NOT wrap with `cleanup.snapshot_baseline` / `cleanup.apply_cleanup`. Rationale: `plan-analyst` is read-only by contract — its agent spec forbids every mutating command (see `agents/plan-analyst.md` §Rules), and its declared file scope is the empty list. The cleanup wrap exists to enforce write-scope symmetry with the script-runner wrapper path; for a read-only classifier it has nothing to enforce. Steps 1-5 of §Canonical Agent dispatch recipe still apply verbatim — only the surrounding cleanup envelope is dropped.
 
 ## plan_ops MCP reference
 
@@ -303,30 +299,33 @@ Inspect the in-memory `tasks[]` array. Let `missing_agent_children = [t for t in
 
 **Skip-classifier case.** If `missing_agent_children` is empty (every child already declares `**Agent:**`), the classifier step is skipped entirely. No Agent dispatches are issued in Phase 1, no network roundtrip, no model latency — Phase 1 collapses to `build-tasks + write-schedule`. Proceed directly to step 3.
 
-**Fan-out case.** If `missing_agent_children` is non-empty, emit **N discrete `Agent` tool calls in a single assistant turn** — one per missing-agent child. The fan-out is N parallel tool-use blocks inside one response, NOT an array-prompt wrapped inside a single Agent tool call; this matches the existing Agent-tool contract in the parent agent's API and introduces no new tool-call shape.
+**Fan-out case.** If `missing_agent_children` is non-empty, emit **N discrete `Agent` tool calls in a single assistant turn** — one per missing-agent child. The fan-out is N parallel tool-use blocks inside one response, NOT an array-prompt wrapped inside a single Agent tool call; this matches the existing Agent-tool contract in the parent agent's API and introduces no new tool-call shape. Parallelism is achieved by the parent agent emitting N `Agent(...)` tool-use blocks together in one assistant message; the runtime fans them out concurrently. There is no batched / array prompt shape — N siblings means N distinct tool-use blocks in the same turn.
 
-Pseudo-syntax (for illustration; each child follows §Claude wrapper dispatch recipe (canonical) with `variant: "analyst"` — the MCP-mode recipe writes one `payload_<i>.json` per child via `plan_ops__build_claude_dispatch_input` (`output:"<payload_i>"`) before the parallel Bash invocations of `plan_claude_dispatch.py run --input <payload_i>`. The v3 wrapper replaces the in-process Agent tool dispatch as of TASK-003):
+Pseudo-syntax (for illustration; each child follows §Canonical Agent dispatch recipe with `template_id: "plan-analyst-per-child"`. The orchestrator first calls `Tool: plan_ops__build_agent_dispatch_prompt` once per child to render the prompt, then dispatches each rendered prompt as an in-process `Agent(...)` tool call. The cleanup wrap is intentionally NOT applied — see §Cleanup-around-Agent-dispatch carve-out for classifier-shaped dispatches.):
 
 ```
-# Inside ONE assistant turn, the orchestrator emits N separate Bash tool-use blocks:
+# Inside ONE assistant turn, the orchestrator emits N separate Agent tool-use blocks:
 [
-  Bash($PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload_0.json>),
-  Bash($PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload_1.json>),
+  Agent(subagent_type="plan-analyst", model="sonnet", prompt=<rendered_0>),
+  Agent(subagent_type="plan-analyst", model="sonnet", prompt=<rendered_1>),
   ...
-  Bash($PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_claude_dispatch.py" run --input <payload_{N-1}.json>),
+  Agent(subagent_type="plan-analyst", model="sonnet", prompt=<rendered_{N-1}>),
 ]
-# ^ N discrete Bash tool calls, emitted together in one response. The wrapper
-#   dispatches them in parallel; the orchestrator receives N v3 envelopes on stdout
-#   and MUST pass each envelope through plan_ops__claude_envelope_extract before routing.
+# ^ N discrete Agent tool calls, emitted together in one response. The runtime
+#   fans them out concurrently; each subagent reads exactly its one child plan
+#   file and returns the {agent, classification_reason} JSON. No claude -p
+#   subprocess; no v3 wrapper envelope. Parse each Agent reply with
+#   plan_ops__parse_schedule (or the lightweight per-child JSON path) before
+#   merging into the in-memory tasks[] array.
 ```
 
-Each payload sets `agent="plan-analyst"`, carries the absolute child plan path under `payload.plan_path`, the orchestrator-known `trace.run_id`, and an `output_instructions.schema_path` reference to the analyst result schema (`plugins/plan-executor/scripts/schemas/claude_dispatch_output.json`'s inner `result` shape — see `dispatch-templates.md` §Phase A-single transport header for the canonical payload skeleton). Each dispatch uses the **Phase A-single** template (`templates.PhaseASingle`) from `dispatch-templates.md` (agent `plan-analyst`, model `sonnet` — narrower scope than the retired whole-plan opus dispatch); the per-child agent reads exactly its one child file and the wrapper returns a v3 envelope whose inner `result` is `{agent: "claude"|"codex", classification_reason: "<one-line justification>"}`.
+Each rendered prompt is produced by `Tool: plan_ops__build_agent_dispatch_prompt with input {"template_id": "plan-analyst-per-child", "context": {"plan_file": "<absolute child plan path>", "repo_root": "<repo_root>"}}` — the renderer pulls the **Phase A-single** body from `dispatch-templates.md` and substitutes the two text-level placeholders. Each dispatch uses agent `plan-analyst` and model `sonnet` (narrower scope than the retired whole-plan opus dispatch); the per-child agent reads exactly its one child file and replies with `{agent: "claude"|"codex", classification_reason: "<one-line justification>"}`.
 
-**Extraction:** invoke `plan_ops__claude_envelope_extract` with `agent:"plan-analyst"` per §Dispatch error handling (Claude wrapper). On `status==ok` the per-child classifier seam's `result` is `{agent, classification_reason}` (no `parse-schedule` round-trip); the whole-plan analyst seam's `result.schedule` flows through `parse-schedule`.
+**Extraction:** parse each Agent reply for the `{agent, classification_reason}` JSON object (the agent emits a single fenced ```json block per its agent spec). A reply that does not parse as that shape is the analyst-site instance of malformed-reply handling: halt with `run_end reason=analyst_invalid`, surface the offending child basename, and release the lock.
 
 Parse each reply and merge into the in-memory `tasks[]` array: for each child reply, set `tasks[i].agent = reply.agent` and `tasks[i].classification_reason = reply.classification_reason` on the matching entry (match by `plan_file` basename — the orchestrator knows which dispatch corresponds to which child).
 
-Malformed reply handling — a wrapper envelope whose `.status != "ok"`, OR whose `.result` does not parse as `{agent, classification_reason}`, is the analyst-site instance of the shared error-status table at §Dispatch error handling (Claude wrapper): halt with `run_end reason=analyst_invalid`; surface the offending child basename + the `error` field returned by `claude-envelope-extract`; release lock.
+Malformed reply handling — an Agent reply that does not contain a fenced ```json block parsing as `{agent, classification_reason}` (with `agent ∈ {"claude", "codex"}`) halts with `run_end reason=analyst_invalid`; surface the offending child basename + the parser's diagnostic; release lock.
 
 Apply the `codex_available=false` preflight override here too — if the preflight flag was false, rewrite every `tasks[i].agent` to `"claude"` in the merged manifest before step 3 (consistent with the retired whole-plan analyst override, which the orchestrator used to apply after parsing the whole-plan JSON).
 
@@ -444,7 +443,7 @@ Empty batch + non-empty ready → halt "scheduler stuck". Empty batch + empty re
 Dispatch all batch tasks in a **single message** — Claude via Agent, Codex via Bash:
 
 - Log `implement_start {task_id, agent, model?, batch_index}` per task (chain into the dispatch via `&&` when convenient). Include `plan_file: "<child-basename>"` for the task so the run-log records which child file the implementer's commit will land in.
-- **Claude tasks** → follow the canonical recipe at §Claude wrapper dispatch recipe (canonical) with `variant: "default"` and the task's `task_id` / `target_task_id` / `analyst_annotations` / `starting_sha`. The recipe writes `claude_dispatch_input.json` to a tmp path via `plan_ops__build_claude_dispatch_input` (`output:"<tmp dispatch input>"`), invokes `plan_claude_dispatch.py run --input <tmp dispatch input>` from Bash, and feeds the wrapper envelope through `plan_ops__claude_envelope_extract` with native `payload`. The wrapper input shape is `agent: "plan-implementer"`, `overrides.model: "opus"`, `payload: {plan_path, repo_root, task_id, target_task_id?, analyst_annotations, starting_sha}`, plus the required top-level `declared_files_changed` derived from the task's `Files:` list via `_extract_task_files_from_plan` (the same canonical helper `_gate_commit_safe` uses). See §dispatch-templates §Phase B for the full skeleton; the wrapper renders the **Phase B** template from `dispatch-templates.md` and returns the v3 envelope (see §Dispatch error handling (Claude wrapper) for shape). Migrated from `Agent(subagent_type: "plan-implementer", ...)` per TASK-004.
+- **Claude tasks** → follow §Canonical Agent dispatch recipe with `template_id:"plan-implementer-default"` and `model:"opus"` (the `/implement-plan` orchestration default). The orchestrator MUST wrap the Agent dispatch with the cleanup recipe documented in §Cleanup-around-Agent-dispatch below: call `cleanup.snapshot_baseline(repo_root)` immediately BEFORE the Agent dispatch and `cleanup.apply_cleanup(baseline, declared_files_changed, repo_root, authorization_source="orchestrator-declared-scope", unattended_revert_policy="preserve-only")` immediately AFTER. The cleanup result dict feeds the existing scope-violation routing unchanged. The legacy script-runner Claude path (`plan_claude_dispatch.py run --input <tmp>` via `plan_ops__build_claude_dispatch_input`) remains available for direct CLI callers of `implement_plan.py` — both paths share the implementer result-schema teaching block via `_inline_implementer_result_schema` so the prompt is byte-identical across surfaces.
 - **Codex tasks** → Wrapper computes the timeout default from `len(task["files"])` per the formula in §Bash-call idioms; pass `--timeout N` to override.
   `Bash: $PYTHON "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement --plan-file <abs> --task-id NNN --repo-root <abs>`.
 
@@ -452,9 +451,9 @@ Await all. For EVERY task (success or not) append `implement_done {task_id, outc
 
 **Classify per task:**
 
-*Claude envelope (JSON from wrapper, post-TASK-004):*
+*Claude implementer Agent report:*
 
-**Extraction:** invoke `plan_ops__claude_envelope_extract` with `agent:"plan-implementer"` per §Dispatch error handling (Claude wrapper). On `status==ok` route on `outcome ∈ {success, partial, failed, plan-incorrect, blocked, malformed}` and surface `.result.report.{plan_adaptations[], concerns_for_reviewer[], on_failure_revert}`. Validate `.result` against `tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json` (TASK-002 fixture). Stage label is `implement`. Post-hoc scope check (legacy markdown-only path; on the wrapper path the extract's `scope_violation` is authoritative):
+**Extraction:** invoke `plan_ops__parse_implementer_report` on the Agent reply. Route on `outcome ∈ {success, partial, failed, plan-incorrect, blocked, malformed}` and surface `report.{plan_adaptations[], concerns_for_reviewer[], on_failure_revert}`. Stage label is `implement`. Post-hoc scope check:
 
 ```bash
 git diff --name-only HEAD -- <task.files>
@@ -555,8 +554,8 @@ The payload, not SKILL-side special casing, expresses Claude-only routing (`revi
 | `commit` | Go to D.3 with `commit_flags` from the route payload. |
 | `fail` | Enter D.4 rescue/pause; do not directly call `fail-task` unless the route payload explicitly authorizes it. |
 | `dispatch_d5` | Dispatch Phase D.5 `code-reviewer` Agent via §Canonical Agent dispatch recipe with `template_id:"code-reviewer-d5"` (`model:"sonnet"`), parse, then call `review-route` again. |
-| `dispatch_bounded_remediation` | Run §Claude wrapper dispatch recipe (canonical) with `variant: "rework"` (also pass `dispatch_context: "<path>"` per the conditional requirement in step 1), then re-review and route again. |
-| `dispatch_narrow_remediation` | Dispatch `plan-remediator` via §Canonical Agent dispatch recipe with `template_id:"plan-remediator-narrow"` (`model:"opus"`), forwarding `dispatch_context.{findings_for_retry, dismissed_for_context, d5_summary}` into the renderer's `context`; dismissed findings are context only. |
+| `dispatch_bounded_remediation` | D.2a.5 bounded remediation. Dispatch `plan-implementer` via §Canonical Agent dispatch recipe with `template_id:"plan-implementer-default"` (`model:"opus"`), forwarding the rework context as `prior_findings[]`, `prior_summary`, and `attempt_count` in the `planImplementerDefaultContext` payload — the renderer inlines a `## Prior attempt — D.2a.5 bounded remediation context` section above the fresh-implement instructions. Then re-review and route again. The orchestrator MUST wrap the Agent dispatch with the §Cleanup-around-Agent-dispatch sub-recipe (`authorization_source="orchestrator-declared-scope"`) because `plan-implementer` is file-editing. |
+| `dispatch_narrow_remediation` | Dispatch `plan-remediator` via §Canonical Agent dispatch recipe with `template_id:"plan-remediator-narrow"` (`model:"opus"`), forwarding `dispatch_context.{findings_for_retry, dismissed_for_context, d5_summary}` into the renderer's `context`; dismissed findings are context only. The orchestrator MUST wrap the Agent dispatch with the §Cleanup-around-Agent-dispatch sub-recipe: `cleanup.snapshot_baseline(repo_root)` immediately BEFORE and `cleanup.apply_cleanup(baseline, declared_files_changed, repo_root, authorization_source="orchestrator-declared-scope", unattended_revert_policy="preserve-only")` immediately AFTER — `plan-remediator` is file-editing (unlike the read-only analyst classifier carve-out), so the wrap applies. |
 | `dispatch_role_swap` | Follow D.2b. |
 | `pause_awaiting_user` or `unknown_state` | Invoke Awaiting-user pause with the route payload's `stage`; do not invent a fallback branch. |
 
@@ -569,20 +568,20 @@ When `review-route` returns `dispatch_d5`, dispatch the D.5 adjudicator `code-re
 | D.5 verdict | Next action |
 |---|---|
 | `ship` / `ship-with-fixes` | D.3 commit (with `disagreement_tag` if D.5 overrules a prior `needs-rework`). |
-| `needs-rework` | D.2a.5 bounded remediation (`plan-implementer`, full rework). |
+| `needs-rework` | D.2a.5 bounded remediation: dispatch `plan-implementer-default` with `prior_findings`, `prior_summary`, and `attempt_count` populated in the `planImplementerDefaultContext` payload (the renderer inlines the prior-attempt block above the fresh-implement instructions); the dispatch is file-editing and MUST be wrapped via §Cleanup-around-Agent-dispatch with `authorization_source="orchestrator-declared-scope"`. |
 | `partial-agreement` | D.2a.6 narrow-remediation retry (`plan-remediator`, load-bearing findings only). |
 
 `partial-agreement` carries an in-range, disjoint `load_bearing[]` / `dismissed[]` index split plus a non-empty `summary` justification; malformed splits halt with structured `partial-agreement-*` errors.
 
 #### D.2a.6 — Narrow-remediation retry
 
-`plan-remediator` is dispatched as **one attempt** via §Canonical Agent dispatch recipe with `template_id:"plan-remediator-narrow"` (`model:"opus"`); the attempt may address only the D.5 load-bearing findings; dismissed findings are context only. The retry wrap is logged with `narrow_remediation_start` before the dispatch and `narrow_remediation_done` after. On retry success, re-run D.1 and treat that re-review as binding. `clean | minor-findings` commits via `plan_ops__commit_task` with `narrow_remediation_tag` and `dismissed_finding_ids` route-provided inputs; second-review failure pauses with `stage:"post_narrow_remediation_review"` and retry-implement failure pauses with `stage:"post_narrow_remediation_implement"`.
+`plan-remediator` is dispatched as **one attempt** via §Canonical Agent dispatch recipe with `template_id:"plan-remediator-narrow"` (`model:"opus"`); the attempt may address only the D.5 load-bearing findings; dismissed findings are context only. The orchestrator MUST wrap the Agent dispatch with the §Cleanup-around-Agent-dispatch sub-recipe: `cleanup.snapshot_baseline(repo_root)` immediately BEFORE and `cleanup.apply_cleanup(baseline, declared_files_changed, repo_root, authorization_source="orchestrator-declared-scope", unattended_revert_policy="preserve-only")` immediately AFTER — `plan-remediator` is file-editing (unlike the read-only analyst classifier carve-out), so the wrap applies. The retry wrap is logged with `narrow_remediation_start` before the dispatch and `narrow_remediation_done` after. On retry success, re-run D.1 and treat that re-review as binding. `clean | minor-findings` commits via `plan_ops__commit_task` with `narrow_remediation_tag` and `dismissed_finding_ids` route-provided inputs; second-review failure pauses with `stage:"post_narrow_remediation_review"` and retry-implement failure pauses with `stage:"post_narrow_remediation_implement"`.
 
 **Binding-mode exemption.** Under `--codex-review-binding` the D.2a.6 narrow-remediation path is **not entered** — the binding-mode contract skips D.2a.5, D.2a.6, and D.5 entirely. The run pauses for user instruction by default (Awaiting-user pause `stage:"post_binding_block"`); cron/CI runs that need an unattended fall-through must opt in via `--unattended-revert-policy fail-fast`, which authorizes a structured `fail-task` instead of the pause.
 
 #### D.2b — Role-swap retry
 
-For Codex-implemented work rejected by a Claude reviewer, perform one Claude role-swap implementation via §Claude wrapper dispatch recipe (canonical) with `variant: "role-swap"`. Classify like Phase B. On success, re-run D.1 using the Codex reviewer; `clean | minor-findings` commits, `needs-rework` enters D.4. Under `claude_only=true` this path is structurally unreachable.
+For Codex-implemented work rejected by a Claude reviewer, perform one Claude role-swap implementation via §Canonical Agent dispatch recipe with `template_id:"plan-implementer-default"` (`model:"opus"`), forwarding the role-swap context into the renderer. Classify like Phase B. On success, re-run D.1 using the Codex reviewer; `clean | minor-findings` commits, `needs-rework` enters D.4. Under `claude_only=true` this path is structurally unreachable.
 
 #### D.3 — Commit
 
@@ -592,7 +591,7 @@ Post-D.5 disagreement commits bind to the reviewer whose verdict allows commit: 
 
 #### D.4 — Try rescue, then pause (TASK-005)
 
-D.4 is **no longer a destructive seam**. The orchestrator dispatches a single-shot `plan-remediator` rescue first via §Canonical Agent dispatch recipe with `template_id:"plan-remediator-rescue"` (`model:"opus"`) — the renderer reads the Phase D.4-rescue template body from `dispatch-templates.md` on the orchestrator's behalf. Rescue success re-runs D.1 and commits via D.3 with `d4_rescue_tag` if the re-review is shippable. Rescue failure or binding re-review failure logs `d4_rescue_done` and enters Awaiting-user pause with `stage:"post_d4_rescue_failed"` and `{reviewer_findings[], rescue_attempt_outcome, rescue_diagnostics}`.
+D.4 is **no longer a destructive seam**. The orchestrator dispatches a single-shot `plan-remediator` rescue first via §Canonical Agent dispatch recipe with `template_id:"plan-remediator-rescue"` (`model:"opus"`) — the renderer reads the Phase D.4-rescue template body from `dispatch-templates.md` on the orchestrator's behalf. The orchestrator MUST wrap the Agent dispatch with the §Cleanup-around-Agent-dispatch sub-recipe: `cleanup.snapshot_baseline(repo_root)` immediately BEFORE and `cleanup.apply_cleanup(baseline, declared_files_changed, repo_root, authorization_source="orchestrator-declared-scope", unattended_revert_policy="preserve-only")` immediately AFTER — `plan-remediator` is file-editing (unlike the read-only analyst classifier carve-out), so the wrap applies. Rescue success re-runs D.1 and commits via D.3 with `d4_rescue_tag` if the re-review is shippable. Rescue failure or binding re-review failure logs `d4_rescue_done` and enters Awaiting-user pause with `stage:"post_d4_rescue_failed"` and `{reviewer_findings[], rescue_attempt_outcome, rescue_diagnostics}`.
 
 A user-instructed revert from this pause invokes `fail-task --authorization-source phase-d4-rescue-failed` — the *only* sanctioned route from the D.4 pause to a destructive action.
 
@@ -695,7 +694,7 @@ For plan operation names and schemas, consult the MCP tool list when available. 
 | `auto-validate-divergence` | `--envelope-file` `--json` `--repo-root` `--run-id` `--task-id` `--test-command` `--timeout` | Orchestrator auto-validate branch for the TASK-008 sandbox-divergence escape hatch. Reads a Codex implement envelope and re-runs the task's Test command in the target env on `cause: independent_test_run_failed`. |
 | `batch-next` | `--done` `--failed` `--from-schedule-state` `--json` `--locked-files` `--parallel` `--paused` `--schedule-file` | Select next batch respecting file locks |
 | `block-dependents` | `--failed` `--json` `--plan-file` `--run-id` `--schedule-file` `--update-schedule-state` | Cascade `blocked` status onto dependents of a failed task. Mutates the plan markdown (single read, single write) and appends `blocked` run-log events. |
-| `build-claude-dispatch-input` | `--analyst-annotations` `--dispatch-context` `--json` `--output` `--plan-file` `--repo-root` `--run-id` `--starting-sha` `--target-task-id` `--task-id` `--variant` | Emit the canonical claude_dispatch_input.json for one dispatch. **MCP mode:** pass `output:"<tmp dispatch input>"` and read the file from disk per §Claude wrapper dispatch recipe (canonical). **CLI fallback only:** pipe stdout into `plan_claude_dispatch.py run --input -`. |
+| `build-claude-dispatch-input` | `--analyst-annotations` `--dispatch-context` `--json` `--output` `--plan-file` `--repo-root` `--run-id` `--starting-sha` `--target-task-id` `--task-id` `--variant` | Emit the canonical claude_dispatch_input.json for the standalone script runner's `ClaudeProvider`. This `/implement-plan` MCP orchestration uses §Canonical Agent dispatch recipe for Claude-tier work instead. |
 | `build-codex-dispatch-input` | `--output` | Emit the codex_dispatch_input.json envelope for one dispatch. Currently only carries cross-wrapper unattended_revert_policy. |
 | `build-gemini-dispatch-input` | `--output` | Emit the gemini_dispatch_input.json envelope for one dispatch. Currently only carries cross-wrapper unattended_revert_policy. |
 | `build-tasks` | `--filter-ids` `--json` `--plans-dir` | Roster-driven fat `tasks[]` synthesis. Reads `00_INDEX.json` + each `chunks[].file` in the supplied decomposed-plan directory and emits a schedule-shaped JSON with per-task description + acceptance_criteria (H3 `### TASK-NNN:` child-plan grammar). |

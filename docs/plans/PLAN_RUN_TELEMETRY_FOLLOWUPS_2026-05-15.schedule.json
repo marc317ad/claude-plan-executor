@@ -1,0 +1,104 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Narrow wrapper `observed_delta_*` to intersection of whole-tree diff and (declared \u222a agent-reported writes)",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_claude_dispatch.py`",
+        "`tests/scripts/test_plan_claude_dispatch.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_claude_dispatch.py -k \"scope or observed_delta or intersection\"",
+      "priority": "high",
+      "plan_file": "TASK-001_narrow_wrapper_observed_delta.md",
+      "agent": "claude",
+      "description": "Narrow wrapper `observed_delta_*` to intersection of whole-tree diff and (declared \u222a agent-reported writes). The wrapper's `_merge_scope_with_cleanup` currently publishes the full cleanup-result restore/delete sets, leaking sibling-batch writes into a task's envelope. Filter the published observed-delta sets to paths actually in scope for the task (declared OR agent-self-reported), while leaving the underlying scope_violation/misreport flags computed on the unfiltered set.",
+      "acceptance_criteria": [
+        "In `plan_claude_dispatch.py`, the wrapper's published `envelope.scope.observed_delta_tracked` and `envelope.scope.observed_delta_untracked` (the lists set in `_merge_scope_with_cleanup` at `plan_claude_dispatch.py:380\u2013384`) are filtered through `task_in_scope_paths = set(declared_files_changed) | set(_extract_observed_files_changed(envelope))` before publication. Paths not in `task_in_scope_paths` are dropped.",
+        "The agent-reported `files_changed` extracted at `plan_claude_dispatch.py:720` already exists in the function-local `_observed` (currently `# noqa: F841` because unused); wire it into the narrowing \u2014 do NOT call `_extract_observed_files_changed` twice.",
+        "The narrowing happens regardless of `scope_violation_detected` / `scope_misreport_detected` (those flags continue to be computed on the unfiltered cleanup result so they still warn loudly on real scope violations; only the published *observed delta lists* are narrowed).",
+        "`scope.declared_files_changed` is untouched by this change (it is already the trusted top-level input, not a diff).",
+        "Add a unit test `test_observed_delta_excludes_cross_batch_leakage`: construct a fake `_merge_scope_with_cleanup` input where `cleanup_result[\"restored\"]` contains both a task-declared file and a sibling-task file (the cross-batch leak); assert the published `observed_delta_tracked` contains only the declared file. The sibling file is dropped from the envelope but the underlying cleanup result is unchanged (verify both via the same test).",
+        "Add a second unit test `test_observed_delta_includes_agent_self_reported_writes`: construct an envelope whose inner `result.files_changed` lists a path that is NOT in `declared_files_changed` (a scope misreport). Assert the published `observed_delta_*` retains that path (so misreports still surface).",
+        "The four-way `scope_violation_detected` / `scope_misreport_detected` / `failed_paths` / `baseline_captured` envelope fields are byte-identical pre- and post-fix for the existing fixtures in `tests/scripts/test_plan_claude_dispatch.py` (regression pin)."
+      ]
+    },
+    {
+      "id": "002",
+      "title": "Add `ac_symbol_groundedness` check to `lint_plans`",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`tests/scripts/test_plan_ops_lint_plans.py`",
+        "`tests/scripts/fixtures/lint_plans/ac_names_missing_symbol.md`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_plan_ops_lint_plans.py -k \"ac_symbol or groundedness\"",
+      "priority": "medium",
+      "plan_file": "TASK-002_add_ac_symbol_groundedness.md",
+      "agent": "claude",
+      "description": "Add a new `ac_symbol_groundedness` warning-level check to the `lint_plans` subcommand. For each TASK-NNN block, extract backtick-wrapped identifier tokens from acceptance-criteria bullets and confirm at least one of the task's declared `Files:` contains the token. Catches the AC-names-a-symbol-that-doesn't-exist class of plan-authoring bug surfaced by the parent run.",
+      "acceptance_criteria": [
+        "Extend the `lint_plans` subcommand body in `plan_ops.py` (search for `def cmd_lint_plans` or the `lint-plans` argparse branch \u2014 read the existing implementation end-to-end before editing) with a new check named `ac_symbol_groundedness`.",
+        "The check, for each TASK-NNN block in the plan markdown: extracts backtick-wrapped tokens matching `` `([A-Za-z_][A-Za-z0-9_]+)` `` from each `**Acceptance criteria:**` bullet; filters out an English/shell-builtin allowlist (`git`, `pytest`, `python`, `bash`, `venv`, `True`, `False`, `None`, `json`, `os`, `re`, `sys`, etc.); for each remaining token, runs `git -C <repo> grep -lF \"<token>\" -- <Files>` (where `<Files>` is the task's declared `Files:` list) and emits a `warning`-severity finding when zero hits are returned (the AC names a symbol that does not exist in the task's declared scope).",
+        "The check is opt-in via a new `--check ac_symbol_groundedness` flag OR runs always at `warning` severity (decision: runs always, since warnings do not block lint exit code).",
+        "The check returns no findings when the AC's named symbol IS present in one of the declared files (positive case fixture).",
+        "Add three test cases: (a) AC names a symbol that exists in a declared file \u2192 no findings; (b) AC names a symbol that does NOT exist in any declared file \u2192 one warning finding citing the token + task id; (c) AC names an allowlisted token (`git`, `pytest`) \u2192 no findings (allowlist filter works).",
+        "The new check appears in the `lint-plans --json` output under the existing `checks[]` (or equivalent) array; do NOT introduce a new top-level key."
+      ]
+    },
+    {
+      "id": "003",
+      "title": "Stop `_run_log.jsonl` from accruing CRLF churn",
+      "files": [
+        "`plugins/plan-executor/scripts/plan_ops.py`",
+        "`.gitattributes`",
+        "`docs/plans/_run_log.jsonl`",
+        "`tests/scripts/fixtures/runlog/deferred_test.jsonl`"
+      ],
+      "dependencies": [],
+      "test_command": "deferred (TASK-003) \u2014 one-shot renormalize commit + a manual reproduction is the verification; no automated regression test is added (the .gitattributes pin is self-verifying via git's normalization-on-commit, and the newline= bind is a one-line correctness fix that does not benefit from a Python-side test on a non-Windows CI host).",
+      "priority": "medium",
+      "plan_file": "TASK-003_stop_run_log_jsonl.md",
+      "agent": "codex",
+      "description": "Stop `_run_log.jsonl` from accruing CRLF churn on every commit. Belt-and-suspenders fix: bind `newline=\"\\n\"` on the three `RUN_LOG_PATH.open(...)` sites in `_append_run_log`, AND add `*.jsonl text eol=lf` to `.gitattributes`, AND run a one-shot `git add --renormalize \"*.jsonl\"` on the fix commit to flatten any historical CRLF in the two tracked `.jsonl` files (`docs/plans/_run_log.jsonl` and `tests/scripts/fixtures/runlog/deferred_test.jsonl`).",
+      "acceptance_criteria": [
+        "In `plan_ops.py:_append_run_log` (currently `plan_ops.py:4539`), change all three `RUN_LOG_PATH.open(...)` calls (lines 4544, 4547, 4552) to pass `newline=\"\\n\"` in addition to the existing `encoding=\"utf-8\"`. The write call's `fh.write(line + \"\\n\")` is unchanged.",
+        "In `.gitattributes`, add a new line `*.jsonl text eol=lf` immediately after the existing `*.sh   text eol=lf` line (keep alphabetical / file-extension grouping consistent with the surrounding lines). Do NOT change any other line in `.gitattributes`.",
+        "The implementer runs `git add --renormalize \"*.jsonl\"` once on the same commit so any historical CRLF in tracked `.jsonl` files (including past `_run_log.jsonl` entries and `tests/scripts/fixtures/runlog/deferred_test.jsonl`) is flattened in this commit's diff. Document the renormalize step in the commit body. The tracked `.jsonl` paths (`docs/plans/_run_log.jsonl`, `tests/scripts/fixtures/runlog/deferred_test.jsonl`) are listed under `Files:` so any renormalize-produced diff falls within the task's declared ownership; `_run_log.jsonl` is `commit-task`'s always-ignore set member, so its renormalize diff stays in the working tree and will land via the orchestrator's housekeeping commit at end-of-run.",
+        "The implementer manually verifies the fix in the same dispatch: append a one-line test event via the canonical path (`plan_ops__log_event` or `plan_ops.py log-event`), then `git status --short`; the `_run_log.jsonl` line MUST be the only change AND the diff hunk MUST contain no `\\r` markers (run `git diff -- '*.jsonl' | grep -c $'\\r'` and assert zero).",
+        "No other behavior changes: the run-log append + verify-on-read shape is unchanged, the event schema is unchanged, the audit trail is unchanged."
+      ]
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001",
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_claude_dispatch.py",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/fixtures/lint_plans/ac_names_missing_symbol.md",
+        "tests/scripts/test_plan_claude_dispatch.py",
+        "tests/scripts/test_plan_ops_lint_plans.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "003"
+      ],
+      "file_locks": [
+        ".gitattributes",
+        "docs/plans/_run_log.jsonl",
+        "plugins/plan-executor/scripts/plan_ops.py",
+        "tests/scripts/fixtures/runlog/deferred_test.jsonl"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}

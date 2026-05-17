@@ -22,7 +22,11 @@ Completed-Work Preservation Principle: templates must preserve existing implemen
 
 ## Phase A-single — plan-analyst per-child classifier (default)
 
-Default Phase 1 invocation as of the per-task-dispatch refactor (v2), now dispatched via the v3 wrapper as of TASK-003 (`SKILL_bash_dispatch_migration`). The orchestrator emits one dispatch per child file that did NOT declare `**Agent:**` in its source markdown; when every child already declares an agent, Phase 1 skips this template entirely (see SKILL.md §Analysis (Phase 1) step 2). The orchestrator emits N of these dispatches as **N discrete `Bash` tool-use blocks inside a single assistant turn** — each invoking `plan_claude_dispatch.py run --input <payload.json>` — not as an array-prompt wrapped inside one tool call.
+Default Phase 1 invocation as of the per-task-dispatch refactor (v2). As of TASK-003 (`PLAN_DEPRECATE_CLAUDE_CLI`), the default transport is the **in-process Agent dispatch** (`template_id: "plan-analyst-per-child"`, agent `plan-analyst`, model `sonnet`); the orchestrator renders this body via `plan_ops__build_agent_dispatch_prompt` and emits N parallel `Agent(...)` tool calls in a single assistant turn. The wrapper-transport prose below (Bash command + JSON payload skeleton) is retained for direct CLI callers and the legacy `plan_claude_dispatch.py run --input -` invocation; the orchestrator no longer takes that path. The orchestrator emits one dispatch per child file that did NOT declare `**Agent:**` in its source markdown; when every child already declares an agent, Phase 1 skips this template entirely (see SKILL.md §Analysis (Phase 1) step 2).
+
+> **Agent-path-cleanliness.** The blockquoted body below (the rendered prompt) carries no wrapper-only knobs — no `output_instructions.format`, no `declared_files_changed`, no `overrides.model`. Both transports render the same body byte-for-byte; only the surrounding envelope differs. The wrapper-transport prose lives in this section for back-compat documentation, NOT inside the rendered prompt.
+
+Wrapper-transport prose (legacy / direct CLI callers only — orchestrator dispatches via the Agent path described above):
 
 Wrapper dispatch, `agent: "plan-analyst"`, `overrides.model: "sonnet"` (narrower scope than the retired whole-plan opus dispatch — a single-child classification is within Sonnet's reliable envelope). The wrapper returns the v3 envelope on stdout `{schema_version, status, status_reason, agent, model, session_id, duration_ms, cost_usd, tokens, result, result_raw_truncated, stderr_tail, permission_denials, scope, trace, error}`; the orchestrator asserts `.status == "ok"` and reads the classifier reply from `.result`. Status `!= "ok"` halts with `run_end reason=analyst_invalid` (see SKILL.md §Step 2 malformed-reply handling).
 
@@ -454,9 +458,8 @@ Payload skeleton (emitted by `build-claude-dispatch-input --variant default`, co
     "analyst_annotations": "<analyst_annotations_json-or-null>"
   },
   "output_instructions": {
-    "format": "json",
     "schema_path": "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json",
-    "schema_inline": null,
+    "schema_inline": "<populated by _inline_implementer_result_schema at render time; the subagent's prompt body carries the inlined schema verbatim>",
     "max_bytes": 65536
   },
   "overrides": {
@@ -496,6 +499,9 @@ The variant selector lives in the builder's `--variant` flag (was `payload.varia
 
 emits `{reads, symbols, errors}`. The orchestrator either renders the structured output via `plan_ops.render_pre_read_excerpts(resolved)` (canonical formatter) or substitutes the rendered string at the `{{pre_read_excerpts}}` interpolation point below. When the task carries no targets the field is empty and the section is omitted entirely (no empty heading).
 
+**Prior-attempt context (TASK-001 of PLAN_DEPRECATE_CLAUDE_CLI_FOLLOWUPS).** When `dispatch_bounded_remediation` (D.2a.5) re-dispatches `plan-implementer-default`, the orchestrator forwards `prior_findings[]`, `prior_summary`, and `attempt_count` in the `planImplementerDefaultContext` payload. The renderer formats those into a `## Prior attempt — D.2a.5 bounded remediation context` section and substitutes it at the `{{prior_attempt_context}}` interpolation point below. When the three fields are absent (or both `prior_findings` and `prior_summary` are empty), the renderer strips the placeholder line entirely so the rendered prompt is byte-identical to a fresh-implement dispatch. The finding-formatting logic lives in the renderer (`_render_prior_attempt_context`) — the markdown only carries the interpolation point.
+
+> {{prior_attempt_context}}
 > {{pre_read_excerpts}}
 >
 > Implement this task from the plan at `<absolute plan path>`.
@@ -520,7 +526,7 @@ emits `{reads, symbols, errors}`. The orchestrator either renders the structured
 > <analyst_annotations_json>
 > ```
 >
-> You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured format from your agent spec. Do not commit. Do not use `git stash`.
+> You may read the plan file for reference but do not modify it. Run the test command if specified — use `{{python_path}} ...` (this repo requires the virtualenv). Return your report in the structured JSON envelope shape `{outcome, files_changed, report}` matching the inlined `implementer_result.json` schema that appears in the `## Result envelope` section appended to this prompt by `_inline_implementer_result_schema` (byte-identical between the in-process `plan-implementer-default` Agent path and the `plan_claude_dispatch.py run` wrapper path). Do not commit. Do not use `git stash`.
 >
 > The `## Pre-read excerpts` block above (when present) is a seed, not a gag — you MAY issue additional `Read` calls with different offsets when the excerpts are insufficient.
 >

@@ -4541,15 +4541,15 @@ def _append_run_log(event: str, fields: dict) -> str:
     rec = {"ts": _now(), "event": event, **fields}
     line = json.dumps(rec, sort_keys=False)
     RUN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with RUN_LOG_PATH.open("a", encoding="utf-8") as fh:
+    with RUN_LOG_PATH.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(line + "\n")
     try:
-        with RUN_LOG_PATH.open("r", encoding="utf-8") as fh:
+        with RUN_LOG_PATH.open("r", encoding="utf-8", newline="\n") as fh:
             last = ""
             for last in fh:
                 pass
         if last.rstrip("\n") != line:
-            with RUN_LOG_PATH.open("a", encoding="utf-8") as fh:
+            with RUN_LOG_PATH.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(line + "\n")
     except OSError as e:
         raise RuntimeError(f"run-log append verification failed: {e}")
@@ -5710,6 +5710,65 @@ def _load_feat_commit_ids(git_dir: Path) -> set[str]:
     return ids
 
 
+# TASK-002 (PLAN_RUN_TELEMETRY_FOLLOWUPS_2026-05-15): ac_symbol_groundedness.
+# A warning-severity check that flags acceptance criteria that name a code
+# symbol (backticked identifier with structural cues — underscore, CamelCase,
+# or ALL_CAPS) which does not literally appear in any of the task's declared
+# Files. Catches AC drift at plan-author time rather than at Phase D
+# cross-review. Findings carry `severity: "warning"` and do not change the
+# lint exit code.
+_AC_HEADER_RE = re.compile(
+    r"^-\s*\*\*Acceptance criteria:\*\*\s*$", re.MULTILINE
+)
+_AC_NEXT_FIELD_RE = re.compile(r"^-\s*\*\*[^*]+:\*\*", re.MULTILINE)
+_AC_SYMBOL_TOKEN_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]+)`")
+
+
+def _is_code_symbol_token(tok: str) -> bool:
+    """Return True when ``tok`` looks like a code identifier worth grounding.
+
+    Heuristic: contains an underscore, OR is all-caps (constant), OR is a
+    CamelCase identifier (leading uppercase with at least one lowercase).
+    Pure-lowercase single words like ``done`` or ``paused`` are intentionally
+    excluded as too noisy.
+    """
+    if len(tok) < 2:
+        return False
+    if "_" in tok:
+        return True
+    if tok.isupper():
+        return True
+    if tok[0].isupper() and any(c.islower() for c in tok):
+        return True
+    return False
+
+
+def _extract_ac_symbols(block: str) -> list[str]:
+    """Return de-duplicated code-symbol tokens cited under Acceptance criteria.
+
+    Reads the section starting at ``- **Acceptance criteria:**`` and stopping
+    at the next top-level ``- **Xxx:**`` field bullet (or end-of-block).
+    Within that range, collects backticked identifiers that pass
+    ``_is_code_symbol_token``.
+    """
+    m = _AC_HEADER_RE.search(block)
+    if not m:
+        return []
+    rest = block[m.end():]
+    nm = _AC_NEXT_FIELD_RE.search(rest)
+    section = rest if nm is None else rest[: nm.start()]
+    seen: set[str] = set()
+    out: list[str] = []
+    for tok in _AC_SYMBOL_TOKEN_RE.findall(section):
+        if not _is_code_symbol_token(tok):
+            continue
+        if tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+    return out
+
+
 def _args_to_payload_lint_plans(args: argparse.Namespace) -> dict:
     payload = {
         "plans_dir": pathlib.Path(args.plans_dir) if args.plans_dir else None,
@@ -5740,11 +5799,6 @@ def _run_lint_plans(payload: dict) -> dict:
             continue
         for raw_id, block in blocks_for_check:
             status_m = _find_status_bullet(block)
-            if not status_m:
-                continue
-            status = status_m.group(2).strip().lower()
-            if status not in {'done', 'partial', 'paused'}:
-                continue
             tid = _normalize_task_id(raw_id)
             if tid is None:
                 continue
@@ -5752,6 +5806,39 @@ def _run_lint_plans(payload: dict) -> dict:
                 rel_path = str(md.relative_to(anchor))
             except ValueError:
                 rel_path = str(md)
+            # ac_symbol_groundedness (warning severity) runs on every task
+            # block regardless of status — its purpose is to catch AC drift
+            # at plan-author time, before the task is dispatched.
+            ac_symbols = _extract_ac_symbols(block)
+            if ac_symbols:
+                declared_files = _extract_task_files_from_plan(text, raw_id) or []
+                file_blobs: list[str] = []
+                for relpath in declared_files:
+                    if not relpath:
+                        continue
+                    fp = git_dir / relpath
+                    try:
+                        file_blobs.append(fp.read_text(encoding='utf-8'))
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                for sym in ac_symbols:
+                    if any(sym in blob for blob in file_blobs):
+                        continue
+                    findings.append({
+                        'plan_file': rel_path,
+                        'task_id': tid,
+                        'code': 'ac_symbol_groundedness',
+                        'message': (
+                            f"acceptance criteria reference symbol `{sym}` "
+                            f"but it does not appear in any declared file"
+                        ),
+                        'severity': 'warning',
+                    })
+            if not status_m:
+                continue
+            status = status_m.group(2).strip().lower()
+            if status not in {'done', 'partial', 'paused'}:
+                continue
             if status == 'paused':
                 if tid not in awaiting_user_ids:
                     findings.append({'plan_file': rel_path, 'task_id': tid, 'code': 'paused_without_awaiting_user_event', 'message': f"plan marks TASK-{tid} as 'paused' but no awaiting_user event found in run log"})
@@ -5762,7 +5849,10 @@ def _run_lint_plans(payload: dict) -> dict:
             if tid not in feat_commit_ids:
                 findings.append({'plan_file': rel_path, 'task_id': tid, 'code': 'missing-feat-commit', 'message': f"plan marks TASK-{tid} as {status!r} but no 'feat(TASK-{tid}):' commit found"})
     result = {'scanned': scanned, 'done_tasks': done_tasks, 'findings': findings}
-    return _result(result, exit_code=1 if findings else 0)
+    # Warning-severity findings (ac_symbol_groundedness) must not change the
+    # lint exit code; only blocking findings raise it.
+    blocking = [f for f in findings if f.get('severity') != 'warning']
+    return _result(result, exit_code=1 if blocking else 0)
 
 def cmd_lint_plans(args: argparse.Namespace) -> None:
     "Flag `**Status:** done`/`partial` tasks without matching commit pairings.\n\n    Read-only. Scans every `*.md` file under --plans-dir, enumerates tasks\n    via `_split_task_blocks`, and for each task whose Status bullet reads\n    `done` or `partial` asserts both (a) a `commit_done` event exists in the\n    run log with a matching task_id and (b) a `feat(TASK-NNN):` commit exists\n    in the repo's git log (across all refs).\n\n    Parent plans whose top-level Status is `superseded` are skipped per the\n    §D.3 guidance: their decomposition is tracked by the superseding children.\n\n    TASK-002 (prohibit_silent_revert): `paused` is a recognized task status\n    and is NOT flagged as drift. Each `**Status:** paused` task must be\n    paired with an `awaiting_user` run-log event for the same task; an\n    unpaired paused task surfaces as `paused_without_awaiting_user_event`.\n    "
@@ -10987,7 +11077,7 @@ def _check_wrapper_restore_authorization_source() -> dict:
     targets = {
         "plan_claude_dispatch.py": _SCRIPT_DIR / "plan_claude_dispatch.py",
         "plan_codex_dispatch.py": _SCRIPT_DIR / "plan_codex_dispatch.py",
-        "_claude_dispatch_cleanup.py": _SCRIPT_DIR / "_claude_dispatch_cleanup.py",
+        "_dispatch_cleanup.py": _SCRIPT_DIR / "_dispatch_cleanup.py",
     }
     canonical_payload = {
         "source": (
@@ -11017,7 +11107,7 @@ def _check_wrapper_restore_authorization_source() -> dict:
         actual_values[name] = sorted({v.strip("'\"") for v in found_auths})
 
         # Verify definitions are gated.
-        if name == "_claude_dispatch_cleanup.py":
+        if name == "_dispatch_cleanup.py":
             if "def _restore_path" in text and "authorization_source" not in text.split("def _restore_path")[1].split(") ->")[0]:
                 problems.append(f"{name}: _restore_path definition is missing authorization_source gate")
         if name == "plan_codex_dispatch.py":
@@ -12170,6 +12260,8 @@ _AGENT_DISPATCH_TEMPLATE_AGENT = {
     "plan-review-triage": "plan-review-triage",
     "plan-remediator-narrow": "plan-remediator",
     "plan-remediator-rescue": "plan-remediator",
+    "plan-implementer-default": "plan-implementer",
+    "plan-analyst-per-child": "plan-analyst",
 }
 
 _AGENT_DISPATCH_TEMPLATE_MODEL = {
@@ -12182,6 +12274,8 @@ _AGENT_DISPATCH_TEMPLATE_MODEL = {
     "plan-review-triage": "sonnet",
     "plan-remediator-narrow": "opus",
     "plan-remediator-rescue": "opus",
+    "plan-implementer-default": "opus",
+    "plan-analyst-per-child": "sonnet",
 }
 
 _AGENT_DISPATCH_TEMPLATE_HEADING = {
@@ -12194,6 +12288,8 @@ _AGENT_DISPATCH_TEMPLATE_HEADING = {
     "plan-review-triage": "## Phase 1-triage / Phase 1.5.5 — plan-review-triage dispatch (source-parameterized)",
     "plan-remediator-narrow": "## Phase B-narrow-remediation — Narrow-remediation retry (D.2a.6)",
     "plan-remediator-rescue": "## Phase D.4-rescue — plan-remediator dispatch (single-shot rescue)",
+    "plan-implementer-default": "## Phase B — plan-implementer dispatch (Claude tier)",
+    "plan-analyst-per-child": "## Phase A-single — plan-analyst per-child classifier (default)",
 }
 
 _AGENT_DISPATCH_TARGET_INJECTION_VERBS = {
@@ -12236,6 +12332,8 @@ _AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE = {
     "plan-review-triage": "planReviewTriageContext",
     "plan-remediator-narrow": "planRemediatorNarrowContext",
     "plan-remediator-rescue": "planRemediatorRescueContext",
+    "plan-implementer-default": "planImplementerDefaultContext",
+    "plan-analyst-per-child": "planAnalystPerChildContext",
 }
 
 
@@ -12411,6 +12509,51 @@ def _extract_agent_blockquote(section: str) -> str:
         return "\n"
     out = runs[-1]
     return "\n".join(out).strip() + "\n"
+
+
+def _render_prior_attempt_context(
+    prior_findings: object,
+    prior_summary: object,
+    attempt_count: object,
+) -> str:
+    """TASK-001 (PLAN_DEPRECATE_CLAUDE_CLI_FOLLOWUPS): render the optional
+    "Prior attempt — D.2a.5 bounded remediation context" block for the
+    plan-implementer-default renderer. Returns empty string when neither
+    ``prior_findings`` nor ``prior_summary`` carries content; that path
+    preserves byte-identity with the pre-change renderer output."""
+    findings = prior_findings if isinstance(prior_findings, list) else []
+    summary = prior_summary if isinstance(prior_summary, str) else ""
+    has_findings = len(findings) > 0
+    has_summary = bool(summary.strip())
+    if not (has_findings or has_summary):
+        return ""
+    lines: list[str] = ["## Prior attempt — D.2a.5 bounded remediation context", ""]
+    if isinstance(attempt_count, int) and attempt_count >= 1:
+        lines.append(f"Attempt count: {attempt_count}")
+        lines.append("")
+    if has_summary:
+        lines.append("Prior reviewer summary:")
+        lines.append("")
+        lines.append(summary)
+        lines.append("")
+    if has_findings:
+        lines.append("Prior reviewer findings:")
+        lines.append("")
+        for idx, finding in enumerate(findings, start=1):
+            if not isinstance(finding, dict):
+                lines.append(f"{idx}. {finding!r}")
+                continue
+            severity = finding.get("severity", "?")
+            file_ = finding.get("file", "?")
+            line_no = finding.get("line", "?")
+            issue = finding.get("issue", "")
+            suggested_fix = finding.get("suggested_fix", "")
+            lines.append(f"{idx}. [{severity}] {file_}:{line_no} — {issue}")
+            if suggested_fix:
+                lines.append(f"   Suggested fix: {suggested_fix}")
+        lines.append("")
+    lines.append("---")
+    return "\n".join(lines)
 
 
 def _json_for_prompt(value: object) -> str:
@@ -12736,6 +12879,68 @@ def _render_agent_dispatch_prompt_body(
         prompt = prompt.replace("<analyst_annotations_json>", _json_for_prompt(context["analyst_annotations_json"]))
         return injection + prompt
 
+    if template_id == "plan-implementer-default":
+        if normalized_task_id is None:
+            return _agent_dispatch_error(
+                "task-id-invalid",
+                f"task_id is not parseable: {context.get('task_id')!r}",
+                path="$.context.task_id",
+            )
+        task_block = _extract_task_block_for_prompt(plan_text, normalized_task_id)
+        if task_block is None:
+            return _agent_dispatch_error(
+                "task-not-found",
+                f"task {normalized_task_id} not present in plan {plan_file}",
+                path="$.context.task_id",
+            )
+        pre_read = context.get("pre_read_excerpts") or ""
+        analyst_annotations = context.get("analyst_annotations_json")
+        if analyst_annotations is None:
+            analyst_annotations_rendered = "null"
+        else:
+            analyst_annotations_rendered = _json_for_prompt(analyst_annotations)
+        # TASK-001 (PLAN_DEPRECATE_CLAUDE_CLI_FOLLOWUPS): optional D.2a.5
+        # bounded-remediation rework context. When all three fields are
+        # absent (or `prior_findings` is empty AND `prior_summary` is
+        # empty), the placeholder is stripped entirely so the rendered
+        # prompt is byte-identical to a no-rework dispatch.
+        prior_attempt_block = _render_prior_attempt_context(
+            context.get("prior_findings"),
+            context.get("prior_summary"),
+            context.get("attempt_count"),
+        )
+        if prior_attempt_block:
+            prompt = prompt.replace(
+                "{{prior_attempt_context}}\n",
+                prior_attempt_block + "\n",
+            )
+        else:
+            prompt = prompt.replace("{{prior_attempt_context}}\n", "")
+        prompt = prompt.replace("{{pre_read_excerpts}}", pre_read)
+        prompt = prompt.replace("{{python_path}}", context.get("python_path", "$PYTHON"))
+        prompt = prompt.replace("<absolute plan path>", str(plan_file))
+        prompt = prompt.replace("<## Context section verbatim>", _context_section_for_prompt(plan_text))
+        prompt = prompt.replace("<entire TASK-NNN block>", task_block)
+        prompt = prompt.replace("<starting_sha>", context.get("starting_sha", ""))
+        prompt = prompt.replace("<analyst_annotations_json>", analyst_annotations_rendered)
+        # BUG-146 / TASK-002: inline the canonical implementer result schema
+        # so the in-process Agent path renders the same envelope-shape
+        # teaching block as the script-runner wrapper path. The schema dict
+        # is discarded here — the Agent path's caller validates via
+        # ``claude_envelope_extract`` which can parse the result without an
+        # envelope-side schema copy.
+        prompt, _schema_obj = _inline_implementer_result_schema(prompt)
+        return prompt
+
+    if template_id == "plan-analyst-per-child":
+        # Phase 1 Step 2 per-child classifier (default fan-out, in-process
+        # Agent dispatch). The rendered body is the Phase A-single
+        # blockquote; substitute the two text-level placeholders the
+        # template carries (`<absolute child plan path>`, `<repo_root>`).
+        prompt = prompt.replace("<absolute child plan path>", str(plan_file))
+        prompt = prompt.replace("<repo_root>", context.get("repo_root", ""))
+        return prompt
+
     if template_id == "plan-remediator-rescue":
         if normalized_task_id is None:
             return _agent_dispatch_error(
@@ -12856,6 +13061,85 @@ _BCDI_VARIANT_SCHEMA_PATH = {
     "narrow-remediation": "tests/scripts/fixtures/claude_dispatch/schemas/remediator_result.json",
     "analyst": "plugins/plan-executor/scripts/schemas/claude_dispatch_output.json",
 }
+
+
+_IMPLEMENTER_RESULT_SCHEMA_REL = (
+    "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json"
+)
+
+
+def _inline_implementer_result_schema(prompt: str) -> tuple[str, dict]:
+    """Append the canonical implementer result-envelope teaching block
+    (worked example + verbatim schema JSON) to ``prompt`` and return
+    ``(new_prompt, schema_dict)``.
+
+    TASK-002 (PLAN_DEPRECATE_CLAUDE_CLI): both the script-runner Claude
+    wrapper path (``build_claude_dispatch_input``) and the in-process
+    ``plan-implementer-default`` Agent renderer call this helper so the
+    inlined schema block is byte-identical across paths. Single-sourcing
+    guards against drift between the two dispatch surfaces (BUG-146).
+
+    The schema is loaded from
+    ``tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json``
+    via the repo-root anchor (``_REPO_ROOT``). Schema-load errors raise
+    rather than returning an error dict — both callers handle the missing
+    fixture via earlier validation in their own paths.
+    """
+    schema_abs = _REPO_ROOT / _IMPLEMENTER_RESULT_SCHEMA_REL
+    schema_obj = json.loads(_load_text(schema_abs))
+    block_lines = [
+        "",
+        (
+            "## Result envelope (MANDATORY shape — do NOT emit a "
+            "legacy `{status, task_id, summary, ...}` shape)"
+        ),
+        "",
+        (
+            "Your final message MUST be a single JSON object "
+            "conforming to the canonical schema below. The wrapper "
+            "parses this with `claude-envelope-extract`; any "
+            "deviation classifies the run as `malformed` and pauses "
+            "the orchestrator. Top-level keys MUST be exactly "
+            "`outcome`, `files_changed`, and `report`."
+        ),
+        "",
+        "Worked example (canonical shape):",
+        "```json",
+        json.dumps(
+            {
+                "outcome": "success",
+                "files_changed": ["path/to/file.py"],
+                "report": {
+                    "summary": "<2-5 bullets describing what changed>",
+                    "test_command": "<verbatim test command or 'none'>",
+                    "test_outcome": "passed",
+                    "test_output_tail": "<last 30 lines or 'n/a'>",
+                    "acceptance_criteria_check": [
+                        {"status": "x", "criterion": "<text>",
+                         "evidence": "<file:line or assertion>"},
+                    ],
+                    "plan_adaptations": [],
+                    "concerns_for_reviewer": [],
+                },
+            },
+            indent=2,
+        ),
+        "```",
+        "",
+        (
+            "`outcome` MUST be one of: `success`, `partial`, "
+            "`failed`, `plan-incorrect`, `blocked`, `malformed`. "
+            "`files_changed` MUST be an array of repo-relative "
+            "paths. `report` MUST be an object (free-form keys "
+            "describing the implementation report)."
+        ),
+        "",
+        f"Result schema (verbatim, from `{_IMPLEMENTER_RESULT_SCHEMA_REL}`):",
+        "```json",
+        json.dumps(schema_obj, indent=2),
+        "```",
+    ]
+    return prompt + "\n".join(block_lines), schema_obj
 
 
 def _bcdi_to_error_result(code: str, message: str) -> dict:
@@ -13063,94 +13347,131 @@ def _run_build_claude_dispatch_input(payload: dict) -> dict:
     # write-authorized variants so the structured-fallback rendering path
     # in ``_claude_backend._resolve_prompt`` surfaces it directly to the
     # nested agent (which never reads the wrapper envelope).
+    #
+    # TASK-002 (PLAN_DEPRECATE_CLAUDE_CLI): for implementer variants the
+    # envelope+schema teaching block of the prompt is rendered by
+    # ``_inline_implementer_result_schema`` so the in-process
+    # ``plan-implementer-default`` Agent renderer emits a byte-identical
+    # block (single-source against drift).
     schema_inline_obj: dict | None = None
-    schema_abs = (Path(repo_root) / schema_path).resolve()
-    if schema_abs.is_file():
-        try:
-            schema_inline_obj = json.loads(_load_text(schema_abs))
-        except json.JSONDecodeError as e:
-            return _bcdi_to_error_result(
-                "schema-inline-invalid-json",
-                f"result schema file is not valid JSON ({schema_abs}): {e}",
-            )
-    else:
-        return _bcdi_to_error_result(
-            "schema-inline-not-found",
-            f"result schema file not found at {schema_abs}",
-        )
-
-    if variant != "analyst":
-        prompt_lines = [
+    if agent == "plan-implementer":
+        # implementer variants (default / rework / role-swap) — single-source
+        # via the shared helper so the script-runner Claude path and the
+        # in-process Agent renderer agree byte-for-byte.
+        opener = (
             f"Implement TASK-{normalized_task_id} from the plan at "
             f"`{plan_file.resolve()}` per your "
-            f"{agent} agent specification.",
-            "",
-            (
-                "Read the plan to find the `## Context` section and the "
-                "verbatim `### TASK-NNN: <title>` block (with Status / "
-                "Priority / Files / Test command / Acceptance criteria / "
-                "Description / Reversion guidance). Apply the minimum "
-                "change satisfying the AC, run the test command, and "
-                "return your structured JSON report. Do not commit, do "
-                "not modify the plan file, do not use `git stash`."
-            ),
-            "",
-            (
-                "## Result envelope (MANDATORY shape — do NOT emit a "
-                "legacy `{status, task_id, summary, ...}` shape)"
-            ),
-            "",
-            (
-                "Your final message MUST be a single JSON object "
-                "conforming to the canonical schema below. The wrapper "
-                "parses this with `claude-envelope-extract`; any "
-                "deviation classifies the run as `malformed` and pauses "
-                "the orchestrator. Top-level keys MUST be exactly "
-                "`outcome`, `files_changed`, and `report`."
-            ),
-            "",
-            "Worked example (canonical shape):",
-            "```json",
-            json.dumps(
-                {
-                    "outcome": "success",
-                    "files_changed": ["path/to/file.py"],
-                    "report": {
-                        "summary": "<2-5 bullets describing what changed>",
-                        "test_command": "<verbatim test command or 'none'>",
-                        "test_outcome": "passed",
-                        "test_output_tail": "<last 30 lines or 'n/a'>",
-                        "acceptance_criteria_check": [
-                            {"status": "x", "criterion": "<text>",
-                             "evidence": "<file:line or assertion>"},
-                        ],
-                        "plan_adaptations": [],
-                        "concerns_for_reviewer": [],
+            f"{agent} agent specification.\n\n"
+            "Read the plan to find the `## Context` section and the "
+            "verbatim `### TASK-NNN: <title>` block (with Status / "
+            "Priority / Files / Test command / Acceptance criteria / "
+            "Description / Reversion guidance). Apply the minimum "
+            "change satisfying the AC, run the test command, and "
+            "return your structured JSON report. Do not commit, do "
+            "not modify the plan file, do not use `git stash`."
+        )
+        try:
+            inlined_prompt, schema_inline_obj = _inline_implementer_result_schema(opener)
+        except (OSError, json.JSONDecodeError) as e:
+            return _bcdi_to_error_result(
+                "schema-inline-not-found",
+                f"result schema file not loadable: {e}",
+            )
+        trailer = (
+            "\n\nStructured dispatch payload (verbatim, for reference):\n"
+            "```json\n"
+            + json.dumps(inner_payload, indent=2, default=str)
+            + "\n```"
+        )
+        inner_payload["prompt"] = inlined_prompt + trailer
+    else:
+        schema_abs = (Path(repo_root) / schema_path).resolve()
+        if schema_abs.is_file():
+            try:
+                schema_inline_obj = json.loads(_load_text(schema_abs))
+            except json.JSONDecodeError as e:
+                return _bcdi_to_error_result(
+                    "schema-inline-invalid-json",
+                    f"result schema file is not valid JSON ({schema_abs}): {e}",
+                )
+        else:
+            return _bcdi_to_error_result(
+                "schema-inline-not-found",
+                f"result schema file not found at {schema_abs}",
+            )
+
+        if variant != "analyst":
+            prompt_lines = [
+                f"Implement TASK-{normalized_task_id} from the plan at "
+                f"`{plan_file.resolve()}` per your "
+                f"{agent} agent specification.",
+                "",
+                (
+                    "Read the plan to find the `## Context` section and the "
+                    "verbatim `### TASK-NNN: <title>` block (with Status / "
+                    "Priority / Files / Test command / Acceptance criteria / "
+                    "Description / Reversion guidance). Apply the minimum "
+                    "change satisfying the AC, run the test command, and "
+                    "return your structured JSON report. Do not commit, do "
+                    "not modify the plan file, do not use `git stash`."
+                ),
+                "",
+                (
+                    "## Result envelope (MANDATORY shape — do NOT emit a "
+                    "legacy `{status, task_id, summary, ...}` shape)"
+                ),
+                "",
+                (
+                    "Your final message MUST be a single JSON object "
+                    "conforming to the canonical schema below. The wrapper "
+                    "parses this with `claude-envelope-extract`; any "
+                    "deviation classifies the run as `malformed` and pauses "
+                    "the orchestrator. Top-level keys MUST be exactly "
+                    "`outcome`, `files_changed`, and `report`."
+                ),
+                "",
+                "Worked example (canonical shape):",
+                "```json",
+                json.dumps(
+                    {
+                        "outcome": "success",
+                        "files_changed": ["path/to/file.py"],
+                        "report": {
+                            "summary": "<2-5 bullets describing what changed>",
+                            "test_command": "<verbatim test command or 'none'>",
+                            "test_outcome": "passed",
+                            "test_output_tail": "<last 30 lines or 'n/a'>",
+                            "acceptance_criteria_check": [
+                                {"status": "x", "criterion": "<text>",
+                                 "evidence": "<file:line or assertion>"},
+                            ],
+                            "plan_adaptations": [],
+                            "concerns_for_reviewer": [],
+                        },
                     },
-                },
-                indent=2,
-            ),
-            "```",
-            "",
-            (
-                "`outcome` MUST be one of: `success`, `partial`, "
-                "`failed`, `plan-incorrect`, `blocked`, `malformed`. "
-                "`files_changed` MUST be an array of repo-relative "
-                "paths. `report` MUST be an object (free-form keys "
-                "describing the implementation report)."
-            ),
-            "",
-            f"Result schema (verbatim, from `{schema_path}`):",
-            "```json",
-            json.dumps(schema_inline_obj, indent=2),
-            "```",
-            "",
-            "Structured dispatch payload (verbatim, for reference):",
-            "```json",
-            json.dumps(inner_payload, indent=2, default=str),
-            "```",
-        ]
-        inner_payload["prompt"] = "\n".join(prompt_lines)
+                    indent=2,
+                ),
+                "```",
+                "",
+                (
+                    "`outcome` MUST be one of: `success`, `partial`, "
+                    "`failed`, `plan-incorrect`, `blocked`, `malformed`. "
+                    "`files_changed` MUST be an array of repo-relative "
+                    "paths. `report` MUST be an object (free-form keys "
+                    "describing the implementation report)."
+                ),
+                "",
+                f"Result schema (verbatim, from `{schema_path}`):",
+                "```json",
+                json.dumps(schema_inline_obj, indent=2),
+                "```",
+                "",
+                "Structured dispatch payload (verbatim, for reference):",
+                "```json",
+                json.dumps(inner_payload, indent=2, default=str),
+                "```",
+            ]
+            inner_payload["prompt"] = "\n".join(prompt_lines)
 
     envelope = {
         "schema_version": 1,

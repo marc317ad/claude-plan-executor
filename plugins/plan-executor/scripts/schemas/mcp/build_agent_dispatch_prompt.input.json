@@ -15,7 +15,9 @@
         "plan-author-legacy-whole-plan",
         "plan-review-triage",
         "plan-remediator-narrow",
-        "plan-remediator-rescue"
+        "plan-remediator-rescue",
+        "plan-implementer-default",
+        "plan-analyst-per-child"
       ]
     },
     "context": {
@@ -46,6 +48,12 @@
         },
         {
           "$ref": "#/$defs/planRemediatorRescueContext"
+        },
+        {
+          "$ref": "#/$defs/planImplementerDefaultContext"
+        },
+        {
+          "$ref": "#/$defs/planAnalystPerChildContext"
         }
       ]
     }
@@ -277,6 +285,99 @@
         "dismissed_for_context",
         "d5_summary",
         "analyst_annotations_json"
+      ],
+      "additionalProperties": false
+    },
+    "planImplementerDefaultContext": {
+      "type": "object",
+      "properties": {
+        "plan_file": {
+          "type": "string"
+        },
+        "task_id": {
+          "$ref": "#/$defs/taskId"
+        },
+        "target_task_id": {
+          "$ref": "#/$defs/taskId"
+        },
+        "starting_sha": {
+          "type": "string"
+        },
+        "analyst_annotations_json": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "pre_read_excerpts": {
+          "type": "string"
+        },
+        "python_path": {
+          "type": "string"
+        },
+        "prior_findings": {
+          "description": "Optional D.2a.5 bounded-remediation rework context: reviewer findings from the prior attempt. Each entry matches the reviewer-finding shape used by plan_ops__parse_reviewer_envelope. Absent or empty means \"fresh implement\" and the renderer's output is byte-identical to a no-rework dispatch.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "severity": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer"
+              },
+              "issue": {
+                "type": "string"
+              },
+              "suggested_fix": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "severity",
+              "file",
+              "line",
+              "issue",
+              "suggested_fix"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "prior_summary": {
+          "description": "Optional D.2a.5 bounded-remediation rework context: prior reviewer summary, emitted verbatim above the fresh-implement instructions when populated.",
+          "type": "string"
+        },
+        "attempt_count": {
+          "description": "Optional D.2a.5 bounded-remediation rework context: 1-based attempt count (>=1). Absent means \"fresh implement\".",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "plan_file",
+        "task_id",
+        "starting_sha",
+        "analyst_annotations_json"
+      ],
+      "additionalProperties": false
+    },
+    "planAnalystPerChildContext": {
+      "type": "object",
+      "description": "Phase 1 Step 2 per-child classifier dispatch (in-process Agent path). Read-only by contract — analyst classifies a single child plan file and emits {agent, classification_reason}. No cleanup wrap is applied (see SKILL.md §Cleanup-around-Agent-dispatch).",
+      "properties": {
+        "plan_file": {
+          "description": "Absolute path to the resolved child plan file",
+          "type": "string"
+        },
+        "repo_root": {
+          "description": "Absolute path to the repository root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_file",
+        "repo_root"
       ],
       "additionalProperties": false
     },

@@ -1,0 +1,29 @@
+{
+  "template_id": "plan-implementer-default",
+  "context": {
+    "plan_file": "/abs/repo/docs/plans/STUB/TASK-001_stub.md",
+    "task_id": "001",
+    "starting_sha": "abc123",
+    "analyst_annotations_json": null,
+    "prior_findings": [
+      {
+        "severity": "important",
+        "confidence": "high",
+        "file": "plugins/foo.py",
+        "line": 42,
+        "issue": "Missing nil-guard around `bar` lookup.",
+        "suggested_fix": "Wrap the dereference in `if bar is not None`."
+      },
+      {
+        "severity": "minor",
+        "confidence": "medium",
+        "file": "plugins/baz.py",
+        "line": 13,
+        "issue": "Docstring undersells the new branch behavior.",
+        "suggested_fix": "Expand the docstring to mention the rework branch."
+      }
+    ],
+    "prior_summary": "Prior attempt missed the nil-guard in foo.py and shipped a thin docstring in baz.py.",
+    "attempt_count": 2
+  }
+}

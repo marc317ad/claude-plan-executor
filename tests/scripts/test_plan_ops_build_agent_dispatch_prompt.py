@@ -125,9 +125,11 @@ def test_schema_exposes_all_agent_dispatch_template_ids() -> None:
         "plan-review-triage",
         "plan-remediator-narrow",
         "plan-remediator-rescue",
+        "plan-implementer-default",
+        "plan-analyst-per-child",
     ]
     assert "oneOf" not in schema
-    assert len(schema["properties"]["context"]["oneOf"]) == 9
+    assert len(schema["properties"]["context"]["oneOf"]) == 11
 
 
 def test_new_agent_dispatch_variants_render_to_golden() -> None:
@@ -256,3 +258,375 @@ Second description.
 
     assert result["ok"] is False
     assert result["errors"][0]["code"] == "target-task-id-required"
+
+
+# ---------------------------------------------------------------------------
+# TASK-002 (PLAN_DEPRECATE_CLAUDE_CLI) — plan-implementer-default template
+# ---------------------------------------------------------------------------
+
+
+_IMPLEMENTER_PLAN_TEMPLATE = """# TASK-001 — stub
+
+## Goal
+
+Stub fixture for plan-implementer-default Agent renderer tests.
+
+## Context
+
+Stub context paragraph.
+
+## Tasks
+
+### TASK-001: stub
+
+- **Status:** pending
+- **Priority:** high
+- **Agent:** claude
+- **Files:**
+  - plugins/foo.py
+- **Dependencies:** []
+- **Test command:** `python3 -m pytest tests/foo`
+- **Acceptance criteria:**
+  - stub criterion
+"""
+
+
+def _write_implementer_plan(tmp_path: Path) -> Path:
+    p = tmp_path / "TASK-001_stub.md"
+    p.write_text(_IMPLEMENTER_PLAN_TEMPLATE, encoding="utf-8")
+    return p
+
+
+def test_plan_implementer_default_renders_with_schema_block(tmp_path: Path) -> None:
+    plan_file = _write_implementer_plan(tmp_path)
+    payload = {
+        "template_id": "plan-implementer-default",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "task_id": "001",
+            "starting_sha": "abc123",
+            "analyst_annotations_json": None,
+        },
+    }
+
+    result = plan_ops._run_build_agent_dispatch_prompt(payload)
+
+    assert result["ok"] is True, result
+    assert result["agent"] == "plan-implementer"
+    assert result["model"] == "opus"
+    prompt = result["prompt"]
+    # The canonical envelope-shape block must be appended via the shared
+    # helper.
+    assert "## Result envelope (MANDATORY shape" in prompt
+    assert "claude_dispatch_implementer_result" in prompt
+    assert '"outcome"' in prompt
+    assert '"files_changed"' in prompt
+    assert '"report"' in prompt
+    # Template substitutions:
+    assert "abc123" in prompt
+    assert "### TASK-001: stub" in prompt
+
+
+def test_inline_implementer_result_schema_byte_stable_vs_wrapper_path(
+    tmp_path: Path,
+) -> None:
+    """TASK-002 (PLAN_DEPRECATE_CLAUDE_CLI): guard against drift between
+    the script-runner Claude wrapper path and the in-process Agent
+    renderer. Both paths inline the same canonical implementer result
+    schema via ``_inline_implementer_result_schema``; the inlined block
+    MUST be byte-identical."""
+    # Anchor: pass the empty string through the helper; the returned
+    # prompt IS the canonical inlined block (no opener / no trailer).
+    helper_prompt, helper_schema = plan_ops._inline_implementer_result_schema("")
+    # Schema dict matches the on-disk canonical schema.
+    schema_abs = (
+        plan_ops._REPO_ROOT
+        / "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json"
+    )
+    on_disk = json.loads(schema_abs.read_text(encoding="utf-8"))
+    assert helper_schema == on_disk
+
+    # Wrapper path (build-claude-dispatch-input) — its prompt MUST contain
+    # the helper's inlined block as a contiguous substring.
+    plan_file = _write_implementer_plan(tmp_path)
+    wrapper_payload = {
+        "plan_file": str(plan_file),
+        "task_id": "001",
+        "variant": "default",
+        "repo_root": str(plan_ops._REPO_ROOT),
+        "analyst_annotations": None,
+        "target_task_id": None,
+        "starting_sha": "abc123",
+        "dispatch_context": None,
+        "run_id": "test-run",
+        "output": "-",
+        "unattended_revert_policy_env": None,
+    }
+    wrapper_result = plan_ops._run_build_claude_dispatch_input(wrapper_payload)
+    wrapper_envelope = {k: v for k, v in wrapper_result.items() if not k.startswith("__")}
+    wrapper_prompt = wrapper_envelope["payload"]["prompt"]
+    # Drop the leading empty-newline (helper appends to ""); the
+    # helper-returned block begins with "\n## Result envelope...". The
+    # wrapper opener ends right before the same "\n## Result envelope".
+    assert helper_prompt in wrapper_prompt, (
+        "implementer schema block drift between wrapper and Agent paths"
+    )
+
+    # Agent path (build-agent-dispatch-prompt) — same substring property.
+    agent_payload = {
+        "template_id": "plan-implementer-default",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "task_id": "001",
+            "starting_sha": "abc123",
+            "analyst_annotations_json": None,
+        },
+    }
+    agent_result = plan_ops._run_build_agent_dispatch_prompt(agent_payload)
+    assert agent_result["ok"] is True
+    agent_prompt = agent_result["prompt"]
+    assert helper_prompt in agent_prompt, (
+        "implementer schema block drift between Agent renderer and helper"
+    )
+
+    # Cross-path byte stability: the helper-emitted inlined block portion
+    # is byte-identical in both prompts.
+    w_offset = wrapper_prompt.index(helper_prompt.strip() or helper_prompt)
+    a_offset = agent_prompt.index(helper_prompt.strip() or helper_prompt)
+    assert wrapper_prompt[w_offset:w_offset + len(helper_prompt.strip())] == \
+        agent_prompt[a_offset:a_offset + len(helper_prompt.strip())]
+
+
+# ---------------------------------------------------------------------------
+# TASK-001 (PLAN_DEPRECATE_CLAUDE_CLI_FOLLOWUPS) — optional D.2a.5 rework
+# context on `plan-implementer-default`
+# ---------------------------------------------------------------------------
+
+
+_REWORK_FIXTURE_PATH = (
+    REPO_ROOT
+    / "tests"
+    / "scripts"
+    / "fixtures"
+    / "build_agent_dispatch_prompt"
+    / "implementer_default_with_rework_context.json"
+)
+
+
+def test_plan_implementer_default_rework_context_inlines_prior_attempt_block(
+    tmp_path: Path,
+) -> None:
+    """When `prior_findings`/`prior_summary`/`attempt_count` are populated,
+    the renderer inlines the `## Prior attempt — D.2a.5 bounded
+    remediation context` section above the fresh-implement instructions."""
+    plan_file = _write_implementer_plan(tmp_path)
+    raw = json.loads(_REWORK_FIXTURE_PATH.read_text(encoding="utf-8"))
+    raw["context"]["plan_file"] = str(plan_file.resolve())
+    result = plan_ops._run_build_agent_dispatch_prompt(raw)
+
+    assert result["ok"] is True, result
+    prompt = result["prompt"]
+    assert "## Prior attempt — D.2a.5 bounded remediation context" in prompt
+    assert "Attempt count: 2" in prompt
+    assert "Prior reviewer summary:" in prompt
+    assert (
+        "Prior attempt missed the nil-guard in foo.py and shipped a thin "
+        "docstring in baz.py."
+    ) in prompt
+    assert "Prior reviewer findings:" in prompt
+    assert "1. [important] plugins/foo.py:42 — Missing nil-guard" in prompt
+    assert "Suggested fix: Wrap the dereference in `if bar is not None`." in prompt
+    assert "2. [minor] plugins/baz.py:13 — Docstring undersells" in prompt
+    # The prior-attempt block precedes the fresh-implement instructions.
+    prior_idx = prompt.index("## Prior attempt — D.2a.5 bounded remediation context")
+    implement_idx = prompt.index("Implement this task from the plan at")
+    assert prior_idx < implement_idx
+
+
+def test_plan_implementer_default_without_rework_context_is_byte_identical(
+    tmp_path: Path,
+) -> None:
+    """When `prior_findings`/`prior_summary`/`attempt_count` are absent,
+    the rendered prompt is byte-identical to a no-rework dispatch and
+    carries no prior-attempt section."""
+    plan_file = _write_implementer_plan(tmp_path)
+    baseline_payload = {
+        "template_id": "plan-implementer-default",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "task_id": "001",
+            "starting_sha": "abc123",
+            "analyst_annotations_json": None,
+        },
+    }
+    baseline = plan_ops._run_build_agent_dispatch_prompt(baseline_payload)
+    assert baseline["ok"] is True
+    assert "Prior attempt — D.2a.5 bounded remediation context" not in (
+        baseline["prompt"]
+    )
+
+    # All-empty rework context: still byte-identical to baseline.
+    empty_payload = {
+        "template_id": "plan-implementer-default",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "task_id": "001",
+            "starting_sha": "abc123",
+            "analyst_annotations_json": None,
+            "prior_findings": [],
+            "prior_summary": "",
+        },
+    }
+    empty = plan_ops._run_build_agent_dispatch_prompt(empty_payload)
+    assert empty["ok"] is True
+    assert empty["prompt"] == baseline["prompt"]
+
+
+def test_plan_implementer_default_rework_context_schema_validates() -> None:
+    """The fixture file conforms to the
+    build_agent_dispatch_prompt.input.json schema (the new optional
+    fields are accepted by the $def)."""
+    try:
+        import jsonschema  # noqa: F401
+    except ImportError:  # pragma: no cover - jsonschema is a dev dep
+        import pytest
+
+        pytest.skip("jsonschema not installed")
+    schema_path = (
+        SCRIPTS_DIR / "schemas" / "mcp" / "build_agent_dispatch_prompt.input.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    payload = json.loads(_REWORK_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+    import jsonschema as _js
+
+    _js.validate(instance=payload, schema=schema)
+
+
+# ---------------------------------------------------------------------------
+# TASK-003 (PLAN_DEPRECATE_CLAUDE_CLI) — plan-analyst-per-child template
+# ---------------------------------------------------------------------------
+
+
+_ANALYST_CHILD_PLAN = """# TASK-001 — stub
+
+## Goal
+Stub child plan for plan-analyst-per-child renderer test.
+
+## Tasks
+
+### TASK-001: stub
+
+- **Status:** pending
+- **Priority:** medium
+- **Files:**
+  - plugins/foo.py
+- **Dependencies:** []
+- **Test command:** none
+- **Acceptance criteria:**
+  - stub criterion
+
+**Description:**
+stub description.
+"""
+
+
+def test_plan_analyst_per_child_renders_with_substitutions(tmp_path: Path) -> None:
+    plan_file = tmp_path / "TASK-001_stub.md"
+    plan_file.write_text(_ANALYST_CHILD_PLAN, encoding="utf-8")
+    payload = {
+        "template_id": "plan-analyst-per-child",
+        "context": {
+            "plan_file": str(plan_file.resolve()),
+            "repo_root": "/abs/repo/root",
+        },
+    }
+
+    result = plan_ops._run_build_agent_dispatch_prompt(payload)
+
+    assert result["ok"] is True, result
+    assert result["agent"] == "plan-analyst"
+    assert result["model"] == "sonnet"
+    prompt = result["prompt"]
+    # Placeholders in the Phase A-single body are substituted.
+    assert str(plan_file.resolve()) in prompt
+    assert "/abs/repo/root" in prompt
+    assert "<absolute child plan path>" not in prompt
+    assert "<repo_root>" not in prompt
+    # Body is the classifier prompt (no wrapper-only knobs leaked in).
+    assert "Classify exactly one task" in prompt
+    assert "output_instructions" not in prompt
+    assert "declared_files_changed" not in prompt
+    # Required closing constraint from the agent body.
+    assert "You do NOT have the Agent tool." in prompt
+
+
+def test_plan_analyst_per_child_missing_required_fields_schema_errors(
+    tmp_path: Path,
+) -> None:
+    plan_file = tmp_path / "TASK-001_stub.md"
+    plan_file.write_text(_ANALYST_CHILD_PLAN, encoding="utf-8")
+    base_context = {
+        "plan_file": str(plan_file.resolve()),
+        "repo_root": "/abs/repo/root",
+    }
+    for missing in ("plan_file", "repo_root"):
+        ctx = dict(base_context)
+        del ctx[missing]
+        result = plan_ops._run_build_agent_dispatch_prompt(
+            {"template_id": "plan-analyst-per-child", "context": ctx}
+        )
+        assert result["ok"] is False, missing
+        assert {
+            "code": "required-field-missing",
+            "path": f"/context/{missing}",
+        }.items() <= result["errors"][0].items()
+
+
+def test_plan_analyst_per_child_registered_in_dispatch_maps() -> None:
+    """TASK-003 (PLAN_DEPRECATE_CLAUDE_CLI): the per-child classifier
+    template_id must be wired through every Agent-dispatch registry."""
+    assert plan_ops._AGENT_DISPATCH_TEMPLATE_AGENT["plan-analyst-per-child"] == (
+        "plan-analyst"
+    )
+    assert plan_ops._AGENT_DISPATCH_TEMPLATE_MODEL["plan-analyst-per-child"] == (
+        "sonnet"
+    )
+    assert plan_ops._AGENT_DISPATCH_TEMPLATE_HEADING["plan-analyst-per-child"] == (
+        "## Phase A-single — plan-analyst per-child classifier (default)"
+    )
+    assert plan_ops._AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE[
+        "plan-analyst-per-child"
+    ] == "planAnalystPerChildContext"
+
+
+def test_template_id_registry_invariant_enum_matches_renderer_maps() -> None:
+    """Smoke test: JSON-schema ``template_id`` enum == renderer-registry map keys."""
+    schema_path = (
+        SCRIPTS_DIR
+        / "schemas"
+        / "mcp"
+        / "build_agent_dispatch_prompt.input.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    enum_ids = set(schema["properties"]["template_id"]["enum"])
+
+    heading_keys = set(plan_ops._AGENT_DISPATCH_TEMPLATE_HEADING.keys())
+    model_keys = set(plan_ops._AGENT_DISPATCH_TEMPLATE_MODEL.keys())
+    # NOTE: TASK-003 AC names this map ``_AGENT_DISPATCH_TEMPLATE_CONTEXT_KEY``,
+    # but the live renderer registry exposes per-template context-$def under
+    # ``_AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE``. Same role, different name.
+    context_keys = set(plan_ops._AGENT_DISPATCH_CONTEXT_DEF_BY_TEMPLATE.keys())
+
+    def _diff(label: str, other: set[str]) -> str:
+        missing = enum_ids - other
+        extra = other - enum_ids
+        return (
+            f"{label} mismatch vs JSON enum: "
+            f"missing_from_{label}={sorted(missing)} "
+            f"extra_in_{label}={sorted(extra)}"
+        )
+
+    assert enum_ids == heading_keys, _diff("HEADING", heading_keys)
+    assert enum_ids == model_keys, _diff("MODEL", model_keys)
+    assert enum_ids == context_keys, _diff("CONTEXT_DEF_BY_TEMPLATE", context_keys)
