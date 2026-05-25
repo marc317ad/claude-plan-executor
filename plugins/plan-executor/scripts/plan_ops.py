@@ -245,7 +245,13 @@ ALLOWED_ROW_FIELDS = {"task", "agent", "reviewer", "verdict", "commit", "notes"}
 # CLI-only / MCP-only deviations here so conformance tests and registry
 # generation consume the same allowlist instead of growing local skips.
 PUBLIC_SUBCOMMAND_TRANSPORT_EXCEPTIONS = {
-    "cli_only": set(),
+    # `audit-review-evidence` is a parent-orchestrator audit tool meant to
+    # run from a sibling checkout / CI step, not from inside the running
+    # `/implement-plan` orchestration. The in-run gate calls
+    # `_review_evidence_gate(...)` directly from `_run_commit_task`,
+    # `_run_finalize_execution_log`, and `_run_log_event(run_end ...)` so
+    # the MCP surface gains nothing from re-exposing the CLI shape.
+    "cli_only": {"audit-review-evidence"},
     "mcp_only": set(),
 }
 # Known run-log event types. The orchestrator owns the vocabulary; this set
@@ -5681,6 +5687,357 @@ def _run_log_handfix_pause_active(
     return paused
 
 
+# Hard review-evidence gate. SKILL.md §Phase D / §Awaiting-user pause already
+# states the contract as prose ("If any task review occurred for a resumed
+# task, review_start / review_done / review_route_called MUST precede that
+# task's commit_done"); this helper enforces it mechanically so a parent
+# orchestrator that bypasses Phase D — accidentally or otherwise — cannot
+# write commit_done or finalize a successful run.
+#
+# Verdicts that authorize commit are the union of the commit-allowed sets
+# in `_validate_review_success_payload`: codex/gemini → {clean,
+# minor-findings}; claude → {ship, ship-with-fixes}. No new vocabulary.
+REVIEW_EVIDENCE_ACCEPTED_VERDICTS = frozenset({
+    "clean", "minor-findings", "ship", "ship-with-fixes",
+})
+
+
+def _review_evidence_gate(
+    run_log: Path,
+    run_id: str,
+    task_ids: list[str] | None = None,
+    *,
+    require_commit_done: bool = False,
+) -> dict:
+    """Audit review evidence for `(run_id, task_ids)` against `run_log`.
+
+    Trigger: an `implement_done {run_id, task_id}` event in the log. Without
+    it, the gate is N/A for that task — preserves legacy/raw `commit-task`
+    callers (unit tests, manual invocations) that never populated the log.
+    Per the user's hardening spec: "Preserve backward compatibility for
+    historical logs unless tests are explicitly scoped to new runs."
+
+    Pass criteria for a triggered (run_id, task_id):
+      * `implement_done` present (the trigger itself).
+      * `review_start` present.
+      * `review_done` present.
+      * AT LEAST ONE of: (a) the LAST `review_done.verdict` for the pair
+        is in `REVIEW_EVIDENCE_ACCEPTED_VERDICTS`, OR (b) a
+        `review_route_called {action: "commit", task_id}` event exists
+        for the pair. The routing state machine
+        (`_route_review_route`) only returns `action: "commit"` for
+        verdict combinations in the commit-allowed set, so the
+        `review_route_called` clause is an independent witness of
+        accepted-verdict authorization — required to cover the D.5
+        disagreement path (original reviewer `needs-rework` + D.5 `ship`
+        / `ship-with-fixes`) where the binding verdict is not emitted as
+        a `review_done`.
+      * No `review_skipped` event for the pair. (`review_skipped` is a hard
+        failure for completed tasks per the SKILL `--skip-cross-review`
+        loud-banner contract — this gate makes that mechanical.)
+      * If `require_commit_done=True` (finalize / `run_end outcome=success`
+        backstop): a `commit_done` event for the pair must also exist.
+
+    Exemption: a `failed` event for the pair short-circuits the gate to
+    `ok: True` (failed tasks don't need review evidence). Implementer
+    failures never reach commit, and lifecycle failures already require
+    their own structured `fail-task` authorization.
+
+    Returns a structured per-task report keyed by normalized task id:
+      {
+        "ok": bool,                # AND across all per_task["ok"]
+        "run_id": str,
+        "per_task": {
+          "<nnn>": {
+            "ok": bool,
+            "triggered": bool,    # had implement_done
+            "failed": bool,       # had `failed` event (exempt)
+            "evidence": {
+              "implement_done": bool,
+              "review_start": bool,
+              "review_done": bool,
+              "commit_done": bool,
+              "last_review_verdict": str|None,
+              "review_skipped": bool,
+              "route_called_commit": bool,
+            },
+            "reasons": [{"code": "...", "message": "..."}, ...],
+          }, ...
+        },
+        "overall_reasons": [...],  # only set on ok=False
+      }
+
+    Tolerance contract matches the other run-log scanners: missing file or
+    malformed lines are skipped; gate is a safety net, not an integrity
+    check. A missing log treated as "no events" — every task is N/A.
+    """
+    report: dict = {
+        "ok": True,
+        "run_id": run_id,
+        "per_task": {},
+        "overall_reasons": [],
+    }
+    # Normalize the explicit task list up front. An invalid id surfaces as
+    # a structured per-task failure rather than a silent skip.
+    norm_explicit: list[str] | None = None
+    if task_ids is not None:
+        norm_explicit = []
+        for raw in task_ids:
+            n = _normalize_task_id(str(raw))
+            if n is None:
+                report["ok"] = False
+                report["per_task"][str(raw)] = {
+                    "ok": False,
+                    "triggered": False,
+                    "failed": False,
+                    "evidence": {
+                        "implement_done": False,
+                        "review_start": False,
+                        "review_done": False,
+                        "commit_done": False,
+                        "last_review_verdict": None,
+                        "review_skipped": False,
+                        "route_called_commit": False,
+                    },
+                    "reasons": [{
+                        "code": "review-evidence-bad-task-id",
+                        "message": (
+                            f"task_id {raw!r} is not a valid task identifier "
+                            "(expected NNN, NNNX, or TASK-NNN[X])"
+                        ),
+                    }],
+                }
+            else:
+                norm_explicit.append(n)
+
+    # Per-task accumulator. Keys are normalized task ids; values track each
+    # piece of evidence we care about. Built incrementally as we stream.
+    per: dict[str, dict] = {}
+
+    def _slot(tid: str) -> dict:
+        if tid not in per:
+            per[tid] = {
+                "implement_done": False,
+                "review_start": False,
+                "review_done": False,
+                "commit_done": False,
+                "last_review_verdict": None,
+                "review_skipped": False,
+                "failed": False,
+                # `review_route_called {action: "commit"}` is the
+                # state-machine's deterministic "this verdict combination
+                # authorizes commit" output. By construction the route
+                # function only returns `action: "commit"` for verdicts in
+                # the commit-allowed set (see `_route_review_route`), so
+                # this event independently witnesses an accepted verdict.
+                # The D.5 disagreement path relies on it: the original
+                # `review_done` carries `needs-rework`, D.5 returns
+                # `ship` / `ship-with-fixes` (not emitted as a
+                # `review_done` today), and the second `review-route`
+                # call records `action: commit` here.
+                "route_called_commit": False,
+            }
+        return per[tid]
+
+    lines: list[str] = []
+    if run_log.exists():
+        try:
+            lines = run_log.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("run_id") != run_id:
+            continue
+        evtype = ev.get("event")
+        raw_tid = ev.get("task_id")
+        if raw_tid is None:
+            continue
+        tid = _normalize_task_id(str(raw_tid))
+        if tid is None:
+            continue
+        # If the caller scoped to an explicit task list, ignore other tasks
+        # entirely so the report only mentions tasks the caller asked about.
+        if norm_explicit is not None and tid not in norm_explicit:
+            continue
+        slot = _slot(tid)
+        if evtype == "implement_done":
+            slot["implement_done"] = True
+        elif evtype == "review_start":
+            slot["review_start"] = True
+        elif evtype == "review_done":
+            slot["review_done"] = True
+            v = ev.get("verdict")
+            if isinstance(v, str):
+                slot["last_review_verdict"] = v
+        elif evtype == "review_skipped":
+            slot["review_skipped"] = True
+        elif evtype == "commit_done":
+            slot["commit_done"] = True
+        elif evtype == "failed":
+            slot["failed"] = True
+        elif (
+            evtype == "review_route_called"
+            and ev.get("action") == "commit"
+        ):
+            slot["route_called_commit"] = True
+
+    # When the caller passed explicit task ids, materialize a row for every
+    # one so missing-implement_done cases also surface in the report.
+    if norm_explicit is not None:
+        for tid in norm_explicit:
+            _slot(tid)
+
+    # Adjudicate each task.
+    for tid in sorted(per.keys()):
+        ev = per[tid]
+        reasons: list[dict] = []
+        triggered = ev["implement_done"]
+        failed = ev["failed"]
+        if not triggered:
+            # No implement_done → gate N/A (legacy/raw caller). Failed
+            # tasks without implement_done are also N/A — they failed
+            # before completing the implement phase.
+            report["per_task"][tid] = {
+                "ok": True,
+                "triggered": False,
+                "failed": failed,
+                "evidence": {
+                    "implement_done": False,
+                    "review_start": ev["review_start"],
+                    "review_done": ev["review_done"],
+                    "commit_done": ev["commit_done"],
+                    "last_review_verdict": ev["last_review_verdict"],
+                    "review_skipped": ev["review_skipped"],
+                    "route_called_commit": ev["route_called_commit"],
+                },
+                "reasons": [],
+            }
+            continue
+        if failed:
+            # Implementer reached implement_done but the task subsequently
+            # failed (review or commit stage). Lifecycle authorization for
+            # `fail-task` is enforced separately via
+            # ALLOWED_FAIL_AUTHORIZATION_SOURCES; the review-evidence gate
+            # does not double-check it.
+            report["per_task"][tid] = {
+                "ok": True,
+                "triggered": True,
+                "failed": True,
+                "evidence": {
+                    "implement_done": True,
+                    "review_start": ev["review_start"],
+                    "review_done": ev["review_done"],
+                    "commit_done": ev["commit_done"],
+                    "last_review_verdict": ev["last_review_verdict"],
+                    "review_skipped": ev["review_skipped"],
+                    "route_called_commit": ev["route_called_commit"],
+                },
+                "reasons": [],
+            }
+            continue
+        # Gate fires.
+        if not ev["review_start"]:
+            reasons.append({
+                "code": "review-evidence-missing-review-start",
+                "message": (
+                    f"task {tid} has implement_done but no review_start "
+                    f"event for run_id={run_id!r}"
+                ),
+            })
+        if not ev["review_done"]:
+            reasons.append({
+                "code": "review-evidence-missing-review-done",
+                "message": (
+                    f"task {tid} has implement_done but no review_done "
+                    f"event for run_id={run_id!r}"
+                ),
+            })
+        else:
+            verdict_accepted = (
+                ev["last_review_verdict"] is not None
+                and ev["last_review_verdict"]
+                in REVIEW_EVIDENCE_ACCEPTED_VERDICTS
+            )
+            # `review_route_called {action: "commit"}` is the routing
+            # state machine's authoritative "commit authorized" signal.
+            # By construction `_route_review_route` only returns
+            # `action: "commit"` for verdict combinations in the
+            # commit-allowed set, which covers the D.5 disagreement path
+            # (original reviewer `needs-rework` + D.5 `ship` /
+            # `ship-with-fixes`) without requiring a synthetic D.5
+            # `review_done` event.
+            if not verdict_accepted and not ev["route_called_commit"]:
+                reasons.append({
+                    "code": "review-evidence-unacceptable-verdict",
+                    "message": (
+                        f"task {tid} last review_done verdict "
+                        f"{ev['last_review_verdict']!r} is not in the "
+                        f"accepted set "
+                        f"{sorted(REVIEW_EVIDENCE_ACCEPTED_VERDICTS)}, "
+                        "and no review_route_called {action: commit} "
+                        "event exists to authorize the commit"
+                    ),
+                })
+        if ev["review_skipped"]:
+            reasons.append({
+                "code": "review-evidence-review-skipped",
+                "message": (
+                    f"task {tid} has a review_skipped event for "
+                    f"run_id={run_id!r}; skip-review is a hard failure for "
+                    "completed tasks"
+                ),
+            })
+        if require_commit_done and not ev["commit_done"]:
+            reasons.append({
+                "code": "review-evidence-missing-commit-done",
+                "message": (
+                    f"task {tid} has implement_done but no commit_done "
+                    f"event for run_id={run_id!r}; cannot finalize as "
+                    "successful"
+                ),
+            })
+        ok = not reasons
+        report["per_task"][tid] = {
+            "ok": ok,
+            "triggered": True,
+            "failed": False,
+            "evidence": {
+                "implement_done": True,
+                "review_start": ev["review_start"],
+                "review_done": ev["review_done"],
+                "commit_done": ev["commit_done"],
+                "last_review_verdict": ev["last_review_verdict"],
+                "review_skipped": ev["review_skipped"],
+                "route_called_commit": ev["route_called_commit"],
+            },
+            "reasons": reasons,
+        }
+        if not ok:
+            report["ok"] = False
+
+    if not report["ok"]:
+        report["overall_reasons"] = [
+            {
+                "code": "review-evidence-gate-failed",
+                "message": (
+                    "review-evidence gate failed for run_id="
+                    f"{run_id!r}; see per_task[*].reasons for details"
+                ),
+            },
+        ]
+    return report
+
+
 def _load_feat_commit_ids(git_dir: Path) -> set[str]:
     """Collect normalized task ids shipped via `feat(TASK-NNN):` commits.
 
@@ -7478,6 +7835,24 @@ def _run_commit_task(payload: dict) -> dict:
             "would_commit": True,
         }, exit_code=0)
 
+    # Hard review-evidence gate. Fires after dry-run early return (so
+    # `--dry-run` flows stay unchanged) and BEFORE any plan-text or git
+    # mutation. Trigger is `implement_done {run_id, tid}` in the run log;
+    # raw callers that never wrote `implement_done` skip the gate (see
+    # `_review_evidence_gate`). Pre-commit hook does NOT require a
+    # `commit_done` event for this task — that event has not been written
+    # yet, and an impossible self-precondition is exactly what the spec
+    # forbids.
+    gate = _review_evidence_gate(
+        RUN_LOG_PATH,
+        payload["run_id"],
+        task_ids=[tid],
+        require_commit_done=False,
+    )
+    task_gate = gate["per_task"].get(tid, {"ok": True, "reasons": []})
+    if not task_gate.get("ok", True):
+        return _result({"errors": task_gate["reasons"]}, exit_code=1)
+
     # TASK-020B: opt-in `acceptance_v_check` YAML frontmatter runs the plan's
     # own declared V-check pre-commit. Runs AFTER the `--files` staging guard
     # (the `--files` validation above) but BEFORE the plan-status flip
@@ -8290,6 +8665,27 @@ def _run_finalize_execution_log(payload: dict) -> dict:
     row_errors = _validate_execution_log_rows(rows)
     if row_errors:
         return _result({'errors': row_errors}, exit_code=1)
+    # Hard review-evidence gate at finalize. Only fires when the run is
+    # being finalized as `outcome == "success"`; partial / failed / paused
+    # outcomes don't claim every implemented task shipped, so the gate
+    # only verifies in the strongest case. `require_commit_done=True`
+    # because every implemented (non-failed) task in a successful run
+    # must have committed.
+    if payload.get('outcome') == 'success' and payload.get('run_id'):
+        gate = _review_evidence_gate(
+            RUN_LOG_PATH,
+            payload['run_id'],
+            task_ids=None,
+            require_commit_done=True,
+        )
+        if not gate['ok']:
+            errs: list[dict] = list(gate['overall_reasons'])
+            for tid in sorted(gate['per_task'].keys()):
+                row = gate['per_task'][tid]
+                if not row['ok']:
+                    for r in row['reasons']:
+                        errs.append({**r, 'task_id': tid})
+            return _result({'errors': errs}, exit_code=1)
     header = '| Task | Agent | Reviewer | Verdict | Commit | Notes |'
     sep = '|---|---|---|---|---|---|'
     run_id_heading = f"## Execution log — {payload['run_id']}"
@@ -8335,6 +8731,29 @@ def _run_log_event(payload: dict) -> dict:
         errors = _validate_review_route_called_fields(fields)
         if errors:
             return _result({'errors': errors}, exit_code=1)
+    # Backstop the review-evidence gate at `run_end outcome=success` —
+    # the orchestrator's terminal claim that every implemented task
+    # shipped. Fires BEFORE `_append_run_log`, so a parent that bypassed
+    # Phase D cross-review cannot durably write the success marker. Only
+    # `outcome=success` is gated; partial / failed / paused finals carry
+    # weaker claims and are not enforced here.
+    if payload['event'] == 'run_end' and fields.get('outcome') == 'success':
+        run_id_val = fields.get('run_id')
+        if isinstance(run_id_val, str) and run_id_val:
+            run_end_gate = _review_evidence_gate(
+                RUN_LOG_PATH,
+                run_id_val,
+                task_ids=None,
+                require_commit_done=True,
+            )
+            if not run_end_gate['ok']:
+                errs: list[dict] = list(run_end_gate['overall_reasons'])
+                for tid in sorted(run_end_gate['per_task'].keys()):
+                    row = run_end_gate['per_task'][tid]
+                    if not row['ok']:
+                        for r in row['reasons']:
+                            errs.append({**r, 'task_id': tid})
+                return _result({'errors': errs}, exit_code=1)
     if payload['event'] in HANDFIX_GATED_EVENTS and _is_handfix_intent(fields):
         run_id = fields.get('run_id')
         task_id = fields.get('task_id')
@@ -8377,6 +8796,48 @@ def _run_log_event(payload: dict) -> dict:
 def cmd_log_event(args: argparse.Namespace) -> None:
     payload = _args_to_payload_log_event(args)
     result = _run_log_event(payload)
+    _emit_or_die(args, result)
+
+
+def _args_to_payload_audit_review_evidence(args: argparse.Namespace) -> dict:
+    raw_ids = (getattr(args, "task_ids", "") or "").strip()
+    task_ids: list[str] | None
+    if raw_ids:
+        task_ids = [tok.strip() for tok in raw_ids.split(",") if tok.strip()]
+    else:
+        task_ids = None
+    run_log_arg = getattr(args, "run_log", None)
+    run_log = Path(run_log_arg) if run_log_arg else RUN_LOG_PATH
+    return {
+        "run_id": args.run_id,
+        "task_ids": task_ids,
+        "run_log": run_log,
+        "require_commit_done": bool(
+            getattr(args, "require_commit_done", False)
+        ),
+    }
+
+
+def _run_audit_review_evidence(payload: dict) -> dict:
+    run_log = payload["run_log"]
+    if not isinstance(run_log, Path):
+        run_log = Path(run_log)
+    run_id = payload.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return _result({"error": "--run-id is required"}, exit_code=1)
+    report = _review_evidence_gate(
+        run_log,
+        run_id,
+        task_ids=payload.get("task_ids"),
+        require_commit_done=bool(payload.get("require_commit_done", False)),
+    )
+    exit_code = 0 if report["ok"] else 1
+    return _result(report, exit_code=exit_code)
+
+
+def cmd_audit_review_evidence(args: argparse.Namespace) -> None:
+    payload = _args_to_payload_audit_review_evidence(args)
+    result = _run_audit_review_evidence(payload)
     _emit_or_die(args, result)
 
 
@@ -14236,6 +14697,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json(p_log)
 
+    p_audit_rev = sub.add_parser(
+        "audit-review-evidence",
+        help=(
+            "Audit per-task review evidence in _run_log.jsonl. Verifies "
+            "that every implemented task in <run_id> carries the SKILL "
+            "Phase D contract: implement_done + review_start + review_done "
+            "with an accepted verdict and no review_skipped. Designed to "
+            "be invoked by a parent orchestrator before merge / recovery "
+            "so a child run that bypassed cross-review cannot be silently "
+            "promoted."
+        ),
+    )
+    p_audit_rev.add_argument("--run-id", required=True, dest="run_id")
+    p_audit_rev.add_argument(
+        "--task-ids", dest="task_ids", default="",
+        help=(
+            "Optional comma-separated task ids (NNN | NNNA | TASK-NNN). "
+            "When omitted, the gate scans every (run_id, task_id) it "
+            "finds in the run log."
+        ),
+    )
+    p_audit_rev.add_argument(
+        "--run-log", dest="run_log", default=None,
+        help=(
+            "Optional override for the run-log path (defaults to the "
+            "configured docs/plans/_run_log.jsonl). Useful for parent "
+            "orchestrators auditing a child plan's log in a sibling "
+            "checkout."
+        ),
+    )
+    p_audit_rev.add_argument(
+        "--require-commit-done", dest="require_commit_done",
+        action="store_true",
+        help=(
+            "Also require a commit_done event for each implemented "
+            "(non-failed) task. Use before promoting a run as "
+            "successful; omit for a pre-commit gate audit."
+        ),
+    )
+    _add_json(p_audit_rev)
+
     p_norm = sub.add_parser("normalize-task-id", help="Canonicalize task id to 3-digit form")
     p_norm.add_argument("--id", required=True, help="Accepts 1 | 001 | TASK-001")
     _add_json(p_norm)
@@ -16230,6 +16732,7 @@ def main(argv: list[str] | None = None) -> None:
         "set-task-agent": cmd_set_task_agent,
         "finalize-execution-log": cmd_finalize_execution_log,
         "log-event": cmd_log_event,
+        "audit-review-evidence": cmd_audit_review_evidence,
         "normalize-task-id": cmd_normalize_task_id,
         "acquire-lock": cmd_acquire_lock,
         "release-lock": cmd_release_lock,

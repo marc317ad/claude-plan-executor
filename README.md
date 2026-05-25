@@ -158,6 +158,52 @@ git pull
 
 Dev-mode users see changes on next Claude Code restart. Permanently-installed users run `/plugin update plan-executor@claude-plan-executor`.
 
+## Remote WSL test bed
+
+Use the PowerShell sync scripts when this checkout is the development machine
+and `marcd@100.112.76.122` is the Windows test bed. The scripts copy the
+current tracked, modified, and untracked non-ignored files with `scp`, unpack
+them into WSL on the remote `D:` drive, create `venv`, and install
+`requirements-dev.txt`.
+
+Prerequisites: SSH access to the Windows host, WSL installed on that host, and
+`python3`, `python3-venv`, and `python3-pip` available inside the target WSL
+distro.
+
+First bootstrap, from PowerShell in this repo:
+
+```powershell
+.\scripts\bootstrap_remote_wsl.ps1
+```
+
+Repeat updates after local development changes:
+
+```powershell
+.\scripts\update_remote_wsl.ps1
+```
+
+Run a focused smoke test remotely after the sync:
+
+```powershell
+.\scripts\update_remote_wsl.ps1 -RunTests
+```
+
+If the remote has multiple WSL distros, pass the target distro name:
+
+```powershell
+.\scripts\update_remote_wsl.ps1 -Distro Ubuntu -RunTests
+```
+
+If the SSH key is not one of OpenSSH's default filenames, pass it explicitly:
+
+```powershell
+.\scripts\update_remote_wsl.ps1 -IdentityFile ~/.ssh/id_ed25519_windows -RunTests
+```
+
+By default the remote tree is mirrored and stale files are removed, while
+`venv/` and `.remote-sync/` are preserved. Use `-NoPrune` if you need to keep
+extra scratch files in `D:\claude-plan-executor`.
+
 ## Architecture notes
 
 - Scripts run with `cwd = consuming project`, not the plugin install directory.

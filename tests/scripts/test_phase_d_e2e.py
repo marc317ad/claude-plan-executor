@@ -384,16 +384,24 @@ def test_chain_preflight_parse_write_batch_next(smoke_repo: dict) -> None:
 
 def _emit_basic_events(run_log: Path, *, run_id: str, task_id: str = "001",
                        sanitizer_flags: list | None = None) -> None:
-    """Emit run_start -> batch_start -> implement_done -> review_done.
+    """Emit run_start -> batch_start -> implement_done -> review_start ->
+    review_done.
 
     The route decision itself is emitted by `_emit_review_route_called` via
-    the public `log-event` path after `plan_ops.route()` returns.
+    the public `log-event` path after `plan_ops.route()` returns. The
+    review_start emission mirrors the orchestrator (see
+    `implement_plan.py:2784` / `:2991`) so the hard review-evidence gate
+    in `plan_ops._review_evidence_gate` sees a faithful run-log shape.
     """
     plan_ops._append_run_log("run_start", {"run_id": run_id})
     plan_ops._append_run_log("batch_start", {"run_id": run_id, "batch_index": 1})
     plan_ops._append_run_log(
         "implement_done",
         {"run_id": run_id, "task_id": task_id, "outcome": "success"},
+    )
+    plan_ops._append_run_log(
+        "review_start",
+        {"run_id": run_id, "task_id": task_id, "reviewer": "codex"},
     )
     review_fields: dict = {
         "run_id": run_id,
@@ -502,11 +510,15 @@ def test_scenario_clean_verdict_commits(smoke_repo: dict) -> None:
 
     events = _events(run_log)
     names = [e["event"] for e in events]
-    # AC: order = run_start, batch_start, implement_done, review_done,
-    # review_route_called, commit_done, batch_done, run_end.
+    # AC: order = run_start, batch_start, implement_done, review_start,
+    # review_done, review_route_called, commit_done, batch_done, run_end.
+    # `review_start` was added to `_emit_basic_events` so the run-log
+    # shape mirrors the orchestrator's emission contract (which always
+    # writes both review_start and review_done — see implement_plan.py).
     assert names == [
-        "run_start", "batch_start", "implement_done", "review_done",
-        "review_route_called", "commit_done", "batch_done", "run_end",
+        "run_start", "batch_start", "implement_done", "review_start",
+        "review_done", "review_route_called", "commit_done", "batch_done",
+        "run_end",
     ], f"event order mismatch: {names}"
     route_event = events[names.index("review_route_called")]
     assert route_event["run_id"] == "R1"
@@ -825,8 +837,13 @@ def test_scenario_sanitizer_flags_surface_in_run_log(smoke_repo: dict) -> None:
 
 def test_full_run_log_event_order_clean_path(smoke_repo: dict) -> None:
     """End-to-end event order on the clean path:
-    run_start, batch_start, implement_done, review_done, review_route_called,
-    commit_done, batch_done, run_end.
+    run_start, batch_start, implement_done, review_start, review_done,
+    review_route_called, commit_done, batch_done, run_end.
+
+    `review_start` is part of the orchestrator's emission contract (see
+    `implement_plan.py:2784` / `:2991`) and `_emit_basic_events` now
+    faithfully replicates that ordering so the hard review-evidence gate
+    sees the same shape the production orchestrator produces.
     """
     repo = smoke_repo["repo_root"]
     schedule_file = smoke_repo["schedule_file"]
@@ -841,11 +858,19 @@ def test_full_run_log_event_order_clean_path(smoke_repo: dict) -> None:
     _commit_via_subprocess(repo, smoke_repo["plan_child"], run_id="ORDER",
                            schedule_file=schedule_file)
     plan_ops._append_run_log("batch_done", {"run_id": "ORDER", "batch_index": 1})
-    plan_ops._append_run_log("run_end", {"run_id": "ORDER", "outcome": "success"})
+    cp = _run(
+        "log-event",
+        "--event", "run_end",
+        "--fields-json", json.dumps({"run_id": "ORDER", "outcome": "success"}),
+        "--json",
+        cwd=repo,
+    )
+    assert cp.returncode == 0, f"log-event run_end failed: {cp.stderr}\n{cp.stdout}"
 
     expected = [
-        "run_start", "batch_start", "implement_done", "review_done",
-        "review_route_called", "commit_done", "batch_done", "run_end",
+        "run_start", "batch_start", "implement_done", "review_start",
+        "review_done", "review_route_called", "commit_done", "batch_done",
+        "run_end",
     ]
     actual = [e["event"] for e in _events(run_log)]
     assert actual == expected, f"event order mismatch: {actual}"
