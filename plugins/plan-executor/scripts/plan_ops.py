@@ -2760,15 +2760,82 @@ def _extract_metadata_field(block: str, key: str) -> str | None:
     wrappers around the value are preserved so callers can distinguish
     ``- **Test command:** `cmd args``` from a bare command; the callers that
     need the unwrapped form strip them explicitly.
+
+    The whitespace between `:**` and the value is matched as horizontal-only
+    (`[^\\S\\n]*`) rather than `\\s*`. `\\s` includes the newline, so the old
+    pattern let a *standalone* marker (e.g. `- **Test command:**` with the
+    value on a following fenced line) swallow the line break and capture the
+    next line's content — most damagingly the ```` ```bash ```` opener of a
+    fenced multi-line command. A standalone marker now correctly returns
+    None, and `_parse_task_block` falls through to `_extract_fenced_block_field`
+    for the multi-line form.
     """
     pattern = re.compile(
-        rf"^\s*-\s*\*\*{re.escape(key)}:\*\*\s*(.+?)\s*$",
+        rf"^\s*-\s*\*\*{re.escape(key)}:\*\*[^\S\n]*(.+?)\s*$",
         re.MULTILINE,
     )
     m = pattern.search(block)
     if not m:
         return None
     return m.group(1).strip()
+
+
+def _extract_fenced_block_field(block: str, key: str) -> str | None:
+    """Capture a fenced code block following a standalone `- **<key>:**` marker.
+
+    Handles the multi-line metadata form the inline `_extract_metadata_field`
+    cannot represent:
+
+        - **Test command:**
+          ```bash
+          cmd1
+          cmd2
+          ```
+
+    The fenced body's non-blank lines are joined with ` && ` into a single
+    runnable command with fail-fast semantics. (A bare newline-joined command
+    is unsafe: `run_test_command` runs the string under `shell=True`, which
+    returns only the *last* line's exit code — an early failure would be
+    silently masked. ` && ` makes any step's failure fail the whole command.)
+    The opening fence info string (e.g. ```bash) is dropped. Returns None when
+    the marker is absent, is not immediately followed (modulo blank lines) by a
+    fenced block, the block is unterminated, or the body has no command lines.
+    """
+    marker = re.search(
+        rf"^[^\S\n]*-[^\S\n]*\*\*{re.escape(key)}:\*\*[^\S\n]*$",
+        block,
+        re.MULTILINE,
+    )
+    if marker is None:
+        return None
+    lines = block[marker.end():].splitlines()
+    idx = 0
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    if idx >= len(lines):
+        return None
+    fence_m = re.match(r"^[^\S\n]*(`{3,}|~{3,})", lines[idx])
+    if fence_m is None:
+        return None
+    fence_token = fence_m.group(1)
+    fence_char = fence_token[0]
+    fence_len = len(fence_token)
+    close_re = re.compile(
+        rf"^[^\S\n]*{re.escape(fence_char)}{{{fence_len},}}[^\S\n]*$"
+    )
+    body: list[str] = []
+    closed = False
+    for line in lines[idx + 1:]:
+        if close_re.match(line):
+            closed = True
+            break
+        body.append(line.strip())
+    if not closed:
+        return None
+    commands = [b for b in body if b]
+    if not commands:
+        return None
+    return " && ".join(commands)
 
 
 def _extract_bullet_list(block: str, heading: str) -> list[str]:
@@ -2802,7 +2869,6 @@ def _extract_bullet_list(block: str, heading: str) -> list[str]:
         base_indent = len(base_indent_str)
         items: list[str] = []
         child_indent: int | None = None
-        in_nested = False
         for line in block[standalone.end():].splitlines():
             if not line.strip():
                 # Blank lines inside a bullet list are tolerated so long as
@@ -2816,19 +2882,22 @@ def _extract_bullet_list(block: str, heading: str) -> list[str]:
                 break
             is_bullet = stripped.startswith("- ") or stripped == "-"
             if child_indent is not None and indent > child_indent:
-                # Deeper-indented line under an already-open top-level
-                # child. If it is itself a bullet, treat as a nested
-                # sub-bullet and skip (we only collect top-level children).
-                # If it is plain text, fold it into the current bullet as
-                # a continuation line so wrapped bullets round-trip intact.
+                # Deeper-indented content under an already-open top-level
+                # child. Fold it into the current bullet so BOTH nested
+                # sub-bullets AND wrapped continuation lines are preserved
+                # (neither is dropped). A nested sub-bullet contributes its
+                # text sans the leading "- " marker; a wrapped continuation
+                # line contributes verbatim. Folding keeps the invariant
+                # "one top-level bullet == one acceptance criterion": a
+                # parent bullet with sub-conditions stays a single, now
+                # self-contained, entry instead of being truncated to its
+                # header (the decompose/build-tasks corruption this fixes).
                 if is_bullet:
-                    in_nested = True
-                    continue
-                if in_nested:
-                    # Continuation of a nested sub-bullet — skip.
-                    continue
-                if items:
-                    items[-1] = (items[-1] + " " + stripped).strip()
+                    folded = stripped[1:].strip() if stripped != "-" else ""
+                else:
+                    folded = stripped
+                if items and folded:
+                    items[-1] = (items[-1] + " " + folded).strip()
                 continue
             if not is_bullet:
                 # Non-bullet line at the child-indent level (or before the
@@ -2836,7 +2905,6 @@ def _extract_bullet_list(block: str, heading: str) -> list[str]:
                 break
             if child_indent is None:
                 child_indent = indent
-            in_nested = False
             raw = stripped[1:].strip() if stripped != "-" else ""
             items.append(raw)
         return items
@@ -2939,6 +3007,14 @@ def _parse_task_block(
         ):
             test_unwrapped = test_unwrapped[1:-1]
         test_command = test_unwrapped
+    else:
+        # No inline value → the marker may be standalone with a fenced
+        # multi-line command block beneath it (the form the whole-plan
+        # author tends to write). `_extract_fenced_block_field` captures the
+        # block body as a single ` && `-joined command (None if no fenced
+        # block follows), which round-trips through the single-line inline
+        # emitter and is read identically by build-tasks and the wrapper.
+        test_command = _extract_fenced_block_field(block, "Test command")
     # Dependencies: inline only; `_extract_bullet_list` handles `none` /
     # `[]` / `[001, 002]` / `001, 002` equivalently.
     raw_deps = _extract_bullet_list(block, "Dependencies")

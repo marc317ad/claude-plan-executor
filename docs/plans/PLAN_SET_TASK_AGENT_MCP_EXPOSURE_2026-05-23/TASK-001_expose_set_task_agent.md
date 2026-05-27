@@ -11,7 +11,7 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
 ## Verification
 
 - `_index.json` includes `set_task_agent` in `tool_names_ordered` and a `plan_ops__set_task_agent` entry pointing to `set_task_agent.input.json`, `set_task_agent.output.json`, and subcommand `set-task-agent`.
-- `set_task_agent.input.json` is JSON Schema 2020-12, top-level object, `additionalProperties: false`, and requires:
+- `set_task_agent.input.json` is JSON Schema 2020-12, top-level object, `additionalProperties: false`, and requires: `plan_file: string` `task_id: string` `agent: enum ["claude", "codex"]`
 - `set_task_agent.output.json` mirrors the standard plan_ops JSON envelope and explicitly permits/declares `prior_agent`.
 - `plan_ops_mcp_server.py` is regenerated from `_codegen/mcp_tool_registrations.py`; the generated registry contains `plan_ops__set_task_agent` with `run_callable_name == "_run_set_task_agent"` and `args_to_payload_callable_name == "_args_to_payload_set_task_agent"`.
 - Registration tests assert the tool is listed and dispatchable through the generated registry.
@@ -33,10 +33,10 @@ Auto-decomposed child for TASK-001. See the source plan for broader context.
   - `tests/scripts/test_plan_ops_mcp_registrations.py`
   - `tests/scripts/test_plan_ops_mcp_schemas.py`
 - **Dependencies:** []
-- **Test command:** ````bash`
+- **Test command:** `venv/bin/python plugins/plan-executor/scripts/_codegen/mcp_tool_registrations.py && venv/bin/pytest -q tests/scripts/test_plan_ops_mcp_registrations.py tests/scripts/test_plan_ops_mcp_schemas.py -k "set_task_agent or registry or schema" && venv/bin/pytest -q tests/scripts/test_implement_plan_mcp_e2e.py -k "phase1_step2"`
 - **Acceptance criteria:**
   - `_index.json` includes `set_task_agent` in `tool_names_ordered` and a `plan_ops__set_task_agent` entry pointing to `set_task_agent.input.json`, `set_task_agent.output.json`, and subcommand `set-task-agent`.
-  - `set_task_agent.input.json` is JSON Schema 2020-12, top-level object, `additionalProperties: false`, and requires:
+  - `set_task_agent.input.json` is JSON Schema 2020-12, top-level object, `additionalProperties: false`, and requires: `plan_file: string` `task_id: string` `agent: enum ["claude", "codex"]`
   - `set_task_agent.output.json` mirrors the standard plan_ops JSON envelope and explicitly permits/declares `prior_agent`.
   - `plan_ops_mcp_server.py` is regenerated from `_codegen/mcp_tool_registrations.py`; the generated registry contains `plan_ops__set_task_agent` with `run_callable_name == "_run_set_task_agent"` and `args_to_payload_callable_name == "_args_to_payload_set_task_agent"`.
   - Registration tests assert the tool is listed and dispatchable through the generated registry.

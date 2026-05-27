@@ -19833,6 +19833,33 @@ class TestParseTaskBlockHelper:
         "Child block.\n"
     )
 
+    # Regression fixture: whole-plan authors write `**Test command:**` as a
+    # standalone marker above a fenced ```bash block, and acceptance criteria
+    # with nested sub-conditions. The shared parser previously (a) captured
+    # only the ```bash fence opener as the command (because `\s*` spanned the
+    # newline) and (b) dropped the nested sub-bullets — corrupting every
+    # decomposed child + the projected schedule.
+    H2_FENCED_BLOCK = (
+        "## TASK-009: Fenced command and nested AC\n"
+        "\n"
+        "- **Status:** pending\n"
+        "- **Priority:** high\n"
+        "- **Files:**\n"
+        "  - src/a.py\n"
+        "- **Dependencies:** []\n"
+        "- **Test command:**\n"
+        "  ```bash\n"
+        "  venv/bin/python codegen.py\n"
+        "  venv/bin/pytest -q tests/a.py -k \"x or y\"\n"
+        "  ```\n"
+        "- **Acceptance criteria:**\n"
+        "  - the schema requires:\n"
+        "    - plan_file: string\n"
+        "    - task_id: string\n"
+        "  - the output is stable\n"
+        "- **Reversion guidance:** none\n"
+    )
+
     def test_parse_task_block_h2_full(self) -> None:
         task = plan_ops._parse_task_block(self.H2_BLOCK, level=2)
         assert task["id"] == "005"
@@ -19903,6 +19930,49 @@ class TestParseTaskBlockHelper:
         assert plan_ops._extract_bullet_list(
             self.H3_BLOCK, "Reversion guidance",
         ) == []
+
+    def test_extract_metadata_field_standalone_marker_returns_none(
+        self,
+    ) -> None:
+        # A standalone `- **Test command:**` marker (value in a fenced block
+        # below) must NOT swallow the newline and capture the ```bash opener.
+        assert plan_ops._extract_metadata_field(
+            self.H2_FENCED_BLOCK, "Test command",
+        ) is None
+
+    def test_extract_fenced_block_field_joins_with_ampersand(self) -> None:
+        # The fenced body's command lines join with ` && ` (fail-fast).
+        assert plan_ops._extract_fenced_block_field(
+            self.H2_FENCED_BLOCK, "Test command",
+        ) == (
+            "venv/bin/python codegen.py && "
+            "venv/bin/pytest -q tests/a.py -k \"x or y\""
+        )
+
+    def test_extract_fenced_block_field_absent_for_inline_form(self) -> None:
+        # Inline `- **Test command:** `cmd`` has no fenced block to capture.
+        assert plan_ops._extract_fenced_block_field(
+            self.H2_BLOCK, "Test command",
+        ) is None
+
+    def test_parse_task_block_captures_fenced_test_command(self) -> None:
+        task = plan_ops._parse_task_block(self.H2_FENCED_BLOCK, level=2)
+        assert task["test_command"] == (
+            "venv/bin/python codegen.py && "
+            "venv/bin/pytest -q tests/a.py -k \"x or y\""
+        )
+        assert "```" not in (task["test_command"] or "")
+
+    def test_extract_bullet_list_folds_nested_subbullets(self) -> None:
+        # Nested sub-bullets fold into their parent so neither the content
+        # nor the "one top-level bullet == one criterion" shape is lost.
+        ac = plan_ops._extract_bullet_list(
+            self.H2_FENCED_BLOCK, "Acceptance criteria",
+        )
+        assert ac == [
+            "the schema requires: plan_file: string task_id: string",
+            "the output is stable",
+        ]
 
 
 class TestDecomposePlan:
@@ -21229,6 +21299,80 @@ class TestBuildTasks:
             if "missing field 'agent'" in w and "tasks[1]" in w
         ]
         assert missing_agent_warnings, parsed
+
+    def test_decompose_fenced_command_and_nested_ac_round_trip(
+        self, tmp_path: Path,
+    ) -> None:
+        """Whole-plan fenced `**Test command:**` + nested AC sub-bullets
+        survive decompose → build-tasks intact.
+
+        Regression for the systemic parser bug surfaced by the
+        PLAN_SET_TASK_AGENT_MCP_EXPOSURE dry-run: `_extract_metadata_field`'s
+        `\\s*` spanned the newline and captured the ```bash fence opener as
+        the command, and `_extract_bullet_list` dropped nested sub-bullets —
+        so the projected schedule carried `test_command == "```bash"` and
+        truncated criteria, which plan-review correctly rejected with
+        needs-replan.
+        """
+        plan = tmp_path / "fenced.md"
+        plan.write_text(
+            "# PLAN - fenced round trip\n"
+            "\n"
+            "**Status:** Pending\n"
+            "**Base branch:** main\n"
+            "\n"
+            "## Goal\n\nDemonstrate the fenced + nested round trip.\n"
+            "\n"
+            "## Context\n\nRegression fixture for the parser fix.\n"
+            "\n"
+            "## Tasks\n"
+            "\n"
+            "## TASK-001: Fenced command task\n"
+            "\n"
+            "- **Status:** Pending\n"
+            "- **Priority:** high\n"
+            "- **Agent:** codex\n"
+            "- **Files:**\n"
+            "  - src/mod.py\n"
+            "- **Dependencies:** none\n"
+            "- **Test command:**\n"
+            "  ```bash\n"
+            "  venv/bin/python codegen.py\n"
+            "  venv/bin/pytest -q tests/test_mod.py -k \"alpha or beta\"\n"
+            "  ```\n"
+            "- **Acceptance criteria:**\n"
+            "  - the input schema requires:\n"
+            "    - plan_file: string\n"
+            "    - task_id: string\n"
+            "  - the registry lists the new entry\n"
+            "- **Reversion guidance:** Revert src/mod.py.\n"
+            "\n"
+            "**Description:**\n"
+            "Fenced command + nested AC task.\n"
+            "\n"
+            "## Verification\n\n- it works\n",
+            encoding="utf-8",
+        )
+        cp = _run("decompose-plan", "--plan-file", str(plan), "--json")
+        assert cp.returncode == 0, cp.stderr
+        produced = Path(_parse_json(cp)["produced_dir"])
+        cp2 = _run("build-tasks", "--plans-dir", str(produced), "--json")
+        assert cp2.returncode == 0, cp2.stderr
+        bt = _parse_json(cp2)
+        assert bt["ok"] is True, bt
+        t1 = next(t for t in bt["tasks"] if t["id"] == "001")
+        # Test command: the runnable &&-joined command, NOT the fence opener.
+        assert t1["test_command"] == (
+            "venv/bin/python codegen.py && "
+            "venv/bin/pytest -q tests/test_mod.py -k \"alpha or beta\""
+        ), t1["test_command"]
+        assert "```" not in t1["test_command"], t1["test_command"]
+        # Acceptance criteria: nested sub-bullets folded into the parent,
+        # nothing truncated to a bare "requires:" header.
+        ac = t1["acceptance_criteria"]
+        assert len(ac) == 2, ac
+        assert "plan_file: string" in ac[0] and "task_id: string" in ac[0], ac
+        assert ac[1] == "the registry lists the new entry", ac
 
     def test_build_tasks_batches_respect_dependencies(self) -> None:
         """`batches[]` must topologically order dependent tasks.
