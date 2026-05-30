@@ -1,0 +1,83 @@
+{
+  "outcome": "valid",
+  "tasks": [
+    {
+      "id": "001",
+      "title": "Expose `set-task-agent` through MCP",
+      "files": [
+        "`plugins/plan-executor/scripts/schemas/mcp/_index.json`",
+        "`plugins/plan-executor/scripts/schemas/mcp/set_task_agent.input.json` (create)",
+        "`plugins/plan-executor/scripts/schemas/mcp/set_task_agent.output.json` (create)",
+        "`plugins/plan-executor/scripts/plan_ops_mcp_server.py`",
+        "`tests/scripts/test_plan_ops_mcp_registrations.py`",
+        "`tests/scripts/test_plan_ops_mcp_schemas.py`"
+      ],
+      "dependencies": [],
+      "test_command": "venv/bin/python plugins/plan-executor/scripts/_codegen/mcp_tool_registrations.py && venv/bin/pytest -q tests/scripts/test_plan_ops_mcp_registrations.py tests/scripts/test_plan_ops_mcp_schemas.py -k \"set_task_agent or registry or schema\" && venv/bin/pytest -q tests/scripts/test_implement_plan_mcp_e2e.py -k \"phase1_step2\"",
+      "priority": "high",
+      "plan_file": "TASK-001_expose_set_task_agent.md",
+      "description": "Expose `set-task-agent` through MCP. (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-001. See the parent plan's `## Context` and `## Verification` sections for the full intent.)",
+      "acceptance_criteria": [
+        "`_index.json` includes `set_task_agent` in `tool_names_ordered` and a `plan_ops__set_task_agent` entry pointing to `set_task_agent.input.json`, `set_task_agent.output.json`, and subcommand `set-task-agent`.",
+        "`set_task_agent.input.json` is JSON Schema 2020-12, top-level object, `additionalProperties: false`, and requires: `plan_file: string` `task_id: string` `agent: enum [\"claude\", \"codex\"]`",
+        "`set_task_agent.output.json` mirrors the standard plan_ops JSON envelope and explicitly permits/declares `prior_agent`.",
+        "`plan_ops_mcp_server.py` is regenerated from `_codegen/mcp_tool_registrations.py`; the generated registry contains `plan_ops__set_task_agent` with `run_callable_name == \"_run_set_task_agent\"` and `args_to_payload_callable_name == \"_args_to_payload_set_task_agent\"`.",
+        "Registration tests assert the tool is listed and dispatchable through the generated registry.",
+        "Schema tests assert the sidecars exist, parse, validate against the meta-schema, and expose the expected required fields.",
+        "Existing Phase 1 Step 2 MCP e2e tests no longer fail with `Unknown tool: 'plan_ops__set_task_agent'`."
+      ],
+      "agent": "codex"
+    },
+    {
+      "id": "002",
+      "title": "Persist resolved agents in the Python runner path",
+      "files": [
+        "`plugins/plan-executor/scripts/implement_plan.py`",
+        "`tests/scripts/test_implement_plan_runner_e2e.py` or closest focused runner test file"
+      ],
+      "dependencies": [
+        "001"
+      ],
+      "test_command": "venv/bin/pytest -q tests/scripts/test_implement_plan_runner_e2e.py -k \"agent and dry_run\"",
+      "priority": "medium",
+      "plan_file": "TASK-002_persist_resolved_agents_in.md",
+      "description": "Persist resolved agents in the Python runner path. (Auto-filled by decompose-plan; the source plan omitted a `**Description:**` body for TASK-002. See the parent plan's `## Context` and `## Verification` sections for the full intent.)",
+      "acceptance_criteria": [
+        "`PlanOpsFacade` exposes a narrow `set_task_agent(**payload)` method that delegates to direct plan_ops execution, matching the existing `build_tasks` / `write_schedule` style.",
+        "After assignment resolution and before schedule write, the runner persists resolved per-task implementer agents to child plan files when: the task has a resolvable child `plan_file`; the resolved implementer provider is `claude` or `codex`; the existing task metadata lacked `agent` or differs from the resolved provider.",
+        "The persistence runs under `--dry-run`, matching the SKILL dry-run exemption.",
+        "Explicit assignment overrides are handled deliberately: either persist the explicit assignment to the child file, making the next run deterministic without the flag; or do not persist explicit overrides and document that decision in a test name/comment.",
+        "Runner tests cover: a dry-run on a child without `**Agent:**` writes the bullet; a second dry-run observes the persisted bullet and does not need to re-resolve from missing task metadata; schedule `tasks[*].agent` matches the persisted child-file value after the run."
+      ],
+      "agent": "codex"
+    }
+  ],
+  "batches": [
+    {
+      "index": 1,
+      "task_ids": [
+        "001"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/plan_ops_mcp_server.py",
+        "plugins/plan-executor/scripts/schemas/mcp/_index.json",
+        "plugins/plan-executor/scripts/schemas/mcp/set_task_agent.input.json",
+        "plugins/plan-executor/scripts/schemas/mcp/set_task_agent.output.json",
+        "tests/scripts/test_plan_ops_mcp_registrations.py",
+        "tests/scripts/test_plan_ops_mcp_schemas.py"
+      ]
+    },
+    {
+      "index": 2,
+      "task_ids": [
+        "002"
+      ],
+      "file_locks": [
+        "plugins/plan-executor/scripts/implement_plan.py",
+        "tests/scripts/test_implement_plan_runner_e2e.py"
+      ]
+    }
+  ],
+  "gaps": [],
+  "risks": []
+}
