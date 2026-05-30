@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 150,
+  "next_id": 152,
   "content_fingerprints": {},
   "groups": {
     "BASH-DISPATCH-MIGRATION": {
@@ -16,7 +16,9 @@
     },
     "DECOMPOSE-CHILD-DROPS-IMPL-NOTES": {
       "bug_ids": [
-        149
+        149,
+        150,
+        151
       ],
       "primary_subsystem": "decompose-child-drops-impl-notes",
       "subsystem_distribution": {},
@@ -142,6 +144,33 @@
         "removed_groups": [],
         "modified_groups": {}
       }
+    },
+    {
+      "event": "manifest-sync",
+      "synced_at": "2026-05-30",
+      "bug_count": 10,
+      "next_id": 152,
+      "groups_count": 8,
+      "forced": false,
+      "drift_summary": {
+        "added_bugs": [
+          "150",
+          "151"
+        ],
+        "removed_bugs": [],
+        "severity_changes": {},
+        "added_groups": [],
+        "removed_groups": [],
+        "modified_groups": {
+          "DECOMPOSE-CHILD-DROPS-IMPL-NOTES": {
+            "added": [
+              150,
+              151
+            ],
+            "removed": []
+          }
+        }
+      }
     }
   ],
   "bug_severities": {
@@ -152,6 +181,8 @@
     "146": "minor",
     "147": "minor",
     "148": "major",
-    "149": "major"
+    "149": "major",
+    "150": "minor",
+    "151": "minor"
   }
 }
