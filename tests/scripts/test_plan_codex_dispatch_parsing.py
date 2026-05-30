@@ -259,3 +259,141 @@ class TestWrapperNormalizeFilePath:
             plan_codex_dispatch.normalize_file_path(f) for f in block["files"]
         ]
         assert normalised == ["Makefile"], normalised
+
+
+# ---------------------------------------------------------------------------
+# Fenced multi-line test commands + nested acceptance criteria.
+#
+# The wrapper reads the child plan file directly (`cmd_implement` /
+# `cmd_review`) and hands `test_command` to `run_test_command`, which runs it
+# under `subprocess.run(..., shell=True)`. Before the parser-unification fix,
+# the `\s*` after `:**` in `_extract_inline_field` spanned the newline, so a
+# *standalone* `- **Test command:**` marker captured the next line — the
+# ```` ```bash ```` fence opener — and the wrapper then exec'd ``` ```bash ```
+# under the shell (nonzero exit, a misleading "test failure"). And
+# `_extract_bullet_list` emitted every indented bullet as its own item, so a
+# nested acceptance criterion's sub-conditions split into separate entries.
+# These pin the wrapper to the canonical `plan_ops` behavior byte-for-byte.
+# ---------------------------------------------------------------------------
+
+
+_PLAN_FENCED_CMD_AND_NESTED_AC = """# Plan: fenced
+
+## Context
+
+Wrapper must read a fenced multi-line test command and nested acceptance
+criteria identically to the orchestrator's plan_ops parser.
+
+## Tasks
+
+### TASK-010: Fenced command and nested criteria
+
+- **Status:** pending
+- **Priority:** high
+- **Agent:** codex
+- **Files:**
+  - scripts/gen.py
+- **Dependencies:** []
+- **Test command:**
+  ```bash
+  venv/bin/python scripts/gen.py
+  venv/bin/pytest tests/scripts/test_gen.py -q
+  ```
+- **Acceptance criteria:**
+  - First criterion with sub-conditions:
+    - sub-condition a
+    - sub-condition b
+  - Second top-level criterion
+
+**Description:**
+Body for the fenced-command task.
+"""
+
+
+class TestWrapperFencedCommandAndNestedAC:
+    def test_extract_inline_field_standalone_marker_returns_empty(self) -> None:
+        """A standalone `- **Test command:**` marker must NOT swallow the
+        following ```` ```bash ```` line. With the horizontal-only whitespace
+        fix the inline extractor returns "" so the caller falls through to the
+        fenced-block extractor."""
+        block = (
+            "- **Test command:**\n"
+            "  ```bash\n"
+            "  venv/bin/pytest -q\n"
+            "  ```\n"
+        )
+        assert plan_codex_dispatch._extract_inline_field(block, "Test command") == ""
+
+    def test_extract_inline_field_still_reads_inline_value(self) -> None:
+        """The fix must not regress the ordinary single-line form."""
+        block = "- **Status:** open\n- **Priority:** high\n"
+        assert plan_codex_dispatch._extract_inline_field(block, "Status") == "open"
+        assert plan_codex_dispatch._extract_inline_field(block, "Priority") == "high"
+
+    def test_extract_fenced_block_field_joins_with_ampersand(self) -> None:
+        block = (
+            "- **Test command:**\n"
+            "  ```bash\n"
+            "  venv/bin/python scripts/gen.py\n"
+            "  venv/bin/pytest tests/scripts/test_gen.py -q\n"
+            "  ```\n"
+        )
+        assert plan_codex_dispatch._extract_fenced_block_field(
+            block, "Test command"
+        ) == (
+            "venv/bin/python scripts/gen.py && "
+            "venv/bin/pytest tests/scripts/test_gen.py -q"
+        )
+
+    def test_extract_fenced_block_field_absent_for_inline_form(self) -> None:
+        """Inline form has no fenced block beneath the marker → ""."""
+        block = "- **Test command:** `venv/bin/pytest -q`\n"
+        assert (
+            plan_codex_dispatch._extract_fenced_block_field(block, "Test command")
+            == ""
+        )
+
+    def test_extract_fenced_block_field_unterminated_returns_empty(self) -> None:
+        block = "- **Test command:**\n  ```bash\n  venv/bin/pytest -q\n"
+        assert (
+            plan_codex_dispatch._extract_fenced_block_field(block, "Test command")
+            == ""
+        )
+
+    def test_extract_bullet_list_folds_nested_subbullets(self) -> None:
+        block = (
+            "- **Acceptance criteria:**\n"
+            "  - First criterion with sub-conditions:\n"
+            "    - sub-condition a\n"
+            "    - sub-condition b\n"
+            "  - Second top-level criterion\n"
+        )
+        assert plan_codex_dispatch._extract_bullet_list(
+            block, "Acceptance criteria"
+        ) == [
+            "First criterion with sub-conditions: sub-condition a sub-condition b",
+            "Second top-level criterion",
+        ]
+
+    def test_parse_task_block_captures_fenced_test_command(self) -> None:
+        block = plan_codex_dispatch.parse_task_block(
+            _PLAN_FENCED_CMD_AND_NESTED_AC, "010"
+        )
+        assert block["test_command"] == (
+            "venv/bin/python scripts/gen.py && "
+            "venv/bin/pytest tests/scripts/test_gen.py -q"
+        )
+        # The original bug symptom: a captured ```` ```bash ```` opener that
+        # would have exited nonzero under `shell=True`. Guard against it.
+        assert not block["test_command"].startswith("`"), block["test_command"]
+
+    def test_parse_task_block_folds_nested_acceptance_criteria(self) -> None:
+        block = plan_codex_dispatch.parse_task_block(
+            _PLAN_FENCED_CMD_AND_NESTED_AC, "010"
+        )
+        assert block["acceptance_criteria"] == [
+            "First criterion with sub-conditions: sub-condition a sub-condition b",
+            "Second top-level criterion",
+        ]
+        # The fenced command block must not leak into Files.
+        assert block["files"] == ["scripts/gen.py"], block["files"]

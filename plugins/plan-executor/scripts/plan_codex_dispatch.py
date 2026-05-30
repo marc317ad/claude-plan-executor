@@ -250,9 +250,20 @@ def parse_plan_context(plan_text: str) -> str:
 
 
 def _extract_inline_field(block: str, field: str) -> str:
-    """Extract `- **Field:** value` single-line form."""
+    """Extract `- **Field:** value` single-line form.
+
+    The whitespace between `:**` and the value is horizontal-only
+    (`[^\\S\\n]*`), not `\\s*`. `\\s` includes the newline, so the old pattern
+    let a *standalone* marker (`- **Test command:**` with the value on a
+    following fenced line) swallow the line break and capture the next line's
+    content — most damagingly the ```` ```bash ```` opener of a fenced
+    multi-line command, which then reached `run_test_command` and exited
+    nonzero under `shell=True`. A standalone marker now returns "" and
+    `parse_task_block` falls through to `_extract_fenced_block_field`. Mirrors
+    the canonical `plan_ops._extract_metadata_field` fix.
+    """
     m = re.search(
-        rf"^-\s*\*\*{re.escape(field)}:\*\*\s*(.+?)\s*$",
+        rf"^-\s*\*\*{re.escape(field)}:\*\*[^\S\n]*(.+?)\s*$",
         block,
         re.MULTILINE,
     )
@@ -260,28 +271,100 @@ def _extract_inline_field(block: str, field: str) -> str:
 
 
 def _extract_bullet_list(block: str, field: str) -> list[str]:
-    """Extract `- **Field:**\n  - item` multi-line form."""
-    m = re.search(
-        rf"^-\s*\*\*{re.escape(field)}:\*\*\s*$",
+    """Extract bullet items nested under a standalone `- **Field:**` marker.
+
+    Mirrors `plan_ops._extract_bullet_list`'s standalone-marker branch so the
+    wrapper and orchestrator agree byte-for-byte on what a bullet list reduces
+    to. Deeper-indented content under an already-open top-level child — both
+    nested sub-bullets AND wrapped continuation lines — is folded into that
+    child rather than emitted as a separate item. This preserves the invariant
+    "one top-level bullet == one item": a parent acceptance criterion with
+    sub-conditions stays a single self-contained entry instead of being split
+    apart (the corruption the canonical fix addresses).
+    """
+    standalone = re.search(
+        rf"^(\s*)-\s*\*\*{re.escape(field)}:\*\*\s*$",
         block,
         re.MULTILINE,
     )
-    if not m:
+    if not standalone:
         return []
+    base_indent = len(standalone.group(1) or "")
     items: list[str] = []
-    for line in block[m.end():].splitlines():
-        stripped = line.strip()
-        if not stripped:
+    child_indent: int | None = None
+    for line in block[standalone.end():].splitlines():
+        if not line.strip():
             continue
-        is_indented_bullet = (
-            stripped.startswith("-")
-            and (line.startswith(" ") or line.startswith("\t"))
-        )
-        if is_indented_bullet:
-            items.append(stripped[1:].strip())
-        else:
+        indent = len(line) - len(line.lstrip(" \t"))
+        stripped = line.strip()
+        if indent <= base_indent:
             break
+        is_bullet = stripped.startswith("- ") or stripped == "-"
+        if child_indent is not None and indent > child_indent:
+            # Deeper than the open top-level child: fold in. A nested
+            # sub-bullet contributes its text sans the leading "- "; a
+            # wrapped continuation line contributes verbatim.
+            if is_bullet:
+                folded = stripped[1:].strip() if stripped != "-" else ""
+            else:
+                folded = stripped
+            if items and folded:
+                items[-1] = (items[-1] + " " + folded).strip()
+            continue
+        if not is_bullet:
+            break
+        if child_indent is None:
+            child_indent = indent
+        items.append(stripped[1:].strip() if stripped != "-" else "")
     return items
+
+
+def _extract_fenced_block_field(block: str, field: str) -> str:
+    """Capture a fenced code block under a standalone `- **Field:**` marker.
+
+    Mirrors `plan_ops._extract_fenced_block_field`: the fenced body's non-blank
+    lines are joined with ` && ` into one fail-fast command. (`run_test_command`
+    runs the string under `shell=True`, which returns only the LAST line's exit
+    code; ` && ` makes any step's failure fail the whole command.) The opening
+    fence info string (e.g. ```bash) is dropped. Returns "" when the marker is
+    absent, is not immediately followed (modulo blank lines) by a fenced block,
+    the block is unterminated, or the body has no command lines.
+    """
+    marker = re.search(
+        rf"^[^\S\n]*-[^\S\n]*\*\*{re.escape(field)}:\*\*[^\S\n]*$",
+        block,
+        re.MULTILINE,
+    )
+    if marker is None:
+        return ""
+    lines = block[marker.end():].splitlines()
+    idx = 0
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    if idx >= len(lines):
+        return ""
+    fence_m = re.match(r"^[^\S\n]*(`{3,}|~{3,})", lines[idx])
+    if fence_m is None:
+        return ""
+    fence_token = fence_m.group(1)
+    fence_char = fence_token[0]
+    fence_len = len(fence_token)
+    close_re = re.compile(
+        rf"^[^\S\n]*{re.escape(fence_char)}{{{fence_len},}}[^\S\n]*$"
+    )
+    body: list[str] = []
+    closed = False
+    for line in lines[idx + 1:]:
+        if close_re.match(line):
+            closed = True
+            break
+        body.append(line.strip())
+    if not closed:
+        return ""
+    commands = [b for b in body if b]
+    if not commands:
+        return ""
+    return " && ".join(commands)
 
 
 def _extract_paragraph(block: str, field: str) -> str:
@@ -317,17 +400,25 @@ def parse_task_block(plan_text: str, task_id_arg: str) -> dict:
     end = len(tail) if end_match is None else end_match.start()
     block = tail[:end]
 
-    # Strip markdown-wrapping backticks from `test_command` to match the
-    # canonical helper in `plan_ops._parse_task_block`. Without this, sh
-    # treats the whole `` `cmd` `` string as command substitution: it
-    # execs the inner command's stdout, yielding exit 127.
+    # Resolve `test_command` to match the canonical helper in
+    # `plan_ops._parse_task_block`:
+    #   * inline `- **Test command:** `cmd`` → strip markdown-wrapping
+    #     backticks (without this, sh treats the whole `` `cmd` `` string as
+    #     command substitution: it execs the inner command's stdout, exit 127);
+    #   * standalone `- **Test command:**` marker → the value lives in a fenced
+    #     block beneath it; capture it as a single ` && `-joined command so
+    #     build-tasks, the orchestrator, and this wrapper all read the
+    #     identical command.
     test_cmd_raw = _extract_inline_field(block, "Test command")
-    if (
-        len(test_cmd_raw) >= 2
-        and test_cmd_raw.startswith("`")
-        and test_cmd_raw.endswith("`")
-    ):
-        test_cmd_raw = test_cmd_raw[1:-1]
+    if test_cmd_raw:
+        if (
+            len(test_cmd_raw) >= 2
+            and test_cmd_raw.startswith("`")
+            and test_cmd_raw.endswith("`")
+        ):
+            test_cmd_raw = test_cmd_raw[1:-1]
+    else:
+        test_cmd_raw = _extract_fenced_block_field(block, "Test command")
 
     return {
         "task_id": task_id,
