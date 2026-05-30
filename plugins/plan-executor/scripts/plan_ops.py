@@ -2832,10 +2832,30 @@ def _extract_fenced_block_field(block: str, key: str) -> str | None:
         body.append(line.strip())
     if not closed:
         return None
-    commands = [b for b in body if b]
-    if not commands:
+    # Collapse backslash line-continuations so that a single logical shell
+    # command written across multiple physical lines (e.g. env-var prefixes
+    # with trailing `\`) is reconstructed as one command before the
+    # ` && ` join.  A physical line that ends with `\` (after rstrip) has
+    # the `\` stripped and is concatenated to the next line with a single
+    # space; the accumulation ends at the first line without a trailing `\`.
+    # Multiple independent logical commands are then ` && `-joined to
+    # preserve fail-fast semantics under `shell=True`.
+    logical_commands: list[str] = []
+    buf = ""
+    for raw in body:
+        if not raw:
+            continue
+        if raw.rstrip().endswith("\\"):
+            buf += raw.rstrip()[:-1].rstrip() + " "
+        else:
+            buf += raw
+            logical_commands.append(buf)
+            buf = ""
+    if buf:
+        logical_commands.append(buf.rstrip())
+    if not logical_commands:
         return None
-    return " && ".join(commands)
+    return " && ".join(logical_commands)
 
 
 def _extract_bullet_list(block: str, heading: str) -> list[str]:

@@ -19955,6 +19955,68 @@ class TestParseTaskBlockHelper:
             self.H2_BLOCK, "Test command",
         ) is None
 
+    def test_extract_fenced_block_field_backslash_continuation_single_command(
+        self,
+    ) -> None:
+        # A fenced body using trailing `\` continuations for a SINGLE logical
+        # shell command must be reconstructed into one runnable string — NOT
+        # ` && `-joined with stray backslashes.
+        block = (
+            "## TASK-010: Backslash continuation\n"
+            "\n"
+            "- **Test command:**\n"
+            "  ```bash\n"
+            "  FOO=1 \\\n"
+            "  BAR=2 \\\n"
+            "  venv/bin/python script.py --flag\n"
+            "  ```\n"
+        )
+        result = plan_ops._extract_fenced_block_field(block, "Test command")
+        assert result == "FOO=1 BAR=2 venv/bin/python script.py --flag"
+        assert "\\" not in (result or "")
+        assert "&&" not in (result or "")
+
+    def test_extract_fenced_block_field_multi_step_no_backslash_still_joined(
+        self,
+    ) -> None:
+        # A genuine multi-step fenced body (no backslashes) must still be
+        # ` && `-joined to preserve fail-fast semantics.
+        block = (
+            "## TASK-011: Multi-step no backslash\n"
+            "\n"
+            "- **Test command:**\n"
+            "  ```bash\n"
+            "  venv/bin/python codegen.py\n"
+            "  venv/bin/pytest -q tests/b.py\n"
+            "  ```\n"
+        )
+        result = plan_ops._extract_fenced_block_field(block, "Test command")
+        assert result == (
+            "venv/bin/python codegen.py && venv/bin/pytest -q tests/b.py"
+        )
+
+    def test_extract_fenced_block_field_mixed_continuation_and_independent(
+        self,
+    ) -> None:
+        # One `\`-continued logical command followed by a separate independent
+        # command line must join the two logical commands with ` && `.
+        block = (
+            "## TASK-012: Mixed continuation and independent\n"
+            "\n"
+            "- **Test command:**\n"
+            "  ```bash\n"
+            "  ENV_A=1 \\\n"
+            "  ENV_B=2 \\\n"
+            "  venv/bin/python run.py\n"
+            "  venv/bin/pytest -q tests/c.py\n"
+            "  ```\n"
+        )
+        result = plan_ops._extract_fenced_block_field(block, "Test command")
+        assert result == (
+            "ENV_A=1 ENV_B=2 venv/bin/python run.py && "
+            "venv/bin/pytest -q tests/c.py"
+        )
+
     def test_parse_task_block_captures_fenced_test_command(self) -> None:
         task = plan_ops._parse_task_block(self.H2_FENCED_BLOCK, level=2)
         assert task["test_command"] == (

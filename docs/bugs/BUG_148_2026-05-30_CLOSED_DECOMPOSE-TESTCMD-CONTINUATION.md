@@ -1,6 +1,6 @@
 ---
 bug_id: 148
-status: OPEN
+status: CLOSED
 group: DECOMPOSE-TESTCMD-CONTINUATION
 severity: major
 source_fix_id: null
@@ -19,7 +19,7 @@ change_history: []
 
 # BUG-148: `_extract_fenced_block_field` ` && `-joins fenced `Test command` lines without collapsing backslash (`\`) line-continuations, corrupting a single multi-line shell command
 
-**Status:** OPEN
+**Status:** CLOSED
 **Severity:** major (silently emits a non-runnable test/run command into the child + schedule; only caught downstream if a reviewer happens to inspect the command string)
 **Group:** DECOMPOSE-TESTCMD-CONTINUATION
 **Depends on:** none
@@ -84,3 +84,9 @@ In `_extract_fenced_block_field`, before the ` && ` join, collapse backslash con
 
 ## Run history
 (none yet — bug filed 2026-05-30)
+
+### Run 20260530T210941 — CLOSED
+- **Stage:** D.3 commit
+- **Files changed:** plugins/plan-executor/scripts/plan_ops.py, plugins/plan-executor/scripts/plan_codex_dispatch.py, tests/scripts/test_plan_ops.py, tests/scripts/test_plan_codex_dispatch_parsing.py
+- **Reviewer verdict:** ship
+- **Reviewer advisories:** D.2.5 remediation then re-review=ship. Scope expanded beyond declared files: to mirror the backslash-collapse accumulator into plan_codex_dispatch._extract_fenced_block_field (cross-wrapper lockstep; resolved reviewer Major) plus a Codex-path test; folded reviewer Minor (rstrip dangling-continuation flush). 1128 tests pass; pre-existing unrelated test_plan_ops_mcp_conformance collection error left untouched.

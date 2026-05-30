@@ -397,3 +397,20 @@ class TestWrapperFencedCommandAndNestedAC:
         ]
         # The fenced command block must not leak into Files.
         assert block["files"] == ["scripts/gen.py"], block["files"]
+
+    def test_extract_fenced_block_field_collapses_backslash_continuations(
+        self,
+    ) -> None:
+        """A fenced body with backslash line-continuations must be collapsed
+        into a single logical command, not ` && `-joined with the `\\` intact."""
+        block = (
+            "- **Test command:**\n"
+            "  ```bash\n"
+            "  FOO=1 \\\n"
+            "  BAR=2 \\\n"
+            "  venv/bin/python script.py --flag\n"
+            "  ```\n"
+        )
+        assert plan_codex_dispatch._extract_fenced_block_field(
+            block, "Test command"
+        ) == "FOO=1 BAR=2 venv/bin/python script.py --flag"
