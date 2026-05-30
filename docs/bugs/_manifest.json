@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 148,
+  "next_id": 150,
   "content_fingerprints": {},
   "groups": {
     "BASH-DISPATCH-MIGRATION": {
@@ -14,16 +14,27 @@
       "created_at": "2026-04-28",
       "updated_at": "2026-04-28"
     },
-    "WRAPPER-PLAN-REVIEW-LATENT": {
+    "DECOMPOSE-CHILD-DROPS-IMPL-NOTES": {
       "bug_ids": [
-        147
+        149
       ],
-      "primary_subsystem": "wrapper-plan-review-latent",
+      "primary_subsystem": "decompose-child-drops-impl-notes",
       "subsystem_distribution": {},
       "internal_deps": 0,
       "external_deps_into_group": [],
-      "created_at": "2026-04-30",
-      "updated_at": "2026-04-30"
+      "created_at": "2026-05-30",
+      "updated_at": "2026-05-30"
+    },
+    "DECOMPOSE-TESTCMD-CONTINUATION": {
+      "bug_ids": [
+        148
+      ],
+      "primary_subsystem": "decompose-testcmd-continuation",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-05-30",
+      "updated_at": "2026-05-30"
     },
     "IMP-PLAN": {
       "bug_ids": [
@@ -68,6 +79,17 @@
       "external_deps_into_group": [],
       "created_at": "2026-04-28",
       "updated_at": "2026-04-28"
+    },
+    "WRAPPER-PLAN-REVIEW-LATENT": {
+      "bug_ids": [
+        147
+      ],
+      "primary_subsystem": "wrapper-plan-review-latent",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-04-30",
+      "updated_at": "2026-04-30"
     }
   },
   "groups_history": [],
@@ -99,6 +121,27 @@
         "removed_groups": [],
         "modified_groups": {}
       }
+    },
+    {
+      "event": "manifest-sync",
+      "synced_at": "2026-05-30",
+      "bug_count": 8,
+      "next_id": 150,
+      "groups_count": 8,
+      "drift_summary": {
+        "added_bugs": [
+          "148",
+          "149"
+        ],
+        "removed_bugs": [],
+        "severity_changes": {},
+        "added_groups": [
+          "DECOMPOSE-CHILD-DROPS-IMPL-NOTES",
+          "DECOMPOSE-TESTCMD-CONTINUATION"
+        ],
+        "removed_groups": [],
+        "modified_groups": {}
+      }
     }
   ],
   "bug_severities": {
@@ -107,6 +150,8 @@
     "144": "critical",
     "145": "minor",
     "146": "minor",
-    "147": "minor"
+    "147": "minor",
+    "148": "major",
+    "149": "major"
   }
 }
