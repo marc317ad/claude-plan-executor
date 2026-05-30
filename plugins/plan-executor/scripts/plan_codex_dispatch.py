@@ -482,8 +482,11 @@ def render_implement_prompt(
     plan_file: str | None = None,
 ) -> str:
     allowed = [normalize_file_path(f) for f in task["files"]]
-    impl_notes = task.get("implementation_notes") or (
-        "None provided -- follow existing patterns in the target files."
+    _raw_impl_notes = task.get("implementation_notes") or ""
+    impl_notes = (
+        _raw_impl_notes
+        if _raw_impl_notes.strip().lower() not in {"none", "n/a", ""}
+        else "None provided -- follow existing patterns in the target files."
     )
     context_block = context or "(no context provided)"
     ac_bullets = "\n".join(f"- {c}" for c in task["acceptance_criteria"]) or "- (none specified)"

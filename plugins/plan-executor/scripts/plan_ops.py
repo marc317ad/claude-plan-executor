@@ -3052,6 +3052,7 @@ def _parse_task_block(
     priority_raw = _extract_metadata_field(block, "Priority")
     status_raw = _extract_metadata_field(block, "Status")
     description = _extract_prose_section(block, "Description")
+    implementation_notes = _extract_prose_section(block, "Implementation notes")
     reversion_raw = _extract_metadata_field(block, "Reversion guidance")
     return {
         "id": canonical_id,
@@ -3065,6 +3066,7 @@ def _parse_task_block(
         "files": files,
         "acceptance_criteria": acceptance_criteria,
         "description": description,
+        "implementation_notes": implementation_notes,
         "reversion_guidance": reversion_raw,
         "status": status_raw,
     }
@@ -3245,6 +3247,9 @@ _DECOMPOSED_CHILD_SCAFFOLD = (
     "${METADATA}\n"
     "\n"
     "**Description:**${DESCRIPTION}\n"
+    "\n"
+    "**Implementation notes:**\n"
+    "${IMPLEMENTATION_NOTES}\n"
 )
 
 
@@ -3355,6 +3360,14 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
             f"for the full intent.)"
         )
     description_slot = f"\n{description}"
+    # ---- Implementation notes: emitted UNCONDITIONALLY — when the source
+    # task provides notes they are used verbatim; when absent, emit the
+    # stable `none` sentinel so the section is always present in child files.
+    # The dispatch render layer (plan_codex_dispatch.render_implement_prompt)
+    # normalises `none`/empty back to the verbose fallback before the
+    # Codex implementer sees it.
+    impl_notes = task.get("implementation_notes")
+    implementation_notes_slot = impl_notes if impl_notes else "none"
     return string.Template(_DECOMPOSED_CHILD_SCAFFOLD).substitute(
         TID=tid,
         TITLE=title,
@@ -3362,6 +3375,7 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
         VERIFICATION=verification,
         METADATA=metadata,
         DESCRIPTION=description_slot,
+        IMPLEMENTATION_NOTES=implementation_notes_slot,
     )
 
 

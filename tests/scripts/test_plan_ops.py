@@ -21064,6 +21064,9 @@ class TestDecomposePlan:
             "Create the scratch parent directory that the sibling tasks write into.\n"
             "Minimal seeder so TASK-002 and TASK-003 can share a common parent\n"
             "without stepping on each other's file locks.\n"
+            "\n"
+            "**Implementation notes:**\n"
+            "none\n"
         )
         assert rendered == expected, (
             f"byte-stable rendering drift:\n--- expected ---\n{expected!r}\n"
@@ -21096,6 +21099,87 @@ class TestDecomposePlan:
         assert "- **Reversion guidance:** none\n" in rendered_no_rev, (
             rendered_no_rev
         )
+
+    def test_render_child_implementation_notes_round_trip(
+        self, tmp_path: Path,
+    ) -> None:
+        """A parent task with a multi-line `**Implementation notes:**` body
+        MUST round-trip verbatim into the rendered child file.  The scaffold
+        always emits the `**Implementation notes:**` section; when notes are
+        absent it emits the `none` sentinel.  The dispatch render layer
+        (`plan_codex_dispatch.render_implement_prompt`) normalises `none`/empty
+        back to the verbose fallback so the Codex implementer never sees a bare
+        `none` — it either sees the real notes body or the verbose fallback.
+        """
+        sys.path.insert(0, str(SCRIPTS_DIR))
+        import plan_codex_dispatch  # noqa: WPS433
+
+        src_text = (DECOMPOSER_INPUTS_DIR / "canonical.md").read_text(
+            encoding="utf-8",
+        )
+        plan_context = plan_ops._extract_plan_context_section(src_text)
+        _, raw_blocks = plan_ops._split_task_blocks_at_level(src_text, level=2)
+        assert raw_blocks, "canonical fixture lost its H2 task headers"
+        raw_id, title, block_text, _src_line = raw_blocks[0]
+        task = plan_ops._parse_task_block(block_text, level=2)
+        task["id"] = raw_id
+        task["title"] = title
+        # Inject multi-line implementation notes.
+        notes_body = (
+            "Edit `_render_child_task_file` in plan_ops.py.\n"
+            "Add IMPLEMENTATION_NOTES slot after DESCRIPTION.\n"
+            "Keep the section unconditional; normalise sentinel at render time."
+        )
+        task["implementation_notes"] = notes_body
+        rendered = plan_ops._render_child_task_file(
+            task, plan_context=plan_context,
+        )
+        # The rendered child file MUST contain the section header + body.
+        assert "**Implementation notes:**" in rendered, rendered
+        assert "Edit `_render_child_task_file` in plan_ops.py." in rendered, rendered
+        # Round-trip via plan_ops parser at H3 level.
+        child_task = plan_ops._parse_task_block(rendered, level=3)
+        assert child_task.get("implementation_notes") == notes_body, (
+            f"round-trip mismatch: {child_task.get('implementation_notes')!r}"
+        )
+        # Round-trip via the DISPATCH parser: parse_task_block must recover
+        # the real notes body (not the sentinel or empty).
+        dispatch_task = plan_codex_dispatch.parse_task_block(rendered, "001")
+        assert dispatch_task.get("implementation_notes") == notes_body, (
+            f"dispatch round-trip mismatch: "
+            f"{dispatch_task.get('implementation_notes')!r}"
+        )
+        # WITH real notes: render_implement_prompt must embed the verbatim body.
+        prompt_with_notes = plan_codex_dispatch.render_implement_prompt(
+            dispatch_task, "ctx.",
+        )
+        assert "Edit `_render_child_task_file` in plan_ops.py." in prompt_with_notes, (
+            prompt_with_notes
+        )
+        assert "None provided" not in prompt_with_notes, prompt_with_notes
+
+        # Absent sentinel: when implementation_notes is None, the scaffold
+        # emits the literal `none` sentinel so the section is always present.
+        no_notes_task = dict(task)
+        no_notes_task["implementation_notes"] = None
+        rendered_no_notes = plan_ops._render_child_task_file(
+            no_notes_task, plan_context=plan_context,
+        )
+        assert "**Implementation notes:**\nnone\n" in rendered_no_notes, (
+            rendered_no_notes
+        )
+        # The dispatch render layer MUST normalise `none` back to the verbose
+        # fallback — the Codex implementer must NOT see a bare `none`.
+        dispatch_no_notes = plan_codex_dispatch.parse_task_block(
+            rendered_no_notes, "001",
+        )
+        prompt_no_notes = plan_codex_dispatch.render_implement_prompt(
+            dispatch_no_notes, "ctx.",
+        )
+        assert "None provided -- follow existing patterns in the target files." in (
+            prompt_no_notes
+        ), prompt_no_notes
+        assert "Implementation notes:\nnone" not in prompt_no_notes, prompt_no_notes
 
     def test_decompose_force_removes_stale_children(
         self, tmp_path: Path,
@@ -25452,6 +25536,19 @@ class TestDecomposedTemplateDrift:
         )
         assert re.search(r"^## Verification\b", text, re.MULTILINE), (
             f"child template missing `## Verification`: {self.CHILD_TEMPLATE}"
+        )
+
+    def test_rendered_child_scaffold_contains_implementation_notes(
+        self,
+    ) -> None:
+        """The runtime scaffold (`_DECOMPOSED_CHILD_SCAFFOLD`) MUST include
+        a `**Implementation notes:**` slot so template and runtime cannot
+        silently diverge. This assertion targets the scaffold constant
+        directly (not the template file) to catch the exact runtime path.
+        """
+        assert "**Implementation notes:**" in plan_ops._DECOMPOSED_CHILD_SCAFFOLD, (
+            "_DECOMPOSED_CHILD_SCAFFOLD is missing the `**Implementation notes:**` "
+            "slot; template and runtime are out of sync"
         )
 
     def test_index_json_template_parses_as_json(self) -> None:

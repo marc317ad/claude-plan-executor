@@ -1,6 +1,6 @@
 ---
 bug_id: 149
-status: OPEN
+status: CLOSED
 group: DECOMPOSE-CHILD-DROPS-IMPL-NOTES
 severity: major
 source_fix_id: null
@@ -21,7 +21,7 @@ change_history: []
 
 # BUG-149: `_DECOMPOSED_CHILD_SCAFFOLD` / `_render_child_task_file` omit the `**Implementation notes:**` section, so auto-decomposed children lose all per-task implementation guidance and the implementer is dispatched with `Implementation notes: None provided`
 
-**Status:** OPEN
+**Status:** CLOSED
 **Severity:** major (silently strips load-bearing implementation guidance from every auto-decomposed child; the implementer runs with `Implementation notes: None provided` even when the parent plan authored detailed notes)
 **Group:** DECOMPOSE-CHILD-DROPS-IMPL-NOTES
 **Depends on:** none
@@ -71,3 +71,9 @@ This contradicts three parts of the system that expect children to carry the not
 
 ## Run history
 (none yet — bug filed 2026-05-30)
+
+### Run 20260530T210941 — CLOSED
+- **Stage:** D.3 commit
+- **Files changed:** plugins/plan-executor/scripts/plan_ops.py, plugins/plan-executor/scripts/plan_codex_dispatch.py, tests/scripts/test_plan_ops.py
+- **Reviewer verdict:** ship
+- **Reviewer advisories:** D.2.5 remediation then re-review=ship (mutation-tested). Load-bearing path (children carry parent notes verbatim) fixed; first-pass absent-notes regression corrected by normalizing the dispatch none/n-a/empty sentinel to the verbose fallback (mirrors test_command line 154). Schema gate untouched. To file: 2 out-of-scope nits (render_review_prompt fallback/sentinel divergence; _parse_task_block docstring missing implementation_notes key). Pre-existing unrelated failures observed: test_plan_ops_mcp_conformance collection error (build-agent-dispatch-prompt fixture) and test_codex_review_prompt d5 SKILL-text assertion.
