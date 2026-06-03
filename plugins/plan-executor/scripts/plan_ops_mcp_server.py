@@ -383,7 +383,9 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                            'plan-author-legacy-whole-plan',
                                                            'plan-review-triage',
                                                            'plan-remediator-narrow',
-                                                           'plan-remediator-rescue']},
+                                                           'plan-remediator-rescue',
+                                                           'plan-implementer-default',
+                                                           'plan-analyst-per-child']},
                                   'context': {'oneOf': [{'$ref': '#/$defs/codeReviewerDClaudeContext'},
                                                         {'$ref': '#/$defs/codeReviewerD5Context'},
                                                         {'$ref': '#/$defs/planReviewerContext'},
@@ -392,7 +394,9 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                         {'$ref': '#/$defs/planAuthorLegacyWholePlanContext'},
                                                         {'$ref': '#/$defs/planReviewTriageContext'},
                                                         {'$ref': '#/$defs/planRemediatorNarrowContext'},
-                                                        {'$ref': '#/$defs/planRemediatorRescueContext'}]}},
+                                                        {'$ref': '#/$defs/planRemediatorRescueContext'},
+                                                        {'$ref': '#/$defs/planImplementerDefaultContext'},
+                                                        {'$ref': '#/$defs/planAnalystPerChildContext'}]}},
                    'required': ['template_id', 'context'],
                    'additionalProperties': False,
                    '$defs': {'taskId': {'type': 'string', 'pattern': '^(?:TASK-)?\\d{1,3}[A-Z]?$'},
@@ -526,6 +530,131 @@ TOOL_REGISTRY: list[dict[str, Any]] = [{'tool_key': 'plan_ops__acquire_lock',
                                                                           'd5_summary',
                                                                           'analyst_annotations_json'],
                                                              'additionalProperties': False},
+                             'planImplementerDefaultContext': {'type': 'object',
+                                                               'properties': {'plan_file': {'type': 'string'},
+                                                                              'task_id': {'$ref': '#/$defs/taskId'},
+                                                                              'target_task_id': {'$ref': '#/$defs/taskId'},
+                                                                              'starting_sha': {'type': 'string'},
+                                                                              'analyst_annotations_json': {'$ref': '#/$defs/jsonValue'},
+                                                                              'pre_read_excerpts': {'type': 'string'},
+                                                                              'python_path': {'type': 'string'},
+                                                                              'prior_findings': {'description': 'Optional '
+                                                                                                                'D.2a.5 '
+                                                                                                                'bounded-remediation '
+                                                                                                                'rework '
+                                                                                                                'context: '
+                                                                                                                'reviewer '
+                                                                                                                'findings '
+                                                                                                                'from '
+                                                                                                                'the '
+                                                                                                                'prior '
+                                                                                                                'attempt. '
+                                                                                                                'Each '
+                                                                                                                'entry '
+                                                                                                                'matches '
+                                                                                                                'the '
+                                                                                                                'reviewer-finding '
+                                                                                                                'shape '
+                                                                                                                'used '
+                                                                                                                'by '
+                                                                                                                'plan_ops__parse_reviewer_envelope. '
+                                                                                                                'Absent '
+                                                                                                                'or '
+                                                                                                                'empty '
+                                                                                                                'means '
+                                                                                                                '"fresh '
+                                                                                                                'implement" '
+                                                                                                                'and '
+                                                                                                                'the '
+                                                                                                                "renderer's "
+                                                                                                                'output '
+                                                                                                                'is '
+                                                                                                                'byte-identical '
+                                                                                                                'to '
+                                                                                                                'a '
+                                                                                                                'no-rework '
+                                                                                                                'dispatch.',
+                                                                                                 'type': 'array',
+                                                                                                 'items': {'type': 'object',
+                                                                                                           'properties': {'severity': {'type': 'string'},
+                                                                                                                          'file': {'type': 'string'},
+                                                                                                                          'line': {'type': 'integer'},
+                                                                                                                          'issue': {'type': 'string'},
+                                                                                                                          'suggested_fix': {'type': 'string'}},
+                                                                                                           'required': ['severity',
+                                                                                                                        'file',
+                                                                                                                        'line',
+                                                                                                                        'issue',
+                                                                                                                        'suggested_fix'],
+                                                                                                           'additionalProperties': True}},
+                                                                              'prior_summary': {'description': 'Optional '
+                                                                                                               'D.2a.5 '
+                                                                                                               'bounded-remediation '
+                                                                                                               'rework '
+                                                                                                               'context: '
+                                                                                                               'prior '
+                                                                                                               'reviewer '
+                                                                                                               'summary, '
+                                                                                                               'emitted '
+                                                                                                               'verbatim '
+                                                                                                               'above '
+                                                                                                               'the '
+                                                                                                               'fresh-implement '
+                                                                                                               'instructions '
+                                                                                                               'when '
+                                                                                                               'populated.',
+                                                                                                'type': 'string'},
+                                                                              'attempt_count': {'description': 'Optional '
+                                                                                                               'D.2a.5 '
+                                                                                                               'bounded-remediation '
+                                                                                                               'rework '
+                                                                                                               'context: '
+                                                                                                               '1-based '
+                                                                                                               'attempt '
+                                                                                                               'count '
+                                                                                                               '(>=1). '
+                                                                                                               'Absent '
+                                                                                                               'means '
+                                                                                                               '"fresh '
+                                                                                                               'implement".',
+                                                                                                'type': 'integer',
+                                                                                                'minimum': 1}},
+                                                               'required': ['plan_file',
+                                                                            'task_id',
+                                                                            'starting_sha',
+                                                                            'analyst_annotations_json'],
+                                                               'additionalProperties': False},
+                             'planAnalystPerChildContext': {'type': 'object',
+                                                            'description': 'Phase 1 Step 2 '
+                                                                           'per-child classifier '
+                                                                           'dispatch (in-process '
+                                                                           'Agent path). Read-only '
+                                                                           'by contract — analyst '
+                                                                           'classifies a single '
+                                                                           'child plan file and '
+                                                                           'emits {agent, '
+                                                                           'classification_reason}. '
+                                                                           'No cleanup wrap is '
+                                                                           'applied (see SKILL.md '
+                                                                           '§Cleanup-around-Agent-dispatch).',
+                                                            'properties': {'plan_file': {'description': 'Absolute '
+                                                                                                        'path '
+                                                                                                        'to '
+                                                                                                        'the '
+                                                                                                        'resolved '
+                                                                                                        'child '
+                                                                                                        'plan '
+                                                                                                        'file',
+                                                                                         'type': 'string'},
+                                                                           'repo_root': {'description': 'Absolute '
+                                                                                                        'path '
+                                                                                                        'to '
+                                                                                                        'the '
+                                                                                                        'repository '
+                                                                                                        'root',
+                                                                                         'type': 'string'}},
+                                                            'required': ['plan_file', 'repo_root'],
+                                                            'additionalProperties': False},
                              'planRemediatorRescueContext': {'type': 'object',
                                                              'properties': {'plan_file': {'type': 'string'},
                                                                             'task_id': {'$ref': '#/$defs/taskId'},
@@ -2242,11 +2371,51 @@ def _registered_mcp_tools() -> list[mcp_types.Tool]:
         mcp_types.Tool(
             name=entry['tool_key'],
             description=entry['description_help'],
-            inputSchema=entry['input_schema'],
-            outputSchema=entry['output_schema'],
+            inputSchema=_schema_for_tool_advertisement(entry['input_schema']),
+            outputSchema=_schema_for_tool_advertisement(entry['output_schema']),
         )
         for entry in TOOL_REGISTRY
     ]
+
+
+OPENAI_TOP_LEVEL_SCHEMA_KEYWORDS: set[str] = {
+    'oneOf',
+    'anyOf',
+    'allOf',
+    'enum',
+    'not',
+}
+
+
+def _resolve_top_level_schema_ref(schema: dict[str, Any]) -> dict[str, Any]:
+    """Resolve top-level MCP schema refs before advertising tools."""
+    ref = schema.get('$ref')
+    if not isinstance(ref, str):
+        return dict(schema)
+    ref_path = (_HERE / 'schemas' / 'mcp' / ref).resolve()
+    resolved = json.loads(ref_path.read_text(encoding='utf-8'))
+    for key in ('title', 'description'):
+        if key in schema:
+            resolved[key] = schema[key]
+    if '$schema' in schema:
+        resolved['$schema'] = schema['$schema']
+    return resolved
+
+
+def _schema_for_tool_advertisement(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return an MCP tool schema accepted by strict function callers.
+
+    MCP sidecars may use top-level ``$ref`` wrappers for reuse. OpenAI
+    rejects function parameter schemas that are not a literal object
+    at the top level, so tools/list advertises a dereferenced object
+    while call-time validation still uses the canonical sidecars.
+    """
+    advertised = _resolve_top_level_schema_ref(schema)
+    advertised.pop('$ref', None)
+    for keyword in OPENAI_TOP_LEVEL_SCHEMA_KEYWORDS:
+        advertised.pop(keyword, None)
+    advertised['type'] = 'object'
+    return advertised
 
 
 def _argparse_subparser_map() -> dict[str, Any]:

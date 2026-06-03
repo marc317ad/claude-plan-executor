@@ -68,6 +68,21 @@ def test_registered_tools_have_valid_input_schemas(server_mod) -> None:
         assert tool.outputSchema is not None
 
 
+def test_registered_tool_schemas_are_openai_top_level_compatible(server_mod) -> None:
+    """Advertised MCP schemas must satisfy strict function-schema importers."""
+    forbidden = set(server_mod.OPENAI_TOP_LEVEL_SCHEMA_KEYWORDS) | {"$ref"}
+    for tool in server_mod._registered_mcp_tools():
+        for label, schema in (
+            ("inputSchema", tool.inputSchema),
+            ("outputSchema", tool.outputSchema),
+        ):
+            assert schema.get("type") == "object", f"{tool.name}.{label}"
+            assert not (set(schema) & forbidden), (
+                f"{tool.name}.{label} has forbidden top-level keys: "
+                f"{sorted(set(schema) & forbidden)!r}"
+            )
+
+
 def test_every_registration_dispatches_to_real_plan_ops_callables(server_mod) -> None:
     for entry in server_mod.TOOL_REGISTRY:
         assert callable(getattr(plan_ops, entry["run_callable_name"], None)), entry
@@ -84,6 +99,18 @@ def test_review_route_registration_is_orchestrator_contract(server_mod, index: d
     assert registered["args_to_payload_callable_name"] == "_args_to_payload_review_route"
     assert registered["input_schema"]["$ref"].endswith("review_route_input_schema.json")
     assert registered["output_schema"]["$ref"].endswith("review_route_output_schema.json")
+
+
+def test_review_route_advertises_dereferenced_input_schema(server_mod) -> None:
+    tool = next(
+        item for item in server_mod._registered_mcp_tools()
+        if item.name == "plan_ops__review_route"
+    )
+    schema = tool.inputSchema
+    assert "$ref" not in schema
+    assert schema["type"] == "object"
+    assert "task_id" in schema["properties"]
+    assert "reviewer_envelope" in schema["required"]
 
 
 def test_codegen_block_is_byte_stable(server_mod) -> None:
