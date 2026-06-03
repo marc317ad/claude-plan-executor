@@ -14714,6 +14714,115 @@ class TestLintPlans:
         body = _parse_json(cp)
         assert body["findings"] == []
 
+    def test_flags_orphaned_task_body(self, lint_workspace: dict) -> None:
+        """BUG-152 pre-decompose gate: a task block carrying substantive body
+        content outside any recognized `**Marker:**` section is flagged
+        `orphaned_task_body` (warning severity) before decomposition, so the
+        author is warned the decomposer would drop it. Warning severity does
+        not raise the lint exit code on its own.
+        """
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-321.md"
+        plan.write_text(
+            "# Plan: orphan body\n\n"
+            "**Base branch:** main\n\n"
+            "## Tasks\n\n"
+            "### TASK-321: orphan body task\n\n"
+            "- **Status:** pending\n"
+            "- **Files:**\n"
+            "  - src/x.py\n"
+            "- **Dependencies:** none\n"
+            "\n"
+            "Steps:\n"
+            "1. Do the load-bearing thing that lives outside any marker.\n",
+            encoding="utf-8",
+        )
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        body = _parse_json(cp)
+        orphaned = [
+            f for f in body["findings"]
+            if f.get("code") == "orphaned_task_body"
+        ]
+        assert orphaned, body
+        assert orphaned[0]["task_id"] == "321"
+        assert orphaned[0]["severity"] == "warning"
+        # Warning severity alone must not raise the exit code.
+        assert cp.returncode == 0, f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
+
+    def test_clean_task_body_not_flagged_orphaned(
+        self, lint_workspace: dict,
+    ) -> None:
+        """A well-formed task whose substance lives under `**Description:**`
+        must NOT trip the `orphaned_task_body` check (no false positive).
+        """
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "plan-322.md"
+        plan.write_text(
+            "# Plan: clean body\n\n"
+            "**Base branch:** main\n\n"
+            "## Tasks\n\n"
+            "### TASK-322: clean body task\n\n"
+            "- **Status:** pending\n"
+            "- **Files:**\n"
+            "  - src/x.py\n"
+            "- **Dependencies:** none\n"
+            "\n"
+            "**Description:**\n"
+            "All the substance lives under the recognized Description marker.\n",
+            encoding="utf-8",
+        )
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        body = _parse_json(cp)
+        orphaned = [
+            f for f in body["findings"]
+            if f.get("code") == "orphaned_task_body"
+        ]
+        assert not orphaned, body
+
+    def test_flags_orphaned_task_body_on_h2_parent_plan(
+        self, lint_workspace: dict,
+    ) -> None:
+        """BUG-152 GAP-1: the pre-decompose `orphaned_task_body` gate must also
+        fire on the REAL pre-decomposition input, which uses H2 `## TASK-NNN:`
+        parent headings -- the form `_decompose_plan` splits at level=2. The
+        H3-only `_split_task_blocks` walk never sees these blocks, so before the
+        level-detecting residual pass this orphan_body case slipped through
+        silently. The substance (numbered steps outside any marker) must be
+        flagged, naming the task id, at warning severity.
+        """
+        ws = lint_workspace
+        plan = ws["plans_dir"] / "orphan-body-h2.md"
+        plan.write_text(
+            "# Plan: orphan body H2\n\n"
+            "**Base branch:** main\n\n"
+            "## Tasks\n\n"
+            "## TASK-001: Persist per-symbol universe snapshot\n\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Files:**\n"
+            "  - src/snapshot.py (modify)\n"
+            "- **Dependencies:** []\n"
+            "- **Acceptance criteria:**\n"
+            "  - the per-symbol snapshot is durably persisted.\n"
+            "\n"
+            "Steps:\n"
+            "1. Add the `universe_snapshot` observation kind.\n"
+            "2. For each symbol in the universe, call "
+            "`record_observation(observation_kind='universe_snapshot')`.\n",
+            encoding="utf-8",
+        )
+        cp = _run_lint(ws["plans_dir"], ws["run_log"], ws["repo"])
+        body = _parse_json(cp)
+        orphaned = [
+            f for f in body["findings"]
+            if f.get("code") == "orphaned_task_body"
+        ]
+        assert orphaned, body
+        assert orphaned[0]["task_id"] == "001"
+        assert orphaned[0]["severity"] == "warning"
+        # Warning severity alone must not raise the exit code.
+        assert cp.returncode == 0, f"stderr={cp.stderr!r} stdout={cp.stdout!r}"
+
 
 def test_task_template_has_all_required_fields() -> None:
     """The canonical TASK authoring template must expose every required field
@@ -20235,6 +20344,56 @@ class TestDecomposePlan:
             r"\*\*Description:\*\*\n\S", body, re.MULTILINE,
         ), body
 
+    def test_orphan_body_carried_with_loud_warning(
+        self, tmp_path: Path,
+    ) -> None:
+        """BUG-152: a parent task whose substance is a numbered-steps body
+        outside any recognized marker decomposes into a child that CARRIES the
+        steps in its `**Description:**` (not the auto-fill boilerplate), and the
+        CLI result surfaces a LOUD `residual_body_carried` warning distinct from
+        the benign `defaults_applied` routine-omission note. Fails on `main`
+        (residual dropped, boilerplate emitted, no warning); passes after fix.
+        """
+        src = tmp_path / "orphan_body.md"
+        src.write_text(
+            (DECOMPOSER_INPUTS_DIR / "orphan_body.md").read_text(
+                encoding="utf-8",
+            ),
+            encoding="utf-8",
+        )
+        cp = _run("decompose-plan", "--plan-file", str(src), "--json")
+        assert cp.returncode == 0, cp.stderr
+        out = _parse_json(cp)
+        assert out["errors"] == [], out
+        # Loud, operator-visible warning DISTINCT from `defaults_applied`.
+        warnings = out.get("warnings") or []
+        carried = [
+            w for w in warnings
+            if w.get("code") == "residual_body_carried"
+            and w.get("task_id") == "001"
+        ]
+        assert carried, warnings
+        # The benign Description default note must NOT fire for this task (the
+        # body was carried, not auto-filled from the title).
+        defaults = out.get("defaults_applied") or []
+        desc_defaults = [
+            d for d in defaults
+            if d.get("task_id") == "001" and d.get("field") == "Description"
+        ]
+        assert not desc_defaults, defaults
+        # The produced child carries the numbered steps, NOT the boilerplate.
+        produced = Path(out["produced_dir"])
+        children = sorted(produced.glob("TASK-001_*.md"))
+        assert children, list(produced.iterdir())
+        body = children[0].read_text(encoding="utf-8")
+        assert "record_observation(observation_kind='universe_snapshot'" in (
+            body
+        ), body
+        assert "Confirm the snapshot is persisted to the backtest store." in (
+            body
+        ), body
+        assert "Auto-filled by decompose-plan" not in body, body
+
     def test_duplicate_ids_structured_error(self, tmp_path: Path) -> None:
         src = tmp_path / "duplicate_ids.md"
         src.write_text(
@@ -21072,14 +21231,18 @@ class TestDecomposePlan:
             f"byte-stable rendering drift:\n--- expected ---\n{expected!r}\n"
             f"--- got ---\n{rendered!r}"
         )
-        # Empty-description fallback: when the source omits the description,
-        # the renderer auto-fills the body with `<title>. (Auto-filled by
-        # decompose-plan; ...)` so plan-review's Intent completeness check
-        # (`tasks[i].description` non-empty) does not route the run to
-        # `needs-replan`. Verify the header is followed by the title + the
-        # explanatory rationale, NOT a bare empty line.
+        # Empty-description fallback: when the source omits the description
+        # AND no residual body content exists, the renderer auto-fills the
+        # body with `<title>. (Auto-filled by decompose-plan; ...)` so
+        # plan-review's Intent completeness check (`tasks[i].description`
+        # non-empty) does not route the run to `needs-replan`. The auto-fill
+        # boilerplate is asserted ONLY for a genuinely empty task body
+        # (BUG-152) -- a residual-bearing body carries through instead (see
+        # `test_render_child_carries_residual_body_through` below). Verify the
+        # header is followed by the title + rationale, NOT a bare empty line.
         empty_desc_task = dict(task)
         empty_desc_task["description"] = ""
+        empty_desc_task["residual_body"] = ""
         rendered_empty = plan_ops._render_child_task_file(
             empty_desc_task, plan_context=plan_context,
         )
@@ -21099,6 +21262,143 @@ class TestDecomposePlan:
         assert "- **Reversion guidance:** none\n" in rendered_no_rev, (
             rendered_no_rev
         )
+
+    def test_render_child_carries_residual_body_through(self) -> None:
+        """BUG-152: a parent task whose load-bearing substance is authored
+        OUTSIDE recognized `**Marker:**` sections -- (a) as bare body prose
+        with no `**Description:**` marker, and (b) as a `Steps:` subsection /
+        numbered steps -- MUST carry that content into the rendered child's
+        `**Description:**` body, NOT be replaced by the `Auto-filled by
+        decompose-plan` boilerplate. Fails on `main` (residual dropped + masked
+        by boilerplate); passes after the fix.
+        """
+        # (a) Bare prose under the heading, no `**Description:**` marker.
+        bare_prose = (
+            "## TASK-007: Persist universe snapshot\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Files:**\n"
+            "  - src/snap.py (modify)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `pytest`\n"
+            "- **Acceptance criteria:**\n"
+            "  - the snapshot persists.\n"
+            "\n"
+            "For each symbol in the universe, call "
+            "record_observation(observation_kind='universe_snapshot', "
+            "symbol=sym) so the per-symbol snapshot is durably persisted.\n"
+        )
+        task_a = plan_ops._parse_task_block(bare_prose, level=2)
+        rendered_a = plan_ops._render_child_task_file(task_a, plan_context="ctx")
+        assert "record_observation(observation_kind='universe_snapshot'" in (
+            rendered_a
+        ), rendered_a
+        assert "Auto-filled by decompose-plan" not in rendered_a, rendered_a
+        # Round-trips: the child re-parses with the residual in its Description.
+        child_a = plan_ops._parse_task_block(rendered_a, level=3)
+        assert "record_observation" in (child_a.get("description") or ""), (
+            child_a.get("description")
+        )
+
+        # (b) A `Steps:` subsection authored as numbered steps, no Description.
+        steps_block = (
+            "## TASK-008: Wire the steps\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Files:**\n"
+            "  - src/loop.py (modify)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `pytest`\n"
+            "- **Acceptance criteria:**\n"
+            "  - the loop records each symbol.\n"
+            "\n"
+            "Steps:\n"
+            "1. Add the `universe_snapshot` enum member.\n"
+            "2. Wire `record_observation` into the per-symbol loop.\n"
+            "3. Persist the snapshot to the backtest store.\n"
+        )
+        task_b = plan_ops._parse_task_block(steps_block, level=2)
+        rendered_b = plan_ops._render_child_task_file(task_b, plan_context="ctx")
+        assert "Wire `record_observation` into the per-symbol loop." in (
+            rendered_b
+        ), rendered_b
+        assert "Persist the snapshot to the backtest store." in rendered_b, (
+            rendered_b
+        )
+        assert "Auto-filled by decompose-plan" not in rendered_b, rendered_b
+
+    def test_render_child_appends_residual_to_authored_description(self) -> None:
+        """BUG-152: when the parent has BOTH a `**Description:**` body AND
+        substantive content outside recognized markers, neither is lost -- the
+        authored description survives verbatim and the residual is appended.
+        """
+        block = (
+            "## TASK-009: Mixed body\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Files:**\n"
+            "  - src/x.py (modify)\n"
+            "- **Dependencies:** []\n"
+            "- **Test command:** `pytest`\n"
+            "- **Acceptance criteria:**\n"
+            "  - done.\n"
+            "\n"
+            "**Description:**\n"
+            "Authored intent paragraph for the task.\n"
+            "\n"
+            "Approach:\n"
+            "Do the orphaned-residual step that lives outside any marker.\n"
+        )
+        task = plan_ops._parse_task_block(block, level=2)
+        rendered = plan_ops._render_child_task_file(task, plan_context="ctx")
+        assert "Authored intent paragraph for the task." in rendered, rendered
+        assert "Do the orphaned-residual step that lives outside any marker." in (
+            rendered
+        ), rendered
+        assert "Auto-filled by decompose-plan" not in rendered, rendered
+
+    def test_render_child_carries_orphan_body_fence_after_metadata(self) -> None:
+        """BUG-152 / M1: when a parent task's ONLY orphaned substance is a bare
+        fenced code block standing as the first non-blank content immediately
+        after the metadata bullets (no surrounding prose, and the preceding
+        marker is NOT `**Test command:**`), the fence body MUST survive as
+        residual and be carried into the child `**Description:**` -- NOT swallowed
+        by the metadata consumer's `Test command` fence-skip and NOT masked by
+        the `Auto-filled by decompose-plan` boilerplate.
+
+        The metadata consumer skips a following fence ONLY for the standalone
+        `**Test command:**` form; a fence after any other marker is orphaned
+        substance. This fails if the fence-skip is ungated to `Test command`
+        (residual computes to '' -> boilerplate emitted); passes with the gate.
+        """
+        block = (
+            "## TASK-010: Orphan fence after metadata\n"
+            "\n"
+            "- **Status:** pending\n"
+            "- **Priority:** high\n"
+            "- **Files:**\n"
+            "  - src/x.py (modify)\n"
+            "- **Dependencies:** []\n"
+            "- **Acceptance criteria:**\n"
+            "  - the snippet is applied.\n"
+            "\n"
+            "```python\n"
+            "record_observation(observation_kind='universe_snapshot', symbol=sym)\n"
+            "```\n"
+        )
+        task = plan_ops._parse_task_block(block, level=2)
+        # The fence body is computed as residual, not silently dropped.
+        assert "record_observation(observation_kind='universe_snapshot'" in (
+            task.get("residual_body") or ""
+        ), task.get("residual_body")
+        rendered = plan_ops._render_child_task_file(task, plan_context="ctx")
+        assert "record_observation(observation_kind='universe_snapshot'" in (
+            rendered
+        ), rendered
+        assert "Auto-filled by decompose-plan" not in rendered, rendered
 
     def test_render_child_implementation_notes_round_trip(
         self, tmp_path: Path,

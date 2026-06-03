@@ -1,6 +1,6 @@
 ---
 bug_id: 152
-status: OPEN
+status: CLOSED
 group: DCMP-BODY
 severity: critical
 source_fix_id: manual
@@ -22,7 +22,7 @@ change_history: []
 
 # BUG-152: decompose drops parent task-body outside named markers; auto-fill hides it
 
-**Status:** OPEN
+**Status:** CLOSED
 **Severity:** critical
 **Group:** DCMP-BODY
 **Depends on:** none
@@ -79,3 +79,11 @@ Revert the `_decompose_plan` / `_parse_task_block` / `_render_child_task_file` a
 - **First decomposed:** 2026-06-03
 - **Group:** DCMP-BODY
 - **Absorbed from:** none
+
+## Run history
+
+### Run 20260603T020528 — CLOSED
+- **Stage:** D.3 commit
+- **Files changed:** plugins/plan-executor/scripts/plan_ops.py, tests/scripts/test_plan_ops.py, plugins/plan-executor/skills/implement-plan/SKILL.md, tests/fixtures/decomposer_inputs/orphan_body.md
+- **Reviewer verdict:** ship
+- **Reviewer advisories:** Re-review post-remediation (GAP-1 H2 lint coverage, GAP-2 SKILL operator-surfacing, M1 fence-after-metadata regression, N1 lockstep warn predicate). All 6 ACs PASS by execution: 43 targeted + 5 BUG-148/149 + 1092 full-suite pass / 0 fail; 7-case warn/carry lockstep sweep zero-divergence; no nits.

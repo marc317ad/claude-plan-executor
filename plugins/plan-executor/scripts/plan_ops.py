@@ -2974,6 +2974,126 @@ def _extract_prose_section(block: str, heading: str) -> str | None:
     return tail.strip() or None
 
 
+# Allow-list of `**Marker:**` field names `_parse_task_block` captures. The
+# residual-body guard (BUG-152) treats any substantive block content that is
+# NOT one of these recognized sections as un-captured parent body that would
+# otherwise be silently dropped by the decomposer.
+_RECOGNIZED_TASK_MARKERS = (
+    "Priority",
+    "Dependencies",
+    "Files",
+    "Acceptance criteria",
+    "Agent",
+    "Status",
+    "Test command",
+    "Description",
+    "Implementation notes",
+    "Reversion guidance",
+)
+
+
+def _compute_task_residual_body(block: str, level: int) -> str:
+    """Return the substantive task-body text NOT captured by any recognized
+    `**Marker:**` section (BUG-152).
+
+    The decomposer is an allow-list transformer: `_parse_task_block` captures
+    only the fixed `_RECOGNIZED_TASK_MARKERS` set. Anything else in the parent
+    block -- bare prose under the heading, a `Steps:` / `Approach:` subsection,
+    numbered/bulleted steps, an embedded fenced code block -- is consumed by
+    nothing and would be dropped. This helper strips the heading line and every
+    recognized marker section (metadata bullets with their nested sub-bullets,
+    fenced `Test command` bodies, and the `Description` / `Implementation notes`
+    prose paragraphs) and returns whatever substantive text remains, so callers
+    can carry it through or fail loud instead of dropping it silently.
+
+    Pure-whitespace residue, and residue consisting only of trivial leftover
+    horizontal rules / blank bullets, returns the empty string.
+    """
+    lines = block.splitlines()
+    heading_re = _task_header_re(level)
+    # A recognized `- **Marker:**` metadata bullet (inline or standalone).
+    marker_alt = "|".join(re.escape(m) for m in _RECOGNIZED_TASK_MARKERS)
+    metadata_marker_re = re.compile(
+        rf"^\s*-\s*\*\*({marker_alt}):\*\*", re.IGNORECASE,
+    )
+    # A paragraph-level prose marker (`**Description:**`, `**Implementation
+    # notes:**`) — body runs until the next paragraph-level `**Xyz:**` marker.
+    prose_marker_re = re.compile(
+        rf"^\*\*(?:{marker_alt}):\*\*", re.IGNORECASE,
+    )
+    any_para_marker_re = re.compile(r"^\*\*[^*]+:\*\*")
+    fence_open_re = re.compile(r"^[^\S\n]*(`{3,}|~{3,})")
+    residual: list[str] = []
+    idx = 0
+    n = len(lines)
+    while idx < n:
+        line = lines[idx]
+        # Drop the task heading line itself.
+        if heading_re.match(line):
+            idx += 1
+            continue
+        # Recognized metadata bullet: consume the bullet plus any deeper-
+        # indented continuation/sub-bullet lines and -- only for the standalone
+        # `Test command` form -- any immediately-following fenced block. A fence
+        # after any other marker is orphaned substance and must survive as
+        # residual (carried into the child Description / flagged), not swallowed.
+        metadata_match = metadata_marker_re.match(line)
+        if metadata_match:
+            is_test_command = metadata_match.group(1).strip().lower() == "test command"
+            base_indent = len(line) - len(line.lstrip(" \t"))
+            idx += 1
+            while idx < n:
+                nxt = lines[idx]
+                if not nxt.strip():
+                    idx += 1
+                    continue
+                nxt_indent = len(nxt) - len(nxt.lstrip(" \t"))
+                if is_test_command and fence_open_re.match(nxt):
+                    # Skip the fenced body to its closing fence.
+                    fence_tok = fence_open_re.match(nxt).group(1)
+                    fch = fence_tok[0]
+                    flen = len(fence_tok)
+                    close_re = re.compile(
+                        rf"^[^\S\n]*{re.escape(fch)}{{{flen},}}[^\S\n]*$"
+                    )
+                    idx += 1
+                    while idx < n and not close_re.match(lines[idx]):
+                        idx += 1
+                    if idx < n:
+                        idx += 1  # consume the closing fence
+                    continue
+                if nxt_indent > base_indent:
+                    idx += 1
+                    continue
+                break
+            continue
+        # Recognized prose section: consume the marker line plus its body up to
+        # the next paragraph-level `**Xyz:**` marker or a heading.
+        if prose_marker_re.match(line):
+            idx += 1
+            while idx < n:
+                nxt = lines[idx]
+                if any_para_marker_re.match(nxt) or heading_re.match(nxt):
+                    break
+                idx += 1
+            continue
+        residual.append(line)
+        idx += 1
+    # Treat residue made only of whitespace / horizontal rules / empty bullets
+    # as non-substantive (no real content was dropped).
+    substantive: list[str] = []
+    for ln in residual:
+        s = ln.strip()
+        if not s:
+            continue
+        if set(s) <= {"-", "*", "_", "=", " "}:
+            continue
+        substantive.append(s)
+    if not substantive:
+        return ""
+    return "\n".join(residual).strip()
+
+
 def _parse_task_block(
     markdown: str,
     level: int,
@@ -3054,6 +3174,10 @@ def _parse_task_block(
     description = _extract_prose_section(block, "Description")
     implementation_notes = _extract_prose_section(block, "Implementation notes")
     reversion_raw = _extract_metadata_field(block, "Reversion guidance")
+    # Residual body: any substantive content in the block NOT captured by a
+    # recognized `**Marker:**` section. Callers (the decomposer) carry it into
+    # the child Description or fail loud rather than dropping it (BUG-152).
+    residual_body = _compute_task_residual_body(block, level)
     return {
         "id": canonical_id,
         "raw_id": raw_id,
@@ -3069,6 +3193,7 @@ def _parse_task_block(
         "implementation_notes": implementation_notes,
         "reversion_guidance": reversion_raw,
         "status": status_raw,
+        "residual_body": residual_body,
     }
 
 
@@ -3352,12 +3477,29 @@ def _render_child_task_file(task: dict, *, plan_context: str | None = None) -> s
     # placeholder is a single short sentence — terse but non-empty,
     # which is the contract plan-review actually checks.
     description = (task.get("description") or "").strip()
+    # Residual body: substantive parent-block content not captured by any
+    # recognized `**Marker:**` section. Carry it into the child Description so
+    # it survives instead of being silently dropped (BUG-152, forward bias).
+    # When a Description body also exists, append the residual under a marker
+    # so neither is lost. When the Description is empty, the residual BECOMES
+    # the body -- the auto-fill boilerplate fires ONLY for a genuinely empty
+    # body with no residual content.
+    residual_body = (task.get("residual_body") or "").strip()
     if not description:
+        if residual_body:
+            description = residual_body
+        else:
+            description = (
+                f"{title}. (Auto-filled by decompose-plan; the source plan "
+                f"omitted a `**Description:**` body for TASK-{tid}. See the "
+                f"parent plan's `## Context` and `## Verification` sections "
+                f"for the full intent.)"
+            )
+    elif residual_body and residual_body not in description:
         description = (
-            f"{title}. (Auto-filled by decompose-plan; the source plan "
-            f"omitted a `**Description:**` body for TASK-{tid}. See the "
-            f"parent plan's `## Context` and `## Verification` sections "
-            f"for the full intent.)"
+            f"{description}\n\n"
+            f"Carried from source task body (not under a recognized marker):\n"
+            f"{residual_body}"
         )
     description_slot = f"\n{description}"
     # ---- Implementation notes: emitted UNCONDITIONALLY — when the source
@@ -3500,6 +3642,13 @@ def _decompose_plan(
     inferred_test_command = _infer_test_command_from_plan(plan_text)
     parent_verification_bullets = _extract_plan_verification_bullets(plan_text)
     defaults_applied: list[dict] = []
+    # Loud, operator-visible warnings DISTINCT from the benign `defaults_applied`
+    # routine-omission notes. A parent block carrying substantive body content
+    # outside any recognized `**Marker:**` section is data the allow-list
+    # transformer would otherwise drop; the renderer carries it into the child
+    # Description, and we surface a `residual_body_carried` warning here so the
+    # carry-through is auditable rather than silent (BUG-152).
+    warnings: list[dict] = []
     for task in parsed:
         tid = task["id"]
         if not task.get("priority"):
@@ -3549,7 +3698,44 @@ def _decompose_plan(
         # title-plus-rationale fallback inside `_render_child_task_file`
         # when the source omits the body; we record the substitution
         # here so operators can see the decomposer filled it in.
-        if not (task.get("description") or "").strip():
+        description_text = (task.get("description") or "").strip()
+        has_description = bool(description_text)
+        residual = (task.get("residual_body") or "").strip()
+        # Stay in LOCKSTEP with `_render_child_task_file`: the renderer only
+        # carries the residual when it is non-empty AND not already contained
+        # in the authored description (`elif residual_body and residual_body
+        # not in description`). Gate the warning on the same predicate so we
+        # never claim content "was carried" when the renderer appended nothing
+        # because it already lived in the Description (BUG-152, N1).
+        if residual and residual not in description_text:
+            # Substantive parent-block content sat outside every recognized
+            # marker. The renderer carries it into the child Description (it
+            # becomes the body when no Description was authored, else it is
+            # appended). This is NOT a routine omission -- emit a LOUD,
+            # operator-visible warning distinct from `defaults_applied` so an
+            # operator can audit the carry-through rather than the content
+            # evaporating into a clean-looking child (BUG-152).
+            warnings.append(
+                {
+                    "task_id": tid,
+                    "code": "residual_body_carried",
+                    "severity": "warning",
+                    "message": (
+                        f"TASK-{tid} had substantive body content outside any "
+                        f"recognized `**Marker:**` section; it was carried into "
+                        f"the child `**Description:**` "
+                        + (
+                            "(appended to the authored description)"
+                            if has_description
+                            else "(used as the description body)"
+                        )
+                        + ". Review the child to confirm nothing was lost."
+                    ),
+                }
+            )
+        elif not has_description:
+            # Genuinely empty body with no residual content: the renderer's
+            # title-plus-rationale auto-fill is a routine, non-lossy default.
             defaults_applied.append(
                 {
                     "task_id": tid,
@@ -3732,7 +3918,7 @@ def _decompose_plan(
         "task_count": len(parsed),
         "children": [c["file"] for c in chunks],
         "defaults_applied": defaults_applied,
-
+        "warnings": warnings,
     }
 
 def _read_stdin_text() -> str:
@@ -6315,6 +6501,45 @@ def _run_lint_plans(payload: dict) -> dict:
                 findings.append({'plan_file': rel_path, 'task_id': tid, 'code': 'missing-commit-done-event', 'message': f'plan marks TASK-{tid} as {status!r} but no commit_done event found in run log'})
             if tid not in feat_commit_ids:
                 findings.append({'plan_file': rel_path, 'task_id': tid, 'code': 'missing-feat-commit', 'message': f"plan marks TASK-{tid} as {status!r} but no 'feat(TASK-{tid}):' commit found"})
+        # orphaned_task_body (warning severity) runs on every task block,
+        # regardless of status: flag substantive body content sitting outside
+        # any recognized `**Marker:**` section, which the allow-list decomposer
+        # would silently drop. Catching it at plan-author time -- before
+        # decomposition -- is the pre-decompose gate (BUG-152). The model is
+        # ac_symbol_groundedness above. The residual check resolves each file's
+        # task heading level the way `_decompose_plan` does (H2 parent plans
+        # first, H3 fallback) so it fires on the real pre-decomposition input;
+        # `_split_task_blocks` above is H3-only and would never see an H2
+        # `## TASK-NNN:` parent block.
+        residual_level = 2
+        _, residual_blocks = _split_task_blocks_at_level(text, level=2)
+        if not residual_blocks:
+            residual_level = 3
+            _, residual_blocks = _split_task_blocks_at_level(text, level=3)
+        for res_raw_id, _res_title, res_block, _res_line in residual_blocks:
+            res_tid = _normalize_task_id(res_raw_id)
+            if res_tid is None:
+                continue
+            try:
+                res_rel_path = str(md.relative_to(anchor))
+            except ValueError:
+                res_rel_path = str(md)
+            residual_body = _compute_task_residual_body(res_block, level=residual_level)
+            if residual_body:
+                findings.append({
+                    'plan_file': res_rel_path,
+                    'task_id': res_tid,
+                    'code': 'orphaned_task_body',
+                    'message': (
+                        f"TASK-{res_tid} carries substantive body content outside "
+                        f"any recognized `**Marker:**` section "
+                        f"(e.g. a `Description`/`Steps`/`Approach` subsection or "
+                        f"bare prose); the decomposer captures only recognized "
+                        f"markers, so this content would be dropped. Move it "
+                        f"under `**Description:**` (or another recognized marker)."
+                    ),
+                    'severity': 'warning',
+                })
     result = {'scanned': scanned, 'done_tasks': done_tasks, 'findings': findings}
     # Warning-severity findings (ac_symbol_groundedness) must not change the
     # lint exit code; only blocking findings raise it.
