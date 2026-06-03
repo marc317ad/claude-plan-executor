@@ -6,3 +6,4 @@ __pycache__/
 venv/
 .venv/
 docs/plans/spans.jsonl
+docs/bugs/_run_lock.json
