@@ -1,6 +1,6 @@
 ---
 bug_id: 150
-status: OPEN
+status: CLOSED
 group: DECOMPOSE-CHILD-DROPS-IMPL-NOTES
 severity: minor
 source_fix_id: null
@@ -19,7 +19,7 @@ change_history: []
 
 # BUG-150: Codex implement and review prompts diverge on absent implementation-notes handling
 
-**Status:** OPEN
+**Status:** CLOSED
 **Severity:** minor
 **Group:** DECOMPOSE-CHILD-DROPS-IMPL-NOTES
 **Depends on:** none
@@ -39,3 +39,11 @@ Factor the sentinel-normalization into a small shared helper (e.g. _normalize_im
 ## Reversion guidance
 
 Revert the changes described in Recommended fix.
+
+## Run history
+
+### Run 20260603T020528 — CLOSED
+- **Stage:** D.3 commit
+- **Files changed:** plugins/plan-executor/scripts/plan_codex_dispatch.py, tests/scripts/test_codex_review_prompt.py
+- **Reviewer verdict:** ship
+- **Reviewer advisories:** Nits filed as follow-ups: description fallback at plan_codex_dispatch.py L692 still bare (none provided); sentinel set lacks n-a hyphen variant; plan_gemini_dispatch.py has the same divergence. Pre-existing unrelated test failure test_d5_dispatch_template_and_skill_forward_wrapper_checks noted for separate filing.

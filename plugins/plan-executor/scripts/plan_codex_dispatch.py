@@ -473,6 +473,13 @@ def parse_task_block(plan_text: str, task_id_arg: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_impl_notes(task: dict) -> str:
+    raw = task.get("implementation_notes") or ""
+    if raw.strip().lower() not in {"none", "n/a", ""}:
+        return raw
+    return "None provided -- follow existing patterns in the target files."
+
+
 def render_implement_prompt(
     task: dict,
     context: str,
@@ -482,12 +489,7 @@ def render_implement_prompt(
     plan_file: str | None = None,
 ) -> str:
     allowed = [normalize_file_path(f) for f in task["files"]]
-    _raw_impl_notes = task.get("implementation_notes") or ""
-    impl_notes = (
-        _raw_impl_notes
-        if _raw_impl_notes.strip().lower() not in {"none", "n/a", ""}
-        else "None provided -- follow existing patterns in the target files."
-    )
+    impl_notes = _normalize_impl_notes(task)
     context_block = context or "(no context provided)"
     ac_bullets = "\n".join(f"- {c}" for c in task["acceptance_criteria"]) or "- (none specified)"
     # TASK-009: optional pre-read excerpts. Resolved here (not in
@@ -688,7 +690,7 @@ def render_review_prompt(
     # TASK-027A: forward Description + Implementation notes so the reviewer
     # has the same "why this pattern here" context the implementer received.
     description = task.get("description") or "(none provided)"
-    impl_notes_text = task.get("implementation_notes") or "(none provided)"
+    impl_notes_text = _normalize_impl_notes(task)
     # TASK-009: pre-read excerpts apply to reviewers too — the reviewer
     # often needs the same windowed context as the implementer to judge
     # whether the diff lands inside the declared symbol/range.

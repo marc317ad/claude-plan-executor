@@ -120,7 +120,7 @@ def test_review_prompt_fallback_when_description_missing():
     }
     prompt = mod.render_review_prompt(task, "", "bugs", ["foo.py"])
     assert "Description:\n(none provided)" in prompt
-    assert "Implementation notes:\n(none provided)" in prompt
+    assert "Implementation notes:\nNone provided -- follow existing patterns in the target files." in prompt
 
 
 def test_symbol_verification_flags_missing_citation():
