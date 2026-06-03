@@ -1,7 +1,9 @@
 {
   "version": 1,
-  "next_id": 152,
-  "content_fingerprints": {},
+  "next_id": 153,
+  "content_fingerprints": {
+    "sha256:manual-152": 152
+  },
   "groups": {
     "BASH-DISPATCH-MIGRATION": {
       "bug_ids": [
@@ -13,6 +15,17 @@
       "external_deps_into_group": [],
       "created_at": "2026-04-28",
       "updated_at": "2026-04-28"
+    },
+    "DCMP-BODY": {
+      "bug_ids": [
+        152
+      ],
+      "primary_subsystem": "dcmp-body",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-06-03",
+      "updated_at": "2026-06-03"
     },
     "DECOMPOSE-CHILD-DROPS-IMPL-NOTES": {
       "bug_ids": [
@@ -171,6 +184,26 @@
           }
         }
       }
+    },
+    {
+      "event": "manifest-sync",
+      "synced_at": "2026-06-03",
+      "bug_count": 11,
+      "next_id": 153,
+      "groups_count": 9,
+      "forced": false,
+      "drift_summary": {
+        "added_bugs": [
+          "152"
+        ],
+        "removed_bugs": [],
+        "severity_changes": {},
+        "added_groups": [
+          "DCMP-BODY"
+        ],
+        "removed_groups": [],
+        "modified_groups": {}
+      }
     }
   ],
   "bug_severities": {
@@ -183,6 +216,7 @@
     "148": "major",
     "149": "major",
     "150": "minor",
-    "151": "minor"
+    "151": "minor",
+    "152": "critical"
   }
 }
