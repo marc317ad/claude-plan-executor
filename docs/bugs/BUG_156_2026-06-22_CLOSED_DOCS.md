@@ -1,6 +1,6 @@
 ---
 bug_id: 156
-status: OPEN
+status: CLOSED
 group: DOCS
 severity: minor
 source_fix_id: null
@@ -19,7 +19,7 @@ change_history: []
 
 # BUG-156: Dangling section reference to non-existent heading in SKILL.md
 
-**Status:** OPEN
+**Status:** CLOSED
 **Severity:** minor
 **Group:** DOCS
 **Depends on:** none
@@ -39,3 +39,11 @@ Re-point the reference to the Command idioms section (or Dispatch rules rule 5, 
 ## Reversion guidance
 
 Revert the changes described in Recommended fix.
+
+## Run history
+
+### Run 20260622T155202 — CLOSED
+- **Stage:** D.3 commit
+- **Files changed:** plugins/plan-executor/skills/implement-plan/SKILL.md
+- **Reviewer verdict:** ship
+- **Reviewer advisories:** No in-scope findings (Critical/Major/Minor all none). One pre-existing nit (L450 timeout formula understates inputs) filed separately as a new bug.
