@@ -1,6 +1,6 @@
 ---
 bug_id: 153
-status: OPEN
+status: CLOSED
 group: CODEX
 severity: important
 source_fix_id: manual
@@ -23,7 +23,7 @@ change_history: []
 
 # BUG-153: Codex implementer envelope lost when the orchestrator yields the turn
 
-**Status:** OPEN
+**Status:** CLOSED
 **Severity:** important
 **Group:** CODEX
 **Depends on:** none
@@ -69,3 +69,11 @@ Revert the SKILL.md and dispatch-templates.md wording (the synchronous-await idi
 - **First decomposed:** 2026-06-22
 - **Group:** CODEX
 - **Absorbed from:** none
+
+## Run history
+
+### Run 20260622T140440 — CLOSED
+- **Stage:** D.3 commit
+- **Files changed:** plugins/plan-executor/skills/implement-plan/SKILL.md, plugins/plan-executor/scripts/plan_ops.py, plugins/plan-executor/skills/implement-plan/dispatch-templates.md
+- **Reviewer verdict:** ship
+- **Reviewer advisories:** Re-review verdict ship; all D.1 findings closed. Deferred out-of-scope nits: SKILL.md D.2b-unreachability clause still lists 2 of 3 claude_only triggers (cosmetic, conclusion still correct); a SKILL.md bullet references a non-existent section heading and should point to Command idioms / dispatch rule 5 (pre-existing).

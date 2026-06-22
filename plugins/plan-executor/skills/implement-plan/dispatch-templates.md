@@ -120,7 +120,7 @@ Dispatched after schedule persist, before any batch runs. Codex is the reviewer 
 
 Router output today: `{"action": "dispatch_codex_reviewer", "args": {"dispatch_context": {"allow_gaps_demotion": <bool>}}}`. The orchestrator supplies `schedule_path`, `repo_root`, and `timeout` from its own Phase 0 / Phase 1 state — they are NOT carried in the router envelope.
 
-Bash command template:
+Bash command template (a blocking shell-out — dispatch with `run_in_background: true` and synchronously await its envelope in the SAME turn via `TaskOutput{block: true, timeout: 600000}` per SKILL.md §Dispatch rules rule 8; the 180s default normally stays under the foreground cap, but never yield the turn before the plan-review envelope is in hand):
 
 ```
 {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" plan-review \
@@ -206,7 +206,7 @@ printf '%s' "<agent_output_extracted_json>" | $PYTHON "${CLAUDE_PLUGIN_ROOT}/scr
 
 Dispatched in place of the Codex wrapper above when `--allow-gemini-fallback` is set AND `plan_ops._route_plan_review(...)` returns `"gemini"` — i.e., either Codex was unavailable from preflight (`codex_available=false`) AND Gemini is available, OR a Codex `plan-review` dispatch returned `outcome ∈ {timeout, parse_error, failure}` AND Gemini is available. See SKILL.md §Phase 1.5 for the truth table. The verdict-routing ladder, the `--codex-plan-review-binding` mutex, the auto-revise `plan-author` path, and the `--allow-gaps` demotion all consume the parsed verdict — they are agnostic to which family produced it. Run-log events on this path carry `reviewer:"gemini"` and the orchestrator MUST emit `plan_review_fallback_used {from:"codex", to:"gemini", reason:<reason>}` BEFORE the matching `plan_review_start`.
 
-Bash command template:
+Bash command template (a blocking shell-out — dispatch with `run_in_background: true` and synchronously await its envelope in the SAME turn via `TaskOutput{block: true, timeout: 600000}` per SKILL.md §Dispatch rules rule 8; never yield the turn before the plan-review envelope is in hand):
 
 ```
 {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_gemini_dispatch.py" plan-review \
@@ -540,7 +540,9 @@ emits `{reads, symbols, errors}`. The orchestrator either renders the structured
 
 ## Phase B-Codex — implement via wrapper (Codex tier)
 
-Bash command template — orchestrator issues this directly, wrapper fully owns Codex session lifecycle:
+Bash command template — orchestrator issues this directly, wrapper fully owns Codex session lifecycle.
+
+**Synchronous-await (BUG-153).** This is a blocking Bash shell-out that can run up to 1800s — well past the foreground cap. Issue it with `run_in_background: true` and await its envelope in the SAME turn via `TaskOutput{block: true, timeout: 600000}` (re-block on the same task id if the wrapper has not `completed` when the window elapses) per SKILL.md §Dispatch rules rule 8. Never end the turn or yield mid-batch before the envelope is in hand: a resumed session cannot reattach to the in-flight subprocess stdout and the envelope reads empty (0 bytes).
 
 ```
 {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" implement \
@@ -580,7 +582,7 @@ Worked examples (terse, synthetic):
 
 **`target_task_id` (TASK-007).** Pass `--target-task-id <NNN>` to the wrapper for shared-file children (child plan declares >1 `### TASK-NNN:` H3 heading). The wrapper's `render_review_prompt` calls `plan_ops.render_target_task_id_injection(plan_text, target_task_id, plan_file=...)` and prepends the disambiguator line per §`target_task_id` auto-injection rule. Omitting `--target-task-id` when the child file carries >1 heading raises `MissingTargetTaskIdError` and the wrapper emits a `failure` envelope.
 
-Bash command template:
+Bash command template (a blocking shell-out — dispatch with `run_in_background: true` and synchronously await its envelope in the SAME turn via `TaskOutput{block: true, timeout: 600000}` per SKILL.md §Dispatch rules rule 8; never yield the turn before the reviewer envelope is in hand):
 
 ```
 {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_codex_dispatch.py" review \
@@ -604,7 +606,7 @@ Wrapper returns `parsed.verdict ∈ {clean, minor-findings, needs-rework}` per `
 
 **`target_task_id` (TASK-007).** Same disambiguator semantics as Phase D-Codex above. Pass `--target-task-id <NNN>` to the wrapper for shared-file children; the Gemini wrapper's `render_review_prompt` honors the flag identically. Omitting it for a >1-heading child file emits a `failure` envelope.
 
-Bash command template (parallel to Phase D-Codex; the same flag set, swapping the Codex wrapper script for the Gemini wrapper script):
+Bash command template (parallel to Phase D-Codex; the same flag set, swapping the Codex wrapper script for the Gemini wrapper script). Same synchronous-await contract: dispatch with `run_in_background: true` and await its envelope in the SAME turn via `TaskOutput{block: true, timeout: 600000}` per SKILL.md §Dispatch rules rule 8; never yield the turn before the reviewer envelope is in hand:
 
 ```
 {{python_path}} "${CLAUDE_PLUGIN_ROOT}/scripts/plan_gemini_dispatch.py" review \

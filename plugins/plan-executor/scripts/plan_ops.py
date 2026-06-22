@@ -6612,6 +6612,7 @@ def _args_to_payload_preflight(args: argparse.Namespace) -> dict:
         "strict_branch": args.strict_branch,
         "strict_scope": args.strict_scope,
         "unattended_revert_policy": getattr(args, "unattended_revert_policy", "pause"),
+        "allow_codex_under_non_interactive": getattr(args, "allow_codex_under_non_interactive", False),
     }
     return payload
 
@@ -6716,6 +6717,33 @@ def _run_preflight(payload: dict) -> dict:
                 dirty['source_blocking'].append(p)
     codex_available = shutil.which('codex') is not None
     gemini_available = _resolve_gemini_available()
+    # BUG-153: a non-interactive / automated drive (e.g. the autonomous
+    # claude -w worktree-run drive) cannot safely yield the turn mid-batch
+    # to await a Bash shell-out, so an in-flight Codex implementer/reviewer
+    # subprocess bound to the prior turn's tool call is lost on resume and
+    # its envelope reads empty (0 bytes). Reuse the exact non-TTY stdin
+    # signal already used for $UNATTENDED_REVERT_POLICY above. Unless the
+    # operator explicitly opts in (--allow-codex-under-non-interactive),
+    # force-prefer the in-process Claude implementer under such a drive by
+    # echoing a codex_under_non_interactive_disallowed signal the
+    # orchestrator binds to claude_only=true (mirroring the existing
+    # codex_available=false override), instead of silently producing an
+    # empty envelope.
+    non_interactive_drive = not sys.stdin.isatty()
+    allow_codex_non_interactive = bool(payload.get('allow_codex_under_non_interactive', False))
+    codex_under_non_interactive_disallowed = (
+        non_interactive_drive and codex_available and not allow_codex_non_interactive
+    )
+    if codex_under_non_interactive_disallowed:
+        warnings.append(
+            'non-interactive drive detected (stdin is not a TTY): Codex shell-out '
+            'is unsafe because the orchestrator cannot yield the turn mid-batch to '
+            'await the wrapper subprocess (BUG-153). Auto-preferring the in-process '
+            'Claude implementer (bind claude_only=true). Pass '
+            '--allow-codex-under-non-interactive to override after confirming the '
+            'driver awaits dispatches synchronously in the same turn (run_in_background '
+            '+ TaskOutput{block:true}).'
+        )
     sha_cp = _git(['rev-parse', 'HEAD'])
     starting_sha = sha_cp.stdout.strip() or ''
     branch_cp = _git(['rev-parse', '--abbrev-ref', 'HEAD'])
@@ -6726,7 +6754,7 @@ def _run_preflight(payload: dict) -> dict:
         pass_flag = False
     if payload['strict_branch'] and (not base_branch_match):
         pass_flag = False
-    result = {'pass': pass_flag, 'starting_sha': starting_sha, 'run_id': _run_id(), 'codex_available': codex_available, 'gemini_available': gemini_available, 'dirty_files': dirty, 'scope_warnings': warnings, 'base_branch': base_branch, 'current_branch': current_branch, 'base_branch_match': base_branch_match, 'python_path': _resolve_python(), 'unattended_revert_policy': unattended_revert_policy}
+    result = {'pass': pass_flag, 'starting_sha': starting_sha, 'run_id': _run_id(), 'codex_available': codex_available, 'gemini_available': gemini_available, 'non_interactive_drive': non_interactive_drive, 'codex_under_non_interactive_disallowed': codex_under_non_interactive_disallowed, 'dirty_files': dirty, 'scope_warnings': warnings, 'base_branch': base_branch, 'current_branch': current_branch, 'base_branch_match': base_branch_match, 'python_path': _resolve_python(), 'unattended_revert_policy': unattended_revert_policy}
     if not pass_flag:
         return _result(result, exit_code=1)
     return _result(result, exit_code=0)
@@ -14489,6 +14517,22 @@ def build_parser() -> argparse.ArgumentParser:
             "resolved value is echoed back on the JSON envelope as "
             "unattended_revert_policy so the orchestrator can pin it as "
             "$UNATTENDED_REVERT_POLICY for the rest of the run."
+        ),
+    )
+    p_pre.add_argument(
+        "--allow-codex-under-non-interactive",
+        action="store_true",
+        help=(
+            "Opt in to Codex (and other Bash-shell-out) implementer/reviewer "
+            "dispatch even when stdin is not a TTY (a non-interactive / automated "
+            "drive). Without this flag, a non-interactive drive sets "
+            "codex_under_non_interactive_disallowed=true on the envelope so the "
+            "orchestrator auto-prefers the in-process Claude implementer "
+            "(bind claude_only=true), because a non-interactive driver cannot "
+            "safely yield the turn mid-batch to await the wrapper subprocess "
+            "(BUG-153). Only pass this flag when the driver awaits dispatches "
+            "synchronously in the same turn via run_in_background + "
+            "TaskOutput{block:true}."
         ),
     )
     _add_json(p_pre)
