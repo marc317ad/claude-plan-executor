@@ -1,6 +1,6 @@
 ---
 bug_id: 153
-status: OPEN
+status: CLOSED
 group: CODEX
 severity: important
 source_fix_id: manual
@@ -23,7 +23,7 @@ change_history: []
 
 # BUG-153: Codex implementer envelope lost when the orchestrator yields the turn
 
-**Status:** OPEN
+**Status:** CLOSED
 **Severity:** important
 **Group:** CODEX
 **Depends on:** none
@@ -69,3 +69,18 @@ Revert the SKILL.md and dispatch-templates.md wording (the synchronous-await idi
 - **First decomposed:** 2026-06-22
 - **Group:** CODEX
 - **Absorbed from:** none
+
+## Run history
+
+### Run 20260622T140440 — CLOSED
+- **Stage:** D.3 commit
+- **Files changed:** plugins/plan-executor/skills/implement-plan/SKILL.md, plugins/plan-executor/scripts/plan_ops.py, plugins/plan-executor/skills/implement-plan/dispatch-templates.md
+- **Reviewer verdict:** ship
+- **Reviewer advisories:** Re-review verdict ship; all D.1 findings closed. Deferred out-of-scope nits: SKILL.md D.2b-unreachability clause still lists 2 of 3 claude_only triggers (cosmetic, conclusion still correct); a SKILL.md bullet references a non-existent section heading and should point to Command idioms / dispatch rule 5 (pre-existing).
+
+### Run 20260622T140440 — CORRECTION (post-close, un-deprecate Codex)
+- **Trigger:** Maintainer review. The original fix's preflight guard (recommended-fix part b) auto-preferred the in-process Claude implementer under *any* non-interactive (non-TTY) drive, binding `claude_only=true` and forbidding all Codex shell-outs — de-facto deprecating Codex headless. Codex is used deliberately for budget/token reasons; the intent was to fix the headless *execution* defect, not reroute away from Codex.
+- **Change:** Removed the reroute apparatus from SKILL.md + plan_ops.py — `codex_under_non_interactive_disallowed`, the `--allow-codex-under-non-interactive` opt-in, the third `claude_only` disjunct, the Phase 1 Step 2/3 agent-rewrite co-triggers, the loud-banner discriminator, and the `--codex-only` precedence prose. **Kept** rule 8 (the `run_in_background` + `TaskOutput{block:true}` synchronous-await idiom — the actual fix) and restated it as unconditional for every Codex/Gemini Bash shell-out in all modes (never yield mid-batch). **Kept** `non_interactive_drive` as an advisory-only preflight signal (no routing effect). `dispatch-templates.md` await notes unchanged.
+- **Net effect:** Codex runs in all modes (interactive and headless); the headless envelope-loss bug stays closed via the in-turn await idiom, NOT by rerouting to Claude.
+- **Files changed:** plugins/plan-executor/skills/implement-plan/SKILL.md, plugins/plan-executor/scripts/plan_ops.py
+- **Reviewer verdict:** ship (clean — apparatus fully + consistently removed, rule 8 intact and still closes the bug, Codex routing preserved, plan_ops.py compiles, argparse rejects the removed flag).

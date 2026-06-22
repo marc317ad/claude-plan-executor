@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 154,
+  "next_id": 158,
   "content_fingerprints": {
     "sha256:manual-152": 152,
     "sha256:manual-153": 153
@@ -62,6 +62,18 @@
       "external_deps_into_group": [],
       "created_at": "2026-05-30",
       "updated_at": "2026-05-30"
+    },
+    "DOCS": {
+      "bug_ids": [
+        156,
+        157
+      ],
+      "primary_subsystem": "docs",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-06-22",
+      "updated_at": "2026-06-22"
     },
     "IMP-PLAN": {
       "bug_ids": [
@@ -236,6 +248,50 @@
         "removed_groups": [],
         "modified_groups": {}
       }
+    },
+    {
+      "event": "manifest-sync",
+      "synced_at": "2026-06-22",
+      "bug_count": 13,
+      "next_id": 157,
+      "groups_count": 11,
+      "drift_summary": {
+        "added_bugs": [
+          "156"
+        ],
+        "removed_bugs": [],
+        "severity_changes": {},
+        "added_groups": [
+          "DOCS"
+        ],
+        "removed_groups": [],
+        "modified_groups": {}
+      }
+    },
+    {
+      "event": "manifest-sync",
+      "synced_at": "2026-06-22",
+      "bug_count": 14,
+      "next_id": 158,
+      "groups_count": 11,
+      "forced": false,
+      "drift_summary": {
+        "added_bugs": [
+          "157"
+        ],
+        "removed_bugs": [],
+        "severity_changes": {},
+        "added_groups": [],
+        "removed_groups": [],
+        "modified_groups": {
+          "DOCS": {
+            "added": [
+              157
+            ],
+            "removed": []
+          }
+        }
+      }
     }
   ],
   "bug_severities": {
@@ -250,6 +306,8 @@
     "150": "minor",
     "151": "minor",
     "152": "critical",
-    "153": "important"
+    "153": "important",
+    "156": "minor",
+    "157": "minor"
   }
 }

@@ -6716,6 +6716,16 @@ def _run_preflight(payload: dict) -> dict:
                 dirty['source_blocking'].append(p)
     codex_available = shutil.which('codex') is not None
     gemini_available = _resolve_gemini_available()
+    # BUG-153: detect a non-interactive / automated drive (e.g. the autonomous
+    # claude -w worktree-run drive) from the same non-TTY stdin signal already
+    # used for $UNATTENDED_REVERT_POLICY above. This is an ADVISORY signal only
+    # (useful for logging and as a reminder that the orchestrator MUST apply the
+    # SKILL §Dispatch rules rule 8 synchronous-await idiom for every Codex/Gemini
+    # Bash shell-out). It does NOT disable or reroute Codex: with the await idiom
+    # in force (dispatch run_in_background + block via TaskOutput{block:true} in
+    # the same turn, never yield mid-batch), a Codex shell-out is safe headless,
+    # so Codex routing is preserved in all modes.
+    non_interactive_drive = not sys.stdin.isatty()
     sha_cp = _git(['rev-parse', 'HEAD'])
     starting_sha = sha_cp.stdout.strip() or ''
     branch_cp = _git(['rev-parse', '--abbrev-ref', 'HEAD'])
@@ -6726,7 +6736,7 @@ def _run_preflight(payload: dict) -> dict:
         pass_flag = False
     if payload['strict_branch'] and (not base_branch_match):
         pass_flag = False
-    result = {'pass': pass_flag, 'starting_sha': starting_sha, 'run_id': _run_id(), 'codex_available': codex_available, 'gemini_available': gemini_available, 'dirty_files': dirty, 'scope_warnings': warnings, 'base_branch': base_branch, 'current_branch': current_branch, 'base_branch_match': base_branch_match, 'python_path': _resolve_python(), 'unattended_revert_policy': unattended_revert_policy}
+    result = {'pass': pass_flag, 'starting_sha': starting_sha, 'run_id': _run_id(), 'codex_available': codex_available, 'gemini_available': gemini_available, 'non_interactive_drive': non_interactive_drive, 'dirty_files': dirty, 'scope_warnings': warnings, 'base_branch': base_branch, 'current_branch': current_branch, 'base_branch_match': base_branch_match, 'python_path': _resolve_python(), 'unattended_revert_policy': unattended_revert_policy}
     if not pass_flag:
         return _result(result, exit_code=1)
     return _result(result, exit_code=0)
