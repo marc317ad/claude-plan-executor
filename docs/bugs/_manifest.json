@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 157,
+  "next_id": 158,
   "content_fingerprints": {
     "sha256:manual-152": 152,
     "sha256:manual-153": 153
@@ -65,7 +65,8 @@
     },
     "DOCS": {
       "bug_ids": [
-        156
+        156,
+        157
       ],
       "primary_subsystem": "docs",
       "subsystem_distribution": {},
@@ -266,6 +267,31 @@
         "removed_groups": [],
         "modified_groups": {}
       }
+    },
+    {
+      "event": "manifest-sync",
+      "synced_at": "2026-06-22",
+      "bug_count": 14,
+      "next_id": 158,
+      "groups_count": 11,
+      "forced": false,
+      "drift_summary": {
+        "added_bugs": [
+          "157"
+        ],
+        "removed_bugs": [],
+        "severity_changes": {},
+        "added_groups": [],
+        "removed_groups": [],
+        "modified_groups": {
+          "DOCS": {
+            "added": [
+              157
+            ],
+            "removed": []
+          }
+        }
+      }
     }
   ],
   "bug_severities": {
@@ -281,6 +307,7 @@
     "151": "minor",
     "152": "critical",
     "153": "important",
-    "156": "minor"
+    "156": "minor",
+    "157": "minor"
   }
 }
