@@ -1,6 +1,6 @@
 ---
 bug_id: 157
-status: OPEN
+status: CLOSED
 group: DOCS
 severity: minor
 source_fix_id: null
@@ -19,7 +19,7 @@ change_history: []
 
 # BUG-157: Phase B Codex bullet understates timeout inputs vs Dispatch rules rule 5
 
-**Status:** OPEN
+**Status:** CLOSED
 **Severity:** minor
 **Group:** DOCS
 **Depends on:** none
@@ -39,3 +39,11 @@ Expand the parenthetical to match rule 5's vocabulary, e.g. 'Wrapper computes th
 ## Reversion guidance
 
 Revert the changes described in Recommended fix.
+
+## Run history
+
+### Run 20260622T191639 — CLOSED
+- **Stage:** D.3 commit
+- **Files changed:** plugins/plan-executor/skills/implement-plan/SKILL.md
+- **Reviewer verdict:** ship
+- **Reviewer advisories:** No findings (Critical/Major/Minor/Nits all none); umbrella phrase 'other task-shape signals' adjudicated accurate against rule 5, no further enumeration needed.
