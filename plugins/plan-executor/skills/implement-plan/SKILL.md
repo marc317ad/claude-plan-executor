@@ -493,6 +493,7 @@ Before classifying a Codex `implement` failure with `cause: independent_test_run
 - **Target-passes** (`divergence: true`): treat as success. Handler appends `sandbox_divergence` event with sandbox + target captures (truncated at 32 KB). Next `commit-task` MUST pass `--sandbox-divergence-tag`. Phase D proceeds as if the implementer succeeded.
 - **Target-fails** (`divergence: false, applicable: true`): real failure; existing path (Codex→Claude fallback OR `fail-task`) unchanged.
 - **Non-matching** (`applicable: false`): no-op; existing path unchanged.
+- **Malformed command** (`divergence: false, applicable: true, command_malformed: true`): the sandbox test failed with a shell *syntax error* (exit 2), so the declared `Test command:` is unrunnable, not environment-divergent — the target re-run only passed because a different (bare) string was supplied. Do NOT pass `--sandbox-divergence-tag`; treat as a real failure and fix the `Test command:`. A `Test command:` must be a **bare runnable command** — no surrounding backticks and no trailing parenthetical annotation; under `shell=True` (`/bin/sh` = dash) those are a syntax error (BUG-158). Build-time `lint-plans` surfaces this shape as `test_command_shell_hazard`.
 
 The `[sandbox-divergence]` tag is informational and does NOT relax the reviewer-verdict whitelist. `--reviewer none` remains the final-resort override; prefer the auto-validate branch when divergence is the cause. End-of-run summary surfaces affected tasks via `run-summary --section sandbox-divergences`.
 

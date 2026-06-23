@@ -24151,6 +24151,79 @@ class TestAutoValidateDivergence:
         assert ev["task_id"] == "027C"
         assert "sandbox_divergence" in ev
 
+    def test_sandbox_shell_syntax_error_withholds_escape_hatch(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """BUG-158: a sandbox shell *syntax error* (exit 2) means the declared
+        Test command is malformed, not environment-divergent — the escape hatch
+        is withheld even though the target re-run passes (it ran a different,
+        bare string). divergence=false, command_malformed=true, no event."""
+        envelope = self._envelope()
+        envelope["sandbox_test_exit_code"] = 2
+        envelope["sandbox_test_stderr"] = (
+            '/bin/sh: 1: Syntax error: word unexpected (expecting ")")\n'
+        )
+        envelope["sandbox_test_command"] = "`pytest foo` (smoke subset)"
+        env_file = tmp_git_repo / "envelope.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        cp = _run(
+            "auto-validate-divergence",
+            "--envelope-file", str(env_file),
+            "--test-command", "true",  # bare command passes in target env
+            "--repo-root", str(tmp_git_repo),
+            "--run-id", "R-MALFORMED",
+            "--task-id", "027C",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        assert body["divergence"] is False, body
+        assert body["applicable"] is True, body
+        assert body["command_malformed"] is True, body
+        assert body["sandbox_divergence"] is None, body
+        assert "reason" in body and "syntax error" in body["reason"].lower(), body
+        # No sandbox_divergence event written on the withheld path.
+        log_path = tmp_git_repo / "docs" / "plans" / "_run_log.jsonl"
+        if log_path.is_file():
+            events = [
+                ln
+                for ln in log_path.read_text(encoding="utf-8").splitlines()
+                if '"sandbox_divergence"' in ln and "R-MALFORMED" in ln
+            ]
+            assert not events, events
+
+    def test_test_subject_syntax_error_not_withheld(
+        self, tmp_git_repo: Path,
+    ) -> None:
+        """BUG-158 review #3: a sandbox failure that exits 2 with "syntax error"
+        in the TEST's OWN output (no shell `<shell>:` prefix — e.g. a parser
+        under test) is NOT a malformed command. The guard must NOT withhold it;
+        the normal divergence path applies."""
+        envelope = self._envelope()
+        envelope["sandbox_test_exit_code"] = 2
+        envelope["sandbox_test_stderr"] = "myparser: syntax error at line 5\n"
+        envelope["sandbox_test_command"] = "venv/bin/pytest tests/parser_test.py"
+        env_file = tmp_git_repo / "envelope.json"
+        env_file.write_text(json.dumps(envelope), encoding="utf-8")
+
+        cp = _run(
+            "auto-validate-divergence",
+            "--envelope-file", str(env_file),
+            "--test-command", "true",  # target passes
+            "--repo-root", str(tmp_git_repo),
+            "--run-id", "R-SUBJECT",
+            "--task-id", "027C",
+            "--json",
+            cwd=tmp_git_repo,
+        )
+        assert cp.returncode == 0, (cp.stdout, cp.stderr)
+        body = _parse_json(cp)
+        assert body["divergence"] is True, body
+        assert body.get("command_malformed") is not True, body
+        assert body["sandbox_divergence"] is not None, body
+
     def test_independent_test_run_target_fails_emits_no_divergence(
         self, tmp_git_repo: Path,
     ) -> None:

@@ -56,6 +56,7 @@ from _plan_paths import (  # noqa: E402
     is_commit_always_ignore,
     is_protected_path,
     normalize_files_entry,
+    normalize_test_command,
 )
 
 def _load_plan_config() -> dict:
@@ -3134,19 +3135,17 @@ def _parse_task_block(
         block = markdown
     normalized_id = _normalize_task_id(raw_id)
     canonical_id = normalized_id if normalized_id is not None else raw_id
-    # Extract the inline `Test command` in stripped form (strip surrounding
-    # backticks if present — downstream consumers want the bare command).
+    # Extract the inline `Test command` in stripped form. `normalize_test_command`
+    # (shared with the wrapper via `_plan_paths`) strips the markdown backtick
+    # wrapper even when a trailing annotation follows it and drops a trailing
+    # parenthetical annotation — downstream consumers run the bare command under
+    # `shell=True`, where surviving backticks/parens are a dash syntax error
+    # (BUG-158). The old both-ends-anchored strip lived here and was skipped
+    # whenever any trailing text moved the closing backtick off the end.
     test_raw = _extract_metadata_field(block, "Test command")
     test_command: str | None = None
     if test_raw is not None:
-        test_unwrapped = test_raw.strip()
-        if (
-            len(test_unwrapped) >= 2
-            and test_unwrapped.startswith("`")
-            and test_unwrapped.endswith("`")
-        ):
-            test_unwrapped = test_unwrapped[1:-1]
-        test_command = test_unwrapped
+        test_command = normalize_test_command(test_raw)
     else:
         # No inline value → the marker may be standalone with a fenced
         # multi-line command block beneath it (the form the whole-plan
@@ -6487,6 +6486,36 @@ def _run_lint_plans(payload: dict) -> dict:
                         ),
                         'severity': 'warning',
                     })
+            # test_command_shell_hazard (warning severity): a Test command that,
+            # after normalization, still carries a shell hazard — a surviving
+            # backtick or an unbalanced parenthesis — will syntax-error under
+            # `shell=True` (/bin/sh = dash) in the wrapper's independent test run
+            # (BUG-158). Catch it at authoring time. Runs on every block
+            # regardless of status, like ac_symbol_groundedness above.
+            test_raw = _extract_metadata_field(block, "Test command")
+            if test_raw is not None:
+                norm = normalize_test_command(test_raw)
+                norm_l = norm.lower()
+                if norm and norm_l != "none" and not norm_l.startswith("deferred"):
+                    hazard = None
+                    if "`" in norm:
+                        hazard = "a surviving backtick"
+                    elif norm.count("(") != norm.count(")"):
+                        hazard = "an unbalanced parenthesis"
+                    if hazard:
+                        findings.append({
+                            'plan_file': rel_path,
+                            'task_id': tid,
+                            'code': 'test_command_shell_hazard',
+                            'message': (
+                                f"Test command still contains {hazard} after "
+                                f"normalization; it will fail under shell=True "
+                                f"(/bin/sh = dash). Write it as a bare "
+                                f"backtick-wrapped command with no trailing "
+                                f"annotation."
+                            ),
+                            'severity': 'warning',
+                        })
             if not status_m:
                 continue
             status = status_m.group(2).strip().lower()
@@ -15655,6 +15684,43 @@ def _run_auto_validate_divergence(payload: dict) -> dict:
             return s or ''
         return encoded[-cap:].decode('utf-8', errors='replace')
     target_test = {'result': 'passed' if target_passed else 'failed', 'exit_code': target_exit, 'stdout_tail': _tail(target_stdout), 'stderr_tail': _tail(target_stderr), 'command': test_cmd}
+    # BUG-158: a shell *syntax error* in the sandbox run (dash exit code 2 with
+    # "Syntax error" in stderr) means the command string itself was malformed —
+    # it never executed. A malformed string fails identically in every
+    # environment, so a sandbox syntax-error paired with a passing target re-run
+    # is NOT an environment divergence; it means the two sides ran DIFFERENT
+    # command strings (a parser/normalization divergence — the wrapper ran the
+    # dirty literal while the orchestrator supplied the bare command). Withhold
+    # the escape hatch so the real defect surfaces instead of being laundered
+    # into a [sandbox-divergence] commit.
+    sandbox_exit = envelope.get('sandbox_test_exit_code')
+    sandbox_stderr_l = (envelope.get('sandbox_test_stderr') or '').lower()
+    # Narrow to a SHELL-emitted syntax error (`/bin/sh: 1: syntax error ...`,
+    # `bash: ... syntax error`), not a test that merely prints "syntax error"
+    # in its own output, e.g. a parser/compiler under test (BUG-158 review
+    # finding #3). dash exits 2 on a parse error; we additionally require the
+    # shell's own `<shell>:` error prefix on the same line.
+    sandbox_command_malformed = (
+        sandbox_exit == 2
+        and re.search(r'(?:/bin/)?(?:ba|da)?sh:.*syntax error', sandbox_stderr_l) is not None
+    )
+    if target_passed and sandbox_command_malformed:
+        return _result({
+            'divergence': False,
+            'applicable': True,
+            'task_id': task_id,
+            'target_test': target_test,
+            'sandbox_divergence': None,
+            'command_malformed': True,
+            'reason': (
+                'sandbox test run failed with a shell syntax error (exit 2); '
+                'the declared Test command is malformed, not '
+                'environment-divergent. The target re-run passed only because a '
+                'different (normalized/bare) command string was supplied. '
+                'Escape hatch withheld — fix the Test command (BUG-158).'
+            ),
+            'errors': [],
+        }, exit_code=0)
     sandbox_block: dict | None = None
     if target_passed:
         sandbox_block = {'task_id': task_id, 'sandbox': {'stdout': envelope.get('sandbox_test_stdout'), 'stderr': envelope.get('sandbox_test_stderr'), 'command': envelope.get('sandbox_test_command'), 'exit_code': envelope.get('sandbox_test_exit_code'), 'attempt_count': envelope.get('sandbox_test_attempt_count'), 'stdout_truncated_to': envelope.get('sandbox_test_stdout_truncated_to'), 'stderr_truncated_to': envelope.get('sandbox_test_stderr_truncated_to')}, 'target': target_test}

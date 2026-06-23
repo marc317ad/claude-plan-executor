@@ -65,6 +65,75 @@ Body for the 004B block — distinct from 004A, immediately adjacent.
 """
 
 
+class TestTestCommandNormalization:
+    """BUG-158: ``normalize_test_command`` (shared via ``_plan_paths``) strips
+    the markdown backtick wrapper even when a trailing annotation follows,
+    drops a trailing parenthetical annotation, and preserves the
+    ``deferred (TASK-NNN)`` / leading-subshell / ``none`` forms. The wrapper
+    and ``plan_ops`` both route inline test commands through it so a
+    backtick+parenthetical command no longer reaches dash verbatim
+    (``/bin/sh: Syntax error: word unexpected``)."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("`pytest foo`", "pytest foo"),
+            ("`pytest foo` (smoke subset)", "pytest foo"),
+            ("pytest foo (smoke subset)", "pytest foo"),
+            ("pytest tests/ (fast, no network)", "pytest tests/"),
+            ("`venv/bin/pytest -q` (runs in ~5s)", "venv/bin/pytest -q"),
+            # Semantic parenthesis — NOT an annotation.
+            ("deferred (TASK-001)", "deferred (TASK-001)"),
+            ("`deferred (TASK-001)`", "deferred (TASK-001)"),
+            # Subshells are commands, not annotations.
+            ("(cd sub && pytest)", "(cd sub && pytest)"),
+            ("make test && (cd e2e && pytest)", "make test && (cd e2e && pytest)"),
+            ("none", "none"),
+            ("", ""),
+            ("venv/bin/pytest -q", "venv/bin/pytest -q"),
+            # Shell command/process substitution must NOT be read as a trailing
+            # annotation (BUG-158 review: `echo $(date)` -> `echo $`).
+            ("echo $(date)", "echo $(date)"),
+            ("pytest --x=$(cat v)", "pytest --x=$(cat v)"),
+            ("diff <(a) <(b)", "diff <(a) <(b)"),
+            # A parenthesis inside a quoted argument ends with the quote, not
+            # `)`, so it is left intact.
+            ('pytest -k "a or (b)"', 'pytest -k "a or (b)"'),
+            # Multiple trailing annotations are ALL stripped (a single pass
+            # would leave `pytest foo (a)`, still a dash syntax error).
+            ("pytest foo (a) (b)", "pytest foo"),
+        ],
+    )
+    def test_normalize_test_command(self, raw: str, expected: str) -> None:
+        assert plan_codex_dispatch.normalize_test_command(raw) == expected
+
+    def test_wrapper_parse_strips_backtick_with_trailing_parenthetical(
+        self,
+    ) -> None:
+        block = (
+            "### TASK-010: demo\n\n"
+            "- **Status:** pending\n"
+            "- **Test command:** `venv/bin/pytest tests/foo.py -q` (smoke subset)\n"
+            "- **Files:**\n  - foo.py\n"
+            "- **Acceptance criteria:**\n  - ok\n"
+        )
+        b = plan_codex_dispatch.parse_task_block(block, "010")
+        assert b["test_command"] == "venv/bin/pytest tests/foo.py -q"
+        assert "`" not in b["test_command"]
+        assert "(" not in b["test_command"]
+
+    def test_run_test_command_runs_dirty_backtick_parenthetical(
+        self, tmp_path: Path,
+    ) -> None:
+        # Pre-BUG-158 this string reached dash verbatim → exit 2 syntax error
+        # (result "failed"). Now it normalizes to `/bin/echo hi` and passes.
+        r = plan_codex_dispatch.run_test_command(
+            "`/bin/echo hi` (annotation)", str(tmp_path), timeout_sec=20,
+        )
+        assert r["result"] == "passed", r
+        assert "`" not in (r.get("command") or ""), r
+
+
 class TestWrapperNormalizeTaskId:
     @pytest.mark.parametrize(
         "raw,expected",

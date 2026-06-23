@@ -188,3 +188,62 @@ def test_ac_symbol_groundedness_warning_does_not_block_exit_code(
     # And the new check appears in the existing `findings[]` array — not
     # under any new top-level key.
     assert set(body.keys()) == {"scanned", "done_tasks", "findings"}, body
+
+
+def test_test_command_shell_hazard_flags_unbalanced_paren(lint_ws: dict) -> None:
+    """BUG-158: a Test command whose normalized form still carries a shell
+    hazard (here an unbalanced paren that normalization cannot strip) is
+    flagged warning-severity, without raising the lint exit code."""
+    ws = lint_ws
+    repo, plans_dir = ws["repo"], ws["plans_dir"]
+    plan_body = (
+        "# Plan: hazard\n\n"
+        "**Base branch:** main\n\n"
+        "## Tasks\n\n"
+        "### TASK-300: hazardous test command\n\n"
+        "- **Status:** pending\n"
+        "- **Files:**\n"
+        "  - src/x.py\n"
+        "- **Dependencies:** none\n"
+        "- **Test command:** pytest tests/x.py (smoke\n"
+        "- **Acceptance criteria:**\n"
+        "  - works\n"
+    )
+    (plans_dir / "plan.md").write_text(plan_body, encoding="utf-8")
+    cp = _lint(plans_dir, repo)
+    body = _parse_json(cp)
+    haz = [
+        f for f in body["findings"]
+        if f["code"] == "test_command_shell_hazard"
+    ]
+    assert len(haz) == 1, body
+    assert haz[0]["severity"] == "warning", haz
+    assert haz[0]["task_id"] == "300", haz
+    assert cp.returncode == 0, (cp.returncode, cp.stderr)
+
+
+def test_test_command_shell_hazard_not_flagged_when_normalizable(
+    lint_ws: dict,
+) -> None:
+    """The common `cmd` (annotation) shape normalizes cleanly to a bare
+    command, so it must NOT be flagged — only genuinely unfixable shapes are."""
+    ws = lint_ws
+    repo, plans_dir = ws["repo"], ws["plans_dir"]
+    plan_body = (
+        "# Plan: clean\n\n"
+        "**Base branch:** main\n\n"
+        "## Tasks\n\n"
+        "### TASK-301: normalizable test command\n\n"
+        "- **Status:** pending\n"
+        "- **Files:**\n"
+        "  - src/x.py\n"
+        "- **Dependencies:** none\n"
+        "- **Test command:** `venv/bin/pytest tests/x.py -q` (smoke subset)\n"
+        "- **Acceptance criteria:**\n"
+        "  - works\n"
+    )
+    (plans_dir / "plan.md").write_text(plan_body, encoding="utf-8")
+    cp = _lint(plans_dir, repo)
+    body = _parse_json(cp)
+    codes = [f["code"] for f in body["findings"]]
+    assert "test_command_shell_hazard" not in codes, body
