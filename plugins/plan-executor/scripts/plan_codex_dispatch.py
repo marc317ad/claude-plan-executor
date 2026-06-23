@@ -66,6 +66,7 @@ from _plan_paths import (  # noqa: E402
     _should_inject_allow_gaps_demotion,
     is_protected_path,
     normalize_files_entry as normalize_file_path,
+    normalize_test_command,
 )
 
 # TASK-009: scale-aware large-file reads. The implementer / reviewer
@@ -422,21 +423,19 @@ def parse_task_block(plan_text: str, task_id_arg: str) -> dict:
 
     # Resolve `test_command` to match the canonical helper in
     # `plan_ops._parse_task_block`:
-    #   * inline `- **Test command:** `cmd`` → strip markdown-wrapping
-    #     backticks (without this, sh treats the whole `` `cmd` `` string as
-    #     command substitution: it execs the inner command's stdout, exit 127);
+    #   * inline `- **Test command:** `cmd`` → `normalize_test_command` (shared
+    #     via `_plan_paths`) strips markdown-wrapping backticks even when a
+    #     trailing annotation follows and drops a trailing parenthetical
+    #     annotation. Without this the value reaches `subprocess.run(shell=True)`
+    #     (`/bin/sh` = dash) where surviving backticks exec command substitution
+    #     and a literal `(` is a syntax error (BUG-158);
     #   * standalone `- **Test command:**` marker → the value lives in a fenced
     #     block beneath it; capture it as a single ` && `-joined command so
     #     build-tasks, the orchestrator, and this wrapper all read the
     #     identical command.
     test_cmd_raw = _extract_inline_field(block, "Test command")
     if test_cmd_raw:
-        if (
-            len(test_cmd_raw) >= 2
-            and test_cmd_raw.startswith("`")
-            and test_cmd_raw.endswith("`")
-        ):
-            test_cmd_raw = test_cmd_raw[1:-1]
+        test_cmd_raw = normalize_test_command(test_cmd_raw)
     else:
         test_cmd_raw = _extract_fenced_block_field(block, "Test command")
 
@@ -1472,12 +1471,13 @@ def run_test_command(
     captured streams (used by TASK-008's sandbox-divergence envelope to
     surface sandbox vs target-env test divergence).
     """
-    cmd = (test_cmd or "").strip()
-    # Defensive unwrap: parse_task_block already strips markdown-wrapping
-    # backticks, but any direct caller handing us raw `` `cmd` `` would
-    # otherwise hit shell command-substitution and exit 127.
-    if len(cmd) >= 2 and cmd.startswith("`") and cmd.endswith("`"):
-        cmd = cmd[1:-1].strip()
+    # Defensive normalize: parse_task_block already routes inline test commands
+    # through `normalize_test_command`, but any direct caller handing us a raw
+    # `` `cmd` `` or `` `cmd` (annotation)`` would otherwise hit shell
+    # command-substitution / a dash syntax error under `shell=True` (BUG-158).
+    # `normalize_test_command` preserves the `none` and `deferred (TASK-NNN)`
+    # sentinels checked just below.
+    cmd = normalize_test_command(test_cmd)
     if not cmd or cmd.lower() == "none":
         return {
             "result": "not_run",

@@ -186,6 +186,84 @@ def normalize_files_entry(raw: str) -> str:
     return cleaned.strip()
 
 
+# A leading markdown code span: `cmd` optionally followed by prose. The WHOLE
+# command lives inside one backtick pair by convention, so the tail is an
+# annotation, not part of the command.
+_TEST_CMD_LEADING_BACKTICK_RE = re.compile(r"`([^`]+)`\s*(?P<tail>.*)$", re.DOTALL)
+# A single trailing parenthetical annotation (handles one level of nesting),
+# e.g. ` (smoke subset)` or ` (create — fixtures)`. The negative lookbehind
+# keeps shell command/process substitution — `$(...)`, `<(...)`, `>(...)` —
+# from being mistaken for an annotation: without it `echo $(date)` would be
+# truncated to `echo $` (BUG-158 review finding).
+_TEST_CMD_TRAILING_PAREN_RE = re.compile(
+    r"\s*(?<![$<>])\([^)]*(?:\([^)]*\)[^)]*)*\)\s*$"
+)
+# Shell operators that, if they immediately precede a trailing `( ... )`, mean
+# the parenthesis is a real subshell (`a && (cd x && y)`), not an annotation.
+_TEST_CMD_TRAILING_OP_RE = re.compile(r"(&&|\|\||[;&|])\s*$")
+
+
+def normalize_test_command(raw: str) -> str:
+    """Normalize a ``Test command:`` value into a bare, shell-runnable string.
+
+    Plan markdown writes the command as a backtick code span --
+    ``- **Test command:** `cmd```` -- and authors frequently append a human
+    annotation: ``- **Test command:** `cmd` (smoke subset)``, or write a
+    trailing parenthetical with no backticks at all. The value is handed to
+    ``subprocess.run(..., shell=True)`` (``/bin/sh`` = dash), where a surviving
+    backtick triggers command substitution and a literal ``(`` is a hard
+    syntax error (``word unexpected``). This strips the markdown backtick
+    wrapper *even when a trailing annotation follows it* and drops a trailing
+    parenthetical annotation -- mirroring ``normalize_files_entry`` for
+    ``Files:`` entries, which already handled this exact backtick+annotation
+    shape (BUG-158).
+
+    The prior both-ends-anchored strip (``startswith('`') and endswith('`')``,
+    copy-pasted across ``plan_ops._parse_task_block``,
+    ``plan_codex_dispatch.parse_task_block``, and ``run_test_command``) skipped
+    the unwrap whenever any trailing text moved the closing backtick off the
+    end, leaving both the backticks and the ``(`` to reach the shell.
+
+    Preserved untouched:
+      * the ``deferred (TASK-NNN)`` marker -- its parenthetical is semantic,
+        not an annotation (consumed by ``_parse_deferred_test_command`` /
+        ``run_test_command``);
+      * a command that is itself a leading subshell -- ``(cd sub && pytest)``
+        -- which starts with ``(`` and is not an annotation;
+      * a trailing subshell that follows a shell operator
+        (``make test && (cd e2e && pytest)``);
+      * the ``none`` sentinel.
+
+    Returns ``""`` for empty/whitespace input.
+    """
+    cleaned = (raw or "").strip()
+    if not cleaned:
+        return ""
+    # Markdown code span wins: return the inner command, drop the prose tail.
+    m = _TEST_CMD_LEADING_BACKTICK_RE.match(cleaned)
+    if m:
+        return m.group(1).strip()
+    # Bare value (no leading backtick wrapper). Leave semantic forms intact.
+    if cleaned.lower().startswith("deferred"):
+        return cleaned
+    # Drop trailing parenthetical annotation(s). Loop so multiple annotations
+    # (`cmd (a) (b)`) are all removed (a single pass would leave `cmd (a)`,
+    # still a dash syntax error that the balanced-paren lint check would miss —
+    # BUG-158 review finding #2). Never eat a leading subshell (`cleaned`
+    # starts with `(`), a trailing subshell after a shell operator
+    # (`a && (b)`), or shell substitution `$()`/`<()`/`>()` (regex lookbehind).
+    while not cleaned.startswith("("):
+        stripped = _TEST_CMD_TRAILING_PAREN_RE.sub("", cleaned, count=1).strip()
+        if stripped == cleaned or not stripped or _TEST_CMD_TRAILING_OP_RE.search(stripped):
+            break
+        cleaned = stripped
+    # Legacy both-ends backtick with no tail (defensive; the leading-backtick
+    # branch already covers the with-tail case).
+    if len(cleaned) >= 2 and cleaned.startswith("`") and cleaned.endswith("`"):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
 def is_protected_path(rel_path: str) -> bool:
     """Return True if rel_path (repo-relative, forward-slash, canonicalized)
     must not be touched by fail-task, wrapper cleanup, or reconcile."""

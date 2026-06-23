@@ -1,9 +1,10 @@
 {
   "version": 1,
-  "next_id": 158,
+  "next_id": 159,
   "content_fingerprints": {
     "sha256:manual-152": 152,
-    "sha256:manual-153": 153
+    "sha256:manual-153": 153,
+    "sha256:manual-158": 158
   },
   "groups": {
     "BASH-DISPATCH-MIGRATION": {
@@ -107,6 +108,17 @@
       "external_deps_into_group": [],
       "created_at": "2026-04-28",
       "updated_at": "2026-04-28"
+    },
+    "WRAP-TCMD": {
+      "bug_ids": [
+        158
+      ],
+      "primary_subsystem": "wrap-tcmd",
+      "subsystem_distribution": {},
+      "internal_deps": 0,
+      "external_deps_into_group": [],
+      "created_at": "2026-06-23",
+      "updated_at": "2026-06-23"
     },
     "WRAPPER-DEFAULT-TIMEOUT-15MIN": {
       "bug_ids": [
@@ -292,6 +304,26 @@
           }
         }
       }
+    },
+    {
+      "event": "manifest-sync",
+      "synced_at": "2026-06-23",
+      "bug_count": 15,
+      "next_id": 159,
+      "groups_count": 12,
+      "forced": false,
+      "drift_summary": {
+        "added_bugs": [
+          "158"
+        ],
+        "removed_bugs": [],
+        "severity_changes": {},
+        "added_groups": [
+          "WRAP-TCMD"
+        ],
+        "removed_groups": [],
+        "modified_groups": {}
+      }
     }
   ],
   "bug_severities": {
@@ -308,6 +340,7 @@
     "152": "critical",
     "153": "important",
     "156": "minor",
-    "157": "minor"
+    "157": "minor",
+    "158": "important"
   }
 }
