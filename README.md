@@ -23,6 +23,50 @@ Inside Claude Code:
 
 Restart Claude Code afterwards. `/implement-plan` should appear in the slash-command list.
 
+### Native Windows (desktop app / Windows CLI)
+
+The plan-ops MCP server is declared as
+`${PLAN_OPS_LAUNCHER:-${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh}`:
+POSIX hosts need no configuration (the variable stays unset and the `.sh`
+launcher runs exactly as before), while native Windows — which cannot spawn
+`.sh` — wires the override once per machine. Windows Claude Code and any WSL
+install keep **separate** `~/.claude` config; install on each side you use.
+
+1. Install the plugin (PowerShell, using the Windows checkout path):
+
+   ```powershell
+   claude plugin marketplace add D:\claude-plan-executor
+   claude plugin install plan-executor@claude-plan-executor
+   ```
+
+2. Create a Windows venv with the server dependencies:
+
+   ```powershell
+   py -3.12 -m venv D:\claude-plan-executor\.venv
+   D:\claude-plan-executor\.venv\Scripts\python.exe -m pip install -r D:\claude-plan-executor\requirements-dev.txt
+   ```
+
+3. Point `PLAN_OPS_LAUNCHER` at the Windows launcher via the `env` block of
+   `%USERPROFILE%\.claude\settings.json` (create the block if absent):
+
+   ```json
+   {
+     "env": {
+       "PLAN_OPS_LAUNCHER": "D:\\claude-plan-executor\\plugins\\plan-executor\\scripts\\run_mcp_server.cmd"
+     }
+   }
+   ```
+
+   `run_mcp_server.cmd` mirrors the `.sh` interpreter resolution
+   (`IMPLEMENT_PLAN_PYTHON`, `venv\Scripts`, `.venv\Scripts`, `python` on
+   PATH) relative to its own location, so pointing at the checkout's copy
+   finds the `.venv` from step 2. If `.cmd` spawning ever misbehaves, set
+   `PLAN_OPS_LAUNCHER` directly to
+   `D:\claude-plan-executor\.venv\Scripts\python.exe` instead.
+
+4. Restart Claude Code and confirm `plugin:plan-executor:plan-ops` is
+   connected via `claude mcp list`.
+
 ## Authoring plans
 
 `/implement-plan` and `implement_plan.py` consume **decomposed-plan
