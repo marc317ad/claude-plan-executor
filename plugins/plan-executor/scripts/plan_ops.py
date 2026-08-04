@@ -2204,8 +2204,11 @@ def _resolve_python() -> str:
       1. $IMPLEMENT_PLAN_PYTHON if the path exists and is executable.
       2. <cwd>/venv/bin/python if present and executable.
       3. <cwd>/.venv/bin/python if present and executable.
-      4. shutil.which('python3').
-      5. sys.executable as final fallback.
+      4. Windows layouts of the same venvs: <cwd>/venv/Scripts/python.exe,
+         then <cwd>/.venv/Scripts/python.exe (never present on POSIX, so
+         POSIX resolution is unchanged).
+      5. shutil.which('python3').
+      6. sys.executable as final fallback.
     Returns an absolute path string. The result is echoed into
     `preflight --json` as `python_path` so the orchestrator can pin one
     interpreter for the rest of the run via ``{{python_path}}``
@@ -2216,7 +2219,12 @@ def _resolve_python() -> str:
     env = os.environ.get("IMPLEMENT_PLAN_PYTHON")
     if env and Path(env).is_file() and os.access(env, os.X_OK):
         return str(Path(env).resolve())
-    for rel in ("venv/bin/python", ".venv/bin/python"):
+    for rel in (
+        "venv/bin/python",
+        ".venv/bin/python",
+        "venv/Scripts/python.exe",
+        ".venv/Scripts/python.exe",
+    ):
         p = Path.cwd() / rel
         if p.is_file() and os.access(p, os.X_OK):
             return str(p.resolve())

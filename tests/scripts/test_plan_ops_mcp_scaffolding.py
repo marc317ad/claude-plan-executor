@@ -70,11 +70,15 @@ def test_manifest_registers_plan_ops_server():
     servers = payload["mcpServers"]
     assert "plan-ops" in servers, f"expected 'plan-ops' entry, got {list(servers)!r}"
     entry = servers["plan-ops"]
-    # Acceptance criterion (verbatim from TASK-001):
-    #   command ["${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh",
-    #            "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops_mcp_server.py"]
-    # Encoded canonically as Claude Code expects: command + args.
-    assert entry["command"] == "${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh"
+    # Acceptance criterion (TASK-001, extended for native-Windows support):
+    # the command is the canonical ${CLAUDE_PLUGIN_ROOT} .sh launcher, now
+    # wrapped in a ${PLAN_OPS_LAUNCHER:-...} override so a host without
+    # bash (native Windows) can substitute its own launcher/interpreter.
+    # With PLAN_OPS_LAUNCHER unset, Claude Code's env expansion resolves
+    # the command to exactly the pre-override .sh path.
+    assert entry["command"] == (
+        "${PLAN_OPS_LAUNCHER:-${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh}"
+    )
     assert entry["args"] == [
         "${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops_mcp_server.py"
     ]

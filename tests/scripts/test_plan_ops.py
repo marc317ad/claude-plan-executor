@@ -29,7 +29,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "plugins" / "plan-executor" / "scripts"
 SCRIPT = SCRIPTS_DIR / "plan_ops.py"
 PY = REPO_ROOT / "venv" / "bin" / "python"
-if not PY.exists():
+try:
+    _py_exists = PY.exists()
+except OSError:
+    # On native Windows, stat() of the WSL-created venv symlink raises
+    # WinError 1920 instead of returning False.
+    _py_exists = False
+if not _py_exists:
     PY = Path(sys.executable)
 
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -6083,6 +6089,42 @@ class TestPreflightPythonPath:
         assert "venv/bin/python" not in resolved or not resolved.startswith(str(tmp_git_repo))
         assert Path(resolved).is_file()
         assert os.access(resolved, os.X_OK)
+
+
+class TestResolvePythonWindowsLayouts:
+    """Native-Windows venvs put the interpreter under `Scripts\\python.exe`
+    (no `bin/`). `_resolve_python` probes those layouts after the POSIX
+    ones, so Windows hosts resolve the project venv instead of falling
+    through to `shutil.which('python3')` (which on Windows can hit the
+    Microsoft-Store alias stub). POSIX resolution is unchanged: a real
+    POSIX venv never contains `Scripts/python.exe`."""
+
+    @staticmethod
+    def _fake_interpreter(path: Path) -> Path:
+        path.parent.mkdir(parents=True)
+        path.write_text("fake interpreter\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def test_scripts_layout_resolves(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = self._fake_interpreter(tmp_path / ".venv" / "Scripts" / "python.exe")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("IMPLEMENT_PLAN_PYTHON", raising=False)
+        assert plan_ops._resolve_python() == str(fake.resolve())
+
+    def test_posix_layout_still_wins_over_scripts(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._fake_interpreter(tmp_path / "venv" / "Scripts" / "python.exe")
+        posix = self._fake_interpreter(tmp_path / "venv" / "bin" / "python")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("IMPLEMENT_PLAN_PYTHON", raising=False)
+        assert plan_ops._resolve_python() == str(posix.resolve())
+
+    def test_venv_scripts_preferred_over_dot_venv_scripts(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        preferred = self._fake_interpreter(tmp_path / "venv" / "Scripts" / "python.exe")
+        self._fake_interpreter(tmp_path / ".venv" / "Scripts" / "python.exe")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("IMPLEMENT_PLAN_PYTHON", raising=False)
+        assert plan_ops._resolve_python() == str(preferred.resolve())
 
 
 class TestPreflightUnattendedRevertPolicy:
