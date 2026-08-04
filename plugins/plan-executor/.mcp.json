@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "plan-ops": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh",
+      "command": "${PLAN_OPS_LAUNCHER:-${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh}",
       "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/plan_ops_mcp_server.py"]
     }
   }
