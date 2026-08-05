@@ -2026,17 +2026,58 @@ def cmd_implement(args) -> int:
         # Codex status mapping (Appendix C.3)
         codex_status = parsed.get("status", "")
         if codex_status != "completed":
+            extra: dict = {
+                "scope": scope,
+                "wall_seconds": codex["wall_seconds"],
+                "effective_timeout": effective_timeout,
+            }
+            # TASK-008 escape-hatch parity for HONEST non-completed
+            # reports: when Codex says `partial`/`failed` BECAUSE its own
+            # in-sandbox test attempt could not run (e.g. Windows venv
+            # python.exe is a redirector stub that spawns the base
+            # interpreter outside the workspace, which the sandbox
+            # blocks) yet it produced in-scope changes, surface the same
+            # `cause` + sandbox_test_* passthrough the independent-test-
+            # run failure branch emits. The orchestrator's auto-validate
+            # branch then re-runs the declared Test command in the target
+            # env; only a target-side pass rescues the task (outcome here
+            # stays `failure`), so trusting the self-report is safe.
+            # Without this, an honest Codex is punished (bare failure →
+            # Claude fallback) while an overclaiming one would have been
+            # validated target-side.
+            sandbox_exit = parsed.get("sandbox_test_exit_code")
+            if (
+                scope["changed_in_scope"]
+                and isinstance(sandbox_exit, int)
+                and sandbox_exit != 0
+            ):
+                sandbox_stdout, stdout_truncated = _truncate_stream(
+                    parsed.get("sandbox_test_stdout") or "",
+                )
+                sandbox_stderr, stderr_truncated = _truncate_stream(
+                    parsed.get("sandbox_test_stderr") or "",
+                )
+                extra["cause"] = "independent_test_run_failed"
+                extra["sandbox_test_stdout"] = sandbox_stdout
+                extra["sandbox_test_stderr"] = sandbox_stderr
+                extra["sandbox_test_command"] = parsed.get(
+                    "sandbox_test_command")
+                extra["sandbox_test_exit_code"] = sandbox_exit
+                extra["sandbox_test_attempt_count"] = parsed.get(
+                    "sandbox_test_attempt_count")
+                if stdout_truncated is not None:
+                    extra["sandbox_test_stdout_truncated_to"] = (
+                        stdout_truncated)
+                if stderr_truncated is not None:
+                    extra["sandbox_test_stderr_truncated_to"] = (
+                        stderr_truncated)
             emit(make_envelope(
                 task["task_id"], "implement", "failure",
                 exit_code=codex["exit_code"],
                 raw=output_text,
                 parsed=parsed,
                 error=f"Codex reported status: {codex_status!r}",
-                extra={
-                    "scope": scope,
-                    "wall_seconds": codex["wall_seconds"],
-                    "effective_timeout": effective_timeout,
-                },
+                extra=extra,
             ))
             return 1
 
