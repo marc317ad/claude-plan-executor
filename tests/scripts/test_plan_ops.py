@@ -15932,14 +15932,42 @@ class TestCanonicalFixturePathSoT:
     """TASK-004 (POSTMORTEM_FIXES_2026-04-25): the fixture path lives in
     `CANONICAL_CONTRACT.fixture_path`; the gate reads it from there and
     failure envelopes attribute the SoT via `expected_from`. A pre-archive
-    audit check fires when the SoT drifts under `docs/plans/archive/`."""
+    audit check fires when the SoT drifts under an `archive/` directory.
+
+    The path is PLUGIN-relative (fixture-packaging fix): the fixture ships
+    inside the plugin package so the gate passes from the installed plugin
+    cache, which does not carry the repo-level `docs/` tree."""
 
     def test_canonical_contract_carries_fixture_path(self) -> None:
         """`CANONICAL_CONTRACT.fixture_path` is the canonical sample fixture."""
         assert (
             plan_ops.CANONICAL_CONTRACT["fixture_path"]
-            == "docs/plans/sample_phase4.md"
+            == "fixtures/sample_phase4.md"
         )
+
+    def test_fixture_resolves_inside_plugin_package(self) -> None:
+        """Packaging invariant: the fixture and its schedule sidecar exist
+        and live under `_PLUGIN_ROOT`, so the installed plugin cache (which
+        ships only the plugin subtree) can always resolve them."""
+        fixture = plan_ops._FIXTURE_ABSOLUTE_PATH
+        assert fixture.is_file(), fixture
+        fixture.resolve().relative_to(plan_ops._PLUGIN_ROOT)  # raises if outside
+        sidecar = plan_ops._PLUGIN_ROOT / str(
+            plan_ops.CANONICAL_CONTRACT["fixture_schedule_path"]
+        )
+        assert sidecar.is_file(), sidecar
+        sidecar.resolve().relative_to(plan_ops._PLUGIN_ROOT)
+
+    def test_dispatch_schemas_resolve_inside_plugin_package(self) -> None:
+        """Packaging invariant: every `_BCDI_VARIANT_SCHEMA_PATH` value and
+        `_IMPLEMENTER_RESULT_SCHEMA_REL` resolve to files under
+        `_PLUGIN_ROOT` (the installed cache has no repo/tests tree)."""
+        rels = set(plan_ops._BCDI_VARIANT_SCHEMA_PATH.values())
+        rels.add(plan_ops._IMPLEMENTER_RESULT_SCHEMA_REL)
+        for rel in rels:
+            path = (plan_ops._PLUGIN_ROOT / rel).resolve()
+            assert path.is_file(), f"packaged schema missing: {path}"
+            path.relative_to(plan_ops._PLUGIN_ROOT)  # raises if outside
 
     def test_fixture_relative_path_reads_from_canonical_contract(self) -> None:
         """The module-level `_FIXTURE_RELATIVE_PATH` is sourced from the SoT."""
@@ -15951,7 +15979,7 @@ class TestCanonicalFixturePathSoT:
     def test_fixture_path_string_literal_appears_only_in_canonical_contract(
         self,
     ) -> None:
-        """The literal `docs/plans/sample_phase4.md` does not appear elsewhere
+        """The literal `fixtures/sample_phase4.md` does not appear elsewhere
         in `plan_ops.py`."""
         text = SCRIPT.read_text(encoding="utf-8")
         # Count occurrences of the literal substring. Acceptable: exactly
@@ -15961,9 +15989,9 @@ class TestCanonicalFixturePathSoT:
         # Locate every occurrence and assert each one is inside
         # CANONICAL_CONTRACT (i.e. between its opening and closing lines).
         # Use a strict substring count: the bare path appears once.
-        count_bare = text.count('"docs/plans/sample_phase4.md"')
+        count_bare = text.count('"fixtures/sample_phase4.md"')
         assert count_bare == 1, (
-            f"`docs/plans/sample_phase4.md` literal appeared {count_bare} "
+            f"`fixtures/sample_phase4.md` literal appeared {count_bare} "
             f"times in plan_ops.py; expected exactly 1 (inside "
             f"CANONICAL_CONTRACT)."
         )
@@ -16018,7 +16046,7 @@ class TestCanonicalFixtureNotArchivedAuditCheck:
         )
 
     def test_canonical_fixture_not_archived_passes_for_live_path(self) -> None:
-        """With the SoT pointing at `docs/plans/sample_phase4.md`, the
+        """With the SoT pointing at `fixtures/sample_phase4.md`, the
         check passes."""
         finding = plan_ops._check_canonical_fixture_not_archived()
         assert finding["check"] == "canonical_fixture_not_archived"
@@ -16028,9 +16056,9 @@ class TestCanonicalFixtureNotArchivedAuditCheck:
     def test_canonical_fixture_not_archived_fails_when_archived(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """When `CANONICAL_CONTRACT.fixture_path` points under
-        `docs/plans/archive/`, the check fails with a remediation tip."""
-        archived = "docs/plans/archive/sample_phase4.md"
+        """When `CANONICAL_CONTRACT.fixture_path` points under an
+        `archive/` directory, the check fails with a remediation tip."""
+        archived = "fixtures/archive/sample_phase4.md"
         # Patch the dict in-place; restore via monkeypatch teardown using
         # `setitem`.
         monkeypatch.setitem(
@@ -16921,7 +16949,8 @@ class TestSkillPreflightStrictHalt:
 # ---------------------------------------------------------------------------
 # TASK-006: sample fixture conformance.
 #
-# After TASK-006, `docs/plans/sample_phase4.md` is the canonical conformance
+# After TASK-006, `plugins/plan-executor/fixtures/sample_phase4.md` is the
+# canonical conformance
 # artifact for Phase 5 certification: `fixture-valid` passes against it and
 # its schedule sidecar, it carries no out-of-schema `**Agent:**` bullets,
 # and every task block declares the required §5 fields. Regressions here
@@ -16931,11 +16960,14 @@ class TestSkillPreflightStrictHalt:
 # ---------------------------------------------------------------------------
 
 
-_SAMPLE_PHASE4_PATH = REPO_ROOT / "docs" / "plans" / "sample_phase4.md"
+_SAMPLE_PHASE4_PATH = (
+    REPO_ROOT / "plugins" / "plan-executor" / "fixtures" / "sample_phase4.md"
+)
 
 
 class TestSamplePhase4FixtureConformance:
-    """TASK-006: `docs/plans/sample_phase4.md` is the canonical conformance
+    """TASK-006: `plugins/plan-executor/fixtures/sample_phase4.md` is the
+    canonical conformance
     fixture. The three tests below are selected by `pytest -k fixture` (via
     this class name), matching the task's `Test command`."""
 

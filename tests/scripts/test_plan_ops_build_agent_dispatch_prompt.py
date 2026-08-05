@@ -340,8 +340,8 @@ def test_inline_implementer_result_schema_byte_stable_vs_wrapper_path(
     helper_prompt, helper_schema = plan_ops._inline_implementer_result_schema("")
     # Schema dict matches the on-disk canonical schema.
     schema_abs = (
-        plan_ops._REPO_ROOT
-        / "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json"
+        plan_ops._PLUGIN_ROOT
+        / "scripts/schemas/implementer_result.json"
     )
     on_disk = json.loads(schema_abs.read_text(encoding="utf-8"))
     assert helper_schema == on_disk
@@ -353,7 +353,7 @@ def test_inline_implementer_result_schema_byte_stable_vs_wrapper_path(
         "plan_file": str(plan_file),
         "task_id": "001",
         "variant": "default",
-        "repo_root": str(plan_ops._REPO_ROOT),
+        "repo_root": str(plan_ops._PLUGIN_ROOT.parents[1]),
         "analyst_annotations": None,
         "target_task_id": None,
         "starting_sha": "abc123",

@@ -39,6 +39,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STUB = REPO_ROOT / "tests" / "scripts" / "stubs" / "plan_claude_dispatch_stub.py"
 FIX_DIR = REPO_ROOT / "tests" / "scripts" / "fixtures" / "claude_dispatch"
 SCHEMAS_DIR = FIX_DIR / "schemas"
+# Runtime result schemas ship inside the plugin package (fixture-packaging
+# fix) so the installed plugin cache can resolve them; test-only schemas
+# (analyst_result.json) stay under the tests fixtures tree.
+PLUGIN_SCHEMAS_DIR = (
+    REPO_ROOT / "plugins" / "plan-executor" / "scripts" / "schemas"
+)
+_PLUGIN_PACKAGED_SCHEMAS = {"implementer_result.json", "remediator_result.json"}
+
+
+def _schema_path(name: str) -> Path:
+    if name in _PLUGIN_PACKAGED_SCHEMAS:
+        return PLUGIN_SCHEMAS_DIR / name
+    return SCHEMAS_DIR / name
 WRAPPER_OUTPUT_SCHEMA = (
     REPO_ROOT
     / "plugins"
@@ -142,7 +155,7 @@ def test_fixture_result_validates_against_agent_schema(
     fixture_name: str, schema_name: str
 ) -> None:
     env = _load_json(FIX_DIR / fixture_name)
-    schema = _load_json(SCHEMAS_DIR / schema_name)
+    schema = _load_json(_schema_path(schema_name))
     errors = sorted(
         Draft7Validator(schema).iter_errors(env["result"]),
         key=lambda e: list(e.absolute_path),
@@ -162,7 +175,7 @@ def test_analyst_schema_enforces_outcome_enum() -> None:
 
 
 def test_implementer_schema_enforces_outcome_enum() -> None:
-    schema = _load_json(SCHEMAS_DIR / "implementer_result.json")
+    schema = _load_json(_schema_path("implementer_result.json"))
     enum = schema["properties"]["outcome"]["enum"]
     assert set(enum) == {
         "success", "partial", "failed", "plan-incorrect", "blocked", "malformed",
@@ -170,7 +183,7 @@ def test_implementer_schema_enforces_outcome_enum() -> None:
 
 
 def test_remediator_schema_enforces_outcome_enum() -> None:
-    schema = _load_json(SCHEMAS_DIR / "remediator_result.json")
+    schema = _load_json(_schema_path("remediator_result.json"))
     enum = schema["properties"]["outcome"]["enum"]
     assert set(enum) == {
         "success", "partial", "failed", "plan-incorrect", "blocked",
@@ -187,7 +200,7 @@ def test_remediator_schema_enforces_outcome_enum() -> None:
     ],
 )
 def test_schema_rejects_outcome_outside_enum(schema_name: str, bad_outcome: str) -> None:
-    schema = _load_json(SCHEMAS_DIR / schema_name)
+    schema = _load_json(_schema_path(schema_name))
     errors = list(Draft7Validator(schema).iter_errors({"outcome": bad_outcome}))
     assert errors, f"{schema_name} should reject outcome={bad_outcome!r}"
 

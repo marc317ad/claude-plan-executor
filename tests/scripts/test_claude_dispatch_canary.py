@@ -68,9 +68,14 @@ STUB_PATH = (
 SCHEMAS_DIR = (
     REPO_ROOT / "tests" / "scripts" / "fixtures" / "claude_dispatch" / "schemas"
 )
+# Runtime result schemas ship inside the plugin package (fixture-packaging
+# fix); analyst_result.json is test-only and stays in the fixtures tree.
+PLUGIN_SCHEMAS_DIR = (
+    REPO_ROOT / "plugins" / "plan-executor" / "scripts" / "schemas"
+)
 ANALYST_RESULT_SCHEMA_PATH = SCHEMAS_DIR / "analyst_result.json"
-IMPLEMENTER_RESULT_SCHEMA_PATH = SCHEMAS_DIR / "implementer_result.json"
-REMEDIATOR_RESULT_SCHEMA_PATH = SCHEMAS_DIR / "remediator_result.json"
+IMPLEMENTER_RESULT_SCHEMA_PATH = PLUGIN_SCHEMAS_DIR / "implementer_result.json"
+REMEDIATOR_RESULT_SCHEMA_PATH = PLUGIN_SCHEMAS_DIR / "remediator_result.json"
 PROBE_RESULTS_PATH = (
     REPO_ROOT / "docs" / "plans" / "SKILL_bash_dispatch_migration" / "probe_results.md"
 )
