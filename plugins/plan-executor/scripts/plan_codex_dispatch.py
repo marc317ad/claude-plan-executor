@@ -1050,14 +1050,19 @@ def invoke_codex(
             "dropped_bytes": 0,
         }
 
+    # Codex CLI >= 0.146 deprecates `--full-auto` (historically: approval
+    # mode on-failure + sandbox workspace-write). `exec` mode is
+    # non-interactive, so per the CLI's own deprecation guidance
+    # `--sandbox workspace-write` is the full behavioral replacement.
+    # Exactly one sandbox flag is emitted: the caller's override (e.g.
+    # read-only for review/plan-review dispatches, Appendix D F2) or the
+    # workspace-write default.
     cmd = [
         "codex", "exec",
-        "--full-auto",
+        "--sandbox", sandbox or "workspace-write",
         "--ephemeral",
         "--json",  # Appendix D B2: coexists with -o
     ]
-    if sandbox:
-        cmd.extend(["-s", sandbox])
     cmd.extend([
         "-C", workdir,
         "--output-schema", schema_path,
