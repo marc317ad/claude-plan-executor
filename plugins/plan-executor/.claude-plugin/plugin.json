@@ -1,6 +1,6 @@
 {
   "name": "plan-executor",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Dual-agent plan executor: plan-analyst schedules, plan-implementer + Codex execute, with cross-review and narrow commits.",
   "author": {"name": "marc317ad"}
 }
