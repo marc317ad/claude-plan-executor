@@ -1896,6 +1896,159 @@ def test_implement_schema_declares_sandbox_divergence_fields_optional_but_requir
     assert required == set(properties.keys())
 
 
+def _codex_partial_sandbox_fail_body(
+    task_id: str, files_changed: list[str], **sandbox_overrides,
+) -> dict:
+    """Codex parsed body for an HONEST non-completed self-report whose
+    in-sandbox test attempt failed (the Windows-venv sandbox-launch
+    shape): status `partial` with the five sandbox_test_* fields
+    populated from Codex's own attempt."""
+    body = _codex_completed_body(task_id, files_changed)
+    body["status"] = "partial"
+    body["blockers"] = ["sandbox could not launch the test runner"]
+    body.update({
+        "sandbox_test_stdout": "CODEX_SANDBOX_OUT",
+        "sandbox_test_stderr": "Unable to create process",
+        "sandbox_test_command": ".venv/Scripts/python.exe -m pytest -q",
+        "sandbox_test_exit_code": 1,
+        "sandbox_test_attempt_count": 1,
+    })
+    body.update(sandbox_overrides)
+    return body
+
+
+def test_implement_honest_sandbox_partial_carries_divergence_cause(
+    tmp_path, monkeypatch, capsys,
+):
+    """An honest `partial` self-report with in-scope changes AND a failed
+    in-sandbox test attempt (sandbox_test_exit_code non-zero) MUST emit
+    `cause: independent_test_run_failed` plus the sandbox_test_*
+    passthrough so the orchestrator's auto-validate branch fires —
+    instead of the bare failure envelope that silently bypassed the
+    escape hatch. Outcome stays `failure` (no wrapper-side
+    reclassification)."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    _impl_plan_with_test_cmd(plan, "001", ["a.py"], "none")
+
+    body = _codex_partial_sandbox_fail_body("001", ["a.py"])
+    monkeypatch.setattr(
+        wrapper, "invoke_codex",
+        _make_codex_writer(body, {"a.py": "x = 1\n"}),
+    )
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+
+    assert rc == 1, envelope
+    assert envelope["outcome"] == "failure", envelope
+    assert "partial" in (envelope.get("error") or ""), envelope
+    assert envelope.get("cause") == "independent_test_run_failed", envelope
+    # Passthrough carries Codex's own sandbox attempt evidence.
+    assert envelope["sandbox_test_stdout"] == "CODEX_SANDBOX_OUT", envelope
+    assert envelope["sandbox_test_stderr"] == "Unable to create process", envelope
+    assert envelope["sandbox_test_command"] == (
+        ".venv/Scripts/python.exe -m pytest -q"
+    ), envelope
+    assert envelope["sandbox_test_exit_code"] == 1, envelope
+    assert envelope["sandbox_test_attempt_count"] == 1, envelope
+    # Small captures: no truncation markers.
+    assert "sandbox_test_stdout_truncated_to" not in envelope, envelope
+    assert "sandbox_test_stderr_truncated_to" not in envelope, envelope
+
+
+def test_implement_honest_sandbox_partial_truncates_streams(
+    tmp_path, monkeypatch, capsys,
+):
+    """Codex-side sandbox_test_stdout/stderr larger than
+    SANDBOX_TEST_CAPTURE_CAP are truncated with the standard
+    `sandbox_test_*_truncated_to` markers, same convention as the
+    wrapper-side test-failure branch."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    _impl_plan_with_test_cmd(plan, "001", ["a.py"], "none")
+
+    big_chars = 64 * 1024
+    body = _codex_partial_sandbox_fail_body(
+        "001", ["a.py"],
+        sandbox_test_stdout="A" * big_chars,
+        sandbox_test_stderr="B" * big_chars,
+    )
+    monkeypatch.setattr(
+        wrapper, "invoke_codex",
+        _make_codex_writer(body, {"a.py": "x = 1\n"}),
+    )
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+
+    cap = wrapper.SANDBOX_TEST_CAPTURE_CAP
+    assert rc == 1, envelope
+    assert envelope.get("cause") == "independent_test_run_failed", envelope
+    assert len(envelope["sandbox_test_stdout"].encode("utf-8")) == cap, envelope
+    assert len(envelope["sandbox_test_stderr"].encode("utf-8")) == cap, envelope
+    assert envelope["sandbox_test_stdout_truncated_to"] == big_chars, envelope
+    assert envelope["sandbox_test_stderr_truncated_to"] == big_chars, envelope
+
+
+def test_implement_non_completed_without_sandbox_evidence_stays_bare(
+    tmp_path, monkeypatch, capsys,
+):
+    """A non-completed self-report WITHOUT a failed sandbox test attempt
+    (sandbox_test_exit_code null) keeps the bare failure envelope — no
+    `cause`, no sandbox_test_* passthrough. `blocked` /
+    `needs_clarification` shapes must keep routing to the normal
+    failure ladder, not the escape hatch."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    _impl_plan_with_test_cmd(plan, "001", ["a.py"], "none")
+
+    body = _codex_completed_body("001", ["a.py"])
+    body["status"] = "partial"
+    monkeypatch.setattr(
+        wrapper, "invoke_codex",
+        _make_codex_writer(body, {"a.py": "x = 1\n"}),
+    )
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+
+    assert rc == 1, envelope
+    assert envelope["outcome"] == "failure", envelope
+    assert "cause" not in envelope, envelope
+    for fld in (
+        "sandbox_test_stdout", "sandbox_test_stderr",
+        "sandbox_test_command", "sandbox_test_exit_code",
+        "sandbox_test_attempt_count",
+    ):
+        assert fld not in envelope, (fld, envelope)
+
+
+def test_implement_non_completed_without_inscope_changes_stays_bare(
+    tmp_path, monkeypatch, capsys,
+):
+    """A non-completed self-report with a failed sandbox attempt but NO
+    in-scope changes keeps the bare failure envelope: there is no work
+    for the escape hatch to rescue, so auto-validate must not fire."""
+    repo = _impl_repo(tmp_path)
+    plan = tmp_path / "plan.md"
+    _impl_plan_with_test_cmd(plan, "001", ["a.py"], "none")
+
+    body = _codex_partial_sandbox_fail_body("001", [])
+    monkeypatch.setattr(
+        wrapper, "invoke_codex",
+        _make_codex_writer(body, {}),
+    )
+
+    rc = wrapper.cmd_implement(_impl_args(plan, repo))
+    envelope = json.loads(capsys.readouterr().out)
+
+    assert rc == 1, envelope
+    assert envelope["outcome"] == "failure", envelope
+    assert "cause" not in envelope, envelope
+    assert "sandbox_test_exit_code" not in envelope, envelope
+
+
 # ---------------------------------------------------------------------------
 # TASK-009 (POSTMORTEM_FIXES): canonical verdict allowlists embedded in Codex
 # review + plan-review prompts. Tests assert (a) the allowlist section is
