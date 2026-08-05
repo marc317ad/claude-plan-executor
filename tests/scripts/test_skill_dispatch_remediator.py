@@ -51,7 +51,10 @@ DISPATCH_TEMPLATES = SKILL_DIR / "dispatch-templates.md"
 STUB = REPO_ROOT / "tests" / "scripts" / "stubs" / "plan_claude_dispatch_stub.py"
 FIXTURES_DIR = REPO_ROOT / "tests" / "scripts" / "fixtures" / "claude_dispatch"
 REMEDIATOR_SCOPE_FIXTURE = FIXTURES_DIR / "remediator_scope_violation.json"
-REMEDIATOR_RESULT_SCHEMA = FIXTURES_DIR / "schemas" / "remediator_result.json"
+REMEDIATOR_RESULT_SCHEMA = (
+    REPO_ROOT / "plugins" / "plan-executor" / "scripts" / "schemas"
+    / "remediator_result.json"
+)
 
 ALLOWED_REMEDIATOR_OUTCOMES = {
     "success",

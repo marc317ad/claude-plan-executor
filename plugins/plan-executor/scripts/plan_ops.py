@@ -46,6 +46,16 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
+# Plugin package root (`plugins/plan-executor` in the dev checkout;
+# `<cache>/<marketplace>/plan-executor/<version>` when installed). Every
+# runtime asset plan_ops loads (conformance fixture, dispatch result
+# schemas) MUST live under this root and be resolved against it — the
+# installed plugin cache ships only the plugin subtree, so repo-root
+# anchoring (the historical `parents[3]`) resolves to a nonexistent tree
+# there. See the fixture-packaging invariant tests in
+# `tests/scripts/test_plan_ops.py`.
+_PLUGIN_ROOT = _SCRIPT_DIR.parent
+
 from _plan_paths import (  # noqa: E402
     COMMIT_ALWAYS_IGNORE,
     PROTECTED_EXACT_PATHS,
@@ -642,9 +652,12 @@ CANONICAL_CONTRACT: dict[str, object] = {
     # canonical sample fixture path the `fixture-valid` gate validates.
     # `_gate_fixture_valid` reads from this field; the audit check
     # `canonical_fixture_not_archived` lints that the fixture has not been
-    # moved under `docs/plans/archive/` without updating this constant.
-    "fixture_path": "docs/plans/sample_phase4.md",
-    "fixture_schedule_path": "docs/plans/sample_phase4.schedule.json",
+    # moved under an `archive/` directory without updating this constant.
+    # Paths are PLUGIN-relative (resolved against `_PLUGIN_ROOT`) so the
+    # gate finds the fixture both in the dev checkout and in an installed
+    # plugin cache, which ships only the plugin subtree.
+    "fixture_path": "fixtures/sample_phase4.md",
+    "fixture_schedule_path": "fixtures/sample_phase4.schedule.json",
 }
 
 ALIAS_WINDOWS: dict[str, list[str]] = {
@@ -9455,20 +9468,19 @@ GATE_NAMES: tuple[str, ...] = (
 # synthetic fixtures. Running this gate against the live fixture pre-TASK-006
 # is expected to return `fail` until the rewrite lands.
 #
-# Path is derived from `__file__` so the gate resolves the fixture at the
-# repo root regardless of the process cwd. `plan_ops.py` lives at
-# `plugins/plan-executor/scripts/plan_ops.py`, so the repo root is three
-# parents up from the script dir. Phase 0 / skill invocations that export
-# `CLAUDE_PLUGIN_ROOT` but don't chdir to the repo root still pick up the
-# correct fixture, and unit tests that run from an arbitrary tmp_path are
-# unaffected.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+# Path is derived from `__file__` (via `_PLUGIN_ROOT`) so the gate
+# resolves the fixture inside the plugin package regardless of the process
+# cwd — identically in the dev checkout and in an installed plugin cache.
+# Phase 0 / skill invocations that export `CLAUDE_PLUGIN_ROOT` but don't
+# chdir anywhere in particular still pick up the correct fixture, and unit
+# tests that run from an arbitrary tmp_path are unaffected.
+#
 # TASK-004: read the SoT path from `CANONICAL_CONTRACT.fixture_path` so the
 # string literal lives in exactly one place. The audit check
 # `canonical_fixture_not_archived` flags drift if the fixture is moved
-# under `docs/plans/archive/` without updating the constant.
+# under an `archive/` directory without updating the constant.
 _FIXTURE_RELATIVE_PATH = str(CANONICAL_CONTRACT["fixture_path"])
-_FIXTURE_ABSOLUTE_PATH = _REPO_ROOT / _FIXTURE_RELATIVE_PATH
+_FIXTURE_ABSOLUTE_PATH = _PLUGIN_ROOT / _FIXTURE_RELATIVE_PATH
 
 # Canonical locations of wrapper predicates. `_gate_execution_safe` and
 # `_gate_review_safe` grep this file — they never invoke the wrapper.
@@ -11455,16 +11467,19 @@ def _check_design_doc_orphans() -> dict:
     }
     doc_relpath = _audit_relpath(doc)
     if not doc.is_file():
+        # The design doc is a dev-checkout artifact and is deliberately not
+        # packaged into the installed plugin. Absent doc => nothing to
+        # drift-check; mirror the absent-section-anchor precedent in
+        # `global_lock_paths` and pass with an explanatory reason.
         return _audit_finding(
             check="design_doc_orphans",
-            status="fail",
+            status="pass",
             canonical=canonical_payload,
             actual={"source": str(doc), "value": None},
-            reason=f"design doc not found: {doc}",
-            locations=[{
-                "path": doc_relpath, "line": None,
-                "reason": f"design doc not found: {doc}",
-            }],
+            reason=(
+                "design doc not present (dev-checkout artifact, not "
+                "packaged in the installed plugin); drift check skipped"
+            ),
         )
     try:
         text = doc.read_text(encoding="utf-8")
@@ -11574,16 +11589,19 @@ def _check_global_lock_paths() -> dict:
     try:
         doc_src = doc_path.read_text(encoding="utf-8")
     except OSError as e:
+        # Dev-checkout artifact, not packaged into the installed plugin.
+        # Same treatment as the absent section anchor below: constants are
+        # canonical, nothing to drift-check.
         return _audit_finding(
             check="global_lock_paths",
-            status="fail",
+            status="pass",
             canonical=canonical_payload,
             actual=canonical_payload,
-            reason=f"design doc unreadable: {e}",
-            locations=[
-                {"path": owning_path, "line": None,
-                 "reason": f"design doc unreadable: {e}"},
-            ],
+            reason=(
+                f"design doc not readable ({e}); dev-checkout artifact "
+                "absent (e.g. installed plugin) — constants are treated "
+                "as canonical"
+            ),
         )
     section_re = re.compile(
         r"##### Globally-locked paths.*?(?=\n#####|\n####|\Z)",
@@ -11669,13 +11687,15 @@ def _check_global_lock_paths() -> dict:
 
 
 def _check_canonical_fixture_not_archived() -> dict:
-    """`CANONICAL_CONTRACT.fixture_path` does not point under `docs/plans/archive/`.
+    """`CANONICAL_CONTRACT.fixture_path` does not point under an `archive/` dir.
 
     TASK-004 (POSTMORTEM_FIXES_2026-04-25): pre-archive lint. When a plan
     is moved to the archive, authors sometimes forget to update the SoT
     fixture path; the `fixture-valid` gate then validates an archived
     artifact instead of the live conformance fixture. This check catches
-    that drift before it ships.
+    that drift before it ships. The fixture is plugin-relative
+    (`fixtures/sample_phase4.md`), so the lint flags any `archive/` path
+    segment rather than the historical `docs/plans/archive/` prefix.
     """
     fixture_value = str(CANONICAL_CONTRACT.get("fixture_path", ""))
     canonical_payload = {
@@ -11688,10 +11708,10 @@ def _check_canonical_fixture_not_archived() -> dict:
     }
     owning_path = _audit_relpath(_SCRIPT_DIR / "plan_ops.py")
     line_no = _audit_locate_constant("CANONICAL_CONTRACT")
-    if fixture_value.startswith("docs/plans/archive/"):
+    if "archive/" in fixture_value.replace("\\", "/"):
         reason = (
-            f"`CANONICAL_CONTRACT.fixture_path` points under "
-            f"`docs/plans/archive/` ({fixture_value!r}); update "
+            f"`CANONICAL_CONTRACT.fixture_path` points under an "
+            f"`archive/` directory ({fixture_value!r}); update "
             "`CANONICAL_CONTRACT.fixture_path` to point at the live "
             "fixture before archiving"
         )
@@ -11826,6 +11846,14 @@ def _check_principle_referenced() -> dict:
     for target_name, target_path in propagation_targets.items():
         target_rel = _audit_relpath(target_path)
         if not target_path.is_file():
+            if target_name == "design-doc":
+                # The design doc is a dev-checkout artifact and is not
+                # packaged into the installed plugin; its absence is not a
+                # propagation failure there. The plugin-packaged targets
+                # (dispatch-templates, plan-implementer) below stay hard
+                # requirements in every context.
+                propagation_hits[target_name] = []
+                continue
             propagation_problems.append((
                 target_name,
                 f"propagation target {target_name!r} not found at {target_rel}",
@@ -13897,17 +13925,21 @@ _BCDI_VARIANT_MODEL = {
     "analyst": "sonnet",
 }
 
+# Plugin-relative paths resolved against `_PLUGIN_ROOT`. These are runtime
+# assets shipped inside the plugin package — never repo-root- or
+# consuming-project-relative, both of which are absent in the installed
+# plugin cache.
 _BCDI_VARIANT_SCHEMA_PATH = {
-    "default": "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json",
-    "rework": "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json",
-    "role-swap": "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json",
-    "narrow-remediation": "tests/scripts/fixtures/claude_dispatch/schemas/remediator_result.json",
-    "analyst": "plugins/plan-executor/scripts/schemas/claude_dispatch_output.json",
+    "default": "scripts/schemas/implementer_result.json",
+    "rework": "scripts/schemas/implementer_result.json",
+    "role-swap": "scripts/schemas/implementer_result.json",
+    "narrow-remediation": "scripts/schemas/remediator_result.json",
+    "analyst": "scripts/schemas/claude_dispatch_output.json",
 }
 
 
 _IMPLEMENTER_RESULT_SCHEMA_REL = (
-    "tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json"
+    "scripts/schemas/implementer_result.json"
 )
 
 
@@ -13922,13 +13954,14 @@ def _inline_implementer_result_schema(prompt: str) -> tuple[str, dict]:
     inlined schema block is byte-identical across paths. Single-sourcing
     guards against drift between the two dispatch surfaces (BUG-146).
 
-    The schema is loaded from
-    ``tests/scripts/fixtures/claude_dispatch/schemas/implementer_result.json``
-    via the repo-root anchor (``_REPO_ROOT``). Schema-load errors raise
-    rather than returning an error dict — both callers handle the missing
-    fixture via earlier validation in their own paths.
+    The schema is loaded from the packaged
+    ``scripts/schemas/implementer_result.json`` via the plugin-root anchor
+    (``_PLUGIN_ROOT``), so it resolves identically in the dev checkout and
+    the installed plugin cache. Schema-load errors raise rather than
+    returning an error dict — both callers handle the missing fixture via
+    earlier validation in their own paths.
     """
-    schema_abs = _REPO_ROOT / _IMPLEMENTER_RESULT_SCHEMA_REL
+    schema_abs = _PLUGIN_ROOT / _IMPLEMENTER_RESULT_SCHEMA_REL
     schema_obj = json.loads(_load_text(schema_abs))
     block_lines = [
         "",
@@ -14228,7 +14261,10 @@ def _run_build_claude_dispatch_input(payload: dict) -> dict:
         )
         inner_payload["prompt"] = inlined_prompt + trailer
     else:
-        schema_abs = (Path(repo_root) / schema_path).resolve()
+        # Packaged plugin asset — resolve against the plugin root, never the
+        # consuming project's repo_root (which historically only worked when
+        # the consuming project WAS the plan-executor checkout).
+        schema_abs = (_PLUGIN_ROOT / schema_path).resolve()
         if schema_abs.is_file():
             try:
                 schema_inline_obj = json.loads(_load_text(schema_abs))

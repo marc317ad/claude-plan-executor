@@ -58,7 +58,10 @@ FIXTURES_DIR = REPO_ROOT / "tests" / "scripts" / "fixtures" / "claude_dispatch"
 IMPL_SUCCESS_FIXTURE = FIXTURES_DIR / "implementer_success.json"
 IMPL_PARTIAL_FIXTURE = FIXTURES_DIR / "implementer_partial.json"
 IMPL_OVERSIZED_FIXTURE = FIXTURES_DIR / "implementer_oversized.json"
-IMPL_RESULT_SCHEMA = FIXTURES_DIR / "schemas" / "implementer_result.json"
+IMPL_RESULT_SCHEMA = (
+    REPO_ROOT / "plugins" / "plan-executor" / "scripts" / "schemas"
+    / "implementer_result.json"
+)
 
 ALLOWED_IMPLEMENTER_OUTCOMES = {
     "success",
